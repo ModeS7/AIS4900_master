@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+env/
+ENV/
+
+# Model files and cache
+model_cache/
+
+# Evaluation outputs
+eval/obj_eval/results/
+
+# evaluation cache
+eval/obj_eval/cache/
+
+# benchmark outputs
+misc/bench/benchmark_results/
+
+# scheduler visualization
+misc/vis_schedulers
+
+# Logs
+/Generation/runs/
+*.log
+
+# IDE
+.idea/
+*.iml

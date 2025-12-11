@@ -1,0 +1,26 @@
+# Core ML
+monai>=1.4.0
+ema-pytorch>=0.7.0
+
+# Training utilities
+tqdm
+tensorboard
+einops
+
+# Image processing
+scikit-image
+nibabel
+pillow
+opencv-python
+
+# Metrics/evaluation
+lpips
+
+# Data handling
+pandas
+numpy
+gdown
+
+# Visualization
+matplotlib
+tabulate
