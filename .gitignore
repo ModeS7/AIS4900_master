@@ -24,9 +24,6 @@ eval/obj_eval/cache/
 # benchmark outputs
 misc/bench/benchmark_results/
 
-# scheduler visualization
-misc/vis_schedulers
-
 # Logs
 /Generation/runs/
 *.log
