@@ -8,14 +8,14 @@ warmup_epochs: 5
 val_interval: 30
 
 # EMA settings
-use_ema: true
+use_ema: false
 ema:
   decay: 0.9999
   update_after_step: 100
   update_every: 10
 
 # Min-SNR loss weighting
-use_min_snr: true
+use_min_snr: false
 min_snr_gamma: 5.0
 
 # Perceptual loss
