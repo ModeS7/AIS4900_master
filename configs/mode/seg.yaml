@@ -1,0 +1,7 @@
+# Segmentation mode - unconditional mask generation
+
+name: seg
+is_conditional: false
+in_channels: 1   # noisy_seg
+out_channels: 1  # predicted noise/velocity
+description: "Unconditional segmentation mask generation"

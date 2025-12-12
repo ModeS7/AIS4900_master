@@ -1,0 +1,8 @@
+# Rectified Flow strategy
+
+name: rflow
+num_train_timesteps: 1000
+use_discrete_timesteps: true
+sample_method: logit-normal
+use_timestep_transform: true
+prediction_type: velocity  # predicts velocity

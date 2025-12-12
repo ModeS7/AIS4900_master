@@ -1,0 +1,7 @@
+# Bravo mode - conditional single image generation
+
+name: bravo
+is_conditional: true
+in_channels: 2   # [noisy_bravo, seg_mask]
+out_channels: 1  # predicted noise/velocity for bravo
+description: "BRAVO image generation conditioned on segmentation mask"

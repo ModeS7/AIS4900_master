@@ -6,13 +6,24 @@ Potential improvements and experiments for the diffusion-based medical image syn
 
 ## Immediate Extensions
 
-- [ ] **Separate training pipelines** - Different configs for seg (no perceptual loss) vs bravo (ImageNet perceptual loss)
+- [x] **Separate training pipelines** - Different configs for seg vs bravo via Hydra YAML configs
 - [ ] **Classifier-free guidance** - Train with random mask dropout, interpolate conditional/unconditional at inference
 - [ ] **Controllable mask generation** - Cross-attention conditioning for tumor count/size/location
-- [ ] **Min-SNR weighting** - Reweight loss across timesteps to prevent high-noise step domination
-- [ ] **EMA weights** - Maintain slowly-updated parameter copy for higher quality samples
-- [ ] **LR Finder** - Automatically find optimal learning rate by sweeping LR range and plotting loss curve
-- [ ] **Warmup Cosine Scheduler** - Linear warmup (e.g., 1000 steps) followed by cosine annealing to prevent early training instability
+- [x] **Min-SNR weighting** - Reweight loss across timesteps to prevent high-noise step domination (IMPLEMENTED)
+- [x] **EMA weights** - Maintain slowly-updated parameter copy for higher quality samples (IMPLEMENTED)
+- [x] **LR Finder** - Automatically find optimal learning rate (IMPLEMENTED in trainer)
+- [x] **Warmup Cosine Scheduler** - Linear warmup followed by cosine annealing (IMPLEMENTED)
+
+---
+
+## Code/Architecture TODOs
+
+- [ ] **Add network layer** - Increase model capacity (currently 3 levels: 128, 256, 256)
+- [ ] **RFlow 100-step training** - Compare quality vs 1000 steps for faster inference
+- [ ] **Fix test segmentation masks** - Dataset preprocessing issue
+- [ ] **Distortion dataset** - Label ~500 images for DRaFT classifier training
+- [ ] **Distortion classifier** - Train as DRaFT reward model
+- [ ] **Noise schedule comparison** - Systematic cosine/linear/sigmoid test
 
 ---
 

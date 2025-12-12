@@ -1,0 +1,8 @@
+# Dual mode - conditional dual image generation
+
+name: dual
+is_conditional: true
+in_channels: 3   # [noisy_t1_pre, noisy_t1_gd, seg_mask]
+out_channels: 2  # predicted noise/velocity for [t1_pre, t1_gd]
+image_keys: [t1_pre, t1_gd]
+description: "T1 pre/post-contrast pair generation conditioned on segmentation mask"

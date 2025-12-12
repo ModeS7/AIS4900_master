@@ -1,0 +1,7 @@
+# Local development paths (Linux)
+
+name: local
+data_dir: /home/mode/NTNU/MedicalDataSets/brainmetshare-3
+model_dir: /home/mode/NTNU/AIS4900_master/runs
+log_dir: /home/mode/NTNU/AIS4900_master/runs
+cache_dir: /home/mode/.cache/medgen

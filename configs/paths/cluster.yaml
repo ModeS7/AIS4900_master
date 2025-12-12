@@ -1,0 +1,7 @@
+# NTNU IDUN cluster paths
+
+name: cluster
+data_dir: /cluster/work/modestas/MedicalDataSets/brainmetshare-3
+model_dir: /cluster/work/modestas/AIS4900_master/runs
+log_dir: /cluster/work/modestas/AIS4900_master/runs
+cache_dir: /cluster/work/modestas/.cache/medgen

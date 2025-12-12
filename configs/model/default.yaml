@@ -1,0 +1,8 @@
+# UNet model configuration
+# Override image_size via CLI: model.image_size=256
+
+image_size: 128
+channels: [128, 256, 256]
+attention_levels: [false, true, true]
+num_res_blocks: 1
+num_head_channels: 256

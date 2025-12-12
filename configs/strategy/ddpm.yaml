@@ -1,0 +1,6 @@
+# DDPM (Denoising Diffusion Probabilistic Models) strategy
+
+name: ddpm
+num_train_timesteps: 1000
+schedule: cosine
+prediction_type: epsilon  # predicts noise

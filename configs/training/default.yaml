@@ -1,0 +1,25 @@
+# Default training configuration
+
+epochs: 500
+batch_size: 16
+learning_rate: 1.0e-4
+gradient_clip_norm: 1.0
+warmup_epochs: 5
+val_interval: 30
+
+# EMA settings
+use_ema: true
+ema:
+  decay: 0.9999
+  update_after_step: 100
+  update_every: 10
+
+# Min-SNR loss weighting
+use_min_snr: true
+min_snr_gamma: 5.0
+
+# Perceptual loss
+perceptual_weight: 0.001
+
+# Multi-GPU
+use_multi_gpu: false

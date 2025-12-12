@@ -1,0 +1,18 @@
+# Main Hydra configuration file
+# Composes from sub-configs via defaults list
+
+defaults:
+  - paths: local
+  - model: default
+  - strategy: ddpm
+  - mode: bravo
+  - training: default
+  - _self_
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${paths.model_dir}/${mode.name}/${strategy.name}_${model.image_size}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

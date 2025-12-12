@@ -1,0 +1,25 @@
+# Fast debug configuration for testing
+
+epochs: 2
+batch_size: 4
+learning_rate: 1.0e-4
+gradient_clip_norm: 1.0
+warmup_epochs: 1
+val_interval: 1
+
+# EMA settings
+use_ema: false
+ema:
+  decay: 0.9999
+  update_after_step: 100
+  update_every: 10
+
+# Min-SNR loss weighting
+use_min_snr: false
+min_snr_gamma: 5.0
+
+# Perceptual loss
+perceptual_weight: 0.001
+
+# Multi-GPU
+use_multi_gpu: false
