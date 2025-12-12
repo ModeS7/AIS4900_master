@@ -21,7 +21,7 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-conda activate AIS4005
+conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
