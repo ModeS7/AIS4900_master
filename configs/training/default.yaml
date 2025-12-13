@@ -24,20 +24,24 @@ perceptual_weight: 0.001
 # Multi-GPU
 use_multi_gpu: false
 
+# Compile fused forward pass (model + loss) for ~10% speedup
+compile_fused_forward: true
+
 # Logging and metrics (all logged at val_interval)
+# Mode compatibility: [seg] = segmentation only, [cond] = bravo/dual only, [all] = all modes
 logging:
   # Training dynamics
-  grad_norm: true              # Track gradient norm (catches instability)
-  timestep_losses: true        # Loss by diffusion timestep
-  regional_losses: true        # Loss by tumor vs background region
-  timestep_region_losses: true # 2D: timestep x region heatmap
+  grad_norm: true              # [all] Track gradient norm (catches instability)
+  timestep_losses: true        # [all] Loss by diffusion timestep (use this for seg mode)
+  regional_losses: true        # [cond] Loss by tumor vs background region
+  timestep_region_losses: true # [cond] 2D heatmap: timestep x region (superset of timestep_losses)
 
   # Validation metrics
-  ssim: true                   # Structural similarity on generated samples
-  psnr: true                   # Peak signal-to-noise ratio
-  boundary_sharpness: true     # Edge quality in tumor regions
+  ssim: true                   # [cond] Structural similarity on generated samples
+  psnr: true                   # [cond] Peak signal-to-noise ratio
+  boundary_sharpness: true     # [cond] Edge quality in tumor regions
 
   # Visualization
-  intermediate_steps: true     # Save denoising trajectory (t=1000,500,250,100,0)
-  worst_batch: true            # Save batch with highest loss each epoch
+  intermediate_steps: true     # [cond] Save denoising trajectory (t=1000,500,250,100,0)
+  worst_batch: true            # [all] Save batch with highest loss each epoch
   num_intermediate_steps: 5    # How many steps to visualize

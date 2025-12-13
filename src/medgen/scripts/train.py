@@ -24,20 +24,12 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
+from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, setup_cuda_optimizations
 from medgen.data import create_dataloader, create_dual_image_dataloader
 from medgen.diffusion import DiffusionTrainer
 
 # Enable CUDA optimizations
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.enabled = True
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
-torch.backends.cuda.enable_math_sdp(True)
-torch.backends.cuda.matmul.allow_tf32 = True
-torch._dynamo.config.cache_size_limit = 32
+setup_cuda_optimizations()
 
 log = logging.getLogger(__name__)
 

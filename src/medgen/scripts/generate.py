@@ -26,25 +26,18 @@ import torch
 from monai.networks.nets import DiffusionModelUNet
 from torch.amp import autocast
 
-from medgen.core.constants import (
+from medgen.core import (
     MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
     DEFAULT_CHANNELS, DEFAULT_ATTENTION_LEVELS,
-    DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS
+    DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS,
+    setup_cuda_optimizations,
 )
 from medgen.diffusion.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from medgen.diffusion.utils import get_vram_usage
 from medgen.data import make_binary
 
 # Enable CUDA optimizations
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.deterministic = False
-torch.backends.cudnn.enabled = True
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
-torch.backends.cuda.enable_math_sdp(True)
-torch.backends.cuda.matmul.allow_tf32 = True
-torch._dynamo.config.cache_size_limit = 32
+setup_cuda_optimizations()
 
 GenerationMode = Literal['bravo', 'dual']
 StrategyType = Literal['ddpm', 'rflow']

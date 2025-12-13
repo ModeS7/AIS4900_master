@@ -89,42 +89,6 @@ def save_checkpoint(
     return save_path
 
 
-def load_checkpoint(
-    checkpoint_path: str,
-    model: nn.Module,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-    ema: Optional[Any] = None,
-    device: torch.device = torch.device('cuda')
-) -> int:
-    """Load checkpoint and restore model, optimizer, and scheduler state.
-
-    Args:
-        checkpoint_path: Path to the checkpoint file.
-        model: Model to load weights into.
-        optimizer: Optional optimizer to restore state.
-        scheduler: Optional scheduler to restore state.
-        ema: Optional EMA wrapper (from ema-pytorch) to restore state.
-        device: Device to load tensors to.
-
-    Returns:
-        Epoch number from checkpoint (0 if not found).
-    """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-
-    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-    if ema is not None and 'ema_state_dict' in checkpoint:
-        ema.load_state_dict(checkpoint['ema_state_dict'])
-
-    return checkpoint.get('epoch', 0)
-
-
 def save_model_only(
     model: nn.Module,
     epoch: int,

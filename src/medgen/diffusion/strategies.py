@@ -9,7 +9,6 @@ from typing import Any, Dict, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from monai.inferers import DiffusionInferer
 from monai.networks.schedulers import DDPMScheduler, RFlowScheduler
 from torch import nn
 from tqdm import tqdm
@@ -157,7 +156,6 @@ class DDPMStrategy(DiffusionStrategy):
         self.scheduler = DDPMScheduler(
             num_train_timesteps=num_timesteps, schedule='cosine'
         )
-        self.inferer = DiffusionInferer(self.scheduler)
         return self.scheduler
 
     def add_noise(
