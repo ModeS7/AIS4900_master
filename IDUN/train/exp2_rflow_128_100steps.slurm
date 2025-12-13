@@ -32,6 +32,7 @@ time python -m medgen.scripts.train \
     strategy.num_train_timesteps=100 \
     model.image_size=128 \
     training.use_ema=false \
-    training.use_min_snr=false
+    training.use_min_snr=false \
+    training.name=exp_2_
 
 conda deactivate

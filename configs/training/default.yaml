@@ -1,5 +1,9 @@
 # Default training configuration
 
+# Experiment name prefix for run directory
+# Include trailing underscore: training.name=exp1_ -> exp1_rflow_128_...
+name: ""
+
 epochs: 500
 batch_size: 16
 learning_rate: 1.0e-4

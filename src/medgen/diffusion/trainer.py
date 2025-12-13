@@ -104,7 +104,9 @@ class DiffusionTrainer:
                 self.save_dir = HydraConfig.get().runtime.output_dir
             except (ImportError, ValueError, AttributeError):
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                self.run_name = f"{self.strategy_name}_{self.image_size}_{timestamp}"
+                # Optional experiment name prefix from config (include underscore in value: "exp1_")
+                exp_name = cfg.training.get('name', '')
+                self.run_name = f"{exp_name}{self.strategy_name}_{self.image_size}_{timestamp}"
                 self.save_dir = os.path.join(cfg.paths.model_dir, self.mode_name, self.run_name)
 
             tensorboard_dir = os.path.join(self.save_dir, "tensorboard")

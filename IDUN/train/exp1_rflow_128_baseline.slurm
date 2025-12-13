@@ -31,6 +31,7 @@ time python -m medgen.scripts.train \
     mode=bravo \
     model.image_size=128 \
     training.use_ema=false \
-    training.use_min_snr=false
+    training.use_min_snr=false \
+    training.name=exp_1_
 
 conda deactivate
