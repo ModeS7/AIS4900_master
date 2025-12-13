@@ -7,9 +7,9 @@
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="exp1_rflow_128"
-#SBATCH --output=IDUN/output/train/exp1_rflow_128_%j.out
-#SBATCH --error=IDUN/output/train/exp1_rflow_128_%j.err
+#SBATCH --job-name="exp1_rflow"
+#SBATCH --output=IDUN/output/train/exp1_rflow_%j.out
+#SBATCH --error=IDUN/output/train/exp1_rflow_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
@@ -29,6 +29,8 @@ time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model.image_size=128
+    model.image_size=128 \
+    training.use_ema=false \
+    training.use_min_snr=false
 
 conda deactivate

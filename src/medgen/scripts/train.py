@@ -24,6 +24,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
 from medgen.data import create_dataloader, create_dual_image_dataloader
 from medgen.diffusion import DiffusionTrainer
 
@@ -41,6 +42,51 @@ torch._dynamo.config.cache_size_limit = 32
 log = logging.getLogger(__name__)
 
 
+def validate_config(cfg: DictConfig) -> None:
+    """Validate configuration values before training.
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Raises:
+        ValueError: If any configuration value is invalid.
+    """
+    errors = []
+
+    # Training params
+    if cfg.training.epochs <= 0:
+        errors.append(f"epochs must be > 0, got {cfg.training.epochs}")
+    if cfg.training.batch_size <= 0:
+        errors.append(f"batch_size must be > 0, got {cfg.training.batch_size}")
+    if cfg.training.learning_rate <= 0:
+        errors.append(f"learning_rate must be > 0, got {cfg.training.learning_rate}")
+
+    # Model params
+    if cfg.model.image_size <= 0:
+        errors.append(f"image_size must be > 0, got {cfg.model.image_size}")
+    if cfg.model.image_size & (cfg.model.image_size - 1) != 0:
+        log.warning(f"image_size {cfg.model.image_size} is not a power of 2 (may cause issues)")
+
+    # Strategy
+    if cfg.strategy.name not in ['ddpm', 'rflow']:
+        errors.append(f"Unknown strategy: {cfg.strategy.name}")
+
+    # Mode
+    if cfg.mode.name not in ['seg', 'bravo', 'dual']:
+        errors.append(f"Unknown mode: {cfg.mode.name}")
+
+    # Paths - check if data directory exists
+    if not os.path.exists(cfg.paths.data_dir):
+        errors.append(f"Data directory does not exist: {cfg.paths.data_dir}")
+
+    # Check CUDA availability
+    if not torch.cuda.is_available():
+        errors.append("CUDA is not available. Training requires GPU.")
+
+    if errors:
+        raise ValueError("Configuration validation failed:\n  - " + "\n  - ".join(errors))
+
+
 @hydra.main(version_base=None, config_path="../../../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main training entry point.
@@ -48,6 +94,9 @@ def main(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object composed from YAML files.
     """
+    # Validate configuration before proceeding
+    validate_config(cfg)
+
     # Print resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
@@ -67,7 +116,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create dataloader based on mode
     if mode == 'dual':
-        image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['t1_pre', 't1_gd']
+        image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
         dataloader, train_dataset = create_dual_image_dataloader(
             cfg=cfg,
             image_keys=image_keys,

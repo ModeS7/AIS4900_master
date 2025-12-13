@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import torch
 
+from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
+
 
 class TrainingMode(ABC):
     """Abstract base class for different training modes.
@@ -238,11 +240,12 @@ class ConditionalDualMode(TrainingMode):
 
         Args:
             image_keys: Names of the two image types to train.
-                Default: ['t1_pre', 't1_gd']
+                Default: DEFAULT_DUAL_IMAGE_KEYS ('t1_pre', 't1_gd')
         """
         if image_keys is None:
-            image_keys = ['t1_pre', 't1_gd']
-        assert len(image_keys) == 2, "ConditionalDualMode requires exactly 2 image types"
+            image_keys = DEFAULT_DUAL_IMAGE_KEYS.copy()
+        if len(image_keys) != 2:
+            raise ValueError(f"ConditionalDualMode requires exactly 2 image types, got {len(image_keys)}: {image_keys}")
         self.image_keys: List[str] = image_keys
 
     @property

@@ -16,6 +16,51 @@ Potential improvements and experiments for the diffusion-based medical image syn
 
 ---
 
+## Conditioning Methods
+
+Current implementation uses **channel concatenation** (`[noise, mask]` → UNet). Multiple conditioning methods can be combined since they operate at different levels.
+
+### Conditioning Taxonomy
+
+| Category | Method | Mechanism | Use Case |
+|----------|--------|-----------|----------|
+| **Input** | Channel Concat ✅ | `[noise, cond]` as input | Dense spatial (current) |
+| **Normalization** | SPADE | Spatial γ(x,y), β(x,y) from mask | Seg→image |
+| | AdaIN | Global γ, β from condition | Style transfer |
+| | FiLM | Feature-wise γ * x + β | General modulation |
+| **Attention** | Cross-Attention | Q=image, K/V=condition | Text prompts |
+| | Reference Attention | Attend to reference features | Image-guided |
+| | IP-Adapter | Image embeddings → cross-attn | Image prompts |
+| **Architecture** | ControlNet | Parallel trainable encoder | Add control to pretrained |
+| | T2I-Adapter | Small adapter networks | Lightweight control |
+| **Inference** | CFG | Interpolate cond/uncond | Control strength |
+| | Classifier Guidance | Classifier gradients | Class-conditional |
+
+### Combining Methods
+
+Methods are **orthogonal** - they work at different levels:
+
+```
+Input: [noise, mask]     ← Channel Concat (WHAT goes in)
+         │
+    ┌────▼────┐
+    │  Conv   │
+    │ + SPADE │           ← SPADE (HOW features processed)
+    └────┬────┘
+         │
+    [prediction]
+         │
+    CFG inference         ← CFG (HOW MUCH to follow condition)
+```
+
+| Step | Method | Benefit |
+|------|--------|---------|
+| 1 ✅ | Channel Concat | Baseline, simple |
+| 2 | + CFG | Control strength at inference |
+| 3 | + SPADE | Stronger mask adherence |
+
+---
+
 ## Code/Architecture TODOs
 
 - [ ] **Add network layer** - Increase model capacity (currently 3 levels: 128, 256, 256)
@@ -55,6 +100,7 @@ Potential improvements and experiments for the diffusion-based medical image syn
 
 - [ ] **Diffusion Transformers (DiT)** - Superior scaling, global receptive field for anatomical relationships
 - [ ] **MMDiT** - Separate transformer branches for conditioning and noisy inputs
+- [ ] **SiT** - Scalable interpolant transformer
 - [ ] **Mamba / State Space Models** - Linear complexity, enable higher resolutions or 3D
 
 ---
@@ -87,7 +133,7 @@ Simpler than DRaFT (no fine-tuning needed), gives immediate improvement to downs
 - [ ] **Implement quality gates** - Auto-reject distorted samples before downstream use
 
 ### Hard Example Mining
-Segmentation models fail more on certain cases (small tumors, multiple lesions, tumors near ventricles):
+Segmentation models fail more on certain cases (small tumors, multiple lesions, tumors near the edge):
 1. Run segmentation model on real test set, identify failure cases
 2. Find mask characteristics that correlate with failures (size, location, count)
 3. Bias mask generation toward these hard cases

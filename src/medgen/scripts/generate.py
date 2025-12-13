@@ -26,7 +26,11 @@ import torch
 from monai.networks.nets import DiffusionModelUNet
 from torch.amp import autocast
 
-from medgen.core.constants import MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD
+from medgen.core.constants import (
+    MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
+    DEFAULT_CHANNELS, DEFAULT_ATTENTION_LEVELS,
+    DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS
+)
 from medgen.diffusion.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from medgen.diffusion.utils import get_vram_usage
 from medgen.data import make_binary
@@ -136,10 +140,10 @@ def load_model(
         spatial_dims=2,
         in_channels=in_channels,
         out_channels=out_channels,
-        channels=(128, 256, 256),
-        attention_levels=(False, True, True),
-        num_res_blocks=1,
-        num_head_channels=256,
+        channels=DEFAULT_CHANNELS,
+        attention_levels=DEFAULT_ATTENTION_LEVELS,
+        num_res_blocks=DEFAULT_NUM_RES_BLOCKS,
+        num_head_channels=DEFAULT_NUM_HEAD_CHANNELS,
     )
 
     pre_trained_model = torch.load(model_path, map_location=device, weights_only=True)
@@ -224,6 +228,50 @@ def log_image_batch(
     sys.stdout.flush()
 
 
+def _process_mask_batch(
+    batch_masks: List[np.ndarray],
+    batch_counters: List[int],
+    image_model: torch.nn.Module,
+    strategy: DiffusionStrategy,
+    num_steps: int,
+    image_size: int,
+    save_dir: str,
+    mode: GenerationMode,
+    device: torch.device,
+    use_progress_bars: bool,
+    num_images: int
+) -> int:
+    """Process a batch of masks through image generation.
+
+    Args:
+        batch_masks: List of mask arrays to condition image generation.
+        batch_counters: List of image indices for saving.
+        image_model: Trained diffusion model for image generation.
+        strategy: Diffusion strategy (DDPM or RFlow).
+        num_steps: Number of denoising steps.
+        image_size: Image size in pixels.
+        save_dir: Directory to save generated images.
+        mode: Generation mode ('bravo' or 'dual').
+        device: Target device.
+        use_progress_bars: Whether to show progress bars.
+        num_images: Total target number of images (for logging).
+
+    Returns:
+        saved_up_to: Highest image counter saved + 1
+    """
+    image_start = time.time()
+    generate_images_from_masks(
+        batch_masks, batch_counters, image_model,
+        strategy, num_steps, image_size,
+        save_dir, mode, device, use_progress_bars=use_progress_bars
+    )
+    image_time = time.time() - image_start
+
+    saved_up_to = max(batch_counters) + 1
+    log_image_batch(saved_up_to, num_images, len(batch_masks), image_time, mode, device)
+    return saved_up_to
+
+
 def generate_images_from_masks(
     mask_images: List[np.ndarray],
     start_counters: List[int],
@@ -262,8 +310,13 @@ def generate_images_from_masks(
             mask_cpu = masks[i:i + 1].cpu().unsqueeze(-1)
             combined = torch.cat((image_cpu[0, 0], mask_cpu[0, 0]), dim=2)
 
-            nifti_image = nib.Nifti1Image(np.array(combined), np.eye(4))
-            nib.save(nifti_image, f"{save_dir}/{start_counters[i]:05d}.nii.gz")
+            try:
+                nifti_image = nib.Nifti1Image(np.array(combined), np.eye(4))
+                output_path = os.path.join(save_dir, f"{start_counters[i]:05d}.nii.gz")
+                nib.save(nifti_image, output_path)
+            except Exception as e:
+                print(f"ERROR: Failed to save image {start_counters[i]:05d}: {e}")
+                raise
 
     elif mode == 'dual':
         noise_pre = torch.randn(
@@ -288,8 +341,13 @@ def generate_images_from_masks(
 
             combined = torch.cat((t1_pre_cpu[0], t1_gd_cpu[0], mask_cpu[0, 0]), dim=2)
 
-            nifti_image = nib.Nifti1Image(np.array(combined), np.eye(4))
-            nib.save(nifti_image, f"{save_dir}/{start_counters[i]:05d}.nii.gz")
+            try:
+                nifti_image = nib.Nifti1Image(np.array(combined), np.eye(4))
+                output_path = os.path.join(save_dir, f"{start_counters[i]:05d}.nii.gz")
+                nib.save(nifti_image, output_path)
+            except Exception as e:
+                print(f"ERROR: Failed to save image {start_counters[i]:05d}: {e}")
+                raise
 
     return True
 
@@ -356,7 +414,7 @@ def main() -> None:
             (batch_size, 1, args.image_size, args.image_size), device=device
         )
 
-        with autocast(device_type="cuda", enabled=False, dtype=torch.bfloat16):
+        with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
                 seg_masks = strategy.generate(
                     seg_model, noise, args.num_steps,
@@ -369,8 +427,12 @@ def main() -> None:
                 break
 
             mask = seg_masks[j, 0].detach().cpu().numpy()
-            mask = (mask - np.min(mask)) / (np.max(mask) - np.min(mask))
-            mask = make_binary(mask, threshold=0.1)
+            mask_min, mask_max = np.min(mask), np.max(mask)
+            if mask_max > mask_min:
+                mask = (mask - mask_min) / (mask_max - mask_min)
+            else:
+                mask = np.zeros_like(mask)  # Constant mask → empty (filtered by is_valid_mask)
+            mask = make_binary(mask, threshold=BINARY_THRESHOLD_GEN)
 
             if is_valid_mask(mask):
                 mask_cache.append((mask, current_image))
@@ -385,23 +447,15 @@ def main() -> None:
             batch_counters = [mask_cache[i][1] for i in range(batch_size)]
             mask_cache = mask_cache[batch_size:]
 
-            image_start = time.time()
-            generate_images_from_masks(
+            _process_mask_batch(
                 batch_masks, batch_counters, image_model,
                 strategy, args.num_steps, args.image_size,
-                save_dir, args.mode, device, use_progress_bars=use_progress_bars
-            )
-            image_time = time.time() - image_start
-
-            saved_up_to = max(batch_counters) + 1
-            log_image_batch(
-                saved_up_to, args.num_images, batch_size,
-                image_time, args.mode, device
+                save_dir, args.mode, device, use_progress_bars, args.num_images
             )
 
         torch.cuda.empty_cache()
 
-    # Process remaining
+    # Process remaining masks in cache
     mask_cache = [(m, c) for m, c in mask_cache if c < args.num_images]
 
     while len(mask_cache) >= batch_size:
@@ -409,18 +463,10 @@ def main() -> None:
         batch_counters = [mask_cache[i][1] for i in range(batch_size)]
         mask_cache = mask_cache[batch_size:]
 
-        image_start = time.time()
-        generate_images_from_masks(
+        _process_mask_batch(
             batch_masks, batch_counters, image_model,
             strategy, args.num_steps, args.image_size,
-            save_dir, args.mode, device, use_progress_bars=use_progress_bars
-        )
-        image_time = time.time() - image_start
-
-        saved_up_to = max(batch_counters) + 1
-        log_image_batch(
-            saved_up_to, args.num_images, batch_size,
-            image_time, args.mode, device
+            save_dir, args.mode, device, use_progress_bars, args.num_images
         )
 
     # Final partial batch
@@ -429,18 +475,10 @@ def main() -> None:
         batch_masks = [mask_cache[i][0] for i in range(len(mask_cache))]
         batch_counters = [mask_cache[i][1] for i in range(len(mask_cache))]
 
-        image_start = time.time()
-        generate_images_from_masks(
+        _process_mask_batch(
             batch_masks, batch_counters, image_model,
             strategy, args.num_steps, args.image_size,
-            save_dir, args.mode, device, use_progress_bars=use_progress_bars
-        )
-        image_time = time.time() - image_start
-
-        saved_up_to = max(batch_counters) + 1
-        log_image_batch(
-            saved_up_to, args.num_images, len(mask_cache),
-            image_time, args.mode, device
+            save_dir, args.mode, device, use_progress_bars, args.num_images
         )
 
     # Summary

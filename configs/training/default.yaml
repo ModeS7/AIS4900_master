@@ -23,3 +23,21 @@ perceptual_weight: 0.001
 
 # Multi-GPU
 use_multi_gpu: false
+
+# Logging and metrics (all logged at val_interval)
+logging:
+  # Training dynamics
+  grad_norm: true              # Track gradient norm (catches instability)
+  timestep_losses: true        # Loss by diffusion timestep
+  regional_losses: true        # Loss by tumor vs background region
+  timestep_region_losses: true # 2D: timestep x region heatmap
+
+  # Validation metrics
+  ssim: true                   # Structural similarity on generated samples
+  psnr: true                   # Peak signal-to-noise ratio
+  boundary_sharpness: true     # Edge quality in tumor regions
+
+  # Visualization
+  intermediate_steps: true     # Save denoising trajectory (t=1000,500,250,100,0)
+  worst_batch: true            # Save batch with highest loss each epoch
+  num_intermediate_steps: 5    # How many steps to visualize

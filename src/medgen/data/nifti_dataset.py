@@ -22,7 +22,7 @@ from monai.transforms import (
 from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
-from medgen.core.constants import BINARY_THRESHOLD, DEFAULT_NUM_WORKERS
+from medgen.core.constants import BINARY_THRESHOLD_GT, DEFAULT_NUM_WORKERS
 
 
 class NiFTIDataset(Dataset):
@@ -74,12 +74,14 @@ class NiFTIDataset(Dataset):
         if self.transform is not None:
             volume = self.transform(nifti_path)
         else:
-            volume = nifti_path
+            # Load NIfTI file directly if no transform provided
+            loader = LoadImage(image_only=True)
+            volume = loader(nifti_path)
 
         return volume, patient_name
 
 
-def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD) -> np.ndarray:
+def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD_GT) -> np.ndarray:
     """Convert image to binary mask using threshold.
 
     Args:
@@ -162,7 +164,7 @@ def extract_slices_dual(
                     slice_data_copy = slice_data.copy()
                     seg_channel = slice_data_copy[-1, :, :]
                     slice_data_copy[-1, :, :] = make_binary(
-                        seg_channel, threshold=BINARY_THRESHOLD
+                        seg_channel, threshold=BINARY_THRESHOLD_GT
                     )
                     all_slices.append(slice_data_copy)
             else:
@@ -194,9 +196,10 @@ def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
 
     # Verify all datasets have same length
     for key, dataset in datasets_dict.items():
-        assert len(dataset) == num_patients, (
-            f"Dataset {key} has {len(dataset)} patients, expected {num_patients}"
-        )
+        if len(dataset) != num_patients:
+            raise ValueError(
+                f"Dataset {key} has {len(dataset)} patients, expected {num_patients}"
+            )
 
     merged_data: List[np.ndarray] = []
 
@@ -211,8 +214,8 @@ def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
             # Verify all sequences are from same patient
             if patient_name is None:
                 patient_name = name
-            else:
-                assert name == patient_name, (
+            elif name != patient_name:
+                raise ValueError(
                     f"Patient name mismatch: {patient_name} vs {name} "
                     f"for sequence {seq_key}"
                 )
@@ -328,9 +331,10 @@ def create_dual_image_dataloader(
         Batches have shape [B, 3, H, W] = [t1_pre, t1_gd, seg].
 
     Raises:
-        AssertionError: If image_keys does not contain exactly 2 items.
+        ValueError: If image_keys does not contain exactly 2 items.
     """
-    assert len(image_keys) == 2, "Dual-image mode requires exactly 2 image types"
+    if len(image_keys) != 2:
+        raise ValueError(f"Dual-image mode requires exactly 2 image types, got {len(image_keys)}: {image_keys}")
 
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size

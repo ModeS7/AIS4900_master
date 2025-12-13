@@ -13,9 +13,6 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# Experiment 2: RFlow with 100 training steps
-# RFlow 128 bravo, 100 steps instead of 1000
-
 cd ${SLURM_SUBMIT_DIR}
 
 echo "Job ID: $SLURM_JOB_ID"
@@ -32,6 +29,9 @@ time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    strategy.num_train_timesteps=100
+    strategy.num_train_timesteps=100 \
+    model.image_size=128 \
+    training.use_ema=false \
+    training.use_min_snr=false
 
 conda deactivate
