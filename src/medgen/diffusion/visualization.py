@@ -22,6 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .modes import TrainingMode
 from .strategies import DiffusionStrategy
 from .metrics import MetricsTracker
+from .spaces import DiffusionSpace, PixelSpace
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class ValidationVisualizer:
         save_dir: Directory for saving visualizations.
         device: PyTorch device.
         is_main_process: Whether this is the main process.
+        space: Optional DiffusionSpace for pixel/latent operations.
     """
 
     def __init__(
@@ -53,6 +55,7 @@ class ValidationVisualizer:
         save_dir: str,
         device: torch.device,
         is_main_process: bool = True,
+        space: Optional[DiffusionSpace] = None,
     ) -> None:
         self.cfg = cfg
         self.strategy = strategy
@@ -62,6 +65,7 @@ class ValidationVisualizer:
         self.save_dir = save_dir
         self.device = device
         self.is_main_process = is_main_process
+        self.space = space if space is not None else PixelSpace()
 
         self.mode_name: str = cfg.mode.name
         self.strategy_name: str = cfg.strategy.name
@@ -395,6 +399,12 @@ class ValidationVisualizer:
                         samples = self.strategy.generate(
                             model, model_input, num_steps=self.num_timesteps, device=self.device
                         )
+
+                # Decode from latent space to pixel space for visualization
+                if self.space.scale_factor > 1:
+                    samples = self.space.decode(samples)
+                    if intermediates is not None:
+                        intermediates = [self.space.decode(inter) for inter in intermediates]
 
                 if intermediates is not None and self.log_intermediate_steps:
                     self._log_intermediate_steps(epoch, intermediates, seg_masks)

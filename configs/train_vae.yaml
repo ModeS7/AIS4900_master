@@ -1,0 +1,61 @@
+# VAE training configuration for Latent Diffusion Models
+# Trains AutoencoderKL with GAN loss (matches MONAI implementation)
+
+defaults:
+  - paths: local
+  - model: default
+  - mode: dual  # Can be seg, bravo, or dual
+  - training: default
+  - _self_
+
+# VAE architecture configuration
+vae:
+  latent_channels: 4
+  channels: [32, 64, 64, 64]
+  attention_levels: [false, false, true, true]
+  num_res_blocks: 2
+
+  # Loss weights (MONAI defaults)
+  kl_weight: 1.0e-8       # KL divergence weight
+  perceptual_weight: 0.002  # Perceptual loss weight
+  adv_weight: 0.005        # Adversarial loss weight
+
+  # Discriminator config
+  disc_lr: 5.0e-5          # Discriminator learning rate
+  disc_num_layers: 3       # PatchDiscriminator layers
+  disc_num_channels: 64    # PatchDiscriminator channels
+
+# Override training defaults for VAE
+training:
+  epochs: 100
+  batch_size: 16
+  learning_rate: 1.0e-5    # Generator learning rate (MONAI default)
+  gradient_clip_norm: 1.0
+  warmup_epochs: 5
+  val_interval: 10
+  use_ema: true
+  ema:
+    decay: 0.999
+    update_after_step: 100
+    update_every: 10
+  use_multi_gpu: false
+  # Disable diffusion-specific logging
+  logging:
+    grad_norm: false
+    timestep_losses: false
+    regional_losses: false
+    timestep_region_losses: false
+    ssim: true
+    psnr: true
+    boundary_sharpness: false
+    intermediate_steps: false
+    worst_batch: false
+    flops: false
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${paths.model_dir}/vae/${mode.name}_${model.image_size}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/vae/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

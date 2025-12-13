@@ -34,6 +34,7 @@ from .modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode,
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .metrics import MetricsTracker
 from .visualization import ValidationVisualizer
+from .spaces import DiffusionSpace, PixelSpace
 from .utils import get_vram_usage, log_epoch_summary, save_checkpoint, save_model_only
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class DiffusionTrainer:
 
     Args:
         cfg: Hydra configuration object containing all settings.
+        space: Optional DiffusionSpace for pixel/latent space operations.
+            Defaults to PixelSpace (identity, backward compatible).
 
     Example:
         >>> trainer = DiffusionTrainer(cfg)
@@ -55,8 +58,9 @@ class DiffusionTrainer:
         >>> trainer.train(train_loader, train_dataset)
     """
 
-    def __init__(self, cfg: DictConfig) -> None:
+    def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
         self.cfg = cfg
+        self.space = space if space is not None else PixelSpace()
 
         # Extract config values
         self.strategy_name: str = cfg.strategy.name
@@ -197,7 +201,15 @@ class DiffusionTrainer:
 
     def setup_model(self, train_dataset: Dataset) -> None:
         """Initialize model, optimizer, and loss functions."""
-        model_input_channels = self.mode.get_model_config()
+        model_cfg = self.mode.get_model_config()
+
+        # Adjust channels for latent space (PixelSpace returns unchanged)
+        in_channels = self.space.get_latent_channels(model_cfg['in_channels'])
+        out_channels = self.space.get_latent_channels(model_cfg['out_channels'])
+
+        if self.is_main_process and self.space.scale_factor > 1:
+            logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
+                       f"scale factor {self.space.scale_factor}x")
 
         channels = tuple(self.cfg.model.channels)
         attention_levels = tuple(self.cfg.model.attention_levels)
@@ -206,8 +218,8 @@ class DiffusionTrainer:
 
         raw_model = DiffusionModelUNet(
             spatial_dims=2,
-            in_channels=model_input_channels['in_channels'],
-            out_channels=model_input_channels['out_channels'],
+            in_channels=in_channels,
+            out_channels=out_channels,
             channels=channels,
             attention_levels=attention_levels,
             num_res_blocks=num_res_blocks,
@@ -249,9 +261,13 @@ class DiffusionTrainer:
 
         self.perceptual_loss_fn = torch.compile(perceptual_loss, mode="reduce-overhead")
 
-        # Compile fused forward pass
+        # Compile fused forward pass (disabled for latent space - perceptual loss needs pixel space)
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
-        if compile_fused and self.is_main_process:
+        if self.space.scale_factor > 1:
+            compile_fused = False
+            if self.is_main_process:
+                logger.info("Disabled compiled fused forward for latent space")
+        elif compile_fused and self.is_main_process:
             logger.info("Compiling fused forward pass")
         self._setup_compiled_forward(compile_fused)
 
@@ -297,6 +313,7 @@ class DiffusionTrainer:
             save_dir=self.save_dir,
             device=self.device,
             is_main_process=self.is_main_process,
+            space=self.space,
         )
 
         # Save metadata
@@ -322,12 +339,13 @@ class DiffusionTrainer:
             noisy_images: torch.Tensor,
             perceptual_weight: float,
             strategy_name: str,
+            num_train_timesteps: int,
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """Fused forward: model prediction + MSE loss + perceptual loss."""
             prediction = model(model_input, timesteps)
 
             if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / 1000.0
+                t_normalized = timesteps.float() / float(num_train_timesteps)
                 t_expanded = t_normalized.view(-1, 1, 1, 1)
                 predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
             else:
@@ -357,6 +375,7 @@ class DiffusionTrainer:
             noisy_1: torch.Tensor,
             perceptual_weight: float,
             strategy_name: str,
+            num_train_timesteps: int,
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """Fused forward for dual mode with separate tensor inputs."""
             prediction = model(model_input, timesteps)
@@ -364,7 +383,7 @@ class DiffusionTrainer:
             pred_1 = prediction[:, 1:2, :, :]
 
             if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / 1000.0
+                t_normalized = timesteps.float() / float(num_train_timesteps)
                 t_expanded = t_normalized.view(-1, 1, 1, 1)
                 clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
                 clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
@@ -495,7 +514,14 @@ class DiffusionTrainer:
         with autocast('cuda', enabled=True, dtype=torch.bfloat16):
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
-            labels_dict = {'labels': prepared.get('labels')}
+            labels = prepared.get('labels')
+
+            # Encode to diffusion space (identity for PixelSpace)
+            images = self.space.encode_batch(images)
+            if labels is not None:
+                labels = self.space.encode(labels)
+
+            labels_dict = {'labels': labels}
 
             if isinstance(images, dict):
                 noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
@@ -521,6 +547,7 @@ class DiffusionTrainer:
                     noisy_images[keys[1]],
                     self.perceptual_weight,
                     self.strategy_name,
+                    self.num_timesteps,
                 )
                 predicted_clean = {keys[0]: clean_0, keys[1]: clean_1}
 
@@ -539,6 +566,7 @@ class DiffusionTrainer:
                     noisy_images,
                     self.perceptual_weight,
                     self.strategy_name,
+                    self.num_timesteps,
                 )
 
                 if self.use_min_snr:
@@ -554,14 +582,26 @@ class DiffusionTrainer:
                     weight_mean = snr_weights.mean()
                     mse_loss = mse_loss * weight_mean
 
-                if isinstance(predicted_clean, dict):
-                    p_losses = [
-                        self.perceptual_loss_fn(pred.float(), images[key].float())
-                        for key, pred in predicted_clean.items()
-                    ]
-                    p_loss = sum(p_losses) / len(p_losses)
+                # Compute perceptual loss (decode for latent space)
+                if self.perceptual_weight > 0:
+                    if self.space.scale_factor > 1:
+                        # Decode to pixel space for perceptual loss
+                        pred_decoded = self.space.decode_batch(predicted_clean)
+                        images_decoded = self.space.decode_batch(images)
+                    else:
+                        pred_decoded = predicted_clean
+                        images_decoded = images
+
+                    if isinstance(pred_decoded, dict):
+                        p_losses = [
+                            self.perceptual_loss_fn(pred.float(), images_decoded[key].float())
+                            for key, pred in pred_decoded.items()
+                        ]
+                        p_loss = sum(p_losses) / len(p_losses)
+                    else:
+                        p_loss = self.perceptual_loss_fn(pred_decoded.float(), images_decoded.float())
                 else:
-                    p_loss = self.perceptual_loss_fn(predicted_clean.float(), images.float())
+                    p_loss = torch.tensor(0.0, device=self.device)
 
                 total_loss = mse_loss + self.perceptual_weight * p_loss
 

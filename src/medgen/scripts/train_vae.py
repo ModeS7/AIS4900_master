@@ -1,21 +1,18 @@
 """
-Training entry point for diffusion models on medical images.
+Training entry point for VAE models.
 
-This module provides the main training script using Hydra for configuration
-management. Trains diffusion models (DDPM or Rectified Flow) on brain MRI data.
+This module provides the main training script for AutoencoderKL models
+that will be used for latent diffusion training.
 
 Usage:
-    # Default config (ddpm, 128, bravo, local)
-    python -m medgen.scripts.train
+    # Default config
+    python -m medgen.scripts.train_vae
 
     # Override via CLI
-    python -m medgen.scripts.train strategy=rflow model=unet_256
+    python -m medgen.scripts.train_vae vae.latent_channels=8 model.image_size=256
 
     # Cluster training
-    python -m medgen.scripts.train paths=cluster
-
-    # Quick debug
-    python -m medgen.scripts.train training=fast_debug
+    python -m medgen.scripts.train_vae paths=cluster
 """
 import logging
 import os
@@ -26,8 +23,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, setup_cuda_optimizations
 from medgen.data import create_dataloader, create_dual_image_dataloader
-from medgen.diffusion import DiffusionTrainer
-from medgen.diffusion.spaces import PixelSpace, load_vae_for_latent_space
+from medgen.diffusion.vae_trainer import VAETrainer
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -60,13 +56,14 @@ def validate_config(cfg: DictConfig) -> None:
     if cfg.model.image_size & (cfg.model.image_size - 1) != 0:
         log.warning(f"image_size {cfg.model.image_size} is not a power of 2 (may cause issues)")
 
-    # Strategy
-    if cfg.strategy.name not in ['ddpm', 'rflow']:
-        errors.append(f"Unknown strategy: {cfg.strategy.name}")
-
-    # Mode
-    if cfg.mode.name not in ['seg', 'bravo', 'dual']:
-        errors.append(f"Unknown mode: {cfg.mode.name}")
+    # VAE params
+    if not hasattr(cfg, 'vae'):
+        errors.append("VAE configuration missing. Add 'vae' section to config.")
+    else:
+        if cfg.vae.latent_channels <= 0:
+            errors.append(f"vae.latent_channels must be > 0, got {cfg.vae.latent_channels}")
+        if len(cfg.vae.channels) == 0:
+            errors.append("vae.channels must not be empty")
 
     # Paths - check if data directory exists
     if not os.path.exists(cfg.paths.data_dir):
@@ -80,9 +77,9 @@ def validate_config(cfg: DictConfig) -> None:
         raise ValueError("Configuration validation failed:\n  - " + "\n  - ".join(errors))
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../../../configs", config_name="train_vae")
 def main(cfg: DictConfig) -> None:
-    """Main training entry point.
+    """Main VAE training entry point.
 
     Args:
         cfg: Hydra configuration object composed from YAML files.
@@ -94,40 +91,27 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     mode = cfg.mode.name
-    strategy = cfg.strategy.name
-    use_multi_gpu = cfg.training.use_multi_gpu
-
-    # Create space based on config (latent or pixel)
-    latent_cfg = cfg.get('latent', {})
-    use_latent = latent_cfg.get('enabled', False)
-
-    if use_latent:
-        vae_checkpoint = latent_cfg.get('vae_checkpoint')
-        if not vae_checkpoint:
-            raise ValueError("latent.vae_checkpoint must be specified when latent.enabled=true")
-        if not os.path.exists(vae_checkpoint):
-            raise ValueError(f"VAE checkpoint not found: {vae_checkpoint}")
-
-        device = torch.device("cuda")
-        space = load_vae_for_latent_space(vae_checkpoint, device)
-        space_name = "latent"
-        log.info(f"Loaded VAE from {vae_checkpoint}")
-    else:
-        space = PixelSpace()
-        space_name = "pixel"
+    use_multi_gpu = cfg.training.get('use_multi_gpu', False)
 
     print(f"\n{'=' * 60}")
-    print(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
+    print(f"Training VAE for {mode} mode")
     print(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
+    print(f"Latent channels: {cfg.vae.latent_channels} | KL weight: {cfg.vae.kl_weight}")
     print(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
-    print(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
+    print(f"EMA: {cfg.training.use_ema}")
     print(f"{'=' * 60}\n")
 
     # Create trainer
-    trainer = DiffusionTrainer(cfg, space=space)
+    trainer = VAETrainer(cfg)
 
     # Create dataloader based on mode
+    # For VAE, we typically train on single images regardless of diffusion mode
+    # But we use the same data loading infrastructure
     if mode == 'dual':
+        # For dual mode VAE, we need to decide how to handle multiple images
+        # Option 1: Train VAE on each image type separately (recommended)
+        # Option 2: Train VAE on concatenated images
+        # Here we train on individual images from the dual dataset
         image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
         dataloader, train_dataset = create_dual_image_dataloader(
             cfg=cfg,
@@ -137,6 +121,7 @@ def main(cfg: DictConfig) -> None:
             rank=trainer.rank if use_multi_gpu else 0,
             world_size=trainer.world_size if use_multi_gpu else 1
         )
+        log.info(f"Training VAE on dual images: {image_keys}")
     else:
         # seg or bravo
         image_type = 'seg' if mode == 'seg' else 'bravo'
@@ -147,9 +132,10 @@ def main(cfg: DictConfig) -> None:
             rank=trainer.rank if use_multi_gpu else 0,
             world_size=trainer.world_size if use_multi_gpu else 1
         )
+        log.info(f"Training VAE on {image_type} images")
 
     # Setup model
-    trainer.setup_model(train_dataset)
+    trainer.setup_model()
 
     # Train
     trainer.train(dataloader, train_dataset)
