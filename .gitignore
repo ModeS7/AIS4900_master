@@ -25,7 +25,7 @@ eval/obj_eval/cache/
 misc/bench/benchmark_results/
 
 # Logs
-/Generation/runs/
+/runs/
 *.log
 
 # IDE
