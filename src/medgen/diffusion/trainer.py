@@ -588,6 +588,34 @@ class DiffusionTrainer:
 
         return total_loss.item(), mse_loss.item(), p_loss.item()
 
+    def _measure_model_flops(self, train_loader: DataLoader) -> None:
+        """Measure model FLOPs using the first batch (one-time profiling)."""
+        if not self.metrics.log_flops or self.metrics._flops_measured:
+            return
+
+        # Get first batch
+        batch = next(iter(train_loader))
+        prepared = self.mode.prepare_batch(batch, self.device)
+        images = prepared['images']
+        labels_dict = {'labels': prepared.get('labels')}
+
+        # Create sample input like in train_step
+        if isinstance(images, dict):
+            noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
+        else:
+            noise = torch.randn_like(images).to(self.device)
+
+        timesteps = self.strategy.sample_timesteps(images)
+        noisy_images = self.strategy.add_noise(images, noise, timesteps)
+        model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+        # Measure FLOPs (model_input already includes conditioning via format_model_input)
+        self.metrics.measure_forward_flops(
+            self.model_raw,
+            model_input,
+            timesteps,
+        )
+
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
         """Train the model for one epoch."""
         self.model.train()
@@ -622,6 +650,9 @@ class DiffusionTrainer:
     def train(self, train_loader: DataLoader, train_dataset: Dataset) -> None:
         """Execute the main training loop."""
         total_start = time.time()
+
+        # Measure FLOPs using first batch (one-time profiling)
+        self._measure_model_flops(train_loader)
 
         avg_loss = float('inf')
         avg_mse = float('inf')

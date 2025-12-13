@@ -72,6 +72,14 @@ class MetricsTracker:
         self.log_psnr: bool = logging_cfg.get('psnr', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
+        self.log_flops: bool = logging_cfg.get('flops', True)
+
+        # FLOPs tracking
+        self._flops_measured: bool = False
+        self.forward_flops: int = 0  # FLOPs for one forward pass
+        self.epoch_flops: int = 0  # Accumulated FLOPs this epoch
+        self.epoch_steps: int = 0  # Steps this epoch
+        self.total_flops: int = 0  # Total FLOPs across all epochs
 
         # Timestep loss tracking
         self.num_timestep_bins: int = 10
@@ -115,6 +123,60 @@ class MetricsTracker:
     def set_scheduler(self, scheduler: Any) -> None:
         """Set scheduler reference for SNR weight computation."""
         self.scheduler = scheduler
+
+    def measure_forward_flops(
+        self,
+        model: torch.nn.Module,
+        sample_input: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> int:
+        """Measure FLOPs for a single forward pass using torch.profiler.
+
+        This should be called once during setup with a representative batch.
+        The measured FLOPs are stored and used to estimate total FLOPs per step
+        (forward + backward ≈ 3x forward FLOPs).
+
+        Args:
+            model: The diffusion model (UNet).
+            sample_input: Sample model input tensor [B, C, H, W] (includes conditioning).
+            timesteps: Sample timesteps tensor [B].
+
+        Returns:
+            FLOPs for one forward pass.
+        """
+        if not self.log_flops:
+            return 0
+
+        if self._flops_measured:
+            return self.forward_flops
+
+        model.eval()
+        with torch.no_grad():
+            from torch.profiler import profile, ProfilerActivity
+
+            # Run profiler to count FLOPs
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                with_flops=True,
+            ) as prof:
+                _ = model(x=sample_input, timesteps=timesteps)
+
+            # Sum all FLOPs from profiler events
+            total_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
+
+        model.train()
+
+        self.forward_flops = total_flops
+        self._flops_measured = True
+
+        if self.is_main_process and total_flops > 0:
+            batch_size = sample_input.shape[0]
+            flops_per_sample = total_flops / batch_size
+            gflops_per_sample = flops_per_sample / 1e9
+            logger.info(f"Model FLOPs measured: {gflops_per_sample:.2f} GFLOPs/sample "
+                       f"(forward), ~{gflops_per_sample * 3:.2f} GFLOPs/sample (train step)")
+
+        return total_flops
 
     def _compute_tumor_size_thresholds(self) -> Dict[str, Tuple[float, float]]:
         """Compute tumor size thresholds based on image resolution.
@@ -273,6 +335,13 @@ class MetricsTracker:
                 'loss': loss,
             }
 
+        # Track FLOPs (no GPU sync - just integer arithmetic)
+        if self.log_flops and self._flops_measured:
+            # Training step ≈ 3x forward FLOPs (forward + backward)
+            # forward_flops was measured for one batch, so just multiply by 3
+            self.epoch_flops += self.forward_flops * 3
+            self.epoch_steps += 1
+
     def _track_timestep_loss_batch(
         self,
         timesteps: torch.Tensor,
@@ -420,9 +489,11 @@ class MetricsTracker:
         if not self.is_main_process:
             return
 
-        # Always log grad norms (lightweight)
+        # Always log grad norms and FLOPs (lightweight)
         if self.log_grad_norm:
             self._log_grad_norms(epoch)
+        if self.log_flops:
+            self._log_flops(epoch)
 
         # Other metrics only at val_interval
         if log_all:
@@ -447,6 +518,30 @@ class MetricsTracker:
         self.grad_norm_sum = torch.tensor(0.0, device=self.device)
         self.grad_norm_max = torch.tensor(0.0, device=self.device)
         self.grad_norm_count = 0
+
+    def _log_flops(self, epoch: int) -> None:
+        """Log FLOPs statistics to TensorBoard and update totals."""
+        if self.epoch_steps == 0 or not self._flops_measured:
+            return
+
+        # Calculate metrics
+        tflops_epoch = self.epoch_flops / 1e12
+        gflops_per_step = (self.epoch_flops / self.epoch_steps) / 1e9
+        self.total_flops += self.epoch_flops
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_scalar('compute/TFLOPs_epoch', tflops_epoch, epoch)
+            self.writer.add_scalar('compute/GFLOPs_per_step', gflops_per_step, epoch)
+            self.writer.add_scalar('compute/TFLOPs_total', self.total_flops / 1e12, epoch)
+
+        # Log to console on first epoch
+        if epoch == 0:
+            logger.info(f"Epoch compute: {tflops_epoch:.2f} TFLOPs ({gflops_per_step:.1f} GFLOPs/step)")
+
+        # Reset epoch counters
+        self.epoch_flops = 0
+        self.epoch_steps = 0
 
     def _log_timestep_losses(self, epoch: int) -> None:
         """Save timestep loss distribution to JSON file."""
