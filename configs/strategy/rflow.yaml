@@ -1,8 +1,29 @@
-# Rectified Flow strategy
+# Rectified Flow Strategy
+#
+# Flow-based diffusion that learns straight paths from noise to data.
+# Predicts velocity (direction of change) instead of noise.
+# Often achieves same quality with fewer sampling steps.
+#
+# Reference: https://arxiv.org/abs/2209.03003
+#
+# Training:
+#   1. Interpolate: x_t = (1-t) * x_0 + t * noise
+#   2. Model predicts velocity: v_pred = model(x_t, t)
+#   3. Target velocity: v_target = x_0 - noise (data minus noise)
+#   4. Loss: MSE(v_pred, v_target)
+#
+# Inference:
+#   1. Start with pure noise x_T
+#   2. Follow velocity field: x_{t-dt} = x_t - v_pred * dt
+#   3. Returns clean image x_0
+#
+# Key difference from DDPM:
+#   - Learns straighter paths -> can use fewer steps
+#   - Logit-normal timestep sampling biases toward middle timesteps
 
 name: rflow
-num_train_timesteps: 1000
-use_discrete_timesteps: true
-sample_method: logit-normal
-use_timestep_transform: true
-prediction_type: velocity  # predicts velocity
+num_train_timesteps: 1000         # Total flow steps
+use_discrete_timesteps: true      # Use discrete timestep indices
+sample_method: logit-normal       # Bias sampling to mid-range t
+use_timestep_transform: true      # Apply timestep transformation
+prediction_type: velocity         # Predict velocity (vs noise for ddpm)

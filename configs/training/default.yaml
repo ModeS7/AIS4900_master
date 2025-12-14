@@ -1,51 +1,68 @@
-# Default training configuration
+# Default Training Configuration
+#
+# Common training hyperparameters used across all training scripts.
+# Override via CLI: python -m medgen.scripts.train training.epochs=1000
 
 # Experiment name prefix for run directory
 # Include trailing underscore: training.name=exp1_ -> exp1_rflow_128_...
 name: ""
 
-epochs: 500
-batch_size: 16
-learning_rate: 1.0e-4
-gradient_clip_norm: 1.0
-warmup_epochs: 5
-val_interval: 30
+# Core training parameters
+epochs: 500                # Total training epochs
+batch_size: 16             # Batch size per GPU
+learning_rate: 1.0e-4      # Base learning rate
+gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
+warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
+val_interval: 30           # Validation frequency (epochs)
 
-# EMA settings
+# EMA (Exponential Moving Average)
+# Maintains slowly-updated weight copy for higher quality samples
 use_ema: false
 ema:
-  decay: 0.9999
-  update_after_step: 100
-  update_every: 10
+  decay: 0.9999            # EMA decay rate (0.999-0.9999)
+  update_after_step: 100   # Start EMA after this many steps
+  update_every: 10         # Update EMA every N steps
 
-# Min-SNR loss weighting
+# Min-SNR Loss Weighting
+# Reweights per-sample loss by timestep to prevent high-noise step domination
+# Reference: https://arxiv.org/abs/2303.09556
 use_min_snr: false
-min_snr_gamma: 5.0
+min_snr_gamma: 5.0         # SNR clipping threshold
 
-# Perceptual loss
-perceptual_weight: 0.001
+# Perceptual loss (SqueezeNet features)
+perceptual_weight: 0.001   # Weight for perceptual loss term
 
-# Multi-GPU
+# Multi-GPU (DDP)
 use_multi_gpu: false
 
-# Compile fused forward pass (model + loss) for ~10% speedup
-compile_fused_forward: true
+# torch.compile optimization
+# Compiles model and loss functions for faster training
+use_compile: true            # Compile VAE/discriminator/perceptual loss
+compile_fused_forward: true  # Compile fused forward pass (diffusion only, ~10% speedup)
+                             # Auto-disabled for latent space or Min-SNR
 
 # Logging and metrics (all logged at val_interval)
-# Mode compatibility: [seg] = segmentation only, [cond] = bravo/dual only, [all] = all modes
+# Mode compatibility:
+#   [seg] = segmentation only
+#   [cond] = bravo/dual only
+#   [all] = all modes
 logging:
   # Training dynamics
   grad_norm: true              # [all] Track gradient norm (catches instability)
-  timestep_losses: true        # [all] Loss by diffusion timestep (use this for seg mode)
+  timestep_losses: true        # [all] Loss by diffusion timestep
   regional_losses: true        # [cond] Loss by tumor vs background region
-  timestep_region_losses: true # [cond] 2D heatmap: timestep x region (superset of timestep_losses)
+  timestep_region_losses: true # [cond] 2D heatmap: timestep x region
 
   # Validation metrics
-  ssim: true                   # [cond] Structural similarity on generated samples
+  ssim: true                   # [cond] Structural similarity
   psnr: true                   # [cond] Peak signal-to-noise ratio
+  lpips: true                  # [cond] Learned Perceptual Image Patch Similarity
   boundary_sharpness: true     # [cond] Edge quality in tumor regions
 
   # Visualization
-  intermediate_steps: true     # [cond] Save denoising trajectory (t=1000,500,250,100,0)
+  intermediate_steps: true     # [cond] Save denoising trajectory
   worst_batch: true            # [all] Save batch with highest loss each epoch
   num_intermediate_steps: 5    # How many steps to visualize
+
+  # Performance
+  flops: true                  # [all] Measure model FLOPs (once at start)

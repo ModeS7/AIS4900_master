@@ -84,7 +84,7 @@ def save_checkpoint(
     }
     if ema is not None:
         checkpoint['ema_state_dict'] = ema.state_dict()
-    save_path = f"{save_dir}/{filename}.pt"
+    save_path = os.path.join(save_dir, f"{filename}.pt")
     torch.save(checkpoint, save_path)
     return save_path
 
@@ -115,6 +115,55 @@ def save_model_only(
     }
     if ema is not None:
         checkpoint['ema_state_dict'] = ema.state_dict()
-    save_path = f"{save_dir}/{filename}.pt"
+    save_path = os.path.join(save_dir, f"{filename}.pt")
     torch.save(checkpoint, save_path)
     return save_path
+
+
+def load_checkpoint(
+    checkpoint_path: str,
+    model: nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
+    ema: Optional[Any] = None,
+    device: Optional[torch.device] = None,
+    strict: bool = True
+) -> int:
+    """Load training checkpoint with model, optimizer, scheduler, and EMA state.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file.
+        model: Model to load state into.
+        optimizer: Optional optimizer to load state into.
+        scheduler: Optional scheduler to load state into.
+        ema: Optional EMA wrapper to load state into.
+        device: Device to map tensors to.
+        strict: Whether to strictly enforce state dict key matching.
+
+    Returns:
+        Epoch number from the checkpoint.
+
+    Raises:
+        FileNotFoundError: If checkpoint file doesn't exist.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Load model state
+    model.load_state_dict(checkpoint['model_state_dict'], strict=strict)
+
+    # Load optimizer state if provided
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    # Load scheduler state if provided
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    # Load EMA state if provided and saved
+    if ema is not None and 'ema_state_dict' in checkpoint:
+        ema.load_state_dict(checkpoint['ema_state_dict'])
+
+    return checkpoint.get('epoch', 0)

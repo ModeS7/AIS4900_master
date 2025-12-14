@@ -1,0 +1,57 @@
+# Learning Rate Finder Configuration
+#
+# Runs a learning rate range test to find optimal learning rates by sweeping
+# through a range and plotting loss vs learning rate.
+#
+# Usage:
+#   # Diffusion model LR finder (default)
+#   python -m medgen.scripts.lr_finder mode=dual strategy=rflow
+#
+#   # VAE LR finder
+#   python -m medgen.scripts.lr_finder mode=dual model_type=vae model.image_size=128
+#
+#   # Custom LR range
+#   python -m medgen.scripts.lr_finder min_lr=1e-8 max_lr=1e-2 num_steps=300
+#
+# Output: lr_finder.png with loss curve and suggested LR
+#
+# Algorithm: "10x before divergence" - finds where loss doubles from minimum,
+# then suggests LR = divergence_lr / 10
+
+defaults:
+  - _self_
+  - paths: local
+  - model: default
+  - strategy: ddpm
+  - mode: bravo
+  - training: default
+
+# LR finder specific settings
+model_type: diffusion  # 'diffusion' or 'vae'
+min_lr: 1.0e-7         # Starting learning rate
+max_lr: 1.0e-1         # Maximum learning rate to test
+num_steps: 200         # Number of LR steps (more = finer resolution)
+
+# VAE architecture configuration (used when model_type=vae)
+# Note: VAE LR finder disables GAN for stable loss curve
+vae:
+  latent_channels: 3
+  channels: [64, 128, 256, 512]
+  attention_levels: [false, false, false, true]
+  num_res_blocks: 2
+  kl_weight: 1.0e-8         # KL divergence weight
+  perceptual_weight: 0.002  # Perceptual loss weight
+  # GAN settings (not used in LR finder, but needed for architecture)
+  adv_weight: 0.005
+  disc_lr: 5.0e-5
+  disc_num_layers: 3
+  disc_num_channels: 64
+
+# Hydra configuration
+# Output structure: runs/lr_finder/{model_type}_2d/{mode}_{size}_{timestamp}
+hydra:
+  run:
+    dir: ${paths.model_dir}/lr_finder/${model_type}_2d/${mode.name}_${model.image_size}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/lr_finder/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

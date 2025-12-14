@@ -19,6 +19,7 @@ from torch.amp import autocast
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 
+from medgen.core import ModeType
 from .modes import TrainingMode
 from .strategies import DiffusionStrategy
 from .metrics import MetricsTracker
@@ -76,6 +77,7 @@ class ValidationVisualizer:
         logging_cfg = cfg.training.get('logging', {})
         self.log_ssim: bool = logging_cfg.get('ssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_intermediate_steps: bool = logging_cfg.get('intermediate_steps', True)
         self.num_intermediate_steps: int = logging_cfg.get('num_intermediate_steps', 5)
@@ -86,16 +88,21 @@ class ValidationVisualizer:
         Layout:
         - Dual mode: 4x8 grid (8 samples) - rows: GT_pre, Pred_pre, GT_gd, Pred_gd
         - Single mode: 2x16 grid (16 samples) - rows: GT, Pred
+        - Shows timestep for each sample and average timestep in title
 
         Args:
             epoch: Current epoch number.
-            data: Dictionary with 'images', 'predicted', 'mask', 'loss' keys.
+            data: Dictionary with 'images', 'predicted', 'mask', 'timesteps', 'loss' keys.
         """
         if self.writer is None:
             return
 
         mask = data['mask']
+        timesteps = data.get('timesteps')
         is_dual = isinstance(data['images'], dict)
+
+        # Compute average timestep for title
+        avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
 
         if is_dual:
             keys = list(data['images'].keys())
@@ -106,9 +113,13 @@ class ValidationVisualizer:
 
             num_show = min(8, images_pre.shape[0])
             fig, axes = plt.subplots(4, num_show, figsize=(2 * num_show, 8))
-            fig.suptitle(f'Worst Batch - Epoch {epoch} (Loss: {data["loss"]:.6f})', fontsize=12)
+            fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
 
             for i in range(num_show):
+                # Show timestep above each column
+                t_val = timesteps[i].item() if timesteps is not None else 0
+                axes[0, i].set_title(f't={t_val:.0f}', fontsize=9)
+
                 axes[0, i].imshow(images_pre[i, 0].numpy(), cmap='gray')
                 axes[0, i].axis('off')
                 if i == 0:
@@ -138,9 +149,13 @@ class ValidationVisualizer:
 
             num_show = min(16, images.shape[0])
             fig, axes = plt.subplots(2, num_show, figsize=(num_show, 2))
-            fig.suptitle(f'Worst Batch - Epoch {epoch} (Loss: {data["loss"]:.6f})', fontsize=12)
+            fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
 
             for i in range(num_show):
+                # Show timestep above each column
+                t_val = timesteps[i].item() if timesteps is not None else 0
+                axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
+
                 axes[0, i].imshow(images[i, 0].numpy(), cmap='gray')
                 axes[0, i].axis('off')
                 if i == 0:
@@ -192,11 +207,10 @@ class ValidationVisualizer:
 
             if seg.sum() > 0:
                 seg_masks.append(seg)
-                if return_images:
-                    if seg_channel_idx == 1:  # bravo mode
-                        gt_images.append(tensor[0:1, :, :])
-                    elif seg_channel_idx == 2:  # dual mode
-                        gt_images.append(tensor[0:2, :, :])
+                if return_images and seg_channel_idx > 0:
+                    # Image channels are all channels before seg
+                    # seg_channel_idx=1 -> 1 image channel, seg_channel_idx=2 -> 2 image channels
+                    gt_images.append(tensor[0:seg_channel_idx, :, :])
             attempts += 1
 
         if len(seg_masks) < num_samples:
@@ -360,11 +374,11 @@ class ValidationVisualizer:
                 gt_images = None
                 intermediates = None
 
-                if self.mode_name == 'seg':
+                if self.mode_name == ModeType.SEG:
                     noise = torch.randn((num_samples, 1, self.image_size, self.image_size), device=self.device)
                     model_input = noise
 
-                elif self.mode_name == 'bravo':
+                elif self.mode_name == ModeType.BRAVO:
                     need_gt = self.log_ssim or self.log_psnr
                     if need_gt:
                         seg_masks, gt_images = self._sample_positive_masks(
@@ -375,7 +389,7 @@ class ValidationVisualizer:
                     noise = torch.randn_like(seg_masks, device=self.device)
                     model_input = torch.cat([noise, seg_masks], dim=1)
 
-                elif self.mode_name == 'dual':
+                elif self.mode_name == ModeType.DUAL:
                     need_gt = self.log_ssim or self.log_psnr
                     if need_gt:
                         seg_masks, gt_images = self._sample_positive_masks(
@@ -391,7 +405,7 @@ class ValidationVisualizer:
                     raise ValueError(f"Unknown mode: {self.mode_name}")
 
                 with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
-                    if self.log_intermediate_steps and self.mode_name != 'seg':
+                    if self.log_intermediate_steps and self.mode_name != ModeType.SEG:
                         samples, intermediates = self._generate_with_intermediate_steps(
                             model, model_input, self.num_timesteps
                         )
@@ -438,6 +452,12 @@ class ValidationVisualizer:
                             self.writer.add_scalar('metrics/psnr_t1_pre', psnr_pre, epoch)
                             self.writer.add_scalar('metrics/psnr_t1_gd', psnr_gd, epoch)
 
+                        if self.log_lpips:
+                            lpips_pre = self.metrics.compute_lpips(samples_pre_norm, gt_pre)
+                            lpips_gd = self.metrics.compute_lpips(samples_gd_norm, gt_gd)
+                            self.writer.add_scalar('metrics/lpips_t1_pre', lpips_pre, epoch)
+                            self.writer.add_scalar('metrics/lpips_t1_gd', lpips_gd, epoch)
+
                     if self.log_boundary_sharpness and seg_masks is not None:
                         sharpness_pre = self.metrics.compute_boundary_sharpness(samples_pre_norm, seg_masks)
                         sharpness_gd = self.metrics.compute_boundary_sharpness(samples_gd_norm, seg_masks)
@@ -453,7 +473,7 @@ class ValidationVisualizer:
                     samples_rgb = samples_normalized.repeat(1, 3, 1, 1)
                     self.writer.add_images('Generated_Images', samples_rgb, epoch)
 
-                    if gt_images is not None and self.mode_name == 'bravo':
+                    if gt_images is not None and self.mode_name == ModeType.BRAVO:
                         if self.log_ssim:
                             ssim_val = self.metrics.compute_ssim(samples_normalized, gt_images)
                             self.writer.add_scalar('metrics/ssim', ssim_val, epoch)
@@ -462,7 +482,11 @@ class ValidationVisualizer:
                             psnr_val = self.metrics.compute_psnr(samples_normalized, gt_images)
                             self.writer.add_scalar('metrics/psnr', psnr_val, epoch)
 
-                    if self.log_boundary_sharpness and seg_masks is not None and self.mode_name == 'bravo':
+                        if self.log_lpips:
+                            lpips_val = self.metrics.compute_lpips(samples_normalized, gt_images)
+                            self.writer.add_scalar('metrics/lpips', lpips_val, epoch)
+
+                    if self.log_boundary_sharpness and seg_masks is not None and self.mode_name == ModeType.BRAVO:
                         sharpness = self.metrics.compute_boundary_sharpness(samples_normalized, seg_masks)
                         self.writer.add_scalar('metrics/boundary_sharpness', sharpness, epoch)
 

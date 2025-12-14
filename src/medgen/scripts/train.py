@@ -24,7 +24,7 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, setup_cuda_optimizations
+from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, ModeType, setup_cuda_optimizations
 from medgen.data import create_dataloader, create_dual_image_dataloader
 from medgen.diffusion import DiffusionTrainer
 from medgen.diffusion.spaces import PixelSpace, load_vae_for_latent_space
@@ -65,8 +65,9 @@ def validate_config(cfg: DictConfig) -> None:
         errors.append(f"Unknown strategy: {cfg.strategy.name}")
 
     # Mode
-    if cfg.mode.name not in ['seg', 'bravo', 'dual']:
-        errors.append(f"Unknown mode: {cfg.mode.name}")
+    valid_modes = [m.value for m in ModeType]
+    if cfg.mode.name not in valid_modes:
+        errors.append(f"Unknown mode: {cfg.mode.name}. Valid modes: {valid_modes}")
 
     # Paths - check if data directory exists
     if not os.path.exists(cfg.paths.data_dir):
@@ -127,7 +128,7 @@ def main(cfg: DictConfig) -> None:
     trainer = DiffusionTrainer(cfg, space=space)
 
     # Create dataloader based on mode
-    if mode == 'dual':
+    if mode == ModeType.DUAL:
         image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
         dataloader, train_dataset = create_dual_image_dataloader(
             cfg=cfg,
@@ -139,7 +140,7 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         # seg or bravo
-        image_type = 'seg' if mode == 'seg' else 'bravo'
+        image_type = 'seg' if mode == ModeType.SEG else 'bravo'
         dataloader, train_dataset = create_dataloader(
             cfg=cfg,
             image_type=image_type,

@@ -30,7 +30,7 @@ from medgen.core import (
     MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
     DEFAULT_CHANNELS, DEFAULT_ATTENTION_LEVELS,
     DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS,
-    setup_cuda_optimizations,
+    ModeType, setup_cuda_optimizations,
 )
 from medgen.diffusion.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from medgen.diffusion.utils import get_vram_usage
@@ -213,7 +213,7 @@ def log_image_batch(
     progress_pct = (current_image / target_images) * 100
     vram_info = get_vram_usage(device)
 
-    mode_label = "Bravo" if mode == "bravo" else "Dual"
+    mode_label = "Bravo" if mode == ModeType.BRAVO else "Dual"
     print(
         f"[{timestamp}] Image {current_image:6d}/{target_images:6d} ({progress_pct:5.1f}%) | "
         f"{mode_label}: {batch_size:3d} saved | Time: {batch_time:6.1f}s | {vram_info}"
@@ -285,7 +285,7 @@ def generate_images_from_masks(
         for mask in mask_images
     ], dim=0).to(device, dtype=torch.float32)
 
-    if mode == 'bravo':
+    if mode == ModeType.BRAVO:
         noise = torch.randn(
             (batch_size_local, 1, image_size, image_size), device=device
         )
@@ -311,7 +311,7 @@ def generate_images_from_masks(
                 print(f"ERROR: Failed to save image {start_counters[i]:05d}: {e}")
                 raise
 
-    elif mode == 'dual':
+    elif mode == ModeType.DUAL:
         noise_pre = torch.randn(
             (batch_size_local, 1, image_size, image_size), device=device
         )
@@ -363,7 +363,7 @@ def main() -> None:
     tracker = ValidationTracker()
     mask_cache: List[Tuple[np.ndarray, int]] = []
 
-    mode_description = "BRAVO images" if args.mode == "bravo" else "T1 pre+gd images"
+    mode_description = "BRAVO images" if args.mode == ModeType.BRAVO else "T1 pre+gd images"
     print(f"\n{'=' * 60}")
     print(f"Generating {mode_description} with {args.strategy}")
     print(f"Target: {args.num_images} image pairs | Batch size: {batch_size}")
@@ -377,7 +377,7 @@ def main() -> None:
 
     print(f"Loading image model ({args.mode})...")
 
-    if args.mode == 'bravo':
+    if args.mode == ModeType.BRAVO:
         in_channels = 2
         out_channels = 1
     else:

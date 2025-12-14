@@ -27,9 +27,10 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from monai.losses import PerceptualLoss
 from monai.networks.nets import DiffusionModelUNet
 
+from medgen.core import ModeType
+from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .metrics import MetricsTracker
@@ -107,7 +108,8 @@ class DiffusionTrainer:
                 # Optional experiment name prefix from config (include underscore in value: "exp1_")
                 exp_name = cfg.training.get('name', '')
                 self.run_name = f"{exp_name}{self.strategy_name}_{self.image_size}_{timestamp}"
-                self.save_dir = os.path.join(cfg.paths.model_dir, self.mode_name, self.run_name)
+                # Structure: runs/diffusion_2d/{mode}/{run_name}
+                self.save_dir = os.path.join(cfg.paths.model_dir, 'diffusion_2d', self.mode_name, self.run_name)
 
             tensorboard_dir = os.path.join(self.save_dir, "tensorboard")
             os.makedirs(tensorboard_dir, exist_ok=True)
@@ -160,6 +162,11 @@ class DiffusionTrainer:
         }
         if mode not in modes:
             raise ValueError(f"Unknown mode: {mode}. Choose from {list(modes.keys())}")
+
+        # Pass image_keys to ConditionalDualMode if configured
+        if mode == ModeType.DUAL or mode == 'dual':
+            image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
+            return ConditionalDualMode(image_keys)
         return modes[mode]()
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
@@ -231,10 +238,13 @@ class DiffusionTrainer:
         if self.use_multi_gpu:
             self.model_raw = raw_model
 
-            if self.mode_name == 'dual' and self.image_size == 256:
+            # Disable DDP optimizer for large models to avoid compilation issues
+            # Can be forced via config: training.disable_ddp_optimizer=true
+            disable_ddp_opt = self.cfg.training.get('disable_ddp_optimizer', False)
+            if disable_ddp_opt or (self.mode_name == ModeType.DUAL and self.image_size >= 256):
                 torch._dynamo.config.optimize_ddp = False
                 if self.is_main_process:
-                    logger.info("Disabled DDPOptimizer for dual 256 (compilation workaround)")
+                    logger.info("Disabled DDPOptimizer for large model (compilation workaround)")
 
             ddp_model = DDP(
                 raw_model,
@@ -253,22 +263,29 @@ class DiffusionTrainer:
             self.model_raw = raw_model
             self.model = torch.compile(raw_model, mode="default")
 
-        # Setup perceptual loss
-        perceptual_loss = PerceptualLoss(
+        # Setup perceptual loss (shared wrapper handles multi-channel inputs)
+        cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
+        self.perceptual_loss_fn = PerceptualLoss(
             spatial_dims=2,
             network_type="radimagenet_resnet50",
-            cache_dir=self.cfg.paths.cache_dir,
+            cache_dir=cache_dir,
             pretrained=True,
-        ).to(self.device)
+            device=self.device,
+            use_compile=True,
+        )
 
-        self.perceptual_loss_fn = torch.compile(perceptual_loss, mode="reduce-overhead")
-
-        # Compile fused forward pass (disabled for latent space - perceptual loss needs pixel space)
+        # Compile fused forward pass (disabled for latent space and Min-SNR)
+        # - Latent space: perceptual loss needs pixel space decoding
+        # - Min-SNR: requires per-sample loss weighting (compiled version incorrectly weights total loss)
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
         if self.space.scale_factor > 1:
             compile_fused = False
             if self.is_main_process:
                 logger.info("Disabled compiled fused forward for latent space")
+        elif self.use_min_snr:
+            compile_fused = False
+            if self.is_main_process:
+                logger.info("Disabled compiled fused forward for Min-SNR weighting")
         elif compile_fused and self.is_main_process:
             logger.info("Compiling fused forward pass")
         self._setup_compiled_forward(compile_fused)
@@ -534,7 +551,8 @@ class DiffusionTrainer:
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
             model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
-            if self._use_compiled_forward and self.mode_name == 'dual':
+            if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
+                # Note: compiled forward is disabled when use_min_snr=True
                 keys = list(images.keys())
                 total_loss, mse_loss, p_loss, clean_0, clean_1 = self._compiled_forward_dual(
                     self.model,
@@ -553,11 +571,8 @@ class DiffusionTrainer:
                 )
                 predicted_clean = {keys[0]: clean_0, keys[1]: clean_1}
 
-                if self.use_min_snr:
-                    snr_weights = self.metrics.compute_snr_weights(timesteps)
-                    total_loss = total_loss * snr_weights.mean()
-
-            elif self._use_compiled_forward and self.mode_name in ('seg', 'bravo'):
+            elif self._use_compiled_forward and self.mode_name in (ModeType.SEG, ModeType.BRAVO):
+                # Note: compiled forward is disabled when use_min_snr=True
                 total_loss, mse_loss, p_loss, predicted_clean = self._compiled_forward_single(
                     self.model,
                     self.perceptual_loss_fn,
@@ -571,18 +586,39 @@ class DiffusionTrainer:
                     self.num_timesteps,
                 )
 
-                if self.use_min_snr:
-                    snr_weights = self.metrics.compute_snr_weights(timesteps)
-                    total_loss = total_loss * snr_weights.mean()
-
             else:
                 prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
                 mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                 if self.use_min_snr:
-                    snr_weights = self.metrics.compute_snr_weights(timesteps)
-                    weight_mean = snr_weights.mean()
-                    mse_loss = mse_loss * weight_mean
+                    # Compute per-sample MSE for proper Min-SNR weighting
+                    snr_weights = self.metrics.compute_snr_weights(timesteps)  # [B]
+
+                    if isinstance(images, dict):
+                        # Dual-image case
+                        keys = list(images.keys())
+                        if self.strategy_name == 'rflow':
+                            target_0 = images[keys[0]] - noise[keys[0]]
+                            target_1 = images[keys[1]] - noise[keys[1]]
+                        else:
+                            target_0 = noise[keys[0]]
+                            target_1 = noise[keys[1]]
+                        pred_0 = prediction[:, 0:1, :, :]
+                        pred_1 = prediction[:, 1:2, :, :]
+                        mse_per_sample_0 = ((pred_0 - target_0) ** 2).mean(dim=(1, 2, 3))
+                        mse_per_sample_1 = ((pred_1 - target_1) ** 2).mean(dim=(1, 2, 3))
+                        mse_per_sample = (mse_per_sample_0 + mse_per_sample_1) / 2  # [B]
+                    else:
+                        # Single-image case
+                        if self.strategy_name == 'rflow':
+                            target = images - noise
+                        else:
+                            target = noise
+                        mse_per_sample = ((prediction - target) ** 2).mean(dim=(1, 2, 3))  # [B]
+
+                    # Apply per-sample weights then average
+                    weighted_mse = mse_per_sample * snr_weights  # [B]
+                    mse_loss = weighted_mse.mean()  # scalar
 
                 # Compute perceptual loss (decode for latent space)
                 if self.perceptual_weight > 0:
@@ -594,14 +630,8 @@ class DiffusionTrainer:
                         pred_decoded = predicted_clean
                         images_decoded = images
 
-                    if isinstance(pred_decoded, dict):
-                        p_losses = [
-                            self.perceptual_loss_fn(pred.float(), images_decoded[key].float())
-                            for key, pred in pred_decoded.items()
-                        ]
-                        p_loss = sum(p_losses) / len(p_losses)
-                    else:
-                        p_loss = self.perceptual_loss_fn(pred_decoded.float(), images_decoded.float())
+                    # Wrapper handles both tensor and dict inputs
+                    p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
                 else:
                     p_loss = torch.tensor(0.0, device=self.device)
 

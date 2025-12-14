@@ -1,8 +1,21 @@
-# Dual mode - conditional dual image generation
+# Dual Mode - Conditional dual image generation
+#
+# Generates T1 pre-contrast and T1 post-contrast (Gd) pairs
+# conditioned on segmentation mask.
+#
+# For DIFFUSION training:
+#   in_channels: 3 = [noisy_t1_pre, noisy_t1_gd, seg_mask]
+#   out_channels: 2 = predicted [t1_pre, t1_gd]
+#   Dataloader: create_dual_image_dataloader()
+#
+# For VAE training (channels overridden in train_vae.py):
+#   in_channels: 2 = [t1_pre, t1_gd] (NO seg mask!)
+#   out_channels: 2
+#   Dataloader: create_vae_dataloader()
 
 name: dual
 is_conditional: true
-in_channels: 3   # [noisy_t1_pre, noisy_t1_gd, seg_mask]
+in_channels: 3   # [noisy_t1_pre, noisy_t1_gd, seg_mask] - for diffusion
 out_channels: 2  # predicted noise/velocity for [t1_pre, t1_gd]
-image_keys: [t1_pre, t1_gd]
+image_keys: [t1_pre, t1_gd]  # Which modalities to load
 description: "T1 pre/post-contrast pair generation conditioned on segmentation mask"

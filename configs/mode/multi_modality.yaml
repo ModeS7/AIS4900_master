@@ -1,0 +1,9 @@
+# Multi-modality mode for progressive VAE training
+# Trains VAE on mixed slices from all modalities (each as single-channel)
+
+name: multi_modality
+is_conditional: false
+in_channels: 1   # Single channel per image
+out_channels: 1  # VAE reconstructs single channel
+image_keys: [bravo, flair, t1_pre, t1_gd]
+description: "Multi-modality VAE pre-training (mixed slices from all modalities)"

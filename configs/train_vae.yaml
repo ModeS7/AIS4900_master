@@ -1,62 +1,84 @@
-# VAE training configuration for Latent Diffusion Models
-# Trains AutoencoderKL with GAN loss (matches MONAI implementation)
+# VAE Training Configuration for Latent Diffusion Models
+#
+# Trains AutoencoderKL with GAN loss for use in latent space diffusion.
+# Architecture matches MONAI 2D implementation.
+#
+# Usage:
+#   # Default: dual mode (T1 pre + T1 post)
+#   python -m medgen.scripts.train_vae
+#
+#   # Single modality
+#   python -m medgen.scripts.train_vae mode=bravo
+#
+#   # Custom settings
+#   python -m medgen.scripts.train_vae vae.latent_channels=4 model.image_size=256
+#
+# Note: VAE training uses create_vae_dataloader() which returns images
+# WITHOUT segmentation masks. This is different from diffusion training.
+#
+# Channel counts (overridden in train_vae.py):
+#   - dual mode: 2 channels (t1_pre + t1_gd, NO seg)
+#   - other modes: 1 channel
 
 defaults:
   - paths: local
   - model: default
-  - mode: dual  # Can be seg, bravo, or dual
+  - mode: dual        # Can be seg, bravo, dual, t1_pre, or t1_gd
   - training: default
   - _self_
 
-# VAE architecture configuration
+# VAE architecture configuration (MONAI 2D standard)
+# Reference: https://github.com/Project-MONAI/GenerativeModels/issues/378
 vae:
-  latent_channels: 4
-  channels: [32, 64, 64, 64]
-  attention_levels: [false, false, true, true]
-  num_res_blocks: 2
+  latent_channels: 3                          # Latent space channels
+  channels: [64, 128, 256, 512]               # Encoder/decoder channels
+  attention_levels: [false, false, false, true]  # Where to apply attention
+  num_res_blocks: 2                           # ResBlocks per level
 
   # Loss weights (MONAI defaults)
-  kl_weight: 1.0e-8       # KL divergence weight
-  perceptual_weight: 0.002  # Perceptual loss weight
-  adv_weight: 0.005        # Adversarial loss weight
+  kl_weight: 1.0e-6         # KL divergence weight
+  perceptual_weight: 0.001  # Perceptual loss weight
+  adv_weight: 0.01          # Adversarial loss weight (GAN)
 
-  # Discriminator config
-  disc_lr: 5.0e-5          # Discriminator learning rate
-  disc_num_layers: 3       # PatchDiscriminator layers
-  disc_num_channels: 64    # PatchDiscriminator channels
+  # Discriminator config (PatchGAN)
+  disc_lr: 5.0e-4           # Discriminator learning rate
+  disc_num_layers: 3        # PatchDiscriminator depth
+  disc_num_channels: 64     # PatchDiscriminator base channels
 
 # Override training defaults for VAE
 training:
   epochs: 100
   batch_size: 16
-  learning_rate: 1.0e-5    # Generator learning rate (MONAI default)
+  learning_rate: 1.0e-4     # Generator learning rate (MONAI default)
   gradient_clip_norm: 1.0
   warmup_epochs: 5
   val_interval: 10
-  use_ema: true
+  use_ema: false
   ema:
     decay: 0.999
     update_after_step: 100
     update_every: 10
   use_multi_gpu: false
-  # Disable diffusion-specific logging
+  # Logging options for VAE (disable diffusion-specific options)
   logging:
-    grad_norm: false
-    timestep_losses: false
-    regional_losses: false
-    timestep_region_losses: false
-    ssim: true
-    psnr: true
-    boundary_sharpness: false
-    intermediate_steps: false
-    worst_batch: false
-    flops: false
+    grad_norm: true           # Track gradient norms
+    timestep_losses: false    # N/A for VAE
+    regional_losses: false    # N/A for VAE
+    timestep_region_losses: false  # N/A for VAE
+    ssim: true                # SSIM metric
+    psnr: true                # PSNR metric
+    lpips: true               # LPIPS perceptual metric
+    boundary_sharpness: false # N/A for VAE
+    intermediate_steps: false # N/A for VAE
+    worst_batch: false        # Track worst reconstruction batches
+    flops: true               # Measure FLOPs
 
 # Hydra configuration
-# Use training.name to prefix run directory: training.name=exp1_ -> exp1_dual_128_...
+# Output structure: runs/vae_2d/{mode}/{exp_name}{size}_{timestamp}
+# Use training.name to add experiment prefix: training.name=exp1_ -> exp1_128_...
 hydra:
   run:
-    dir: ${paths.model_dir}/vae/${oc.select:training.name,}${mode.name}_${model.image_size}_${now:%Y%m%d-%H%M%S}
+    dir: ${paths.model_dir}/vae_2d/${mode.name}/${oc.select:training.name,}${model.image_size}_${now:%Y%m%d-%H%M%S}
   sweep:
-    dir: ${paths.model_dir}/vae/multirun/${now:%Y%m%d-%H%M%S}
+    dir: ${paths.model_dir}/vae_2d/multirun/${now:%Y%m%d-%H%M%S}
     subdir: ${hydra.job.num}

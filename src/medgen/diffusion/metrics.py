@@ -70,9 +70,14 @@ class MetricsTracker:
         self.log_timestep_region: bool = logging_cfg.get('timestep_region_losses', True)
         self.log_ssim: bool = logging_cfg.get('ssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
+
+        # LPIPS model (initialized lazily)
+        self._lpips_model: Optional[Any] = None
+        self._lpips_initialized: bool = False
 
         # FLOPs tracking
         self._flops_measured: bool = False
@@ -332,6 +337,7 @@ class MetricsTracker:
                 'images': images.detach().clone() if not isinstance(images, dict) else {k: v.detach().clone() for k, v in images.items()},
                 'mask': mask.detach().clone() if mask is not None else None,
                 'predicted': predicted_clean.detach().clone() if not isinstance(predicted_clean, dict) else {k: v.detach().clone() for k, v in predicted_clean.items()},
+                'timesteps': timesteps.detach().clone(),
                 'loss': loss,
             }
 
@@ -739,6 +745,7 @@ class MetricsTracker:
             'images': data['images'].cpu() if not isinstance(data['images'], dict) else {k: v.cpu() for k, v in data['images'].items()},
             'mask': data['mask'].cpu() if data['mask'] is not None else None,
             'predicted': data['predicted'].cpu() if not isinstance(data['predicted'], dict) else {k: v.cpu() for k, v in data['predicted'].items()},
+            'timesteps': data['timesteps'].cpu(),
             'loss': data['loss'],
         }
 
@@ -789,6 +796,69 @@ class MetricsTracker:
 
         psnr = 10 * np.log10(1.0 / mse)
         return float(psnr)
+
+    def _init_lpips(self) -> None:
+        """Initialize LPIPS model lazily on first use."""
+        if self._lpips_initialized:
+            return
+
+        if not self.log_lpips:
+            self._lpips_initialized = True
+            return
+
+        try:
+            import lpips
+            self._lpips_model = lpips.LPIPS(net='alex', verbose=False).to(self.device)
+            self._lpips_model.eval()
+            for param in self._lpips_model.parameters():
+                param.requires_grad = False
+            if self.is_main_process:
+                logger.info("LPIPS metric initialized (AlexNet)")
+        except ImportError:
+            if self.is_main_process:
+                logger.warning("lpips package not installed - LPIPS metric disabled")
+            self.log_lpips = False
+
+        self._lpips_initialized = True
+
+    def compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
+        """Compute LPIPS (perceptual similarity) between generated and reference images.
+
+        Args:
+            generated: Generated images [B, C, H, W].
+            reference: Reference images [B, C, H, W].
+
+        Returns:
+            Average LPIPS across batch (lower is better, 0 = identical).
+        """
+        # Initialize LPIPS model lazily
+        if not self._lpips_initialized:
+            self._init_lpips()
+
+        if self._lpips_model is None:
+            return 0.0
+
+        # LPIPS expects images in [-1, 1] range and RGB (3 channels)
+        gen = generated.float()
+        ref = reference.float()
+
+        # Normalize to [-1, 1]
+        gen = gen * 2.0 - 1.0
+        ref = ref * 2.0 - 1.0
+
+        # Handle single channel by replicating to 3 channels
+        if gen.shape[1] == 1:
+            gen = gen.repeat(1, 3, 1, 1)
+            ref = ref.repeat(1, 3, 1, 1)
+        elif gen.shape[1] > 3:
+            # For multi-channel, just use first channel replicated
+            gen = gen[:, :1].repeat(1, 3, 1, 1)
+            ref = ref[:, :1].repeat(1, 3, 1, 1)
+
+        with torch.no_grad():
+            lpips_values = self._lpips_model(gen, ref)
+
+        return float(lpips_values.mean().item())
 
     def compute_boundary_sharpness(
         self,

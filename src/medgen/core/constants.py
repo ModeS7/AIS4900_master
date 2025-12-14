@@ -3,6 +3,22 @@
 This module centralizes magic numbers and threshold values used throughout
 the training and generation pipelines.
 """
+from enum import Enum
+
+
+class ModeType(str, Enum):
+    """Valid training/generation modes.
+
+    Using str inheritance allows direct comparison with config strings:
+        mode_name == ModeType.DUAL  # works even if mode_name is "dual"
+    """
+    SEG = "seg"
+    BRAVO = "bravo"
+    DUAL = "dual"
+    T1_PRE = "t1_pre"
+    T1_GD = "t1_gd"
+    MULTI_MODALITY = "multi_modality"
+
 
 # Data processing thresholds
 # Ground truth masks: low threshold to preserve all positive pixels

@@ -30,10 +30,11 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from monai.losses import PerceptualLoss, PatchAdversarialLoss
+from monai.losses import PatchAdversarialLoss
 from monai.networks.nets import AutoencoderKL, PatchDiscriminator
 from skimage.metrics import structural_similarity as ssim_skimage
 
+from .losses import PerceptualLoss
 from .utils import get_vram_usage, save_checkpoint, save_model_only
 
 logger = logging.getLogger(__name__)
@@ -105,9 +106,19 @@ class VAETrainer:
         self.kl_weight: float = cfg.vae.get('kl_weight', 1e-8)
         self.adv_weight: float = cfg.vae.get('adv_weight', 0.005)
 
+        # Staged training options (for progressive training)
+        # disable_gan: Skip discriminator entirely (faster, more stable for early training)
+        # use_constant_lr: No scheduler, use constant learning rate
+        progressive_cfg = cfg.get('progressive', {})
+        self.disable_gan: bool = progressive_cfg.get('disable_gan', False)
+        self.use_constant_lr: bool = progressive_cfg.get('use_constant_lr', False)
+
         # Discriminator config
         self.disc_num_layers: int = cfg.vae.get('disc_num_layers', 3)
         self.disc_num_channels: int = cfg.vae.get('disc_num_channels', 64)
+
+        # torch.compile option (default: True)
+        self.use_compile: bool = cfg.training.get('use_compile', True)
 
         # VAE architecture config
         self.latent_channels: int = cfg.vae.latent_channels
@@ -135,8 +146,12 @@ class VAETrainer:
                 self.save_dir = HydraConfig.get().runtime.output_dir
             except (ImportError, ValueError, AttributeError):
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                self.run_name = f"vae_{self.image_size}_{timestamp}"
-                self.save_dir = os.path.join(cfg.paths.model_dir, "vae", self.run_name)
+                # Optional experiment name prefix from config (include underscore in value: "exp1_")
+                exp_name = cfg.training.get('name', '')
+                mode_name = cfg.mode.get('name', 'dual')
+                self.run_name = f"{exp_name}{self.image_size}_{timestamp}"
+                # Structure: runs/vae_2d/{mode}/{run_name}
+                self.save_dir = os.path.join(cfg.paths.model_dir, 'vae_2d', mode_name, self.run_name)
 
             tensorboard_dir = os.path.join(self.save_dir, "tensorboard")
             os.makedirs(tensorboard_dir, exist_ok=True)
@@ -160,6 +175,35 @@ class VAETrainer:
         self.lr_scheduler_d: Optional[LRScheduler] = None
         self.perceptual_loss_fn: Optional[nn.Module] = None
         self.adv_loss_fn: Optional[PatchAdversarialLoss] = None
+
+        # Logging config
+        logging_cfg = cfg.training.get('logging', {})
+        self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
+        self.log_flops: bool = logging_cfg.get('flops', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', True)
+        self.log_worst_batch: bool = logging_cfg.get('worst_batch', False)
+
+        # Gradient norm tracking (per epoch)
+        self._grad_norm_g_sum: float = 0.0
+        self._grad_norm_g_max: float = 0.0
+        self._grad_norm_d_sum: float = 0.0
+        self._grad_norm_d_max: float = 0.0
+        self._grad_norm_count: int = 0
+
+        # FLOPs tracking
+        self._flops_measured: bool = False
+        self._forward_flops: int = 0
+        self._total_flops: int = 0
+
+        # Worst batch tracking
+        self._worst_batch_loss: float = 0.0
+        self._worst_batch_data: Optional[Dict[str, Any]] = None
+
+        # LPIPS model (initialized lazily in setup_model)
+        self._lpips_model: Optional[Any] = None
+
+        # Validation loader (set in train())
+        self.val_loader: Optional[DataLoader] = None
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
         """Setup distributed training with dynamic port allocation."""
@@ -200,8 +244,13 @@ class VAETrainer:
 
         return rank, local_rank, world_size, device
 
-    def setup_model(self) -> None:
-        """Initialize VAE model, discriminator, optimizers, and loss functions."""
+    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+        """Initialize VAE model, discriminator, optimizers, and loss functions.
+
+        Args:
+            pretrained_checkpoint: Optional path to checkpoint for loading pretrained weights.
+                Used for progressive training to transfer weights between resolutions.
+        """
         # For VAE, in_channels must equal out_channels (autoencoder)
         # Use in_channels from mode config (total channels to encode)
         n_channels = self.cfg.mode.get('in_channels', 1)
@@ -220,17 +269,30 @@ class VAETrainer:
             with_decoder_nonlocal_attn=True,
         ).to(self.device)
 
-        # Create PatchDiscriminator
-        raw_disc = PatchDiscriminator(
-            spatial_dims=2,
-            in_channels=n_channels,
-            channels=self.disc_num_channels,
-            num_layers_d=self.disc_num_layers,
-        ).to(self.device)
+        # Create PatchDiscriminator (only if GAN is enabled)
+        raw_disc = None
+        if not self.disable_gan:
+            raw_disc = PatchDiscriminator(
+                spatial_dims=2,
+                in_channels=n_channels,
+                channels=self.disc_num_channels,
+                num_layers_d=self.disc_num_layers,
+            ).to(self.device)
+
+        # Load pretrained weights if provided (for progressive training)
+        if pretrained_checkpoint and os.path.exists(pretrained_checkpoint):
+            checkpoint = torch.load(pretrained_checkpoint, map_location=self.device)
+            if 'model_state_dict' in checkpoint:
+                raw_model.load_state_dict(checkpoint['model_state_dict'])
+                if self.is_main_process:
+                    logger.info(f"Loaded VAE weights from {pretrained_checkpoint}")
+            if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
+                raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
+                if self.is_main_process:
+                    logger.info(f"Loaded discriminator weights from {pretrained_checkpoint}")
 
         if self.use_multi_gpu:
             self.model_raw = raw_model
-            self.discriminator_raw = raw_disc
             ddp_model = DDP(
                 raw_model,
                 device_ids=[self.local_rank],
@@ -238,76 +300,106 @@ class VAETrainer:
                 find_unused_parameters=False,
                 gradient_as_bucket_view=True,
             )
-            ddp_disc = DDP(
-                raw_disc,
-                device_ids=[self.local_rank],
-                output_device=self.local_rank,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-            )
-            self.model = torch.compile(ddp_model, mode="reduce-overhead")
-            self.discriminator = torch.compile(ddp_disc, mode="reduce-overhead")
+            if self.use_compile:
+                self.model = torch.compile(ddp_model, mode="reduce-overhead")
+            else:
+                self.model = ddp_model
+
+            if raw_disc is not None:
+                self.discriminator_raw = raw_disc
+                ddp_disc = DDP(
+                    raw_disc,
+                    device_ids=[self.local_rank],
+                    output_device=self.local_rank,
+                    find_unused_parameters=False,
+                    gradient_as_bucket_view=True,
+                )
+                if self.use_compile:
+                    self.discriminator = torch.compile(ddp_disc, mode="reduce-overhead")
+                else:
+                    self.discriminator = ddp_disc
             if self.is_main_process:
-                logger.info("Multi-GPU: Compiled DDP VAE + Discriminator")
+                msg = f"Multi-GPU: {'Compiled ' if self.use_compile else ''}DDP VAE"
+                if not self.disable_gan:
+                    msg += " + Discriminator"
+                logger.info(msg)
         else:
             self.model_raw = raw_model
-            self.discriminator_raw = raw_disc
-            self.model = torch.compile(raw_model, mode="default")
-            self.discriminator = torch.compile(raw_disc, mode="default")
+            if self.use_compile:
+                self.model = torch.compile(raw_model, mode="default")
+            else:
+                self.model = raw_model
+            if raw_disc is not None:
+                self.discriminator_raw = raw_disc
+                if self.use_compile:
+                    self.discriminator = torch.compile(raw_disc, mode="default")
+                else:
+                    self.discriminator = raw_disc
 
         # Setup perceptual loss (RadImageNet for 2D medical images)
-        perceptual_loss = PerceptualLoss(
+        # Uses shared wrapper that handles multi-channel inputs
+        cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
+        self.perceptual_loss_fn = PerceptualLoss(
             spatial_dims=2,
             network_type="radimagenet_resnet50",
-            cache_dir=self.cfg.paths.cache_dir,
+            cache_dir=cache_dir,
             pretrained=True,
-        ).to(self.device)
-        self.perceptual_loss_fn = torch.compile(perceptual_loss, mode="reduce-overhead")
+            device=self.device,
+            use_compile=self.use_compile,
+        )
 
-        # Setup adversarial loss
-        self.adv_loss_fn = PatchAdversarialLoss(criterion="least_squares")
+        # Setup adversarial loss (only if GAN is enabled)
+        if not self.disable_gan:
+            self.adv_loss_fn = PatchAdversarialLoss(criterion="least_squares")
 
         # Setup generator optimizer
         self.optimizer_g = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
 
-        # Setup discriminator optimizer
-        self.optimizer_d = AdamW(self.discriminator_raw.parameters(), lr=self.disc_lr)
+        # Setup discriminator optimizer (only if GAN is enabled)
+        if not self.disable_gan:
+            self.optimizer_d = AdamW(self.discriminator_raw.parameters(), lr=self.disc_lr)
 
-        # Warmup + Cosine scheduler for generator
-        warmup_scheduler_g = LinearLR(
-            self.optimizer_g,
-            start_factor=0.1,
-            end_factor=1.0,
-            total_iters=self.warmup_epochs
-        )
-        cosine_scheduler_g = CosineAnnealingLR(
-            self.optimizer_g,
-            T_max=self.n_epochs - self.warmup_epochs,
-            eta_min=1e-6
-        )
-        self.lr_scheduler_g = SequentialLR(
-            self.optimizer_g,
-            schedulers=[warmup_scheduler_g, cosine_scheduler_g],
-            milestones=[self.warmup_epochs]
-        )
+        # Setup LR schedulers (only if not using constant LR)
+        if not self.use_constant_lr:
+            # Warmup + Cosine scheduler for generator
+            warmup_scheduler_g = LinearLR(
+                self.optimizer_g,
+                start_factor=0.1,
+                end_factor=1.0,
+                total_iters=self.warmup_epochs
+            )
+            cosine_scheduler_g = CosineAnnealingLR(
+                self.optimizer_g,
+                T_max=self.n_epochs - self.warmup_epochs,
+                eta_min=1e-6
+            )
+            self.lr_scheduler_g = SequentialLR(
+                self.optimizer_g,
+                schedulers=[warmup_scheduler_g, cosine_scheduler_g],
+                milestones=[self.warmup_epochs]
+            )
 
-        # Warmup + Cosine scheduler for discriminator
-        warmup_scheduler_d = LinearLR(
-            self.optimizer_d,
-            start_factor=0.1,
-            end_factor=1.0,
-            total_iters=self.warmup_epochs
-        )
-        cosine_scheduler_d = CosineAnnealingLR(
-            self.optimizer_d,
-            T_max=self.n_epochs - self.warmup_epochs,
-            eta_min=1e-6
-        )
-        self.lr_scheduler_d = SequentialLR(
-            self.optimizer_d,
-            schedulers=[warmup_scheduler_d, cosine_scheduler_d],
-            milestones=[self.warmup_epochs]
-        )
+            # Warmup + Cosine scheduler for discriminator (only if GAN is enabled)
+            if not self.disable_gan:
+                warmup_scheduler_d = LinearLR(
+                    self.optimizer_d,
+                    start_factor=0.1,
+                    end_factor=1.0,
+                    total_iters=self.warmup_epochs
+                )
+                cosine_scheduler_d = CosineAnnealingLR(
+                    self.optimizer_d,
+                    T_max=self.n_epochs - self.warmup_epochs,
+                    eta_min=1e-6
+                )
+                self.lr_scheduler_d = SequentialLR(
+                    self.optimizer_d,
+                    schedulers=[warmup_scheduler_d, cosine_scheduler_d],
+                    milestones=[self.warmup_epochs]
+                )
+        else:
+            if self.is_main_process:
+                logger.info(f"Using constant LR: {self.learning_rate} (scheduler disabled)")
 
         # Create EMA wrapper if enabled (for generator only)
         if self.use_ema:
@@ -324,14 +416,112 @@ class VAETrainer:
         if self.is_main_process:
             self._save_metadata()
 
+        # Initialize LPIPS model for validation metrics (if enabled)
+        if self.log_lpips:
+            try:
+                import lpips
+                self._lpips_model = lpips.LPIPS(net='alex', verbose=False).to(self.device)
+                self._lpips_model.eval()
+                for param in self._lpips_model.parameters():
+                    param.requires_grad = False
+                if self.is_main_process:
+                    logger.info("LPIPS metric initialized (AlexNet)")
+            except ImportError:
+                if self.is_main_process:
+                    logger.warning("lpips package not installed - LPIPS metric disabled")
+                self.log_lpips = False
+
         # Log model info
         if self.is_main_process:
             vae_params = sum(p.numel() for p in self.model_raw.parameters())
-            disc_params = sum(p.numel() for p in self.discriminator_raw.parameters())
             logger.info(f"VAE initialized: {vae_params / 1e6:.1f}M parameters")
-            logger.info(f"Discriminator initialized: {disc_params / 1e6:.1f}M parameters")
+            if not self.disable_gan:
+                disc_params = sum(p.numel() for p in self.discriminator_raw.parameters())
+                logger.info(f"Discriminator initialized: {disc_params / 1e6:.1f}M parameters")
+            else:
+                logger.info("GAN disabled - discriminator not created")
             logger.info(f"Latent shape: [{self.latent_channels}, {self.image_size // 8}, {self.image_size // 8}]")
             logger.info(f"Loss weights - Perceptual: {self.perceptual_weight}, KL: {self.kl_weight}, Adv: {self.adv_weight}")
+
+    def load_checkpoint(self, checkpoint_path: str, load_optimizer: bool = True) -> int:
+        """Load checkpoint to resume training.
+
+        Loads model weights, discriminator (if GAN enabled), optimizers, schedulers,
+        and EMA state from a checkpoint file.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file.
+            load_optimizer: Whether to load optimizer and scheduler states.
+                Set to False when loading for inference or fine-tuning with new optimizer.
+
+        Returns:
+            Epoch number from the checkpoint (0-indexed).
+
+        Raises:
+            FileNotFoundError: If checkpoint file doesn't exist.
+            RuntimeError: If checkpoint is incompatible with current config.
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        # Load VAE model weights
+        self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+        if self.is_main_process:
+            logger.info(f"Loaded VAE weights from {checkpoint_path}")
+
+        # Load discriminator weights (if GAN enabled and checkpoint has them)
+        if not self.disable_gan and self.discriminator_raw is not None:
+            if 'discriminator_state_dict' in checkpoint:
+                self.discriminator_raw.load_state_dict(checkpoint['discriminator_state_dict'])
+                if self.is_main_process:
+                    logger.info("Loaded discriminator weights from checkpoint")
+            else:
+                if self.is_main_process:
+                    logger.warning("Checkpoint has no discriminator weights - using fresh discriminator")
+
+        # Load optimizer states
+        if load_optimizer:
+            if 'optimizer_g_state_dict' in checkpoint and self.optimizer_g is not None:
+                self.optimizer_g.load_state_dict(checkpoint['optimizer_g_state_dict'])
+                if self.is_main_process:
+                    logger.info("Loaded generator optimizer state")
+
+            if not self.disable_gan and self.optimizer_d is not None:
+                if 'optimizer_d_state_dict' in checkpoint:
+                    self.optimizer_d.load_state_dict(checkpoint['optimizer_d_state_dict'])
+                    if self.is_main_process:
+                        logger.info("Loaded discriminator optimizer state")
+
+            # Load scheduler states (only if not using constant LR)
+            if not self.use_constant_lr:
+                if 'scheduler_g_state_dict' in checkpoint and self.lr_scheduler_g is not None:
+                    self.lr_scheduler_g.load_state_dict(checkpoint['scheduler_g_state_dict'])
+                    if self.is_main_process:
+                        logger.info("Loaded generator scheduler state")
+
+                if not self.disable_gan and self.lr_scheduler_d is not None:
+                    if 'scheduler_d_state_dict' in checkpoint:
+                        self.lr_scheduler_d.load_state_dict(checkpoint['scheduler_d_state_dict'])
+                        if self.is_main_process:
+                            logger.info("Loaded discriminator scheduler state")
+
+        # Load EMA state
+        if self.use_ema and self.ema is not None:
+            if 'ema_state_dict' in checkpoint:
+                self.ema.load_state_dict(checkpoint['ema_state_dict'])
+                if self.is_main_process:
+                    logger.info("Loaded EMA state from checkpoint")
+            else:
+                if self.is_main_process:
+                    logger.warning("Checkpoint has no EMA state - EMA will start fresh")
+
+        epoch = checkpoint.get('epoch', 0)
+        if self.is_main_process:
+            logger.info(f"Resuming from epoch {epoch + 1}")
+
+        return epoch
 
     def _save_metadata(self) -> None:
         """Save training configuration to metadata.json."""
@@ -443,6 +633,55 @@ class VAETrainer:
         kl = kl / mean.numel()
         return kl
 
+    def _measure_model_flops(self, sample_batch: torch.Tensor) -> None:
+        """Measure FLOPs for VAE forward pass using torch.profiler.
+
+        Should be called once at the start of training with a sample batch.
+        The measured FLOPs are stored and logged to TensorBoard.
+
+        Args:
+            sample_batch: Sample input tensor [B, C, H, W].
+        """
+        if not self.log_flops or self._flops_measured:
+            return
+
+        self.model_raw.eval()
+        with torch.no_grad():
+            try:
+                from torch.profiler import profile, ProfilerActivity
+
+                # Run profiler to count FLOPs
+                with profile(
+                    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                    with_flops=True,
+                ) as prof:
+                    _ = self.model_raw(sample_batch)
+
+                # Sum all FLOPs from profiler events
+                total_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
+
+                self._forward_flops = total_flops
+                self._flops_measured = True
+
+                if self.is_main_process and total_flops > 0:
+                    batch_size = sample_batch.shape[0]
+                    flops_per_sample = total_flops / batch_size
+                    gflops_per_sample = flops_per_sample / 1e9
+                    # VAE has encoder + decoder, training has forward + backward ≈ 3x
+                    logger.info(
+                        f"VAE FLOPs measured: {gflops_per_sample:.2f} GFLOPs/sample "
+                        f"(forward), ~{gflops_per_sample * 3:.2f} GFLOPs/sample (train step)"
+                    )
+
+                    if self.writer is not None:
+                        self.writer.add_scalar('model/gflops_per_sample', gflops_per_sample, 0)
+
+            except Exception as e:
+                if self.is_main_process:
+                    logger.warning(f"Failed to measure FLOPs: {e}")
+
+        self.model_raw.train()
+
     def _prepare_batch(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Prepare batch tensor from dataloader output.
 
@@ -469,11 +708,11 @@ class VAETrainer:
             return batch.to(self.device)
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Execute a single training step with GAN training.
+        """Execute a single training step with optional GAN training.
 
         Training follows MONAI's approach with proper gradient handling:
-        1. Train discriminator on real vs fake (detached generator output)
-        2. Train generator with L1 + perceptual + KL + adversarial loss
+        1. Train discriminator on real vs fake (only if GAN enabled)
+        2. Train generator with L1 + perceptual + KL + (optional) adversarial loss
 
         Args:
             batch: Input batch - either a dict of tensors (from dual dataloader)
@@ -485,29 +724,41 @@ class VAETrainer:
         images = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
 
-        # ==================== Discriminator Step ====================
-        # Forward through generator (no grad needed for D step)
-        with torch.no_grad():
+        d_loss = torch.tensor(0.0, device=self.device)
+        adv_loss = torch.tensor(0.0, device=self.device)
+
+        # ==================== Discriminator Step (if GAN enabled) ====================
+        if not self.disable_gan:
+            # Forward through generator (no grad needed for D step)
+            with torch.no_grad():
+                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    reconstruction_for_d, _, _ = self.model(images)
+
+            self.optimizer_d.zero_grad(set_to_none=True)
+
             with autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                reconstruction_for_d, _, _ = self.model(images)
+                # Real images -> discriminator should output 1
+                logits_real = self.discriminator(images.contiguous())
+                # Fake images -> discriminator should output 0
+                logits_fake = self.discriminator(reconstruction_for_d.contiguous())
 
-        self.optimizer_d.zero_grad(set_to_none=True)
+                d_loss = 0.5 * (
+                    self.adv_loss_fn(logits_real, target_is_real=True, for_discriminator=True)
+                    + self.adv_loss_fn(logits_fake, target_is_real=False, for_discriminator=True)
+                )
 
-        with autocast('cuda', enabled=True, dtype=torch.bfloat16):
-            # Real images -> discriminator should output 1
-            logits_real = self.discriminator(images.contiguous())
-            # Fake images -> discriminator should output 0
-            logits_fake = self.discriminator(reconstruction_for_d.contiguous())
+            d_loss.backward()
+            grad_norm_d = 0.0
+            if grad_clip > 0:
+                grad_norm_d = torch.nn.utils.clip_grad_norm_(
+                    self.discriminator_raw.parameters(), max_norm=grad_clip
+                ).item()
+            self.optimizer_d.step()
 
-            d_loss = 0.5 * (
-                self.adv_loss_fn(logits_real, target_is_real=True, for_discriminator=True)
-                + self.adv_loss_fn(logits_fake, target_is_real=False, for_discriminator=True)
-            )
-
-        d_loss.backward()
-        if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.discriminator_raw.parameters(), max_norm=grad_clip)
-        self.optimizer_d.step()
+            # Track discriminator gradient norm
+            if self.log_grad_norm:
+                self._grad_norm_d_sum += grad_norm_d
+                self._grad_norm_d_max = max(self._grad_norm_d_max, grad_norm_d)
 
         # ==================== Generator Step ====================
         self.optimizer_g.zero_grad(set_to_none=True)
@@ -519,17 +770,18 @@ class VAETrainer:
             # L1 reconstruction loss (MONAI uses L1, not MSE)
             l1_loss = torch.abs(reconstruction - images).mean()
 
-            # Perceptual loss (cast to float32 for pretrained network)
-            p_loss = self.perceptual_loss_fn(reconstruction.float(), images.float())
+            # Perceptual loss (wrapper handles multi-channel inputs)
+            p_loss = self.perceptual_loss_fn(reconstruction, images)
 
             # KL divergence loss
             kl_loss = self._compute_kl_loss(mean, logvar)
 
-            # Adversarial loss (generator wants discriminator to output 1 for fakes)
-            logits_fake_for_g = self.discriminator(reconstruction.contiguous())
-            adv_loss = self.adv_loss_fn(
-                logits_fake_for_g, target_is_real=True, for_discriminator=False
-            )
+            # Adversarial loss (only if GAN enabled)
+            if not self.disable_gan:
+                logits_fake_for_g = self.discriminator(reconstruction.contiguous())
+                adv_loss = self.adv_loss_fn(
+                    logits_fake_for_g, target_is_real=True, for_discriminator=False
+                )
 
             # Total generator loss
             g_loss = (
@@ -540,21 +792,107 @@ class VAETrainer:
             )
 
         g_loss.backward()
+        grad_norm_g = 0.0
         if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(self.model_raw.parameters(), max_norm=grad_clip)
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(
+                self.model_raw.parameters(), max_norm=grad_clip
+            ).item()
         self.optimizer_g.step()
+
+        # Track generator gradient norm
+        if self.log_grad_norm:
+            self._grad_norm_g_sum += grad_norm_g
+            self._grad_norm_g_max = max(self._grad_norm_g_max, grad_norm_g)
+            self._grad_norm_count += 1
+
+        # Track worst batch (for debugging high loss samples)
+        g_loss_val = g_loss.item()
+        if self.log_worst_batch and g_loss_val > self._worst_batch_loss:
+            self._worst_batch_loss = g_loss_val
+            self._worst_batch_data = {
+                'input': images.detach(),
+                'output': reconstruction.detach(),
+                'loss': g_loss_val,
+                'l1_loss': l1_loss.item(),
+                'perceptual_loss': p_loss.item(),
+            }
 
         if self.use_ema:
             self._update_ema()
 
         return {
             'gen': g_loss.item(),
-            'disc': d_loss.item(),
+            'disc': d_loss.item() if not self.disable_gan else 0.0,
             'recon': l1_loss.item(),
             'perc': p_loss.item(),
             'kl': kl_loss.item(),
             'adv': adv_loss.item(),
         }
+
+    def _reset_grad_norm_tracking(self) -> None:
+        """Reset gradient norm tracking for a new epoch."""
+        self._grad_norm_g_sum = 0.0
+        self._grad_norm_g_max = 0.0
+        self._grad_norm_d_sum = 0.0
+        self._grad_norm_d_max = 0.0
+        self._grad_norm_count = 0
+
+    def _log_grad_norms(self, epoch: int) -> None:
+        """Log gradient norm statistics to TensorBoard."""
+        if not self.log_grad_norm or self._grad_norm_count == 0 or self.writer is None:
+            return
+
+        avg_grad_norm_g = self._grad_norm_g_sum / self._grad_norm_count
+        self.writer.add_scalar('training/grad_norm_g_avg', avg_grad_norm_g, epoch)
+        self.writer.add_scalar('training/grad_norm_g_max', self._grad_norm_g_max, epoch)
+
+        if not self.disable_gan:
+            avg_grad_norm_d = self._grad_norm_d_sum / self._grad_norm_count
+            self.writer.add_scalar('training/grad_norm_d_avg', avg_grad_norm_d, epoch)
+            self.writer.add_scalar('training/grad_norm_d_max', self._grad_norm_d_max, epoch)
+
+    def _log_worst_batch(self, epoch: int) -> None:
+        """Log worst batch visualization to TensorBoard."""
+        if not self.log_worst_batch or self._worst_batch_data is None or self.writer is None:
+            return
+
+        data = self._worst_batch_data
+        input_imgs = data['input'].cpu()
+        output_imgs = data['output'].cpu()
+
+        # Create visualization figure
+        n_samples = min(4, input_imgs.shape[0])
+        fig, axes = plt.subplots(2, n_samples, figsize=(4 * n_samples, 8))
+
+        for i in range(n_samples):
+            # Input
+            if input_imgs.shape[1] == 1:
+                axes[0, i].imshow(input_imgs[i, 0].numpy(), cmap='gray')
+            else:
+                axes[0, i].imshow(input_imgs[i, 0].numpy(), cmap='gray')
+            axes[0, i].set_title(f'Input {i}')
+            axes[0, i].axis('off')
+
+            # Output
+            if output_imgs.shape[1] == 1:
+                axes[1, i].imshow(output_imgs[i, 0].numpy(), cmap='gray')
+            else:
+                axes[1, i].imshow(output_imgs[i, 0].numpy(), cmap='gray')
+            axes[1, i].set_title(f'Recon {i}')
+            axes[1, i].axis('off')
+
+        fig.suptitle(f"Worst Batch - Loss: {data['loss']:.4f} (L1: {data['l1_loss']:.4f}, Perc: {data['perceptual_loss']:.4f})")
+        plt.tight_layout()
+
+        self.writer.add_figure('training/worst_batch', fig, epoch)
+        plt.close(fig)
+
+        # Log scalar
+        self.writer.add_scalar('training/worst_batch_loss', data['loss'], epoch)
+
+        # Reset for next epoch
+        self._worst_batch_loss = 0.0
+        self._worst_batch_data = None
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train the model for one epoch.
@@ -567,7 +905,11 @@ class VAETrainer:
             Dict with average losses: 'gen', 'disc', 'recon', 'perc', 'kl', 'adv'.
         """
         self.model.train()
-        self.discriminator.train()
+        if not self.disable_gan and self.discriminator is not None:
+            self.discriminator.train()
+
+        # Reset gradient norm tracking for this epoch
+        self._reset_grad_norm_tracking()
 
         epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
 
@@ -641,11 +983,63 @@ class VAETrainer:
         psnr = 10 * np.log10(1.0 / mse)
         return float(psnr)
 
-    def _generate_validation_samples(self, dataset: Dataset, epoch: int) -> None:
-        """Generate reconstruction samples for visualization.
+    def _compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
+        """Compute LPIPS (perceptual similarity) between generated and reference images.
 
         Args:
-            dataset: Training dataset.
+            generated: Generated images [B, C, H, W].
+            reference: Reference images [B, C, H, W].
+
+        Returns:
+            Average LPIPS across batch (lower is better, 0 = identical).
+        """
+        if self._lpips_model is None:
+            return 0.0
+
+        # LPIPS expects images in [-1, 1] range and RGB (3 channels)
+        # For grayscale, replicate to 3 channels
+        gen = generated.float()
+        ref = reference.float()
+
+        # Normalize to [-1, 1]
+        gen = gen * 2.0 - 1.0
+        ref = ref * 2.0 - 1.0
+
+        # Handle different channel counts (LPIPS expects 3-channel RGB)
+        num_channels = gen.shape[1]
+
+        with torch.no_grad():
+            if num_channels == 1:
+                # Single channel: replicate to 3
+                gen = gen.repeat(1, 3, 1, 1)
+                ref = ref.repeat(1, 3, 1, 1)
+                lpips_values = self._lpips_model(gen, ref)
+            elif num_channels <= 3:
+                # 2-3 channels: compute per-channel LPIPS and average
+                lpips_per_channel = []
+                for ch in range(num_channels):
+                    ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    lpips_per_channel.append(self._lpips_model(ch_gen, ch_ref))
+                lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
+            else:
+                # >3 channels: use first 3 channels computed per-channel
+                lpips_per_channel = []
+                for ch in range(3):
+                    ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    lpips_per_channel.append(self._lpips_model(ch_gen, ch_ref))
+                lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
+
+        return float(lpips_values.mean().item())
+
+    def _generate_validation_samples(self, dataset: Dataset, epoch: int) -> None:
+        """Generate reconstruction samples and compute validation metrics.
+
+        Uses val_loader if provided, otherwise samples from training dataset.
+
+        Args:
+            dataset: Training dataset (used if no val_loader).
             epoch: Current epoch number.
         """
         if self.writer is None:
@@ -654,36 +1048,45 @@ class VAETrainer:
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
 
-        # Sample random images
-        n_samples = min(8, len(dataset))
-        indices = torch.randperm(len(dataset))[:n_samples]
-
-        samples = []
         image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
-        for idx in indices:
-            sample = dataset[idx]
-            if isinstance(sample, dict):
-                # Stack all channels from dict
-                tensors = []
-                for key in image_keys:
-                    if key in sample:
-                        val = sample[key]
+
+        # Get validation samples from val_loader or dataset
+        if self.val_loader is not None:
+            # Use validation loader
+            val_batch = next(iter(self.val_loader))
+            samples = self._prepare_batch(val_batch)
+            # Limit to 8 samples for visualization
+            samples = samples[:8]
+        else:
+            # Sample random images from training dataset
+            n_samples = min(8, len(dataset))
+            indices = torch.randperm(len(dataset))[:n_samples]
+
+            samples_list = []
+            for idx in indices:
+                sample = dataset[idx]
+                if isinstance(sample, dict):
+                    # Stack all channels from dict
+                    tensors = []
+                    for key in image_keys:
+                        if key in sample:
+                            val = sample[key]
+                            if not isinstance(val, torch.Tensor):
+                                val = torch.from_numpy(np.array(val))
+                            tensors.append(val)
+                    if 'seg' in sample:
+                        val = sample['seg']
                         if not isinstance(val, torch.Tensor):
                             val = torch.from_numpy(np.array(val))
                         tensors.append(val)
-                if 'seg' in sample:
-                    val = sample['seg']
-                    if not isinstance(val, torch.Tensor):
-                        val = torch.from_numpy(np.array(val))
-                    tensors.append(val)
-                sample = torch.cat(tensors, dim=0)
-            elif hasattr(sample, 'as_tensor'):
-                sample = sample.as_tensor()
-            elif isinstance(sample, np.ndarray):
-                sample = torch.from_numpy(sample)
-            samples.append(sample)
+                    sample = torch.cat(tensors, dim=0)
+                elif hasattr(sample, 'as_tensor'):
+                    sample = sample.as_tensor()
+                elif isinstance(sample, np.ndarray):
+                    sample = torch.from_numpy(sample)
+                samples_list.append(sample)
 
-        samples = torch.stack(samples).to(self.device)
+            samples = torch.stack(samples_list).to(self.device)
 
         # Reconstruct
         with torch.no_grad():
@@ -697,13 +1100,22 @@ class VAETrainer:
         self.writer.add_scalar('validation/SSIM', ssim, epoch)
         self.writer.add_scalar('validation/PSNR', psnr, epoch)
 
+        # Compute LPIPS if enabled
+        lpips_val = 0.0
+        if self.log_lpips and self._lpips_model is not None:
+            lpips_val = self._compute_lpips(reconstructed, samples)
+            self.writer.add_scalar('validation/LPIPS', lpips_val, epoch)
+
         # Create visualization figure
         fig = self._create_reconstruction_figure(samples, reconstructed)
         self.writer.add_figure('validation/reconstructions', fig, epoch)
         plt.close(fig)
 
         if self.is_main_process:
-            logger.info(f"Validation - SSIM: {ssim:.4f}, PSNR: {psnr:.2f} dB")
+            msg = f"Validation - SSIM: {ssim:.4f}, PSNR: {psnr:.2f} dB"
+            if self.log_lpips:
+                msg += f", LPIPS: {lpips_val:.4f}"
+            logger.info(msg)
 
         model_to_use.train()
 
@@ -785,16 +1197,28 @@ class VAETrainer:
 
         checkpoint = {
             'model_state_dict': self.model_raw.state_dict(),
-            'discriminator_state_dict': self.discriminator_raw.state_dict(),
             'optimizer_g_state_dict': self.optimizer_g.state_dict(),
-            'optimizer_d_state_dict': self.optimizer_d.state_dict(),
-            'scheduler_g_state_dict': self.lr_scheduler_g.state_dict(),
-            'scheduler_d_state_dict': self.lr_scheduler_d.state_dict(),
             'epoch': epoch,
             'config': vae_config,
-            'disc_config': disc_config,
+            'disable_gan': self.disable_gan,
+            'use_constant_lr': self.use_constant_lr,
         }
 
+        # Add discriminator state if GAN is enabled
+        if not self.disable_gan and self.discriminator_raw is not None:
+            checkpoint['discriminator_state_dict'] = self.discriminator_raw.state_dict()
+            checkpoint['disc_config'] = disc_config
+            if self.optimizer_d is not None:
+                checkpoint['optimizer_d_state_dict'] = self.optimizer_d.state_dict()
+
+        # Add scheduler states if not using constant LR
+        if not self.use_constant_lr:
+            if self.lr_scheduler_g is not None:
+                checkpoint['scheduler_g_state_dict'] = self.lr_scheduler_g.state_dict()
+            if not self.disable_gan and self.lr_scheduler_d is not None:
+                checkpoint['scheduler_d_state_dict'] = self.lr_scheduler_d.state_dict()
+
+        # Add EMA state if enabled
         if self.ema is not None:
             checkpoint['ema_state_dict'] = self.ema.state_dict()
 
@@ -802,20 +1226,43 @@ class VAETrainer:
         torch.save(checkpoint, save_path)
         return save_path
 
-    def train(self, train_loader: DataLoader, train_dataset: Dataset) -> None:
+    def train(
+        self,
+        train_loader: DataLoader,
+        train_dataset: Dataset,
+        val_loader: Optional[DataLoader] = None,
+        start_epoch: int = 0
+    ) -> None:
         """Execute the main training loop.
 
         Args:
             train_loader: Training data loader.
-            train_dataset: Training dataset (for validation sampling).
+            train_dataset: Training dataset (for validation sampling if no val_loader).
+            val_loader: Optional validation data loader. If provided, used for
+                validation metrics instead of sampling from train_dataset.
+            start_epoch: Epoch to start from (for resuming training).
         """
+        self.val_loader = val_loader
         total_start = time.time()
+
+        # Measure FLOPs on first batch (once at start of training)
+        if self.log_flops and not self._flops_measured:
+            try:
+                first_batch = next(iter(train_loader))
+                sample_images = self._prepare_batch(first_batch)
+                self._measure_model_flops(sample_images)
+            except Exception as e:
+                if self.is_main_process:
+                    logger.warning(f"Could not measure FLOPs: {e}")
 
         avg_losses = {'gen': float('inf'), 'disc': float('inf'), 'recon': float('inf'),
                       'perc': float('inf'), 'kl': float('inf'), 'adv': float('inf')}
 
+        if start_epoch > 0 and self.is_main_process:
+            logger.info(f"Resuming training from epoch {start_epoch + 1}")
+
         try:
-            for epoch in range(self.n_epochs):
+            for epoch in range(start_epoch, self.n_epochs):
                 epoch_start = time.time()
 
                 if self.use_multi_gpu and hasattr(train_loader.sampler, 'set_epoch'):
@@ -835,9 +1282,12 @@ class VAETrainer:
 
                 epoch_time = time.time() - epoch_start
 
-                # Step both schedulers
-                self.lr_scheduler_g.step()
-                self.lr_scheduler_d.step()
+                # Step schedulers (only if not using constant LR)
+                if not self.use_constant_lr:
+                    if self.lr_scheduler_g is not None:
+                        self.lr_scheduler_g.step()
+                    if not self.disable_gan and self.lr_scheduler_d is not None:
+                        self.lr_scheduler_d.step()
 
                 if self.is_main_process:
                     log_vae_epoch_summary(epoch, self.n_epochs, avg_losses, epoch_time)
@@ -849,10 +1299,27 @@ class VAETrainer:
                         self.writer.add_scalar('Loss/Perceptual', avg_losses['perc'], epoch)
                         self.writer.add_scalar('Loss/KL', avg_losses['kl'], epoch)
                         self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
-                        self.writer.add_scalar('LR/Generator', self.lr_scheduler_g.get_last_lr()[0], epoch)
-                        self.writer.add_scalar('LR/Discriminator', self.lr_scheduler_d.get_last_lr()[0], epoch)
+
+                        # Log learning rates
+                        if not self.use_constant_lr and self.lr_scheduler_g is not None:
+                            self.writer.add_scalar('LR/Generator', self.lr_scheduler_g.get_last_lr()[0], epoch)
+                        else:
+                            self.writer.add_scalar('LR/Generator', self.learning_rate, epoch)
+
+                        if not self.disable_gan:
+                            if not self.use_constant_lr and self.lr_scheduler_d is not None:
+                                self.writer.add_scalar('LR/Discriminator', self.lr_scheduler_d.get_last_lr()[0], epoch)
+                            else:
+                                self.writer.add_scalar('LR/Discriminator', self.disc_lr, epoch)
+
+                        # Log gradient norms
+                        self._log_grad_norms(epoch)
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
+
+                    # Log worst batch at validation intervals
+                    if is_val_epoch and self.log_worst_batch:
+                        self._log_worst_batch(epoch)
 
                     if is_val_epoch or (epoch + 1) == self.n_epochs:
                         self._generate_validation_samples(train_dataset, epoch)

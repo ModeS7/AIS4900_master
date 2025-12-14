@@ -1,6 +1,7 @@
 """Core utilities and shared infrastructure."""
 
 from .constants import (
+    ModeType,
     BINARY_THRESHOLD_GT,
     BINARY_THRESHOLD_GEN,
     BINARY_THRESHOLD,
@@ -20,6 +21,8 @@ from .constants import (
 from .cuda_utils import setup_cuda_optimizations
 
 __all__ = [
+    # Enums
+    'ModeType',
     # Constants
     'BINARY_THRESHOLD_GT',
     'BINARY_THRESHOLD_GEN',

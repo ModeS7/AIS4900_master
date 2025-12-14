@@ -1,0 +1,109 @@
+# Progressive VAE Training Configuration
+#
+# Trains VAE at increasing resolutions (64 -> 128 -> 256) with automatic
+# plateau detection for phase transitions. Trains on multiple modalities
+# (bravo, flair, t1_pre, t1_gd) to create a pre-trained model.
+#
+# Usage:
+#   # Full progressive training
+#   python -m medgen.scripts.train_vae_progressive
+#
+#   # Resume from checkpoint
+#   python -m medgen.scripts.train_vae_progressive \
+#       progressive.resume_from=/path/to/progressive_state.pt
+#
+#   # Custom plateau detection
+#   python -m medgen.scripts.train_vae_progressive \
+#       progressive.plateau.min_improvement=1.0 \
+#       progressive.final_phase.epochs=200
+#
+# Plateau detection:
+#   - Monitors rolling average loss improvement
+#   - Transitions to next resolution when improvement < min_improvement%
+#   - Patience prevents premature transitions
+
+defaults:
+  - paths: local
+  - model: default
+  - training: default
+  - _self_
+
+# Progressive training phases
+progressive:
+  resolutions: [64, 128, 256]  # Resolution progression
+
+  # Batch sizes per resolution (larger batch for smaller images)
+  batch_sizes:
+    64: 64
+    128: 32
+    256: 16
+
+  # Plateau detection for phase transition
+  plateau:
+    window_size: 10          # Rolling window of epochs to consider
+    min_improvement: 0.5     # Minimum % improvement required (0.5 = 0.5%)
+    min_epochs: 20           # Minimum epochs before checking plateau
+    patience: 5              # Epochs below threshold before transition
+
+  # Final phase settings (256x256)
+  final_phase:
+    epochs: 100              # Fixed epochs at final resolution
+
+  # Resume support
+  resume_from: null          # Path to progressive_state.pt to resume
+
+  # Staged training options
+  disable_gan: true          # Skip discriminator (faster, more stable)
+  use_constant_lr: true      # No LR scheduler, use base learning_rate
+
+# Multi-modality training (each modality as separate 1-channel image)
+modalities:
+  image_keys: [bravo, flair, t1_pre, t1_gd]  # All modalities mixed
+  in_channels: 1                              # Single channel per image
+
+# VAE architecture (same as train_vae.yaml)
+vae:
+  latent_channels: 3
+  channels: [64, 128, 256, 512]
+  attention_levels: [false, false, false, true]
+  num_res_blocks: 2
+  kl_weight: 1.0e-6
+  perceptual_weight: 0.001
+  adv_weight: 0.01
+  disc_lr: 5.0e-4
+  disc_num_layers: 3
+  disc_num_channels: 64
+
+# Override training defaults
+training:
+  learning_rate: 1.0e-4
+  gradient_clip_norm: 1.0
+  warmup_epochs: 3           # Per phase warmup
+  val_interval: 5
+  use_ema: false
+  ema:
+    decay: 0.999
+    update_after_step: 100
+    update_every: 10
+  use_multi_gpu: false
+  # Disable unused logging options for faster training
+  logging:
+    grad_norm: false
+    timestep_losses: false
+    regional_losses: false
+    timestep_region_losses: false
+    ssim: true
+    psnr: true
+    boundary_sharpness: false
+    intermediate_steps: false
+    worst_batch: false
+    flops: false
+
+# Hydra configuration
+# Output structure: runs/vae_2d/progressive/{timestamp}/
+hydra:
+  run:
+    dir: ${paths.model_dir}/vae_2d/progressive/${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/vae_2d/progressive/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

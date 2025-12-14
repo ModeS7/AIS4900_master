@@ -1,8 +1,20 @@
-# UNet model configuration
-# Override image_size via CLI: model.image_size=256
+# DiffusionModelUNet Architecture Configuration
+#
+# MONAI's DiffusionModelUNet with configurable depth and attention.
+# Override via CLI: python -m medgen.scripts.train model.image_size=256
+#
+# Architecture overview:
+#   - Encoder: progressive downsampling with ResBlocks
+#   - Middle: attention blocks at bottleneck
+#   - Decoder: progressive upsampling with skip connections
+#
+# Memory usage (approximate, batch_size=16):
+#   - 128px: ~8GB VRAM
+#   - 256px: ~24GB VRAM
+#   - 512px: ~80GB+ VRAM
 
-image_size: 128
-channels: [128, 256, 256]
-attention_levels: [false, true, true]
-num_res_blocks: 1
-num_head_channels: 256
+image_size: 128                      # Input image size (must be power of 2)
+channels: [128, 256, 256]            # Channels at each encoder level
+attention_levels: [false, true, true]  # Where to apply self-attention
+num_res_blocks: 1                    # ResBlocks per encoder/decoder level
+num_head_channels: 256               # Attention head dimension
