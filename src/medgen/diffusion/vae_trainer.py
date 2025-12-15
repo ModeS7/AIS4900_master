@@ -141,17 +141,21 @@ class VAETrainer:
 
         # Initialize logging and save directories
         if self.is_main_process:
-            try:
-                from hydra.core.hydra_config import HydraConfig
-                self.save_dir = HydraConfig.get().runtime.output_dir
-            except (ImportError, ValueError, AttributeError):
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                # Optional experiment name prefix from config (include underscore in value: "exp1_")
-                exp_name = cfg.training.get('name', '')
-                mode_name = cfg.mode.get('name', 'dual')
-                self.run_name = f"{exp_name}{self.image_size}_{timestamp}"
-                # Structure: runs/vae_2d/{mode}/{run_name}
-                self.save_dir = os.path.join(cfg.paths.model_dir, 'vae_2d', mode_name, self.run_name)
+            # Check for explicit save_dir override (used by progressive training)
+            if hasattr(cfg, 'save_dir_override') and cfg.save_dir_override:
+                self.save_dir = cfg.save_dir_override
+            else:
+                try:
+                    from hydra.core.hydra_config import HydraConfig
+                    self.save_dir = HydraConfig.get().runtime.output_dir
+                except (ImportError, ValueError, AttributeError):
+                    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    # Optional experiment name prefix from config (include underscore in value: "exp1_")
+                    exp_name = cfg.training.get('name', '')
+                    mode_name = cfg.mode.get('name', 'dual')
+                    self.run_name = f"{exp_name}{self.image_size}_{timestamp}"
+                    # Structure: runs/vae_2d/{mode}/{run_name}
+                    self.save_dir = os.path.join(cfg.paths.model_dir, 'vae_2d', mode_name, self.run_name)
 
             tensorboard_dir = os.path.join(self.save_dir, "tensorboard")
             os.makedirs(tensorboard_dir, exist_ok=True)

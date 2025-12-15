@@ -281,14 +281,14 @@ class ProgressiveVAETrainer:
             # Log to tensorboard
             if trainer.writer is not None:
                 global_step = epoch
-                trainer.writer.add_scalar('Loss/generator', avg_losses['gen'], global_step)
-                trainer.writer.add_scalar('Loss/discriminator', avg_losses['disc'], global_step)
-                trainer.writer.add_scalar('Loss/reconstruction', avg_losses['recon'], global_step)
-                trainer.writer.add_scalar('Loss/perceptual', avg_losses['perc'], global_step)
-                trainer.writer.add_scalar('Loss/kl', avg_losses['kl'], global_step)
-                trainer.writer.add_scalar('Loss/adversarial', avg_losses['adv'], global_step)
+                trainer.writer.add_scalar('Loss/Generator', avg_losses['gen'], global_step)
+                trainer.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], global_step)
+                trainer.writer.add_scalar('Loss/L1', avg_losses['recon'], global_step)
+                trainer.writer.add_scalar('Loss/Perceptual', avg_losses['perc'], global_step)
+                trainer.writer.add_scalar('Loss/KL', avg_losses['kl'], global_step)
+                trainer.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], global_step)
                 lr_g = trainer.optimizer_g.param_groups[0]['lr']
-                trainer.writer.add_scalar('LR/generator', lr_g, global_step)
+                trainer.writer.add_scalar('LR/Generator', lr_g, global_step)
 
             # Save best checkpoint
             if avg_losses['gen'] < trainer.best_loss:
@@ -356,8 +356,10 @@ class ProgressiveVAETrainer:
         })
 
         # Override paths to use phase directory
-        # We need to hack the save_dir by pre-creating the Hydra output structure
         phase_cfg.paths.model_dir = self.base_dir
+
+        # Set explicit save directory for VAETrainer to use
+        phase_cfg.save_dir_override = phase_dir
 
         return phase_cfg
 
