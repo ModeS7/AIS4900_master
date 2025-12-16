@@ -3,29 +3,32 @@
 Preprocess medical images to standardized format using MONAI transforms.
 
 Two-step processing pipeline to preserve aspect ratio:
-  1. Pad to intermediate size (240x240) - preserves aspect ratio
+  1. Pad to intermediate size (240x240) - preserves aspect ratio, centered
   2. Resize to target size (256x256) - power of 2 for deep learning
 
 Processing pipeline:
   Images (bravo, flair, t1_gd, t1_pre):
     1. Load NIfTI image
     2. Ensure channel-first format [C, H, W, D]
-    3. Normalize intensity to [0, 1]
-    4. Pad to 240x240 (preserves aspect ratio, no distortion)
-    5. Resize to 256x256 with bilinear interpolation
-    6. Save as float32 compressed NIfTI
+    3. Pad to 240x240 (centered, preserves aspect ratio)
+    4. Resize to 256x256 with bilinear interpolation
+    5. Save as float32 compressed NIfTI
 
   Segmentation masks (seg):
     1. Load NIfTI image
     2. Ensure channel-first format [C, H, W, D]
-    3. Pad to 240x240 (preserves aspect ratio, no distortion)
+    3. Pad to 240x240 (centered, preserves aspect ratio)
     4. Resize to 256x256 with nearest-neighbor interpolation
     5. Binarize to strictly {0, 1} values (threshold at 0.5)
     6. Save as float32 compressed NIfTI
 
 Processes all modalities (bravo, seg, flair, t1_gd, t1_pre).
+
+Usage:
+    python misc/prepro/pro.py --input /path/to/raw --output /path/to/processed
+    python misc/prepro/pro.py  # Uses default paths
 """
-import sys
+import argparse
 from pathlib import Path
 from typing import Tuple
 
@@ -37,23 +40,15 @@ from monai.transforms import (
     EnsureChannelFirst,
     LoadImage,
     Resize,
-    ScaleIntensity,
     SpatialPad,
 )
 from tqdm import tqdm
 
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
-
-from config import PathConfig
-
 # ============================================================================
-# CONFIGURATION - Default paths from PathConfig, can be overridden
+# DEFAULT CONFIGURATION
 # ============================================================================
-path_config = PathConfig()
-INPUT_DIR = str(path_config.data_dir / "StanfordSkullStripped_1mm")
-OUTPUT_DIR = str(path_config.data_dir / "brainmetshare-3_non_public_256")
+DEFAULT_INPUT_DIR = "/home/mode/NTNU/MedicalDataSets/StanfordSkullStripped_1mm"
+DEFAULT_OUTPUT_DIR = "/home/mode/NTNU/MedicalDataSets/brainmetshare-3_non_public_256"
 INTERMEDIATE_SIZE: Tuple[int, int] = (240, 240)  # Pad to this size first
 TARGET_SIZE: Tuple[int, int] = (256, 256)        # Then resize to this final size
 # ============================================================================
@@ -77,20 +72,19 @@ def create_transforms(
         MONAI Compose transform.
     """
     if is_segmentation:
-        # Segmentation: pad, then nearest-neighbor resize, no normalization
+        # Segmentation: pad (centered), then nearest-neighbor resize, no normalization
         transform = Compose([
             LoadImage(image_only=True),
             EnsureChannelFirst(),
-            SpatialPad(spatial_size=(intermediate_size[0], intermediate_size[1], -1), mode='constant'),
+            SpatialPad(spatial_size=(intermediate_size[0], intermediate_size[1], -1), mode='constant', method='symmetric'),
             Resize(spatial_size=(target_size[0], target_size[1], -1), mode='nearest')
         ])
     else:
-        # Images: pad, normalize to [0, 1], then bilinear resize
+        # Images: pad (centered), then bilinear resize (no normalization - done during training)
         transform = Compose([
             LoadImage(image_only=True),
             EnsureChannelFirst(),
-            ScaleIntensity(minv=0.0, maxv=1.0),
-            SpatialPad(spatial_size=(intermediate_size[0], intermediate_size[1], -1), mode='constant'),
+            SpatialPad(spatial_size=(intermediate_size[0], intermediate_size[1], -1), mode='constant', method='symmetric'),
             Resize(spatial_size=(target_size[0], target_size[1], -1), mode='bilinear')
         ])
 
@@ -216,13 +210,36 @@ def process_dataset(
 
 
 def main() -> int:
-    """Main function to process dataset with configuration from top of file.
+    """Main function to process dataset with command-line arguments.
 
     Returns:
         Exit code (0 for success, 1 for error).
     """
-    input_base = Path(INPUT_DIR)
-    output_base = Path(OUTPUT_DIR)
+    parser = argparse.ArgumentParser(
+        description="Preprocess medical images to standardized format",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python misc/prepro/pro.py --input /path/to/raw --output /path/to/processed
+    python misc/prepro/pro.py  # Uses default paths
+        """
+    )
+    parser.add_argument(
+        "--input", "-i",
+        type=Path,
+        default=Path(DEFAULT_INPUT_DIR),
+        help=f"Input directory (default: {DEFAULT_INPUT_DIR})"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        type=Path,
+        default=Path(DEFAULT_OUTPUT_DIR),
+        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})"
+    )
+    args = parser.parse_args()
+
+    input_base = args.input
+    output_base = args.output
 
     # Validate input directory
     if not input_base.exists():
@@ -240,9 +257,8 @@ def main() -> int:
     print(f"\nTransforms:")
     print(f"  Images (bravo, flair, t1_gd, t1_pre):")
     print(f"    1. Load and ensure channel-first")
-    print(f"    2. Normalize intensity to [0, 1]")
-    print(f"    3. Pad to {INTERMEDIATE_SIZE[0]}x{INTERMEDIATE_SIZE[1]} (preserves aspect ratio)")
-    print(f"    4. Resize to {TARGET_SIZE[0]}x{TARGET_SIZE[1]} with bilinear interpolation")
+    print(f"    2. Pad to {INTERMEDIATE_SIZE[0]}x{INTERMEDIATE_SIZE[1]} (centered)")
+    print(f"    3. Resize to {TARGET_SIZE[0]}x{TARGET_SIZE[1]} with bilinear interpolation")
     print(f"  Segmentation masks:")
     print(f"    1. Load and ensure channel-first")
     print(f"    2. Pad to {INTERMEDIATE_SIZE[0]}x{INTERMEDIATE_SIZE[1]} (preserves aspect ratio)")

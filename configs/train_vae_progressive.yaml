@@ -42,7 +42,7 @@ progressive:
   plateau:
     window_size: 10          # Rolling window of epochs to consider
     min_improvement: 0.5     # Minimum % improvement required (0.5 = 0.5%)
-    min_epochs: 20           # Minimum epochs before checking plateau
+    min_epochs: 40           # Minimum epochs before checking plateau
     patience: 5              # Epochs below threshold before transition
 
   # Final phase settings (256x256)

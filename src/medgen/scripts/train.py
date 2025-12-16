@@ -25,7 +25,12 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, ModeType, setup_cuda_optimizations
-from medgen.data import create_dataloader, create_dual_image_dataloader
+from medgen.data import (
+    create_dataloader,
+    create_dual_image_dataloader,
+    create_validation_dataloader,
+    create_dual_image_validation_dataloader,
+)
 from medgen.diffusion import DiffusionTrainer
 from medgen.diffusion.spaces import PixelSpace, load_vae_for_latent_space
 
@@ -149,11 +154,36 @@ def main(cfg: DictConfig) -> None:
             world_size=trainer.world_size if use_multi_gpu else 1
         )
 
+    log.info(f"Training dataset: {len(train_dataset)} slices")
+
+    # Create validation dataloader (if val/ directory exists)
+    val_loader = None
+    if mode == ModeType.DUAL:
+        val_result = create_dual_image_validation_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            conditioning='seg',
+        )
+    else:
+        val_result = create_validation_dataloader(
+            cfg=cfg,
+            image_type=image_type,
+        )
+
+    if val_result is not None:
+        val_loader, val_dataset = val_result
+        log.info(f"Validation dataset: {len(val_dataset)} slices")
+    else:
+        log.info("No val/ directory found - using train loss for best model selection")
+
     # Setup model
     trainer.setup_model(train_dataset)
 
-    # Train
-    trainer.train(dataloader, train_dataset)
+    # Train with optional validation loader
+    trainer.train(dataloader, train_dataset, val_loader=val_loader)
+
+    # Close TensorBoard writer after training
+    trainer.close_writer()
 
 
 if __name__ == "__main__":

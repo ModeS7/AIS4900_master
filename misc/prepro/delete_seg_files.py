@@ -4,10 +4,10 @@ Delete seg.nii.gz files from dataset test directory only.
 
 Usage:
   # Dry run (show what would be deleted)
-  python misc/delete_seg_files.py --dataset-path /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --dry-run
+  python misc/prepro/delete_seg_files.py --dataset-path /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --dry-run
 
   # Actually delete files
-  python misc/delete_seg_files.py --dataset-path /home/mode/NTNU/MedicalDataSets/brainmetshare-3
+  python misc/prepro/delete_seg_files.py --dataset-path /home/mode/NTNU/MedicalDataSets/brainmetshare-3
 """
 
 import argparse
@@ -24,7 +24,7 @@ def find_seg_files(dataset_path):
         print(f"Warning: Test directory not found: {test_path}")
         return []
 
-    seg_files = list(test_path.rglob("*seg.nii.gz"))
+    seg_files = list(test_path.rglob("*Zone.Identifier")) # seg.nii.gz:Zone.Identifier
     return sorted(seg_files)
 
 

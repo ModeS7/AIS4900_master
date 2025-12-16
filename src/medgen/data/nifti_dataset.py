@@ -557,6 +557,157 @@ def create_multi_modality_dataloader(
     return dataloader, train_dataset
 
 
+# =============================================================================
+# Diffusion Validation Dataloaders
+# =============================================================================
+
+
+def create_validation_dataloader(
+    cfg: DictConfig,
+    image_type: str,
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create validation dataloader for single-image diffusion from val/ directory.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        image_type: Image type ('seg' or 'bravo').
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, "val")
+
+    if not os.path.exists(val_dir):
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist
+    try:
+        if image_type == 'seg':
+            validate_modality_exists(val_dir, 'seg')
+        elif image_type == 'bravo':
+            validate_modality_exists(val_dir, 'bravo')
+            validate_modality_exists(val_dir, 'seg')
+        else:
+            return None
+    except ValueError:
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    if image_type == 'seg':
+        seg_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence="seg", transform=transform
+        )
+        val_dataset = extract_slices_single(seg_dataset)
+
+    elif image_type == 'bravo':
+        bravo_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence="bravo", transform=transform
+        )
+        seg_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence="seg", transform=transform
+        )
+        datasets_dict = {'bravo': bravo_dataset, 'seg': seg_dataset}
+        merged = merge_sequences(datasets_dict)
+        val_dataset = extract_slices_dual(merged, has_seg=True)
+
+    dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, val_dataset
+
+
+def create_dual_image_validation_dataloader(
+    cfg: DictConfig,
+    image_keys: List[str],
+    conditioning: Optional[str] = 'seg',
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create validation dataloader for dual-image diffusion from val/ directory.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        image_keys: List of two sequences (e.g., ['t1_pre', 't1_gd']).
+        conditioning: Conditioning sequence name (e.g., 'seg') or None.
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, "val")
+
+    if not os.path.exists(val_dir):
+        return None
+
+    if len(image_keys) != 2:
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist
+    try:
+        for key in image_keys:
+            validate_modality_exists(val_dir, key)
+        if conditioning:
+            validate_modality_exists(val_dir, conditioning)
+    except ValueError:
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    datasets_dict: Dict[str, NiFTIDataset] = {}
+    for key in image_keys:
+        datasets_dict[key] = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=key, transform=transform
+        )
+
+    if conditioning:
+        datasets_dict[conditioning] = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=conditioning, transform=transform
+        )
+
+    merged = merge_sequences(datasets_dict)
+    val_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None))
+
+    dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, val_dataset
+
+
+# =============================================================================
+# VAE Dataloaders
+# =============================================================================
+
+
 def create_vae_dataloader(
     cfg: DictConfig,
     modality: str,
@@ -643,3 +794,284 @@ def create_vae_dataloader(
     )
 
     return dataloader, train_dataset
+
+
+def create_vae_validation_dataloader(
+    cfg: DictConfig,
+    modality: str,
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create validation dataloader for VAE training from val/ directory.
+
+    Loads data from the val/ subdirectory if it exists. Returns None if
+    val/ directory doesn't exist (training will use train dataset sampling
+    for validation visualizations).
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        modality: Modality to validate on ('bravo', 'seg', 't1_pre', 't1_gd', 'dual').
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, "val")
+
+    # Check if validation directory exists
+    if not os.path.exists(val_dir):
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist in val directory
+    try:
+        if modality == 'dual':
+            for key in ['t1_pre', 't1_gd']:
+                validate_modality_exists(val_dir, key)
+        else:
+            validate_modality_exists(val_dir, modality)
+    except ValueError:
+        # Modality not found in val directory
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    if modality == 'dual':
+        # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
+        image_keys = ['t1_pre', 't1_gd']
+        datasets_dict: Dict[str, NiFTIDataset] = {}
+        for key in image_keys:
+            datasets_dict[key] = NiFTIDataset(
+                data_dir=val_dir, mr_sequence=key, transform=transform
+            )
+        merged = merge_sequences(datasets_dict)
+        val_dataset = extract_slices_dual(merged, has_seg=False)
+    else:
+        # Single modality: 1 channel
+        nifti_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=modality, transform=transform
+        )
+        val_dataset = extract_slices_single(nifti_dataset)
+
+    # Validation loader: shuffle enabled for diverse batch sampling
+    dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, val_dataset
+
+
+def create_multi_modality_validation_dataloader(
+    cfg: DictConfig,
+    image_keys: List[str],
+    image_size: int,
+    batch_size: int
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create validation dataloader for multi-modality VAE training.
+
+    Loads data from the val/ subdirectory if it exists. Returns None if
+    val/ directory doesn't exist.
+
+    Args:
+        cfg: Hydra configuration with paths.
+        image_keys: List of MR sequences to load.
+        image_size: Target image size.
+        batch_size: Batch size.
+
+    Returns:
+        Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, "val")
+
+    # Check if validation directory exists
+    if not os.path.exists(val_dir):
+        return None
+
+    # Validate modalities exist in val directory
+    try:
+        for key in image_keys:
+            validate_modality_exists(val_dir, key)
+    except ValueError:
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    # Collect all slices from all modalities into one list
+    all_slices: List[np.ndarray] = []
+
+    for key in image_keys:
+        dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=key, transform=transform
+        )
+        slices = extract_slices_single(dataset)
+        all_slices.extend(list(slices))
+
+    val_dataset = Dataset(all_slices)
+
+    # Validation loader: shuffle enabled for diverse batch sampling
+    dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, val_dataset
+
+
+def create_vae_test_dataloader(
+    cfg: DictConfig,
+    modality: str,
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create test dataloader for VAE evaluation from test_new/ directory.
+
+    Loads data from the test_new/ subdirectory if it exists. Returns None if
+    test_new/ directory doesn't exist.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        modality: Modality to test on ('bravo', 'seg', 't1_pre', 't1_gd', 'dual').
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
+    """
+    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
+
+    # Check if test directory exists
+    if not os.path.exists(test_dir):
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist in test directory
+    try:
+        if modality == 'dual':
+            for key in ['t1_pre', 't1_gd']:
+                validate_modality_exists(test_dir, key)
+        else:
+            validate_modality_exists(test_dir, modality)
+    except ValueError:
+        # Modality not found in test directory
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    if modality == 'dual':
+        # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
+        image_keys = ['t1_pre', 't1_gd']
+        datasets_dict: Dict[str, NiFTIDataset] = {}
+        for key in image_keys:
+            datasets_dict[key] = NiFTIDataset(
+                data_dir=test_dir, mr_sequence=key, transform=transform
+            )
+        merged = merge_sequences(datasets_dict)
+        test_dataset = extract_slices_dual(merged, has_seg=False)
+    else:
+        # Single modality: 1 channel
+        nifti_dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence=modality, transform=transform
+        )
+        test_dataset = extract_slices_single(nifti_dataset)
+
+    # Test loader: shuffle for diverse visualization samples
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, test_dataset
+
+
+def create_multi_modality_test_dataloader(
+    cfg: DictConfig,
+    image_keys: List[str],
+    image_size: int,
+    batch_size: int
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create test dataloader for multi-modality VAE evaluation.
+
+    Loads data from the test_new/ subdirectory if it exists. Returns None if
+    test_new/ directory doesn't exist.
+
+    Args:
+        cfg: Hydra configuration with paths.
+        image_keys: List of MR sequences to load.
+        image_size: Target image size.
+        batch_size: Batch size.
+
+    Returns:
+        Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
+    """
+    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
+
+    # Check if test directory exists
+    if not os.path.exists(test_dir):
+        return None
+
+    # Validate modalities exist in test directory
+    try:
+        for key in image_keys:
+            validate_modality_exists(test_dir, key)
+    except ValueError:
+        return None
+
+    transform = Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
+
+    # Collect all slices from all modalities into one list
+    all_slices: List[np.ndarray] = []
+
+    for key in image_keys:
+        dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence=key, transform=transform
+        )
+        slices = extract_slices_single(dataset)
+        all_slices.extend(list(slices))
+
+    test_dataset = Dataset(all_slices)
+
+    # Test loader: shuffle for diverse visualization samples
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS
+    )
+
+    return dataloader, test_dataset

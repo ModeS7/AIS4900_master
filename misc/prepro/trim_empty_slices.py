@@ -6,16 +6,16 @@ then removes all leading empty slices from all modalities for each patient.
 
 Usage:
     # Dry run (shows what would be done)
-    python misc/trim_empty_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --dry_run
+    python misc/prepro/trim_empty_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --dry_run
 
     # Actually trim slices (overwrites files!)
-    python misc/trim_empty_slices.py --data_dir /path/to/data
+    python misc/prepro/trim_empty_slices.py --data_dir /path/to/data
 
     # Trim trailing slices too
-    python misc/trim_empty_slices.py --data_dir /path/to/data --trim_trailing
+    python misc/prepro/trim_empty_slices.py --data_dir /path/to/data --trim_trailing
 
     # Custom threshold for "empty" detection
-    python misc/trim_empty_slices.py --data_dir /path/to/data --threshold 0.01
+    python misc/prepro/trim_empty_slices.py --data_dir /path/to/data --threshold 0.01
 """
 import argparse
 import os

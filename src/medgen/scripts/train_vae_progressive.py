@@ -30,7 +30,11 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import setup_cuda_optimizations
-from medgen.data import create_multi_modality_dataloader
+from medgen.data import (
+    create_multi_modality_dataloader,
+    create_multi_modality_validation_dataloader,
+    create_multi_modality_test_dataloader,
+)
 from medgen.diffusion.vae_trainer import VAETrainer, log_vae_epoch_summary
 
 # Enable CUDA optimizations
@@ -190,6 +194,9 @@ class ProgressiveVAETrainer:
         # Save final model
         self._save_final_model()
 
+        # Run test evaluation on final model
+        self._evaluate_final_model()
+
         total_time = time.time() - start_time
         log.info(f"\nProgressive training completed in {total_time / 3600:.2f} hours")
         log.info(f"Final model saved to: {os.path.join(self.base_dir, 'final_model.pt')}")
@@ -221,7 +228,19 @@ class ProgressiveVAETrainer:
             image_size=resolution,
             batch_size=batch_size
         )
-        log.info(f"Dataset: {len(dataset)} slices, {len(dataloader)} batches")
+        log.info(f"Training dataset: {len(dataset)} slices, {len(dataloader)} batches")
+
+        # Create validation dataloader (if val/ directory exists)
+        val_loader = None
+        val_result = create_multi_modality_validation_dataloader(
+            cfg=self.cfg,
+            image_keys=self.image_keys,
+            image_size=resolution,
+            batch_size=batch_size
+        )
+        if val_result is not None:
+            val_loader, val_dataset = val_result
+            log.info(f"Validation dataset: {len(val_dataset)} slices")
 
         # Create modified config for this phase
         phase_cfg = self._create_phase_config(resolution, batch_size, phase_dir)
@@ -244,6 +263,18 @@ class ProgressiveVAETrainer:
 
         # Setup model (with optional pretrained weights)
         trainer.setup_model(pretrained_checkpoint=prev_checkpoint)
+
+        # Set validation loader for metrics (if available)
+        trainer.val_loader = val_loader
+
+        # Measure FLOPs (once per phase)
+        if trainer.log_flops and not trainer._flops_measured:
+            try:
+                first_batch = next(iter(dataloader))
+                sample_images = trainer._prepare_batch(first_batch)
+                trainer._measure_model_flops(sample_images)
+            except Exception as e:
+                log.warning(f"Could not measure FLOPs: {e}")
 
         # Reset plateau detector
         self.plateau_detector.reset()
@@ -270,31 +301,46 @@ class ProgressiveVAETrainer:
 
             elapsed = time.time() - epoch_start
 
+            # Compute validation metrics every epoch
+            val_metrics = trainer.compute_validation_losses(epoch)
+
             # Log progress
             if is_final:
                 total_epochs = self.cfg.progressive.final_phase.epochs
             else:
                 total_epochs = "?"  # Unknown for plateau-based phases
 
-            log_vae_epoch_summary(epoch, total_epochs if isinstance(total_epochs, int) else 999, avg_losses, elapsed)
+            log_vae_epoch_summary(epoch, total_epochs if isinstance(total_epochs, int) else 999, avg_losses, val_metrics, elapsed)
 
             # Log to tensorboard
             if trainer.writer is not None:
                 global_step = epoch
-                trainer.writer.add_scalar('Loss/Generator', avg_losses['gen'], global_step)
-                trainer.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], global_step)
-                trainer.writer.add_scalar('Loss/L1', avg_losses['recon'], global_step)
-                trainer.writer.add_scalar('Loss/Perceptual', avg_losses['perc'], global_step)
-                trainer.writer.add_scalar('Loss/KL', avg_losses['kl'], global_step)
-                trainer.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], global_step)
+                trainer.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], global_step)
+                trainer.writer.add_scalar('Loss/L1_train', avg_losses['recon'], global_step)
+                trainer.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], global_step)
+                trainer.writer.add_scalar('Loss/KL_train', avg_losses['kl'], global_step)
                 lr_g = trainer.optimizer_g.param_groups[0]['lr']
                 trainer.writer.add_scalar('LR/Generator', lr_g, global_step)
 
-            # Save best checkpoint
-            if avg_losses['gen'] < trainer.best_loss:
-                trainer.best_loss = avg_losses['gen']
+                # Log gradient norms
+                trainer._log_grad_norms(global_step)
+
+            # Visualization logging at intervals
+            is_val_epoch = (epoch + 1) % self.cfg.training.val_interval == 0
+            if is_val_epoch and trainer.writer is not None:
+                # Log worst batch
+                if trainer.log_worst_batch:
+                    trainer._log_worst_batch(epoch)
+
+                # Generate validation visualizations (metrics already logged above)
+                trainer.generate_validation_visualizations(dataset, epoch)
+
+            # Save best checkpoint (use validation loss for proper overfitting detection)
+            val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
+            if val_gen_loss < trainer.best_loss:
+                trainer.best_loss = val_gen_loss
                 trainer._save_vae_checkpoint(epoch, "best")
-                log.info(f"New best model saved (G loss: {avg_losses['gen']:.6f})")
+                log.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
 
             # Check termination condition
             if is_final:
@@ -302,8 +348,8 @@ class ProgressiveVAETrainer:
                 if epoch >= self.cfg.progressive.final_phase.epochs - 1:
                     break
             else:
-                # Earlier phases: plateau detection
-                if self.plateau_detector.update(avg_losses['gen'], epoch):
+                # Earlier phases: plateau detection (use validation loss)
+                if self.plateau_detector.update(val_gen_loss, epoch):
                     log.info(f"Plateau detected at epoch {epoch + 1}")
                     break
 
@@ -409,6 +455,60 @@ class ProgressiveVAETrainer:
             log.info(f"Final model copied to: {dst}")
         else:
             log.warning(f"Final phase checkpoint not found: {src}")
+
+    def _evaluate_final_model(self) -> None:
+        """Run test evaluation on the final trained model.
+
+        Creates a fresh trainer with the final resolution, loads the best
+        checkpoint, and evaluates on the test set if it exists.
+        """
+        final_resolution = self.resolutions[-1]
+        batch_size = self.batch_sizes[final_resolution]
+
+        # Check if test set exists
+        test_result = create_multi_modality_test_dataloader(
+            cfg=self.cfg,
+            image_keys=self.image_keys,
+            image_size=final_resolution,
+            batch_size=batch_size
+        )
+
+        if test_result is None:
+            log.info("No test_new/ directory found - skipping test evaluation")
+            return
+
+        test_loader, test_dataset = test_result
+        log.info(f"Test dataset: {len(test_dataset)} slices")
+
+        # Create trainer for evaluation
+        phase_dir = os.path.join(self.base_dir, f"phase_{final_resolution}")
+        phase_cfg = self._create_phase_config(final_resolution, batch_size, phase_dir)
+
+        trainer = VAETrainer(phase_cfg)
+        trainer.setup_model()
+
+        # Evaluate on best and latest checkpoints from final phase
+        best_checkpoint = os.path.join(self.base_dir, "best.pt")
+        latest_checkpoint = os.path.join(self.base_dir, "final_model.pt")
+
+        # Evaluate best model
+        if os.path.exists(best_checkpoint):
+            trainer.load_checkpoint(best_checkpoint, load_optimizer=False)
+            log.info(f"Loaded best model from: {best_checkpoint}")
+            trainer.evaluate_test_set(test_loader, checkpoint_name="best")
+        else:
+            log.warning(f"Best checkpoint not found: {best_checkpoint}")
+
+        # Evaluate latest/final model
+        if os.path.exists(latest_checkpoint):
+            trainer.load_checkpoint(latest_checkpoint, load_optimizer=False)
+            log.info(f"Loaded final model from: {latest_checkpoint}")
+            trainer.evaluate_test_set(test_loader, checkpoint_name="latest")
+        else:
+            log.warning(f"Final model not found: {latest_checkpoint}")
+
+        # Close TensorBoard writer
+        trainer.close_writer()
 
 
 def validate_config(cfg: DictConfig) -> None:

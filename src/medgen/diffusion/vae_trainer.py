@@ -32,9 +32,9 @@ from tqdm import tqdm
 
 from monai.losses import PatchAdversarialLoss
 from monai.networks.nets import AutoencoderKL, PatchDiscriminator
-from skimage.metrics import structural_similarity as ssim_skimage
-
 from .losses import PerceptualLoss
+from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
+from .worst_batch import WorstBatchTracker
 from .utils import get_vram_usage, save_checkpoint, save_model_only
 
 logger = logging.getLogger(__name__)
@@ -44,24 +44,37 @@ def log_vae_epoch_summary(
     epoch: int,
     total_epochs: int,
     avg_losses: Dict[str, float],
+    val_metrics: Dict[str, float],
     elapsed_time: float
 ) -> None:
-    """Log VAE epoch completion summary.
+    """Log VAE epoch completion summary with train and validation metrics.
 
     Args:
         epoch: Current epoch number (0-indexed).
         total_epochs: Total number of epochs.
-        avg_losses: Dict with 'gen', 'disc', 'recon', 'kl', 'adv' losses.
+        avg_losses: Dict with 'gen', 'disc', 'recon', 'perc', 'kl', 'adv' training losses.
+        val_metrics: Dict with 'gen', 'l1', 'ssim', 'psnr' validation metrics (can be empty).
         elapsed_time: Time taken for the epoch in seconds.
     """
     timestamp = time.strftime("%H:%M:%S")
     epoch_pct = ((epoch + 1) / total_epochs) * 100
 
+    # Format validation metrics if available
+    if val_metrics:
+        val_gen = f"(v:{val_metrics.get('gen', 0):.4f})"
+        val_l1 = f"(v:{val_metrics.get('l1', 0):.4f})"
+        ssim_str = f"SSIM: {val_metrics.get('ssim', 0):.3f}"
+    else:
+        val_gen = ""
+        val_l1 = ""
+        ssim_str = ""
+
     print(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
-        f"G: {avg_losses['gen']:.4f} | D: {avg_losses['disc']:.4f} | "
-        f"L1: {avg_losses['recon']:.4f} | Perc: {avg_losses['perc']:.4f} | "
-        f"KL: {avg_losses['kl']:.4f} | Adv: {avg_losses['adv']:.4f} | "
+        f"G: {avg_losses['gen']:.4f}{val_gen} | "
+        f"L1: {avg_losses['recon']:.4f}{val_l1} | "
+        f"D: {avg_losses['disc']:.4f} | "
+        f"{ssim_str} | "
         f"Time: {elapsed_time:.1f}s"
     )
 
@@ -200,11 +213,7 @@ class VAETrainer:
         self._total_flops: int = 0
 
         # Worst batch tracking
-        self._worst_batch_loss: float = 0.0
-        self._worst_batch_data: Optional[Dict[str, Any]] = None
-
-        # LPIPS model (initialized lazily in setup_model)
-        self._lpips_model: Optional[Any] = None
+        self.worst_batch_tracker = WorstBatchTracker(enabled=self.log_worst_batch)
 
         # Validation loader (set in train())
         self.val_loader: Optional[DataLoader] = None
@@ -419,21 +428,6 @@ class VAETrainer:
         # Save metadata
         if self.is_main_process:
             self._save_metadata()
-
-        # Initialize LPIPS model for validation metrics (if enabled)
-        if self.log_lpips:
-            try:
-                import lpips
-                self._lpips_model = lpips.LPIPS(net='alex', verbose=False).to(self.device)
-                self._lpips_model.eval()
-                for param in self._lpips_model.parameters():
-                    param.requires_grad = False
-                if self.is_main_process:
-                    logger.info("LPIPS metric initialized (AlexNet)")
-            except ImportError:
-                if self.is_main_process:
-                    logger.warning("lpips package not installed - LPIPS metric disabled")
-                self.log_lpips = False
 
         # Log model info
         if self.is_main_process:
@@ -810,16 +804,12 @@ class VAETrainer:
             self._grad_norm_count += 1
 
         # Track worst batch (for debugging high loss samples)
-        g_loss_val = g_loss.item()
-        if self.log_worst_batch and g_loss_val > self._worst_batch_loss:
-            self._worst_batch_loss = g_loss_val
-            self._worst_batch_data = {
-                'input': images.detach(),
-                'output': reconstruction.detach(),
-                'loss': g_loss_val,
-                'l1_loss': l1_loss.item(),
-                'perceptual_loss': p_loss.item(),
-            }
+        self.worst_batch_tracker.update(
+            loss=g_loss.item(),
+            original=images,
+            generated=reconstruction,
+            loss_breakdown={'L1': l1_loss.item(), 'Perc': p_loss.item(), 'KL': kl_loss.item()},
+        )
 
         if self.use_ema:
             self._update_ema()
@@ -854,49 +844,6 @@ class VAETrainer:
             avg_grad_norm_d = self._grad_norm_d_sum / self._grad_norm_count
             self.writer.add_scalar('training/grad_norm_d_avg', avg_grad_norm_d, epoch)
             self.writer.add_scalar('training/grad_norm_d_max', self._grad_norm_d_max, epoch)
-
-    def _log_worst_batch(self, epoch: int) -> None:
-        """Log worst batch visualization to TensorBoard."""
-        if not self.log_worst_batch or self._worst_batch_data is None or self.writer is None:
-            return
-
-        data = self._worst_batch_data
-        input_imgs = data['input'].cpu()
-        output_imgs = data['output'].cpu()
-
-        # Create visualization figure
-        n_samples = min(4, input_imgs.shape[0])
-        fig, axes = plt.subplots(2, n_samples, figsize=(4 * n_samples, 8))
-
-        for i in range(n_samples):
-            # Input
-            if input_imgs.shape[1] == 1:
-                axes[0, i].imshow(input_imgs[i, 0].numpy(), cmap='gray')
-            else:
-                axes[0, i].imshow(input_imgs[i, 0].numpy(), cmap='gray')
-            axes[0, i].set_title(f'Input {i}')
-            axes[0, i].axis('off')
-
-            # Output
-            if output_imgs.shape[1] == 1:
-                axes[1, i].imshow(output_imgs[i, 0].numpy(), cmap='gray')
-            else:
-                axes[1, i].imshow(output_imgs[i, 0].numpy(), cmap='gray')
-            axes[1, i].set_title(f'Recon {i}')
-            axes[1, i].axis('off')
-
-        fig.suptitle(f"Worst Batch - Loss: {data['loss']:.4f} (L1: {data['l1_loss']:.4f}, Perc: {data['perceptual_loss']:.4f})")
-        plt.tight_layout()
-
-        self.writer.add_figure('training/worst_batch', fig, epoch)
-        plt.close(fig)
-
-        # Log scalar
-        self.writer.add_scalar('training/worst_batch_loss', data['loss'], epoch)
-
-        # Reset for next epoch
-        self._worst_batch_loss = 0.0
-        self._worst_batch_data = None
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train the model for one epoch.
@@ -945,105 +892,101 @@ class VAETrainer:
         n_batches = len(data_loader)
         return {key: val / n_batches for key, val in epoch_losses.items()}
 
-    def _compute_ssim(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
-        """Compute SSIM between generated and reference images.
+    def compute_validation_losses(self, epoch: int) -> Dict[str, float]:
+        """Compute losses and metrics on full validation set (every epoch).
+
+        Runs inference on entire val_loader and computes:
+        - L1, Perceptual, KL, Generator losses (for train/val comparison)
+        - SSIM, PSNR, LPIPS quality metrics
 
         Args:
-            generated: Generated images [B, C, H, W].
-            reference: Reference images [B, C, H, W].
+            epoch: Current epoch number.
 
         Returns:
-            Average SSIM across batch (using first channel only).
+            Dict with validation metrics: 'l1', 'perc', 'kl', 'gen', 'ssim', 'psnr', 'lpips'.
         """
-        ssim_values = []
-        gen_np = generated.cpu().float().numpy()
-        ref_np = reference.cpu().float().numpy()
+        if self.val_loader is None:
+            return {}
 
-        for i in range(gen_np.shape[0]):
-            gen_img = np.clip(gen_np[i, 0], 0, 1)
-            ref_img = np.clip(ref_np[i, 0], 0, 1)
-            ssim_val = ssim_skimage(gen_img, ref_img, data_range=1.0)
-            ssim_values.append(ssim_val)
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
 
-        return float(np.mean(ssim_values))
+        # Accumulators
+        total_l1 = 0.0
+        total_perc = 0.0
+        total_kl = 0.0
+        total_gen = 0.0
+        total_ssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
 
-    def _compute_psnr(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
-        """Compute PSNR between generated and reference images.
-
-        Args:
-            generated: Generated images [B, C, H, W].
-            reference: Reference images [B, C, H, W].
-
-        Returns:
-            Average PSNR across batch.
-        """
-        gen_np = np.clip(generated.cpu().float().numpy(), 0, 1)
-        ref_np = np.clip(reference.cpu().float().numpy(), 0, 1)
-
-        mse = np.mean((gen_np - ref_np) ** 2)
-        if mse < 1e-10:
-            return 100.0
-
-        psnr = 10 * np.log10(1.0 / mse)
-        return float(psnr)
-
-    def _compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
-        """Compute LPIPS (perceptual similarity) between generated and reference images.
-
-        Args:
-            generated: Generated images [B, C, H, W].
-            reference: Reference images [B, C, H, W].
-
-        Returns:
-            Average LPIPS across batch (lower is better, 0 = identical).
-        """
-        if self._lpips_model is None:
-            return 0.0
-
-        # LPIPS expects images in [-1, 1] range and RGB (3 channels)
-        # For grayscale, replicate to 3 channels
-        gen = generated.float()
-        ref = reference.float()
-
-        # Normalize to [-1, 1]
-        gen = gen * 2.0 - 1.0
-        ref = ref * 2.0 - 1.0
-
-        # Handle different channel counts (LPIPS expects 3-channel RGB)
-        num_channels = gen.shape[1]
+        # Mark CUDA graph step boundary to prevent tensor caching issues
+        # when perceptual loss (compiled with torch.compile) is called during validation
+        if self.use_compile:
+            torch.compiler.cudagraph_mark_step_begin()
 
         with torch.no_grad():
-            if num_channels == 1:
-                # Single channel: replicate to 3
-                gen = gen.repeat(1, 3, 1, 1)
-                ref = ref.repeat(1, 3, 1, 1)
-                lpips_values = self._lpips_model(gen, ref)
-            elif num_channels <= 3:
-                # 2-3 channels: compute per-channel LPIPS and average
-                lpips_per_channel = []
-                for ch in range(num_channels):
-                    ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
-                    ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
-                    lpips_per_channel.append(self._lpips_model(ch_gen, ch_ref))
-                lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
-            else:
-                # >3 channels: use first 3 channels computed per-channel
-                lpips_per_channel = []
-                for ch in range(3):
-                    ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
-                    ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
-                    lpips_per_channel.append(self._lpips_model(ch_gen, ch_ref))
-                lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
+            for batch in self.val_loader:
+                images = self._prepare_batch(batch)
 
-        return float(lpips_values.mean().item())
+                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    reconstructed, mean, logvar = model_to_use(images)
 
-    def _generate_validation_samples(self, dataset: Dataset, epoch: int) -> None:
-        """Generate reconstruction samples and compute validation metrics.
+                    # Compute losses (same as training)
+                    l1_loss = torch.abs(reconstructed - images).mean()
+                    p_loss = self.perceptual_loss_fn(reconstructed, images)
+                    kl_loss = self._compute_kl_loss(mean, logvar)
+                    g_loss = l1_loss + self.perceptual_weight * p_loss + self.kl_weight * kl_loss
 
-        Uses val_loader if provided, otherwise samples from training dataset.
+                total_l1 += l1_loss.item()
+                total_perc += p_loss.item()
+                total_kl += kl_loss.item()
+                total_gen += g_loss.item()
+
+                # Quality metrics
+                total_ssim += compute_ssim(reconstructed, images)
+                total_psnr += compute_psnr(reconstructed, images)
+                if self.log_lpips:
+                    total_lpips += compute_lpips(reconstructed, images, self.device)
+
+                n_batches += 1
+
+        model_to_use.train()
+
+        # Compute averages
+        metrics = {
+            'l1': total_l1 / n_batches,
+            'perc': total_perc / n_batches,
+            'kl': total_kl / n_batches,
+            'gen': total_gen / n_batches,
+            'ssim': total_ssim / n_batches,
+            'psnr': total_psnr / n_batches,
+        }
+
+        if self.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_scalar('Loss/L1_val', metrics['l1'], epoch)
+            self.writer.add_scalar('Loss/Perceptual_val', metrics['perc'], epoch)
+            self.writer.add_scalar('Loss/KL_val', metrics['kl'], epoch)
+            self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
+            self.writer.add_scalar('Validation/SSIM', metrics['ssim'], epoch)
+            self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            if 'lpips' in metrics:
+                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+
+        return metrics
+
+    def generate_validation_visualizations(self, dataset: Dataset, epoch: int) -> None:
+        """Generate validation visualization figures (at val_interval only).
+
+        Creates reconstruction comparison figures for TensorBoard.
 
         Args:
-            dataset: Training dataset (used if no val_loader).
+            dataset: Training dataset (fallback if no val_loader).
             epoch: Current epoch number.
         """
         if self.writer is None:
@@ -1054,15 +997,12 @@ class VAETrainer:
 
         image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
 
-        # Get validation samples from val_loader or dataset
+        # Get samples for visualization
         if self.val_loader is not None:
-            # Use validation loader
             val_batch = next(iter(self.val_loader))
             samples = self._prepare_batch(val_batch)
-            # Limit to 8 samples for visualization
             samples = samples[:8]
         else:
-            # Sample random images from training dataset
             n_samples = min(8, len(dataset))
             indices = torch.randperm(len(dataset))[:n_samples]
 
@@ -1070,7 +1010,6 @@ class VAETrainer:
             for idx in indices:
                 sample = dataset[idx]
                 if isinstance(sample, dict):
-                    # Stack all channels from dict
                     tensors = []
                     for key in image_keys:
                         if key in sample:
@@ -1097,29 +1036,10 @@ class VAETrainer:
             with autocast('cuda', enabled=True, dtype=torch.bfloat16):
                 reconstructed, _, _ = model_to_use(samples)
 
-        # Compute metrics
-        ssim = self._compute_ssim(reconstructed, samples)
-        psnr = self._compute_psnr(reconstructed, samples)
-
-        self.writer.add_scalar('validation/SSIM', ssim, epoch)
-        self.writer.add_scalar('validation/PSNR', psnr, epoch)
-
-        # Compute LPIPS if enabled
-        lpips_val = 0.0
-        if self.log_lpips and self._lpips_model is not None:
-            lpips_val = self._compute_lpips(reconstructed, samples)
-            self.writer.add_scalar('validation/LPIPS', lpips_val, epoch)
-
         # Create visualization figure
         fig = self._create_reconstruction_figure(samples, reconstructed)
-        self.writer.add_figure('validation/reconstructions', fig, epoch)
+        self.writer.add_figure('Validation/reconstructions', fig, epoch)
         plt.close(fig)
-
-        if self.is_main_process:
-            msg = f"Validation - SSIM: {ssim:.4f}, PSNR: {psnr:.2f} dB"
-            if self.log_lpips:
-                msg += f", LPIPS: {lpips_val:.4f}"
-            logger.info(msg)
 
         model_to_use.train()
 
@@ -1294,14 +1214,19 @@ class VAETrainer:
                         self.lr_scheduler_d.step()
 
                 if self.is_main_process:
-                    log_vae_epoch_summary(epoch, self.n_epochs, avg_losses, epoch_time)
+                    # Compute validation metrics every epoch
+                    val_metrics = self.compute_validation_losses(epoch)
+
+                    # Log epoch summary with train and val metrics
+                    log_vae_epoch_summary(epoch, self.n_epochs, avg_losses, val_metrics, epoch_time)
 
                     if self.writer is not None:
-                        self.writer.add_scalar('Loss/Generator', avg_losses['gen'], epoch)
+                        # Training losses (with _train suffix)
+                        self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
                         self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
-                        self.writer.add_scalar('Loss/L1', avg_losses['recon'], epoch)
-                        self.writer.add_scalar('Loss/Perceptual', avg_losses['perc'], epoch)
-                        self.writer.add_scalar('Loss/KL', avg_losses['kl'], epoch)
+                        self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
+                        self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
+                        self.writer.add_scalar('Loss/KL_train', avg_losses['kl'], epoch)
                         self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
 
                         # Log learning rates
@@ -1322,21 +1247,24 @@ class VAETrainer:
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
                     # Log worst batch at validation intervals
-                    if is_val_epoch and self.log_worst_batch:
-                        self._log_worst_batch(epoch)
+                    if is_val_epoch:
+                        self.worst_batch_tracker.log_and_reset(self.writer, epoch)
 
                     if is_val_epoch or (epoch + 1) == self.n_epochs:
-                        self._generate_validation_samples(train_dataset, epoch)
+                        # Generate visualizations (figures only, metrics already logged above)
+                        self.generate_validation_visualizations(train_dataset, epoch)
 
                         self._save_vae_checkpoint(epoch, f"epoch_{epoch:04d}")
                         self._cleanup_old_checkpoints(keep_n=3)
 
                         self._save_vae_checkpoint(epoch, "latest")
 
-                        if avg_losses['gen'] < self.best_loss:
-                            self.best_loss = avg_losses['gen']
+                        # Use validation loss for best model selection (standard practice)
+                        val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
+                        if val_gen_loss < self.best_loss:
+                            self.best_loss = val_gen_loss
                             self._save_vae_checkpoint(epoch, "best")
-                            logger.info(f"New best model saved (G loss: {avg_losses['gen']:.6f})")
+                            logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
 
         finally:
             total_time = time.time() - total_start
@@ -1344,12 +1272,209 @@ class VAETrainer:
             if self.is_main_process:
                 logger.info(f"Training completed! Total time: {total_time:.1f}s ({total_time / 3600:.1f}h)")
                 self._update_metadata_final(avg_losses['gen'], avg_losses['recon'], total_time)
-
-                if self.writer is not None:
-                    self.writer.close()
+                # Note: writer is NOT closed here - call close_writer() after test evaluation
 
             if self.use_multi_gpu:
                 try:
                     dist.destroy_process_group()
                 except Exception as e:
                     logger.warning(f"Error destroying process group: {e}")
+
+    def evaluate_test_set(
+        self,
+        test_loader: DataLoader,
+        checkpoint_name: Optional[str] = None
+    ) -> Dict[str, float]:
+        """Evaluate VAE reconstruction on test set.
+
+        Runs inference on the entire test set and computes metrics:
+        - L1 reconstruction loss
+        - SSIM (Structural Similarity Index)
+        - PSNR (Peak Signal-to-Noise Ratio)
+        - LPIPS (Learned Perceptual Image Patch Similarity) if enabled
+
+        Results are saved to test_results_{checkpoint_name}.json and logged to TensorBoard.
+
+        Args:
+            test_loader: DataLoader for test set.
+            checkpoint_name: Name of checkpoint to load ("best", "latest", or None
+                for current model state).
+
+        Returns:
+            Dict with test metrics: 'l1', 'ssim', 'psnr', 'lpips', 'n_samples'.
+        """
+        if not self.is_main_process:
+            return {}
+
+        # Load checkpoint if specified
+        if checkpoint_name is not None:
+            checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, map_location=self.device)
+                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
+            else:
+                logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
+                checkpoint_name = "current"
+
+        label = checkpoint_name or "current"
+        logger.info("=" * 60)
+        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
+        logger.info("=" * 60)
+
+        # Use EMA model if available and no checkpoint loaded, otherwise raw model
+        if checkpoint_name is None and self.ema is not None:
+            model_to_use = self.ema.ema_model
+        else:
+            model_to_use = self.model_raw
+        model_to_use.eval()
+
+        # Accumulators for metrics
+        total_l1 = 0.0
+        total_ssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
+        n_samples = 0
+
+        # Store samples for visualization
+        sample_inputs = []
+        sample_outputs = []
+        max_vis_samples = 16
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
+                images = self._prepare_batch(batch)
+                batch_size = images.shape[0]
+
+                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    reconstructed, _, _ = model_to_use(images)
+
+                # Compute metrics
+                total_l1 += torch.abs(reconstructed - images).mean().item()
+                total_ssim += compute_ssim(reconstructed, images)
+                total_psnr += compute_psnr(reconstructed, images)
+                if self.log_lpips:
+                    total_lpips += compute_lpips(reconstructed, images, self.device)
+
+                n_batches += 1
+                n_samples += batch_size
+
+                # Collect samples for visualization
+                if len(sample_inputs) < max_vis_samples:
+                    remaining = max_vis_samples - len(sample_inputs)
+                    sample_inputs.append(images[:remaining].cpu())
+                    sample_outputs.append(reconstructed[:remaining].cpu())
+
+        # Compute averages
+        metrics = {
+            'l1': total_l1 / n_batches,
+            'ssim': total_ssim / n_batches,
+            'psnr': total_psnr / n_batches,
+            'n_samples': n_samples,
+        }
+
+        if self.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
+
+        # Log results
+        logger.info(f"Test Results - {label} ({n_samples} samples):")
+        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
+        logger.info(f"  SSIM:    {metrics['ssim']:.4f}")
+        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
+        if 'lpips' in metrics:
+            logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
+
+        # Save results to JSON (with checkpoint name suffix)
+        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
+        with open(results_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Test results saved to: {results_path}")
+
+        # Log to TensorBoard (with checkpoint name prefix)
+        tb_prefix = f'test_{label}'
+        if self.writer is not None:
+            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/SSIM', metrics['ssim'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            if 'lpips' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+
+            # Create and save visualization
+            if sample_inputs:
+                all_inputs = torch.cat(sample_inputs, dim=0)[:max_vis_samples]
+                all_outputs = torch.cat(sample_outputs, dim=0)[:max_vis_samples]
+                fig = self._create_test_reconstruction_figure(all_inputs, all_outputs, metrics, label)
+                self.writer.add_figure(f'{tb_prefix}/reconstructions', fig, 0)
+                plt.close(fig)
+
+                # Also save as image file
+                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
+                fig = self._create_test_reconstruction_figure(all_inputs, all_outputs, metrics, label)
+                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Test reconstructions saved to: {fig_path}")
+
+        model_to_use.train()
+        return metrics
+
+    def _create_test_reconstruction_figure(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        metrics: Dict[str, float],
+        label: str = "test"
+    ) -> plt.Figure:
+        """Create test set reconstruction comparison figure.
+
+        Args:
+            original: Original images [N, C, H, W].
+            reconstructed: Reconstructed images [N, C, H, W].
+            metrics: Dict with test metrics for title.
+            label: Checkpoint label for title (e.g., "best", "latest").
+
+        Returns:
+            Matplotlib figure.
+        """
+        n_samples = min(8, original.shape[0])
+
+        # For multi-channel, show first channel only
+        orig_np = original[:n_samples, 0].numpy()
+        recon_np = reconstructed[:n_samples, 0].float().numpy()
+        diff_np = np.abs(orig_np - recon_np)
+
+        fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
+
+        for i in range(n_samples):
+            # Original
+            axes[0, i].imshow(orig_np[i], cmap='gray', vmin=0, vmax=1)
+            axes[0, i].axis('off')
+            if i == 0:
+                axes[0, i].set_title('Original', fontsize=10)
+
+            # Reconstructed
+            axes[1, i].imshow(recon_np[i], cmap='gray', vmin=0, vmax=1)
+            axes[1, i].axis('off')
+            if i == 0:
+                axes[1, i].set_title('Reconstructed', fontsize=10)
+
+            # Difference
+            axes[2, i].imshow(diff_np[i], cmap='hot', vmin=0, vmax=0.2)
+            axes[2, i].axis('off')
+            if i == 0:
+                axes[2, i].set_title('Difference', fontsize=10)
+
+        # Add metrics to title
+        title = f"Test Results ({label}) - SSIM: {metrics['ssim']:.4f}, PSNR: {metrics['psnr']:.2f} dB"
+        if 'lpips' in metrics:
+            title += f", LPIPS: {metrics['lpips']:.4f}"
+        fig.suptitle(title, fontsize=12)
+
+        plt.tight_layout()
+        return fig
+
+    def close_writer(self) -> None:
+        """Close TensorBoard writer. Call after all logging is complete."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None

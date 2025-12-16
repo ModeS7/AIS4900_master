@@ -6,13 +6,13 @@ Padding is added at the end of the volume (after the last slice).
 
 Usage:
     # Dry run (shows what would be done)
-    python misc/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150 --dry_run
+    python misc/prepro/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150 --dry_run
 
     # Actually pad slices (overwrites files!)
-    python misc/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150
+    python misc/prepro/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150
 
     # Pad at the beginning instead of end
-    python misc/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150 --pad_start
+    python misc/prepro/pad_slices.py --data_dir /home/mode/NTNU/MedicalDataSets/brainmetshare-3 --target_slices 150 --pad_start
 """
 import argparse
 from pathlib import Path

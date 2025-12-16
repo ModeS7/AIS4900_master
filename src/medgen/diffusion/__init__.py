@@ -7,6 +7,8 @@ from .modes import SegmentationMode, ConditionalSingleMode, ConditionalDualMode,
 from .spaces import DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space
 from .metrics import MetricsTracker
 from .visualization import ValidationVisualizer
+from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
+from .worst_batch import WorstBatchTracker, create_worst_batch_figure
 
 __all__ = [
     'DiffusionTrainer',
@@ -24,4 +26,9 @@ __all__ = [
     'load_vae_for_latent_space',
     'MetricsTracker',
     'ValidationVisualizer',
+    'compute_ssim',
+    'compute_psnr',
+    'compute_lpips',
+    'WorstBatchTracker',
+    'create_worst_batch_figure',
 ]

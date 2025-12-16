@@ -22,7 +22,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from medgen.core import ModeType, setup_cuda_optimizations
-from medgen.data import create_vae_dataloader
+from medgen.data import create_vae_dataloader, create_vae_validation_dataloader, create_vae_test_dataloader
 from medgen.diffusion.vae_trainer import VAETrainer
 
 # Enable CUDA optimizations
@@ -125,12 +125,36 @@ def main(cfg: DictConfig) -> None:
         world_size=trainer.world_size if use_multi_gpu else 1
     )
     log.info(f"Training VAE on {mode} mode ({vae_in_channels} channel{'s' if vae_in_channels > 1 else ''})")
+    log.info(f"Training dataset: {len(train_dataset)} slices")
+
+    # Create validation dataloader (if val/ directory exists)
+    val_loader = None
+    val_result = create_vae_validation_dataloader(cfg=cfg, modality=mode)
+    if val_result is not None:
+        val_loader, val_dataset = val_result
+        log.info(f"Validation dataset: {len(val_dataset)} slices")
+    else:
+        log.info("No val/ directory found - using train samples for validation")
 
     # Setup model
     trainer.setup_model()
 
-    # Train
-    trainer.train(dataloader, train_dataset)
+    # Train with optional validation loader
+    trainer.train(dataloader, train_dataset, val_loader=val_loader)
+
+    # Run test evaluation if test_new/ directory exists
+    test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
+    if test_result is not None:
+        test_loader, test_dataset = test_result
+        log.info(f"Test dataset: {len(test_dataset)} slices")
+        # Evaluate on both best and latest checkpoints
+        trainer.evaluate_test_set(test_loader, checkpoint_name="best")
+        trainer.evaluate_test_set(test_loader, checkpoint_name="latest")
+    else:
+        log.info("No test_new/ directory found - skipping test evaluation")
+
+    # Close TensorBoard writer after all logging
+    trainer.close_writer()
 
 
 if __name__ == "__main__":

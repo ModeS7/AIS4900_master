@@ -78,7 +78,10 @@ AIS4900_master/
 │       ├── lr_finder.py         # Learning rate finder
 │       └── generate.py          # Image generation
 │
-├── IDUN/                        # SLURM job templates for cluster
+├── IDUN/                        # SLURM job scripts for cluster
+│   ├── train/diffusion/         # Diffusion training jobs
+│   ├── train/vae/               # VAE training jobs
+│   └── generate/                # Generation jobs
 ├── docs/                        # Additional documentation
 ├── CLAUDE.md                    # Claude Code context file
 ├── DETAILES.md                  # Detailed technical documentation
@@ -316,8 +319,25 @@ pip install -e .
 ## Cluster (IDUN)
 
 ```bash
-# Edit IDUN/train_template.slurm to configure job
-sbatch IDUN/train_template.slurm
+# Training jobs
+sbatch IDUN/train/diffusion/exp1_rflow_128_baseline.slurm
+sbatch IDUN/train/vae/exp1_progressive_baseline.slurm
+
+# Generation jobs (coming soon)
+sbatch IDUN/generate/exp1_generate.slurm
+```
+
+IDUN structure:
+```
+IDUN/
+├── train/
+│   ├── diffusion/    # Diffusion training experiments
+│   └── vae/          # VAE training experiments
+├── generate/         # Generation jobs
+└── output/           # SLURM logs
+    ├── train/diffusion/
+    ├── train/vae/
+    └── generate/
 ```
 
 ## Documentation

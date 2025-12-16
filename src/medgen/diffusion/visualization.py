@@ -86,8 +86,8 @@ class ValidationVisualizer:
         """Save visualization of the worst (highest loss) batch.
 
         Layout:
-        - Dual mode: 4x8 grid (8 samples) - rows: GT_pre, Pred_pre, GT_gd, Pred_gd
-        - Single mode: 2x16 grid (16 samples) - rows: GT, Pred
+        - Dual mode: 6 rows x 8 samples - GT_pre, Pred_pre, Diff_pre, GT_gd, Pred_gd, Diff_gd
+        - Single mode: 3 rows x 8 samples - GT, Pred, Diff heatmap
         - Shows timestep for each sample and average timestep in title
 
         Args:
@@ -111,8 +111,12 @@ class ValidationVisualizer:
             pred_pre = data['predicted'][keys[0]]
             pred_gd = data['predicted'][keys[1]]
 
+            # Compute difference heatmaps
+            diff_pre = np.abs(images_pre[:, 0].numpy() - pred_pre[:, 0].numpy())
+            diff_gd = np.abs(images_gd[:, 0].numpy() - pred_gd[:, 0].numpy())
+
             num_show = min(8, images_pre.shape[0])
-            fig, axes = plt.subplots(4, num_show, figsize=(2 * num_show, 8))
+            fig, axes = plt.subplots(6, num_show, figsize=(2 * num_show, 12))
             fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
 
             for i in range(num_show):
@@ -120,35 +124,51 @@ class ValidationVisualizer:
                 t_val = timesteps[i].item() if timesteps is not None else 0
                 axes[0, i].set_title(f't={t_val:.0f}', fontsize=9)
 
-                axes[0, i].imshow(images_pre[i, 0].numpy(), cmap='gray')
+                # Pre-contrast
+                axes[0, i].imshow(images_pre[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
                 axes[0, i].axis('off')
                 if i == 0:
                     axes[0, i].set_ylabel('GT Pre', fontsize=10)
 
-                axes[1, i].imshow(pred_pre[i, 0].numpy(), cmap='gray')
+                axes[1, i].imshow(pred_pre[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
                 if mask is not None:
                     axes[1, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
                 axes[1, i].axis('off')
                 if i == 0:
                     axes[1, i].set_ylabel('Pred Pre', fontsize=10)
 
-                axes[2, i].imshow(images_gd[i, 0].numpy(), cmap='gray')
+                axes[2, i].imshow(diff_pre[i], cmap='hot', vmin=0, vmax=diff_pre.max())
                 axes[2, i].axis('off')
                 if i == 0:
-                    axes[2, i].set_ylabel('GT Gd', fontsize=10)
+                    axes[2, i].set_ylabel('|Diff| Pre', fontsize=10)
 
-                axes[3, i].imshow(pred_gd[i, 0].numpy(), cmap='gray')
-                if mask is not None:
-                    axes[3, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
+                # Post-contrast (Gd)
+                axes[3, i].imshow(images_gd[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
                 axes[3, i].axis('off')
                 if i == 0:
-                    axes[3, i].set_ylabel('Pred Gd', fontsize=10)
+                    axes[3, i].set_ylabel('GT Gd', fontsize=10)
+
+                axes[4, i].imshow(pred_gd[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
+                if mask is not None:
+                    axes[4, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
+                axes[4, i].axis('off')
+                if i == 0:
+                    axes[4, i].set_ylabel('Pred Gd', fontsize=10)
+
+                im = axes[5, i].imshow(diff_gd[i], cmap='hot', vmin=0, vmax=diff_gd.max())
+                axes[5, i].axis('off')
+                if i == 0:
+                    axes[5, i].set_ylabel('|Diff| Gd', fontsize=10)
+
         else:
             images = data['images']
             predicted = data['predicted']
 
-            num_show = min(16, images.shape[0])
-            fig, axes = plt.subplots(2, num_show, figsize=(num_show, 2))
+            # Compute difference heatmap
+            diff = np.abs(images[:, 0].numpy() - predicted[:, 0].numpy())
+
+            num_show = min(8, images.shape[0])
+            fig, axes = plt.subplots(3, num_show, figsize=(2 * num_show, 6))
             fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
 
             for i in range(num_show):
@@ -156,17 +176,22 @@ class ValidationVisualizer:
                 t_val = timesteps[i].item() if timesteps is not None else 0
                 axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
 
-                axes[0, i].imshow(images[i, 0].numpy(), cmap='gray')
+                axes[0, i].imshow(images[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
                 axes[0, i].axis('off')
                 if i == 0:
                     axes[0, i].set_ylabel('GT', fontsize=10)
 
-                axes[1, i].imshow(predicted[i, 0].numpy(), cmap='gray')
+                axes[1, i].imshow(predicted[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
                 if mask is not None:
                     axes[1, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
                 axes[1, i].axis('off')
                 if i == 0:
                     axes[1, i].set_ylabel('Pred', fontsize=10)
+
+                im = axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
+                axes[2, i].axis('off')
+                if i == 0:
+                    axes[2, i].set_ylabel('|Diff|', fontsize=10)
 
         plt.tight_layout()
 

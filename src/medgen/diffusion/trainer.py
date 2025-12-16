@@ -36,6 +36,7 @@ from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .metrics import MetricsTracker
 from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
+from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .utils import get_vram_usage, log_epoch_summary, save_checkpoint, save_model_only
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,9 @@ class DiffusionTrainer:
         self.optimizer: Optional[AdamW] = None
         self.lr_scheduler: Optional[LRScheduler] = None
         self.perceptual_loss_fn: Optional[nn.Module] = None
+
+        # Validation loader (set in train())
+        self.val_loader: Optional[DataLoader] = None
 
         # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
@@ -719,9 +723,134 @@ class DiffusionTrainer:
 
         return epoch_loss / len(data_loader), epoch_mse_loss / len(data_loader), epoch_perceptual_loss / len(data_loader)
 
-    def train(self, train_loader: DataLoader, train_dataset: Dataset) -> None:
-        """Execute the main training loop."""
+    def compute_validation_losses(self, epoch: int) -> Dict[str, float]:
+        """Compute losses and metrics on validation set.
+
+        Args:
+            epoch: Current epoch number (for TensorBoard logging).
+
+        Returns:
+            Dictionary with validation metrics (mse, perceptual, total, ssim, psnr, lpips).
+            Empty dict if no validation loader.
+        """
+        if self.val_loader is None:
+            return {}
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        total_mse = 0.0
+        total_perc = 0.0
+        total_loss = 0.0
+        total_ssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
+
+        with torch.no_grad():
+            for batch in self.val_loader:
+                prepared = self.mode.prepare_batch(batch, self.device)
+                images = prepared['images']
+                labels = prepared.get('labels')
+
+                # Encode to diffusion space (identity for PixelSpace)
+                images = self.space.encode_batch(images)
+                if labels is not None:
+                    labels = self.space.encode(labels)
+
+                labels_dict = {'labels': labels}
+
+                # Sample timesteps and noise
+                if isinstance(images, dict):
+                    noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
+                else:
+                    noise = torch.randn_like(images).to(self.device)
+
+                timesteps = self.strategy.sample_timesteps(images)
+                noisy_images = self.strategy.add_noise(images, noise, timesteps)
+                model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                # Predict and compute loss
+                prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+
+                # Compute perceptual loss
+                if self.perceptual_weight > 0:
+                    if self.space.scale_factor > 1:
+                        pred_decoded = self.space.decode_batch(predicted_clean)
+                        images_decoded = self.space.decode_batch(images)
+                    else:
+                        pred_decoded = predicted_clean
+                        images_decoded = images
+                    p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
+                else:
+                    p_loss = torch.tensor(0.0, device=self.device)
+
+                loss = mse_loss + self.perceptual_weight * p_loss
+
+                total_mse += mse_loss.item()
+                total_perc += p_loss.item()
+                total_loss += loss.item()
+
+                # Quality metrics (SSIM, PSNR, LPIPS) on predicted vs ground truth
+                if isinstance(predicted_clean, dict):
+                    # Dual mode: average metrics across channels
+                    keys = list(predicted_clean.keys())
+                    ssim_val = (compute_ssim(predicted_clean[keys[0]], images[keys[0]]) +
+                                compute_ssim(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
+                                compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
+                                 compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
+                else:
+                    ssim_val = compute_ssim(predicted_clean, images)
+                    psnr_val = compute_psnr(predicted_clean, images)
+                    lpips_val = compute_lpips(predicted_clean, images, self.device)
+
+                total_ssim += ssim_val
+                total_psnr += psnr_val
+                total_lpips += lpips_val
+                n_batches += 1
+
+        model_to_use.train()
+
+        metrics = {
+            'mse': total_mse / n_batches,
+            'perceptual': total_perc / n_batches,
+            'total': total_loss / n_batches,
+            'ssim': total_ssim / n_batches,
+            'psnr': total_psnr / n_batches,
+            'lpips': total_lpips / n_batches,
+        }
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_scalar('Loss/MSE_val', metrics['mse'], epoch)
+            self.writer.add_scalar('Loss/Perceptual_val', metrics['perceptual'], epoch)
+            self.writer.add_scalar('Loss/Total_val', metrics['total'], epoch)
+            self.writer.add_scalar('Validation/SSIM', metrics['ssim'], epoch)
+            self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+
+        return metrics
+
+    def train(
+        self,
+        train_loader: DataLoader,
+        train_dataset: Dataset,
+        val_loader: Optional[DataLoader] = None
+    ) -> None:
+        """Execute the main training loop.
+
+        Args:
+            train_loader: Training dataloader.
+            train_dataset: Training dataset (for visualization samples).
+            val_loader: Optional validation dataloader for computing validation losses.
+        """
         total_start = time.time()
+
+        # Store validation loader
+        self.val_loader = val_loader
 
         # Measure FLOPs using first batch (one-time profiling)
         self._measure_model_flops(train_loader)
@@ -750,10 +879,13 @@ class DiffusionTrainer:
                     log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time)
 
                     if self.writer is not None:
-                        self.writer.add_scalar('Loss/Total', avg_loss, epoch)
-                        self.writer.add_scalar('Loss/MSE', avg_mse, epoch)
-                        self.writer.add_scalar('Loss/Perceptual', avg_perceptual, epoch)
+                        self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
+                        self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
+                        self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
                         self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+
+                    # Compute validation losses every epoch
+                    val_metrics = self.compute_validation_losses(epoch)
 
                     # Log metrics (grad norms every epoch, others at val_interval)
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
@@ -778,13 +910,16 @@ class DiffusionTrainer:
                             epoch, self.save_dir, "latest", self.ema
                         )
 
-                        if avg_loss < self.best_loss:
-                            self.best_loss = avg_loss
+                        # Use validation loss for best model selection (fallback to train if no val_loader)
+                        loss_for_selection = val_metrics.get('total', avg_loss)
+                        if loss_for_selection < self.best_loss:
+                            self.best_loss = loss_for_selection
                             save_checkpoint(
                                 self.model_raw, self.optimizer, self.lr_scheduler,
                                 epoch, self.save_dir, "best", self.ema
                             )
-                            logger.info(f"New best model saved (loss: {avg_loss:.6f})")
+                            loss_type = "val" if val_metrics else "train"
+                            logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
 
         finally:
             total_time = time.time() - total_start
@@ -793,11 +928,14 @@ class DiffusionTrainer:
                 logger.info(f"Training completed! Total time: {total_time:.1f}s ({total_time / 3600:.1f}h)")
                 self._update_metadata_final(avg_loss, avg_mse, total_time)
 
-                if self.writer is not None:
-                    self.writer.close()
-
             if self.use_multi_gpu:
                 try:
                     dist.destroy_process_group()
                 except Exception as e:
                     logger.warning(f"Error destroying process group: {e}")
+
+    def close_writer(self) -> None:
+        """Close TensorBoard writer. Call after all logging is complete."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
