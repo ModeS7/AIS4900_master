@@ -22,7 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from medgen.core import ModeType
 from .modes import TrainingMode
 from .strategies import DiffusionStrategy
-from .metrics import MetricsTracker
+from .metrics import MetricsTracker, create_reconstruction_figure
 from .spaces import DiffusionSpace, PixelSpace
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,7 @@ class ValidationVisualizer:
     def log_worst_batch(self, epoch: int, data: Dict[str, Any]) -> None:
         """Save visualization of the worst (highest loss) batch.
 
-        Layout:
-        - Dual mode: 6 rows x 8 samples - GT_pre, Pred_pre, Diff_pre, GT_gd, Pred_gd, Diff_gd
-        - Single mode: 3 rows x 8 samples - GT, Pred, Diff heatmap
-        - Shows timestep for each sample and average timestep in title
+        Uses shared create_reconstruction_figure for consistent visualization.
 
         Args:
             epoch: Current epoch number.
@@ -97,108 +94,24 @@ class ValidationVisualizer:
         if self.writer is None:
             return
 
-        mask = data['mask']
         timesteps = data.get('timesteps')
-        is_dual = isinstance(data['images'], dict)
-
-        # Compute average timestep for title
         avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
 
-        if is_dual:
-            keys = list(data['images'].keys())
-            images_pre = data['images'][keys[0]]
-            images_gd = data['images'][keys[1]]
-            pred_pre = data['predicted'][keys[0]]
-            pred_gd = data['predicted'][keys[1]]
+        title = f'Worst Validation Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}'
 
-            # Compute difference heatmaps
-            diff_pre = np.abs(images_pre[:, 0].numpy() - pred_pre[:, 0].numpy())
-            diff_gd = np.abs(images_gd[:, 0].numpy() - pred_gd[:, 0].numpy())
+        fig = create_reconstruction_figure(
+            original=data['images'],
+            generated=data['predicted'],
+            title=title,
+            timesteps=timesteps,
+            mask=data.get('mask'),
+            max_samples=8,
+        )
 
-            num_show = min(8, images_pre.shape[0])
-            fig, axes = plt.subplots(6, num_show, figsize=(2 * num_show, 12))
-            fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
+        filepath = os.path.join(self.save_dir, f'worst_val_batch_epoch_{epoch:04d}.png')
+        fig.savefig(filepath, dpi=150, bbox_inches='tight')
 
-            for i in range(num_show):
-                # Show timestep above each column
-                t_val = timesteps[i].item() if timesteps is not None else 0
-                axes[0, i].set_title(f't={t_val:.0f}', fontsize=9)
-
-                # Pre-contrast
-                axes[0, i].imshow(images_pre[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                axes[0, i].axis('off')
-                if i == 0:
-                    axes[0, i].set_ylabel('GT Pre', fontsize=10)
-
-                axes[1, i].imshow(pred_pre[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                if mask is not None:
-                    axes[1, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
-                axes[1, i].axis('off')
-                if i == 0:
-                    axes[1, i].set_ylabel('Pred Pre', fontsize=10)
-
-                axes[2, i].imshow(diff_pre[i], cmap='hot', vmin=0, vmax=diff_pre.max())
-                axes[2, i].axis('off')
-                if i == 0:
-                    axes[2, i].set_ylabel('|Diff| Pre', fontsize=10)
-
-                # Post-contrast (Gd)
-                axes[3, i].imshow(images_gd[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                axes[3, i].axis('off')
-                if i == 0:
-                    axes[3, i].set_ylabel('GT Gd', fontsize=10)
-
-                axes[4, i].imshow(pred_gd[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                if mask is not None:
-                    axes[4, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
-                axes[4, i].axis('off')
-                if i == 0:
-                    axes[4, i].set_ylabel('Pred Gd', fontsize=10)
-
-                im = axes[5, i].imshow(diff_gd[i], cmap='hot', vmin=0, vmax=diff_gd.max())
-                axes[5, i].axis('off')
-                if i == 0:
-                    axes[5, i].set_ylabel('|Diff| Gd', fontsize=10)
-
-        else:
-            images = data['images']
-            predicted = data['predicted']
-
-            # Compute difference heatmap
-            diff = np.abs(images[:, 0].numpy() - predicted[:, 0].numpy())
-
-            num_show = min(8, images.shape[0])
-            fig, axes = plt.subplots(3, num_show, figsize=(2 * num_show, 6))
-            fig.suptitle(f'Worst Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}', fontsize=12)
-
-            for i in range(num_show):
-                # Show timestep above each column
-                t_val = timesteps[i].item() if timesteps is not None else 0
-                axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
-
-                axes[0, i].imshow(images[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                axes[0, i].axis('off')
-                if i == 0:
-                    axes[0, i].set_ylabel('GT', fontsize=10)
-
-                axes[1, i].imshow(predicted[i, 0].numpy(), cmap='gray', vmin=0, vmax=1)
-                if mask is not None:
-                    axes[1, i].contour(mask[i, 0].numpy(), colors='red', linewidths=0.5, alpha=0.7)
-                axes[1, i].axis('off')
-                if i == 0:
-                    axes[1, i].set_ylabel('Pred', fontsize=10)
-
-                im = axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
-                axes[2, i].axis('off')
-                if i == 0:
-                    axes[2, i].set_ylabel('|Diff|', fontsize=10)
-
-        plt.tight_layout()
-
-        filepath = os.path.join(self.save_dir, f'worst_batch_epoch_{epoch:04d}.png')
-        plt.savefig(filepath, dpi=150, bbox_inches='tight')
-
-        self.writer.add_figure('worst_batch', fig, epoch)
+        self.writer.add_figure('Validation/worst_batch', fig, epoch)
         plt.close(fig)
 
     def _sample_positive_masks(

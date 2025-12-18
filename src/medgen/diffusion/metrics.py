@@ -77,7 +77,6 @@ class MetricsTracker:
         self.log_psnr: bool = logging_cfg.get('psnr', True)
         self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
-        self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
 
         # Timestep loss tracking
@@ -106,10 +105,6 @@ class MetricsTracker:
         self.grad_norm_sum: Optional[torch.Tensor] = None
         self.grad_norm_max: Optional[torch.Tensor] = None
         self.grad_norm_count: int = 0
-
-        # Worst batch tracking
-        self.worst_batch_loss: float = 0.0
-        self.worst_batch_data: Optional[Dict[str, Any]] = None
 
         # 2D timestep-region loss tracking
         self._timestep_region_accum_initialized: bool = False
@@ -267,7 +262,6 @@ class MetricsTracker:
         images: Union[torch.Tensor, Dict[str, torch.Tensor]],
         mask: Optional[torch.Tensor],
         grad_norm: Optional[torch.Tensor],
-        loss: float,
     ) -> None:
         """Track metrics for a single training step.
 
@@ -279,7 +273,6 @@ class MetricsTracker:
             images: Ground truth images.
             mask: Segmentation mask (None for seg mode).
             grad_norm: Gradient norm from clipping.
-            loss: Total loss value.
         """
         # Track gradient norm
         if self.log_grad_norm and grad_norm is not None:
@@ -300,17 +293,6 @@ class MetricsTracker:
                 self._track_regional_losses(predicted_clean, images, mask)
             if self.log_timestep_region:
                 self._track_timestep_region_loss(timesteps, predicted_clean, images, mask)
-
-        # Track worst batch (keep on GPU, defer .cpu() to get_worst_batch_data)
-        if self.log_worst_batch and loss > self.worst_batch_loss:
-            self.worst_batch_loss = loss
-            self.worst_batch_data = {
-                'images': images.detach().clone() if not isinstance(images, dict) else {k: v.detach().clone() for k, v in images.items()},
-                'mask': mask.detach().clone() if mask is not None else None,
-                'predicted': predicted_clean.detach().clone() if not isinstance(predicted_clean, dict) else {k: v.detach().clone() for k, v in predicted_clean.items()},
-                'timesteps': timesteps.detach().clone(),
-                'loss': loss,
-            }
 
     def _track_timestep_loss_batch(
         self,
@@ -668,29 +650,6 @@ class MetricsTracker:
         self._tr_bg_sum = torch.zeros(self.num_timestep_bins, device=self.device)
         self._tr_bg_count = torch.zeros(self.num_timestep_bins, device=self.device, dtype=torch.long)
 
-    def get_worst_batch_data(self) -> Optional[Dict[str, Any]]:
-        """Get the worst batch data and reset for next epoch.
-
-        Moves tensors to CPU here (deferred from track_step to avoid sync).
-        """
-        if self.worst_batch_data is None:
-            self.worst_batch_loss = 0.0
-            return None
-
-        # Move to CPU now (only happens once per val_interval, not every step)
-        data = self.worst_batch_data
-        cpu_data = {
-            'images': data['images'].cpu() if not isinstance(data['images'], dict) else {k: v.cpu() for k, v in data['images'].items()},
-            'mask': data['mask'].cpu() if data['mask'] is not None else None,
-            'predicted': data['predicted'].cpu() if not isinstance(data['predicted'], dict) else {k: v.cpu() for k, v in data['predicted'].items()},
-            'timesteps': data['timesteps'].cpu(),
-            'loss': data['loss'],
-        }
-
-        self.worst_batch_loss = 0.0
-        self.worst_batch_data = None
-        return cpu_data
-
     def compute_ssim(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
         """Compute SSIM between generated and reference images.
 
@@ -777,3 +736,221 @@ class MetricsTracker:
             sharpness_values.append(boundary_grad)
 
         return float(np.mean(sharpness_values)) if sharpness_values else 0.0
+
+
+def create_reconstruction_figure(
+    original: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    generated: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    title: Optional[str] = None,
+    timesteps: Optional[torch.Tensor] = None,
+    mask: Optional[torch.Tensor] = None,
+    max_samples: int = 8,
+    metrics: Optional[Dict[str, float]] = None,
+) -> plt.Figure:
+    """Create reconstruction visualization figure.
+
+    Shared function for worst_batch, validation, and test visualizations.
+    Works for both VAE (no timesteps) and Diffusion (with timesteps).
+
+    Layout:
+    - Single mode: 3 rows (Original, Generated, Difference)
+    - Dual mode: 6 rows (Original_ch1, Generated_ch1, Diff_ch1, Original_ch2, ...)
+
+    Args:
+        original: Ground truth images [B, C, H, W] or dict of channel tensors.
+        generated: Generated images [B, C, H, W] or dict of channel tensors.
+        title: Optional title for the figure.
+        timesteps: Optional per-sample timesteps [B] (shown in column titles).
+        mask: Optional segmentation mask [B, 1, H, W] for contour overlay.
+        max_samples: Maximum number of samples to display.
+        metrics: Optional dict of metrics to show in subtitle (e.g., {'SSIM': 0.95}).
+
+    Returns:
+        Matplotlib figure.
+    """
+    is_dual = isinstance(original, dict)
+
+    if is_dual:
+        return _create_dual_reconstruction_figure(
+            original, generated, title, timesteps, mask, max_samples, metrics
+        )
+    else:
+        return _create_single_reconstruction_figure(
+            original, generated, title, timesteps, mask, max_samples, metrics
+        )
+
+
+def _create_single_reconstruction_figure(
+    original: torch.Tensor,
+    generated: torch.Tensor,
+    title: Optional[str],
+    timesteps: Optional[torch.Tensor],
+    mask: Optional[torch.Tensor],
+    max_samples: int,
+    metrics: Optional[Dict[str, float]],
+) -> plt.Figure:
+    """Create figure for single-channel reconstruction (seg, bravo modes)."""
+    # Convert to numpy
+    if isinstance(original, torch.Tensor):
+        orig_np = original.cpu().numpy()
+        gen_np = generated.cpu().numpy()
+    else:
+        orig_np = original
+        gen_np = generated
+
+    n_samples = min(max_samples, orig_np.shape[0])
+
+    # Use first channel
+    orig_ch = orig_np[:n_samples, 0]
+    gen_ch = gen_np[:n_samples, 0]
+    diff = np.abs(orig_ch - gen_ch)
+
+    mask_np = None
+    if mask is not None:
+        mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+
+    # Create figure
+    fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
+    if n_samples == 1:
+        axes = axes.reshape(3, 1)
+
+    for i in range(n_samples):
+        # Column title with timestep if provided
+        if timesteps is not None:
+            t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
+
+        # Row 1: Original
+        axes[0, i].imshow(np.clip(orig_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[0, i].axis('off')
+        if i == 0:
+            axes[0, i].set_ylabel('Original', fontsize=10)
+
+        # Row 2: Generated (with optional mask contour)
+        axes[1, i].imshow(np.clip(gen_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        if mask_np is not None and mask_np.shape[0] > i:
+            axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+        axes[1, i].axis('off')
+        if i == 0:
+            axes[1, i].set_ylabel('Generated', fontsize=10)
+
+        # Row 3: Difference heatmap
+        im = axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
+        axes[2, i].axis('off')
+        if i == 0:
+            axes[2, i].set_ylabel('|Diff|', fontsize=10)
+
+    # Build title
+    full_title = title or ''
+    if metrics:
+        metrics_str = ' | '.join(f'{k}: {v:.4f}' for k, v in metrics.items())
+        if full_title:
+            full_title = f'{full_title}\n{metrics_str}'
+        else:
+            full_title = metrics_str
+
+    if full_title:
+        fig.suptitle(full_title, fontsize=10)
+
+    plt.tight_layout()
+    return fig
+
+
+def _create_dual_reconstruction_figure(
+    original: Dict[str, torch.Tensor],
+    generated: Dict[str, torch.Tensor],
+    title: Optional[str],
+    timesteps: Optional[torch.Tensor],
+    mask: Optional[torch.Tensor],
+    max_samples: int,
+    metrics: Optional[Dict[str, float]],
+) -> plt.Figure:
+    """Create figure for dual-channel reconstruction (dual mode)."""
+    keys = list(original.keys())
+    key1, key2 = keys[0], keys[1]
+
+    # Convert to numpy
+    orig1 = original[key1].cpu().numpy() if isinstance(original[key1], torch.Tensor) else original[key1]
+    orig2 = original[key2].cpu().numpy() if isinstance(original[key2], torch.Tensor) else original[key2]
+    gen1 = generated[key1].cpu().numpy() if isinstance(generated[key1], torch.Tensor) else generated[key1]
+    gen2 = generated[key2].cpu().numpy() if isinstance(generated[key2], torch.Tensor) else generated[key2]
+
+    n_samples = min(max_samples, orig1.shape[0])
+
+    # Use first channel of each
+    orig1_ch = orig1[:n_samples, 0]
+    orig2_ch = orig2[:n_samples, 0]
+    gen1_ch = gen1[:n_samples, 0]
+    gen2_ch = gen2[:n_samples, 0]
+    diff1 = np.abs(orig1_ch - gen1_ch)
+    diff2 = np.abs(orig2_ch - gen2_ch)
+
+    mask_np = None
+    if mask is not None:
+        mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+
+    # Create figure: 6 rows (3 per channel)
+    fig, axes = plt.subplots(6, n_samples, figsize=(2 * n_samples, 12))
+    if n_samples == 1:
+        axes = axes.reshape(6, 1)
+
+    # Row labels based on key names
+    label1 = key1.replace('_', ' ').title()
+    label2 = key2.replace('_', ' ').title()
+
+    for i in range(n_samples):
+        # Column title with timestep if provided
+        if timesteps is not None:
+            t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
+
+        # Channel 1
+        axes[0, i].imshow(np.clip(orig1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[0, i].axis('off')
+        if i == 0:
+            axes[0, i].set_ylabel(f'GT {label1}', fontsize=9)
+
+        axes[1, i].imshow(np.clip(gen1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        if mask_np is not None and mask_np.shape[0] > i:
+            axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+        axes[1, i].axis('off')
+        if i == 0:
+            axes[1, i].set_ylabel(f'Pred {label1}', fontsize=9)
+
+        axes[2, i].imshow(diff1[i], cmap='hot', vmin=0, vmax=diff1.max())
+        axes[2, i].axis('off')
+        if i == 0:
+            axes[2, i].set_ylabel(f'|Diff| {label1}', fontsize=9)
+
+        # Channel 2
+        axes[3, i].imshow(np.clip(orig2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[3, i].axis('off')
+        if i == 0:
+            axes[3, i].set_ylabel(f'GT {label2}', fontsize=9)
+
+        axes[4, i].imshow(np.clip(gen2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        if mask_np is not None and mask_np.shape[0] > i:
+            axes[4, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+        axes[4, i].axis('off')
+        if i == 0:
+            axes[4, i].set_ylabel(f'Pred {label2}', fontsize=9)
+
+        im = axes[5, i].imshow(diff2[i], cmap='hot', vmin=0, vmax=diff2.max())
+        axes[5, i].axis('off')
+        if i == 0:
+            axes[5, i].set_ylabel(f'|Diff| {label2}', fontsize=9)
+
+    # Build title
+    full_title = title or ''
+    if metrics:
+        metrics_str = ' | '.join(f'{k}: {v:.4f}' for k, v in metrics.items())
+        if full_title:
+            full_title = f'{full_title}\n{metrics_str}'
+        else:
+            full_title = metrics_str
+
+    if full_title:
+        fig.suptitle(full_title, fontsize=10)
+
+    plt.tight_layout()
+    return fig

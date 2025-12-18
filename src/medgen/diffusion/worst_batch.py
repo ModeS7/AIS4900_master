@@ -15,6 +15,8 @@ import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
+from .metrics import create_reconstruction_figure
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,70 +149,39 @@ def create_worst_batch_figure(
 ) -> plt.Figure:
     """Create visualization figure for worst batch.
 
-    Shows:
-    - Row 1: Original/ground truth images
-    - Row 2: Generated/reconstructed images
-    - Row 3: Absolute difference heatmap
+    Uses shared create_reconstruction_figure for consistent visualization.
 
     Args:
         original: Ground truth images [B, C, H, W].
         generated: Generated images [B, C, H, W].
         loss: Total loss value.
         loss_breakdown: Optional dict of individual losses.
-        extra: Optional extra info (e.g., {'timestep': 450}).
+        extra: Optional extra info (e.g., {'timesteps': tensor}).
         max_samples: Maximum number of samples to show.
 
     Returns:
         Matplotlib figure.
     """
-    n_samples = min(max_samples, original.shape[0])
-
-    # Convert to numpy, use first channel if multi-channel
-    orig_np = original[:n_samples, 0].numpy()
-    gen_np = generated[:n_samples, 0].numpy()
-    diff_np = np.abs(orig_np - gen_np)
-
-    # Create figure: 3 rows x n_samples columns
-    fig, axes = plt.subplots(3, n_samples, figsize=(3 * n_samples, 9))
-
-    # Handle single sample case (axes won't be 2D)
-    if n_samples == 1:
-        axes = axes.reshape(3, 1)
-
-    for i in range(n_samples):
-        # Row 1: Original
-        axes[0, i].imshow(np.clip(orig_np[i], 0, 1), cmap='gray', vmin=0, vmax=1)
-        axes[0, i].set_title(f'Original {i+1}')
-        axes[0, i].axis('off')
-
-        # Row 2: Generated
-        axes[1, i].imshow(np.clip(gen_np[i], 0, 1), cmap='gray', vmin=0, vmax=1)
-        axes[1, i].set_title(f'Generated {i+1}')
-        axes[1, i].axis('off')
-
-        # Row 3: Difference heatmap
-        im = axes[2, i].imshow(diff_np[i], cmap='hot', vmin=0, vmax=diff_np.max())
-        axes[2, i].set_title(f'|Diff| {i+1}')
-        axes[2, i].axis('off')
-
-    # Add colorbar for heatmap
-    cbar = fig.colorbar(im, ax=axes[2, :].tolist(), shrink=0.6, aspect=20)
-    cbar.set_label('Absolute Error')
-
     # Build title
     title_parts = [f"Worst Batch - Loss: {loss:.4f}"]
 
-    # Add loss breakdown
     if loss_breakdown:
         breakdown_str = ", ".join(f"{k}: {v:.4f}" for k, v in loss_breakdown.items())
         title_parts.append(f"({breakdown_str})")
 
-    # Add extra info (e.g., timestep for diffusion)
     extra = extra or {}
-    if 'timestep' in extra:
-        title_parts.append(f"[t={extra['timestep']}]")
+    timesteps = extra.get('timesteps')
 
-    fig.suptitle(" ".join(title_parts), fontsize=12)
-    plt.tight_layout()
+    # Add average timestep to title if available
+    if timesteps is not None:
+        avg_t = timesteps.float().mean().item() if isinstance(timesteps, torch.Tensor) else np.mean(timesteps)
+        title_parts.append(f"[Avg t={avg_t:.0f}]")
 
-    return fig
+    return create_reconstruction_figure(
+        original=original,
+        generated=generated,
+        title=" ".join(title_parts),
+        timesteps=timesteps,
+        mask=extra.get('mask'),
+        max_samples=max_samples,
+    )

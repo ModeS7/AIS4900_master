@@ -83,12 +83,8 @@ AIS4900_master/
 │   ├── train/vae/               # VAE training jobs
 │   └── generate/                # Generation jobs
 │
-├── misc/prepro/                 # Data preprocessing tools
-│   ├── pro.py                   # Main preprocessing (pad + resize)
-│   ├── trim_slices.py           # Interactive slice trimming
-│   ├── trim_empty_slices.py     # Auto-trim empty slices
-│   ├── pad_slices.py            # Pad to consistent slice count
-│   └── split_test_val.py        # Split test into test/val
+├── misc/preprocessing/          # Data preprocessing tools
+│   └── preprocess.py            # Unified preprocessing CLI tool
 │
 ├── docs/                        # Additional documentation
 ├── CLAUDE.md                    # Claude Code context file

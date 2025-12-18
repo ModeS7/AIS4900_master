@@ -39,6 +39,7 @@ from medgen.core import (
 from .losses import PerceptualLoss
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .worst_batch import WorstBatchTracker
+from .metrics import create_reconstruction_figure
 from .utils import (
     get_vram_usage,
     GradientNormTracker,
@@ -905,6 +906,8 @@ class VAETrainer:
     ) -> plt.Figure:
         """Create side-by-side reconstruction comparison figure.
 
+        Uses shared create_reconstruction_figure for consistent visualization.
+
         Args:
             original: Original images [B, C, H, W].
             reconstructed: Reconstructed images [B, C, H, W].
@@ -912,37 +915,11 @@ class VAETrainer:
         Returns:
             Matplotlib figure.
         """
-        n_samples = min(8, original.shape[0])
-        n_channels = original.shape[1]
-
-        # For multi-channel, show first channel only
-        orig_np = original[:n_samples, 0].cpu().numpy()
-        recon_np = reconstructed[:n_samples, 0].cpu().float().numpy()
-        diff_np = np.abs(orig_np - recon_np)
-
-        fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
-
-        for i in range(n_samples):
-            # Original
-            axes[0, i].imshow(orig_np[i], cmap='gray', vmin=0, vmax=1)
-            axes[0, i].axis('off')
-            if i == 0:
-                axes[0, i].set_title('Original', fontsize=10)
-
-            # Reconstructed
-            axes[1, i].imshow(recon_np[i], cmap='gray', vmin=0, vmax=1)
-            axes[1, i].axis('off')
-            if i == 0:
-                axes[1, i].set_title('Reconstructed', fontsize=10)
-
-            # Difference
-            axes[2, i].imshow(diff_np[i], cmap='hot', vmin=0, vmax=0.2)
-            axes[2, i].axis('off')
-            if i == 0:
-                axes[2, i].set_title('Difference', fontsize=10)
-
-        plt.tight_layout()
-        return fig
+        return create_reconstruction_figure(
+            original=original,
+            generated=reconstructed,
+            max_samples=8,
+        )
 
     def _save_vae_checkpoint(self, epoch: int, filename: str) -> str:
         """Save VAE checkpoint with config for easy loading.
@@ -1278,6 +1255,8 @@ class VAETrainer:
     ) -> plt.Figure:
         """Create test set reconstruction comparison figure.
 
+        Uses shared create_reconstruction_figure for consistent visualization.
+
         Args:
             original: Original images [N, C, H, W].
             reconstructed: Reconstructed images [N, C, H, W].
@@ -1287,42 +1266,18 @@ class VAETrainer:
         Returns:
             Matplotlib figure.
         """
-        n_samples = min(8, original.shape[0])
-
-        # For multi-channel, show first channel only
-        orig_np = original[:n_samples, 0].numpy()
-        recon_np = reconstructed[:n_samples, 0].float().numpy()
-        diff_np = np.abs(orig_np - recon_np)
-
-        fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
-
-        for i in range(n_samples):
-            # Original
-            axes[0, i].imshow(orig_np[i], cmap='gray', vmin=0, vmax=1)
-            axes[0, i].axis('off')
-            if i == 0:
-                axes[0, i].set_title('Original', fontsize=10)
-
-            # Reconstructed
-            axes[1, i].imshow(recon_np[i], cmap='gray', vmin=0, vmax=1)
-            axes[1, i].axis('off')
-            if i == 0:
-                axes[1, i].set_title('Reconstructed', fontsize=10)
-
-            # Difference
-            axes[2, i].imshow(diff_np[i], cmap='hot', vmin=0, vmax=0.2)
-            axes[2, i].axis('off')
-            if i == 0:
-                axes[2, i].set_title('Difference', fontsize=10)
-
-        # Add metrics to title
-        title = f"Test Results ({label}) - SSIM: {metrics['ssim']:.4f}, PSNR: {metrics['psnr']:.2f} dB"
+        title = f"Test Results ({label})"
+        display_metrics = {'SSIM': metrics['ssim'], 'PSNR': metrics['psnr']}
         if 'lpips' in metrics:
-            title += f", LPIPS: {metrics['lpips']:.4f}"
-        fig.suptitle(title, fontsize=12)
+            display_metrics['LPIPS'] = metrics['lpips']
 
-        plt.tight_layout()
-        return fig
+        return create_reconstruction_figure(
+            original=original,
+            generated=reconstructed,
+            title=title,
+            max_samples=8,
+            metrics=display_metrics,
+        )
 
     def close_writer(self) -> None:
         """Close TensorBoard writer. Call after all logging is complete."""
