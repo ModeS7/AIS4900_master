@@ -711,8 +711,8 @@ class MetricsTracker:
             Average boundary sharpness.
         """
         sharpness_values = []
-        gen_np = generated.cpu().numpy()
-        mask_np = mask.cpu().numpy()
+        gen_np = generated.cpu().float().numpy()
+        mask_np = mask.cpu().float().numpy()
 
         for i in range(gen_np.shape[0]):
             img = gen_np[i, 0]
@@ -790,10 +790,10 @@ def _create_single_reconstruction_figure(
     metrics: Optional[Dict[str, float]],
 ) -> plt.Figure:
     """Create figure for single-channel reconstruction (seg, bravo modes)."""
-    # Convert to numpy
+    # Convert to numpy (float() handles bfloat16 -> float32)
     if isinstance(original, torch.Tensor):
-        orig_np = original.cpu().numpy()
-        gen_np = generated.cpu().numpy()
+        orig_np = original.cpu().float().numpy()
+        gen_np = generated.cpu().float().numpy()
     else:
         orig_np = original
         gen_np = generated
@@ -807,7 +807,7 @@ def _create_single_reconstruction_figure(
 
     mask_np = None
     if mask is not None:
-        mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+        mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
 
     # Create figure
     fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
@@ -869,11 +869,11 @@ def _create_dual_reconstruction_figure(
     keys = list(original.keys())
     key1, key2 = keys[0], keys[1]
 
-    # Convert to numpy
-    orig1 = original[key1].cpu().numpy() if isinstance(original[key1], torch.Tensor) else original[key1]
-    orig2 = original[key2].cpu().numpy() if isinstance(original[key2], torch.Tensor) else original[key2]
-    gen1 = generated[key1].cpu().numpy() if isinstance(generated[key1], torch.Tensor) else generated[key1]
-    gen2 = generated[key2].cpu().numpy() if isinstance(generated[key2], torch.Tensor) else generated[key2]
+    # Convert to numpy (float() handles bfloat16 -> float32)
+    orig1 = original[key1].cpu().float().numpy() if isinstance(original[key1], torch.Tensor) else original[key1]
+    orig2 = original[key2].cpu().float().numpy() if isinstance(original[key2], torch.Tensor) else original[key2]
+    gen1 = generated[key1].cpu().float().numpy() if isinstance(generated[key1], torch.Tensor) else generated[key1]
+    gen2 = generated[key2].cpu().float().numpy() if isinstance(generated[key2], torch.Tensor) else generated[key2]
 
     n_samples = min(max_samples, orig1.shape[0])
 
@@ -887,7 +887,7 @@ def _create_dual_reconstruction_figure(
 
     mask_np = None
     if mask is not None:
-        mask_np = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else mask
+        mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
 
     # Create figure: 6 rows (3 per channel)
     fig, axes = plt.subplots(6, n_samples, figsize=(2 * n_samples, 12))

@@ -812,7 +812,7 @@ def create_test_dataloader(
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         pin_memory=True,
         num_workers=DEFAULT_NUM_WORKERS,
         persistent_workers=DEFAULT_NUM_WORKERS > 0
@@ -878,7 +878,7 @@ def create_dual_image_test_dataloader(
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         pin_memory=True,
         num_workers=DEFAULT_NUM_WORKERS,
         persistent_workers=DEFAULT_NUM_WORKERS > 0

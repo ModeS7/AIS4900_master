@@ -985,9 +985,9 @@ class DiffusionTrainer:
         n_batches = 0
         n_samples = 0
 
-        # Track worst samples by per-sample MSE
-        max_vis_samples = 8
-        worst_samples: List[Tuple[float, torch.Tensor, torch.Tensor]] = []  # (mse, original, predicted)
+        # Track worst batch by loss
+        worst_batch_loss = 0.0
+        worst_batch_data: Optional[Dict[str, Any]] = None
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
@@ -1018,7 +1018,8 @@ class DiffusionTrainer:
                     mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                 # Compute metrics
-                total_mse += mse_loss.item()
+                loss_val = mse_loss.item()
+                total_mse += loss_val
 
                 if isinstance(predicted_clean, dict):
                     keys = list(predicted_clean.keys())
@@ -1028,37 +1029,35 @@ class DiffusionTrainer:
                                 compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
                     lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
                                  compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
-
-                    # Compute per-sample MSE for worst tracking (use first channel)
-                    first_key = keys[0]
-                    per_sample_mse = ((predicted_clean[first_key] - images[first_key]) ** 2).mean(dim=(1, 2, 3))
-                    for i in range(batch_size):
-                        sample_mse = per_sample_mse[i].item()
-                        orig_sample = images[first_key][i:i+1].cpu()
-                        pred_sample = predicted_clean[first_key][i:i+1].cpu()
-                        worst_samples.append((sample_mse, orig_sample, pred_sample))
                 else:
                     ssim_val = compute_ssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
                     lpips_val = compute_lpips(predicted_clean, images, self.device)
 
-                    # Compute per-sample MSE for worst tracking
-                    per_sample_mse = ((predicted_clean - images) ** 2).mean(dim=(1, 2, 3))
-                    for i in range(batch_size):
-                        sample_mse = per_sample_mse[i].item()
-                        orig_sample = images[i:i+1].cpu()
-                        pred_sample = predicted_clean[i:i+1].cpu()
-                        worst_samples.append((sample_mse, orig_sample, pred_sample))
+                # Track worst batch
+                if loss_val > worst_batch_loss:
+                    worst_batch_loss = loss_val
+                    if isinstance(images, dict):
+                        first_key = list(images.keys())[0]
+                        worst_batch_data = {
+                            'images': images[first_key].cpu(),
+                            'predicted': predicted_clean[first_key].cpu(),
+                            'timesteps': timesteps.cpu(),
+                            'loss': loss_val,
+                        }
+                    else:
+                        worst_batch_data = {
+                            'images': images.cpu(),
+                            'predicted': predicted_clean.cpu(),
+                            'timesteps': timesteps.cpu(),
+                            'loss': loss_val,
+                        }
 
                 total_ssim += ssim_val
                 total_psnr += psnr_val
                 total_lpips += lpips_val
                 n_batches += 1
                 n_samples += batch_size
-
-        # Sort by MSE (descending) and take worst samples
-        worst_samples.sort(key=lambda x: x[0], reverse=True)
-        worst_samples = worst_samples[:max_vis_samples]
 
         model_to_use.train()
 
@@ -1097,20 +1096,30 @@ class DiffusionTrainer:
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
             self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
 
-            # Create visualization of worst performing samples
-            if worst_samples:
-                all_originals = torch.cat([s[1] for s in worst_samples], dim=0)
-                all_predictions = torch.cat([s[2] for s in worst_samples], dim=0)
-                fig = self._create_test_reconstruction_figure(all_originals, all_predictions, metrics, label)
-                self.writer.add_figure(f'{tb_prefix}/worst_samples', fig, 0)
+            # Create visualization of worst batch
+            if worst_batch_data is not None:
+                fig = self._create_test_reconstruction_figure(
+                    worst_batch_data['images'],
+                    worst_batch_data['predicted'],
+                    metrics,
+                    label,
+                    worst_batch_data['timesteps'],
+                )
+                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
                 plt.close(fig)
 
                 # Also save as image file
-                fig_path = os.path.join(self.save_dir, f'test_worst_samples_{label}.png')
-                fig = self._create_test_reconstruction_figure(all_originals, all_predictions, metrics, label)
+                fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
+                fig = self._create_test_reconstruction_figure(
+                    worst_batch_data['images'],
+                    worst_batch_data['predicted'],
+                    metrics,
+                    label,
+                    worst_batch_data['timesteps'],
+                )
                 fig.savefig(fig_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
-                logger.info(f"Test worst samples saved to: {fig_path}")
+                logger.info(f"Test worst batch saved to: {fig_path}")
 
         return metrics
 
@@ -1120,6 +1129,7 @@ class DiffusionTrainer:
         predicted: torch.Tensor,
         metrics: Dict[str, float],
         label: str,
+        timesteps: Optional[torch.Tensor] = None,
     ) -> plt.Figure:
         """Create side-by-side test evaluation figure.
 
@@ -1130,11 +1140,12 @@ class DiffusionTrainer:
             predicted: Predicted clean images [B, C, H, W] (CPU).
             metrics: Dict with test metrics (mse, ssim, psnr, lpips).
             label: Checkpoint label (best, latest, current).
+            timesteps: Optional timesteps for each sample.
 
         Returns:
             Matplotlib figure.
         """
-        title = f"Worst Test Samples ({label})"
+        title = f"Worst Test Batch ({label})"
         display_metrics = {
             'SSIM': metrics['ssim'],
             'PSNR': metrics['psnr'],
@@ -1146,4 +1157,5 @@ class DiffusionTrainer:
             title=title,
             max_samples=8,
             metrics=display_metrics,
+            timesteps=timesteps,
         )
