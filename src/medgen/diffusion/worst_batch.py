@@ -5,7 +5,7 @@ Shared utility for tracking and visualizing the worst performing batch
 during training for both DiffusionTrainer and VAETrainer.
 """
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional
 
 import matplotlib
 matplotlib.use('Agg')

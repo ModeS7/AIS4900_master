@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import matplotlib
 matplotlib.use('Agg')
@@ -852,8 +852,6 @@ class VAETrainer:
 
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
-
-        image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
 
         # Get samples for visualization
         if self.val_loader is not None:

@@ -10,12 +10,11 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.distributed as dist
 from ema_pytorch import EMA
