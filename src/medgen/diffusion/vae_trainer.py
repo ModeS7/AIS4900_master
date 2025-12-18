@@ -35,7 +35,12 @@ from monai.networks.nets import AutoencoderKL, PatchDiscriminator
 from .losses import PerceptualLoss
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .worst_batch import WorstBatchTracker
-from .utils import get_vram_usage
+from .utils import (
+    get_vram_usage,
+    GradientNormTracker,
+    FLOPsTracker,
+    create_epoch_iterator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,16 +206,11 @@ class VAETrainer:
         self.log_worst_batch: bool = logging_cfg.get('worst_batch', False)
 
         # Gradient norm tracking (per epoch)
-        self._grad_norm_g_sum: float = 0.0
-        self._grad_norm_g_max: float = 0.0
-        self._grad_norm_d_sum: float = 0.0
-        self._grad_norm_d_max: float = 0.0
-        self._grad_norm_count: int = 0
+        self._grad_tracker_g = GradientNormTracker()
+        self._grad_tracker_d = GradientNormTracker()
 
         # FLOPs tracking
-        self._flops_measured: bool = False
-        self._forward_flops: int = 0
-        self._total_flops: int = 0
+        self._flops_tracker = FLOPsTracker()
 
         # Worst batch tracking
         self.worst_batch_tracker = WorstBatchTracker(enabled=self.log_worst_batch)
@@ -631,54 +631,24 @@ class VAETrainer:
         kl = kl / mean.numel()
         return kl
 
-    def _measure_model_flops(self, sample_batch: torch.Tensor) -> None:
-        """Measure FLOPs for VAE forward pass using torch.profiler.
+    def _measure_model_flops(self, sample_batch: torch.Tensor, steps_per_epoch: int) -> None:
+        """Measure FLOPs for VAE forward pass using FLOPsTracker.
 
         Should be called once at the start of training with a sample batch.
-        The measured FLOPs are stored and logged to TensorBoard.
 
         Args:
             sample_batch: Sample input tensor [B, C, H, W].
+            steps_per_epoch: Number of training steps per epoch.
         """
-        if not self.log_flops or self._flops_measured:
+        if not self.log_flops:
             return
-
-        self.model_raw.eval()
-        with torch.no_grad():
-            try:
-                from torch.profiler import profile, ProfilerActivity
-
-                # Run profiler to count FLOPs
-                with profile(
-                    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                    with_flops=True,
-                ) as prof:
-                    _ = self.model_raw(sample_batch)
-
-                # Sum all FLOPs from profiler events
-                total_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
-
-                self._forward_flops = total_flops
-                self._flops_measured = True
-
-                if self.is_main_process and total_flops > 0:
-                    batch_size = sample_batch.shape[0]
-                    flops_per_sample = total_flops / batch_size
-                    gflops_per_sample = flops_per_sample / 1e9
-                    # VAE has encoder + decoder, training has forward + backward ≈ 3x
-                    logger.info(
-                        f"VAE FLOPs measured: {gflops_per_sample:.2f} GFLOPs/sample "
-                        f"(forward), ~{gflops_per_sample * 3:.2f} GFLOPs/sample (train step)"
-                    )
-
-                    if self.writer is not None:
-                        self.writer.add_scalar('model/gflops_per_sample', gflops_per_sample, 0)
-
-            except Exception as e:
-                if self.is_main_process:
-                    logger.warning(f"Failed to measure FLOPs: {e}")
-
-        self.model_raw.train()
+        self._flops_tracker.measure(
+            model=self.model_raw,
+            sample_input=sample_batch[:1],  # Single sample
+            steps_per_epoch=steps_per_epoch,
+            timesteps=None,  # VAE has no timesteps
+            is_main_process=self.is_main_process,
+        )
 
     def _prepare_batch(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Prepare batch tensor from dataloader output.
@@ -755,8 +725,7 @@ class VAETrainer:
 
             # Track discriminator gradient norm
             if self.log_grad_norm:
-                self._grad_norm_d_sum += grad_norm_d
-                self._grad_norm_d_max = max(self._grad_norm_d_max, grad_norm_d)
+                self._grad_tracker_d.update(grad_norm_d)
 
         # ==================== Generator Step ====================
         self.optimizer_g.zero_grad(set_to_none=True)
@@ -799,9 +768,7 @@ class VAETrainer:
 
         # Track generator gradient norm
         if self.log_grad_norm:
-            self._grad_norm_g_sum += grad_norm_g
-            self._grad_norm_g_max = max(self._grad_norm_g_max, grad_norm_g)
-            self._grad_norm_count += 1
+            self._grad_tracker_g.update(grad_norm_g)
 
         # Track worst batch (for debugging high loss samples)
         self.worst_batch_tracker.update(
@@ -825,25 +792,16 @@ class VAETrainer:
 
     def _reset_grad_norm_tracking(self) -> None:
         """Reset gradient norm tracking for a new epoch."""
-        self._grad_norm_g_sum = 0.0
-        self._grad_norm_g_max = 0.0
-        self._grad_norm_d_sum = 0.0
-        self._grad_norm_d_max = 0.0
-        self._grad_norm_count = 0
+        self._grad_tracker_g.reset()
+        self._grad_tracker_d.reset()
 
     def _log_grad_norms(self, epoch: int) -> None:
         """Log gradient norm statistics to TensorBoard."""
-        if not self.log_grad_norm or self._grad_norm_count == 0 or self.writer is None:
+        if not self.log_grad_norm:
             return
-
-        avg_grad_norm_g = self._grad_norm_g_sum / self._grad_norm_count
-        self.writer.add_scalar('training/grad_norm_g_avg', avg_grad_norm_g, epoch)
-        self.writer.add_scalar('training/grad_norm_g_max', self._grad_norm_g_max, epoch)
-
-        if not self.disable_gan:
-            avg_grad_norm_d = self._grad_norm_d_sum / self._grad_norm_count
-            self.writer.add_scalar('training/grad_norm_d_avg', avg_grad_norm_d, epoch)
-            self.writer.add_scalar('training/grad_norm_d_max', self._grad_norm_d_max, epoch)
+        self._grad_tracker_g.log(self.writer, epoch, prefix='training/grad_norm_g')
+        if self.discriminator is not None:
+            self._grad_tracker_d.log(self.writer, epoch, prefix='training/grad_norm_d')
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train the model for one epoch.
@@ -864,23 +822,19 @@ class VAETrainer:
 
         epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
 
-        use_progress_bars = (not self.is_cluster) and self.is_main_process
+        epoch_iter = create_epoch_iterator(
+            data_loader, epoch, self.is_cluster, self.is_main_process
+        )
 
-        if use_progress_bars:
-            progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), ncols=100)
-            progress_bar.set_description(f"Epoch {epoch}")
-            steps_iter = progress_bar
-        else:
-            steps_iter = enumerate(data_loader)
-
-        for step, batch in steps_iter:
+        for step, batch in enumerate(epoch_iter):
             losses = self.train_step(batch)
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]
 
-            if use_progress_bars:
-                progress_bar.set_postfix(
+            # Update progress bar if tqdm instance (has set_postfix method)
+            if hasattr(epoch_iter, 'set_postfix'):
+                epoch_iter.set_postfix(
                     G=f"{epoch_losses['gen'] / (step + 1):.4f}",
                     D=f"{epoch_losses['disc'] / (step + 1):.4f}"
                 )
@@ -1170,11 +1124,11 @@ class VAETrainer:
         total_start = time.time()
 
         # Measure FLOPs on first batch (once at start of training)
-        if self.log_flops and not self._flops_measured:
+        if self.log_flops:
             try:
                 first_batch = next(iter(train_loader))
                 sample_images = self._prepare_batch(first_batch)
-                self._measure_model_flops(sample_images)
+                self._measure_model_flops(sample_images, len(train_loader))
             except Exception as e:
                 if self.is_main_process:
                     logger.warning(f"Could not measure FLOPs: {e}")
@@ -1243,6 +1197,9 @@ class VAETrainer:
 
                         # Log gradient norms
                         self._log_grad_norms(epoch)
+
+                        # Log FLOPs per epoch
+                        self._flops_tracker.log_epoch(self.writer, epoch)
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
