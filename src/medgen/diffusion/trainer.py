@@ -1056,44 +1056,44 @@ class DiffusionTrainer:
         }
 
         # Log results
-        logger.info(f"Test Results ({label}):")
+        logger.info(f"Test Results - {label} ({n_samples} samples):")
         logger.info(f"  MSE:   {metrics['mse']:.6f}")
         logger.info(f"  SSIM:  {metrics['ssim']:.4f}")
         logger.info(f"  PSNR:  {metrics['psnr']:.2f} dB")
         logger.info(f"  LPIPS: {metrics['lpips']:.4f}")
-        logger.info(f"  Samples: {n_samples}")
-
-        # Log to TensorBoard
-        if self.writer is not None:
-            self.writer.add_scalar(f'Test/{label}/MSE', metrics['mse'], 0)
-            self.writer.add_scalar(f'Test/{label}/SSIM', metrics['ssim'], 0)
-            self.writer.add_scalar(f'Test/{label}/PSNR', metrics['psnr'], 0)
-            self.writer.add_scalar(f'Test/{label}/LPIPS', metrics['lpips'], 0)
-
-            # Create and save visualization
-            if sample_originals:
-                all_originals = torch.cat(sample_originals, dim=0)[:max_vis_samples]
-                all_predictions = torch.cat(sample_predictions, dim=0)[:max_vis_samples]
-                fig = self._create_test_figure(all_originals, all_predictions, metrics, label)
-                self.writer.add_figure(f'Test/{label}/reconstructions', fig, 0)
-                plt.close(fig)
-
-                # Also save as image file
-                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
-                fig = self._create_test_figure(all_originals, all_predictions, metrics, label)
-                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Test reconstructions saved to: {fig_path}")
 
         # Save results to JSON
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
         with open(results_path, 'w') as f:
             json.dump(metrics, f, indent=2)
-        logger.info(f"Results saved to: {results_path}")
+        logger.info(f"Test results saved to: {results_path}")
+
+        # Log to TensorBoard
+        tb_prefix = f'test_{label}'
+        if self.writer is not None:
+            self.writer.add_scalar(f'{tb_prefix}/MSE', metrics['mse'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/SSIM', metrics['ssim'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+
+            # Create and save visualization
+            if sample_originals:
+                all_originals = torch.cat(sample_originals, dim=0)[:max_vis_samples]
+                all_predictions = torch.cat(sample_predictions, dim=0)[:max_vis_samples]
+                fig = self._create_test_reconstruction_figure(all_originals, all_predictions, metrics, label)
+                self.writer.add_figure(f'{tb_prefix}/reconstructions', fig, 0)
+                plt.close(fig)
+
+                # Also save as image file
+                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
+                fig = self._create_test_reconstruction_figure(all_originals, all_predictions, metrics, label)
+                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Test reconstructions saved to: {fig_path}")
 
         return metrics
 
-    def _create_test_figure(
+    def _create_test_reconstruction_figure(
         self,
         original: torch.Tensor,
         predicted: torch.Tensor,
