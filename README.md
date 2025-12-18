@@ -347,26 +347,40 @@ IDUN/
 
 ## Data Preprocessing
 
-Tools for preparing medical imaging data (`misc/prepro/`):
+Unified preprocessing tool (`misc/preprocessing/preprocess.py`) with subcommands:
 
 ```bash
-# Main preprocessing: pad + resize to 256x256
-python misc/prepro/pro.py --input /path/to/raw --output /path/to/processed
+# Resize images (pad to 240x240 centered, resize to 256x256)
+python misc/preprocessing/preprocess.py resize -i /path/to/raw -o /path/to/processed
 
-# Interactive slice trimming (remove slices from start)
-python misc/prepro/trim_slices.py
+# Align all modalities to same slice count (truncate/pad to match)
+python misc/preprocessing/preprocess.py align --data_dir /path/to/data -t 150 --dry_run
+python misc/preprocessing/preprocess.py align --data_dir /path/to/data -t 150
 
-# Auto-trim empty slices from volumes
-python misc/prepro/trim_empty_slices.py
+# Pad volumes to target slice count (add zeros at end)
+python misc/preprocessing/preprocess.py pad --data_dir /path/to/data -t 150
 
-# Pad volumes to consistent slice count
-python misc/prepro/pad_slices.py
+# Auto-trim empty slices (detect and remove empty leading/trailing slices)
+python misc/preprocessing/preprocess.py trim-auto --data_dir /path/to/data --trim_trailing
 
-# Split test set into test/val
-python misc/prepro/split_test_val.py
+# Manual trimming (interactively specify slices to remove per patient)
+python misc/preprocessing/preprocess.py trim-manual --data_dir /path/to/data/test
+
+# Split test set into val and test_new
+python misc/preprocessing/preprocess.py split --data_dir /path/to/data --val_ratio 0.5
 ```
 
-Preprocessing pipeline (`pro.py`):
+Available subcommands:
+| Command | Description |
+|---------|-------------|
+| `resize` | Pad to 240x240 (centered) then resize to 256x256 |
+| `align` | Align all modalities per patient to same slice count |
+| `pad` | Pad volumes to target slice count (add zeros) |
+| `trim-auto` | Auto-detect and trim empty slices |
+| `trim-manual` | Interactive per-patient slice trimming |
+| `split` | Split test into val and test_new |
+
+Resize pipeline:
 - **Images**: Load → Pad to 240x240 (centered) → Resize to 256x256 (bilinear)
 - **Segmentation**: Load → Pad to 240x240 (centered) → Resize to 256x256 (nearest) → Binarize
 
