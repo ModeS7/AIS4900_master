@@ -5,7 +5,6 @@ This module provides the VAETrainer class for training AutoencoderKL models
 with the same infrastructure as DiffusionTrainer: TensorBoard logging,
 checkpoint management, multi-GPU support, and metrics tracking.
 """
-import glob
 import json
 import logging
 import os
@@ -23,15 +22,20 @@ from ema_pytorch import EMA
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.amp import autocast
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from monai.losses import PatchAdversarialLoss
 from monai.networks.nets import AutoencoderKL, PatchDiscriminator
+
+from medgen.core import (
+    setup_distributed,
+    create_warmup_cosine_scheduler,
+    wrap_model_for_training,
+)
 from .losses import PerceptualLoss
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .worst_batch import WorstBatchTracker
@@ -40,6 +44,7 @@ from .utils import (
     GradientNormTracker,
     FLOPsTracker,
     create_epoch_iterator,
+    save_full_checkpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,42 +225,7 @@ class VAETrainer:
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
         """Setup distributed training with dynamic port allocation."""
-        if 'SLURM_PROCID' in os.environ:
-            rank = int(os.environ['SLURM_PROCID'])
-            local_rank = int(os.environ['SLURM_LOCALID'])
-
-            if 'SLURM_NTASKS' in os.environ:
-                world_size = int(os.environ['SLURM_NTASKS'])
-            else:
-                nodes = int(os.environ.get('SLURM_JOB_NUM_NODES', 1))
-                tasks_per_node = int(os.environ.get('SLURM_NTASKS_PER_NODE', 1))
-                world_size = nodes * tasks_per_node
-
-            if 'SLURM_JOB_NODELIST' in os.environ:
-                nodelist = os.environ['SLURM_JOB_NODELIST']
-                master_addr = nodelist.split(',')[0].split('[')[0]
-                os.environ['MASTER_ADDR'] = master_addr
-            else:
-                os.environ['MASTER_ADDR'] = os.environ.get('SLURM_LAUNCH_NODE_IPADDR', 'localhost')
-
-            if 'SLURM_JOB_ID' in os.environ:
-                job_id = int(os.environ['SLURM_JOB_ID'])
-                port = 12000 + (job_id % 53000)
-                os.environ['MASTER_PORT'] = str(port)
-                if rank == 0:
-                    logger.info(f"Using dynamic port: {port} (from SLURM_JOB_ID: {job_id})")
-            else:
-                os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
-        else:
-            rank = int(os.environ.get('RANK', 0))
-            local_rank = int(os.environ.get('LOCAL_RANK', 0))
-            world_size = int(os.environ.get('WORLD_SIZE', 1))
-
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f'cuda:{local_rank}')
-        dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=world_size)
-
-        return rank, local_rank, world_size, device
+        return setup_distributed()
 
     def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
         """Initialize VAE model, discriminator, optimizers, and loss functions.
@@ -293,61 +263,41 @@ class VAETrainer:
             ).to(self.device)
 
         # Load pretrained weights if provided (for progressive training)
-        if pretrained_checkpoint and os.path.exists(pretrained_checkpoint):
-            checkpoint = torch.load(pretrained_checkpoint, map_location=self.device)
-            if 'model_state_dict' in checkpoint:
-                raw_model.load_state_dict(checkpoint['model_state_dict'])
+        if pretrained_checkpoint:
+            try:
+                checkpoint = torch.load(pretrained_checkpoint, map_location=self.device)
+                if 'model_state_dict' in checkpoint:
+                    raw_model.load_state_dict(checkpoint['model_state_dict'])
+                    if self.is_main_process:
+                        logger.info(f"Loaded VAE weights from {pretrained_checkpoint}")
+                if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
+                    raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
+                    if self.is_main_process:
+                        logger.info(f"Loaded discriminator weights from {pretrained_checkpoint}")
+            except FileNotFoundError:
                 if self.is_main_process:
-                    logger.info(f"Loaded VAE weights from {pretrained_checkpoint}")
-            if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
-                raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
-                if self.is_main_process:
-                    logger.info(f"Loaded discriminator weights from {pretrained_checkpoint}")
+                    logger.warning(f"Pretrained checkpoint not found: {pretrained_checkpoint}")
 
-        if self.use_multi_gpu:
-            self.model_raw = raw_model
-            ddp_model = DDP(
-                raw_model,
-                device_ids=[self.local_rank],
-                output_device=self.local_rank,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
+        # Wrap VAE model with DDP and/or torch.compile
+        self.model, self.model_raw = wrap_model_for_training(
+            raw_model,
+            use_multi_gpu=self.use_multi_gpu,
+            local_rank=self.local_rank if self.use_multi_gpu else 0,
+            use_compile=self.use_compile,
+            compile_mode="default",
+            is_main_process=self.is_main_process,
+        )
+
+        # Wrap discriminator if GAN is enabled
+        if raw_disc is not None:
+            self.discriminator, self.discriminator_raw = wrap_model_for_training(
+                raw_disc,
+                use_multi_gpu=self.use_multi_gpu,
+                local_rank=self.local_rank if self.use_multi_gpu else 0,
+                use_compile=self.use_compile,
+                compile_mode="default",
+                is_main_process=False,  # Suppress duplicate logging
             )
-            if self.use_compile:
-                self.model = torch.compile(ddp_model, mode="reduce-overhead")
-            else:
-                self.model = ddp_model
-
-            if raw_disc is not None:
-                self.discriminator_raw = raw_disc
-                ddp_disc = DDP(
-                    raw_disc,
-                    device_ids=[self.local_rank],
-                    output_device=self.local_rank,
-                    find_unused_parameters=False,
-                    gradient_as_bucket_view=True,
-                )
-                if self.use_compile:
-                    self.discriminator = torch.compile(ddp_disc, mode="reduce-overhead")
-                else:
-                    self.discriminator = ddp_disc
-            if self.is_main_process:
-                msg = f"Multi-GPU: {'Compiled ' if self.use_compile else ''}DDP VAE"
-                if not self.disable_gan:
-                    msg += " + Discriminator"
-                logger.info(msg)
-        else:
-            self.model_raw = raw_model
-            if self.use_compile:
-                self.model = torch.compile(raw_model, mode="default")
-            else:
-                self.model = raw_model
-            if raw_disc is not None:
-                self.discriminator_raw = raw_disc
-                if self.use_compile:
-                    self.discriminator = torch.compile(raw_disc, mode="default")
-                else:
-                    self.discriminator = raw_disc
 
         # Setup perceptual loss (RadImageNet for 2D medical images)
         # Uses shared wrapper that handles multi-channel inputs
@@ -374,41 +324,16 @@ class VAETrainer:
 
         # Setup LR schedulers (only if not using constant LR)
         if not self.use_constant_lr:
-            # Warmup + Cosine scheduler for generator
-            warmup_scheduler_g = LinearLR(
+            self.lr_scheduler_g = create_warmup_cosine_scheduler(
                 self.optimizer_g,
-                start_factor=0.1,
-                end_factor=1.0,
-                total_iters=self.warmup_epochs
+                warmup_epochs=self.warmup_epochs,
+                total_epochs=self.n_epochs,
             )
-            cosine_scheduler_g = CosineAnnealingLR(
-                self.optimizer_g,
-                T_max=self.n_epochs - self.warmup_epochs,
-                eta_min=1e-6
-            )
-            self.lr_scheduler_g = SequentialLR(
-                self.optimizer_g,
-                schedulers=[warmup_scheduler_g, cosine_scheduler_g],
-                milestones=[self.warmup_epochs]
-            )
-
-            # Warmup + Cosine scheduler for discriminator (only if GAN is enabled)
             if not self.disable_gan:
-                warmup_scheduler_d = LinearLR(
+                self.lr_scheduler_d = create_warmup_cosine_scheduler(
                     self.optimizer_d,
-                    start_factor=0.1,
-                    end_factor=1.0,
-                    total_iters=self.warmup_epochs
-                )
-                cosine_scheduler_d = CosineAnnealingLR(
-                    self.optimizer_d,
-                    T_max=self.n_epochs - self.warmup_epochs,
-                    eta_min=1e-6
-                )
-                self.lr_scheduler_d = SequentialLR(
-                    self.optimizer_d,
-                    schedulers=[warmup_scheduler_d, cosine_scheduler_d],
-                    milestones=[self.warmup_epochs]
+                    warmup_epochs=self.warmup_epochs,
+                    total_epochs=self.n_epochs,
                 )
         else:
             if self.is_main_process:
@@ -448,7 +373,7 @@ class VAETrainer:
         and EMA state from a checkpoint file.
 
         Args:
-            checkpoint_path: Path to the checkpoint file.
+            checkpoint_path: Path to the checkpoint file (.pt).
             load_optimizer: Whether to load optimizer and scheduler states.
                 Set to False when loading for inference or fine-tuning with new optimizer.
 
@@ -461,7 +386,6 @@ class VAETrainer:
         """
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
         # Load VAE model weights
@@ -588,27 +512,6 @@ class VAETrainer:
 
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
-
-    def _cleanup_old_checkpoints(self, keep_n: int = 3) -> None:
-        """Keep only the N most recent epoch checkpoints."""
-        pattern = os.path.join(self.save_dir, "epoch_*.pt")
-        checkpoints = glob.glob(pattern)
-
-        if len(checkpoints) <= keep_n:
-            return
-
-        def get_epoch_num(path: str) -> int:
-            basename = os.path.basename(path)
-            return int(basename.split('_')[1].split('.')[0])
-
-        checkpoints.sort(key=get_epoch_num)
-
-        for old_ckpt in checkpoints[:-keep_n]:
-            try:
-                os.remove(old_ckpt)
-                logger.debug(f"Removed old checkpoint: {old_ckpt}")
-            except OSError as e:
-                logger.warning(f"Failed to remove checkpoint {old_ckpt}: {e}")
 
     def _update_ema(self) -> None:
         """Update EMA model weights."""
@@ -1049,13 +952,11 @@ class VAETrainer:
             filename: Checkpoint filename (without extension).
 
         Returns:
-            Path to saved checkpoint.
+            Path to saved checkpoint (.pt).
         """
-        os.makedirs(self.save_dir, exist_ok=True)
-
         # Include VAE config in checkpoint for easy reconstruction
         n_channels = self.cfg.mode.get('in_channels', 1)
-        vae_config = {
+        model_config = {
             'in_channels': n_channels,
             'out_channels': n_channels,
             'latent_channels': self.latent_channels,
@@ -1067,42 +968,37 @@ class VAETrainer:
             'with_decoder_nonlocal_attn': True,
         }
 
-        disc_config = {
-            'in_channels': n_channels,
-            'channels': self.disc_num_channels,
-            'num_layers_d': self.disc_num_layers,
-        }
-
-        checkpoint = {
-            'model_state_dict': self.model_raw.state_dict(),
-            'optimizer_g_state_dict': self.optimizer_g.state_dict(),
-            'epoch': epoch,
-            'config': vae_config,
+        # Build extra state for VAE-specific components
+        extra_state = {
             'disable_gan': self.disable_gan,
             'use_constant_lr': self.use_constant_lr,
         }
 
         # Add discriminator state if GAN is enabled
         if not self.disable_gan and self.discriminator_raw is not None:
-            checkpoint['discriminator_state_dict'] = self.discriminator_raw.state_dict()
-            checkpoint['disc_config'] = disc_config
+            extra_state['discriminator_state_dict'] = self.discriminator_raw.state_dict()
+            extra_state['disc_config'] = {
+                'in_channels': n_channels,
+                'channels': self.disc_num_channels,
+                'num_layers_d': self.disc_num_layers,
+            }
             if self.optimizer_d is not None:
-                checkpoint['optimizer_d_state_dict'] = self.optimizer_d.state_dict()
+                extra_state['optimizer_d_state_dict'] = self.optimizer_d.state_dict()
+            if not self.use_constant_lr and self.lr_scheduler_d is not None:
+                extra_state['scheduler_d_state_dict'] = self.lr_scheduler_d.state_dict()
 
-        # Add scheduler states if not using constant LR
-        if not self.use_constant_lr:
-            if self.lr_scheduler_g is not None:
-                checkpoint['scheduler_g_state_dict'] = self.lr_scheduler_g.state_dict()
-            if not self.disable_gan and self.lr_scheduler_d is not None:
-                checkpoint['scheduler_d_state_dict'] = self.lr_scheduler_d.state_dict()
-
-        # Add EMA state if enabled
-        if self.ema is not None:
-            checkpoint['ema_state_dict'] = self.ema.state_dict()
-
-        save_path = os.path.join(self.save_dir, f"{filename}.pt")
-        torch.save(checkpoint, save_path)
-        return save_path
+        # Use subprocess-isolated compression to avoid heap corruption
+        return save_full_checkpoint(
+            model=self.model_raw,
+            optimizer=self.optimizer_g,
+            epoch=epoch,
+            save_dir=self.save_dir,
+            filename=filename,
+            model_config=model_config,
+            scheduler=self.lr_scheduler_g if not self.use_constant_lr else None,
+            ema=self.ema,
+            extra_state=extra_state,
+        )
 
     def train(
         self,
@@ -1211,12 +1107,10 @@ class VAETrainer:
                         # Generate visualizations (figures only, metrics already logged above)
                         self.generate_validation_visualizations(train_dataset, epoch)
 
-                        self._save_vae_checkpoint(epoch, f"epoch_{epoch:04d}")
-                        self._cleanup_old_checkpoints(keep_n=3)
-
+                        # Save latest checkpoint (for resuming)
                         self._save_vae_checkpoint(epoch, "latest")
 
-                        # Use validation loss for best model selection (standard practice)
+                        # Save best checkpoint if validation loss improved
                         val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
                         if val_gen_loss < self.best_loss:
                             self.best_loss = val_gen_loss

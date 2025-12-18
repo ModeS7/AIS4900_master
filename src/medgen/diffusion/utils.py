@@ -4,13 +4,11 @@ Utility functions for diffusion model training.
 This module provides utility functions for logging, VRAM monitoring,
 and checkpoint saving/loading. Checkpoint functions are shared between
 DiffusionTrainer and VAETrainer.
-
-Checkpoints are compressed with ZipNN by default for ~17-33% size reduction.
 """
 import logging
 import os
 import time
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -19,102 +17,6 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
-
-# ZipNN compression support (optional but recommended)
-_ZIPNN_AVAILABLE = False
-_zipnn_warned = False
-try:
-    from zipnn import ZipNN
-    _ZIPNN_AVAILABLE = True
-except ImportError:
-    pass
-
-
-def _compress_checkpoint(file_path: str) -> str:
-    """Compress checkpoint file with ZipNN.
-
-    Args:
-        file_path: Path to .pt file to compress.
-
-    Returns:
-        Path to compressed file (.znn extension).
-    """
-    global _zipnn_warned
-
-    if not _ZIPNN_AVAILABLE:
-        if not _zipnn_warned:
-            logger.warning("zipnn not installed - checkpoints will not be compressed. "
-                          "Install with: pip install zipnn")
-            _zipnn_warned = True
-        return file_path
-
-    try:
-        # Use byte-mode API (file-mode is broken in zipnn 0.5.x)
-        from zipnn import ZipNN
-        with open(file_path, 'rb') as f:
-            data = f.read()
-
-        znn = ZipNN()
-        compressed = znn.compress(data)
-        compressed_path = file_path + ".znn"
-
-        with open(compressed_path, 'wb') as f:
-            f.write(compressed)
-
-        # Remove original uncompressed file
-        os.remove(file_path)
-        return compressed_path
-    except Exception as e:
-        logger.warning(f"Failed to compress checkpoint: {e}")
-
-    return file_path
-
-
-def _decompress_checkpoint(file_path: str) -> str:
-    """Decompress checkpoint file if needed.
-
-    Handles both compressed (.znn) and uncompressed (.pt) files.
-
-    Args:
-        file_path: Path to checkpoint (with or without .znn extension).
-
-    Returns:
-        Path to decompressed .pt file.
-
-    Raises:
-        FileNotFoundError: If neither .pt nor .znn file exists.
-    """
-    # Check if path already points to uncompressed file
-    if os.path.exists(file_path) and not file_path.endswith('.znn'):
-        return file_path
-
-    # Check for compressed version
-    znn_path = file_path + ".znn" if not file_path.endswith('.znn') else file_path
-    pt_path = file_path[:-4] if file_path.endswith('.znn') else file_path
-
-    if os.path.exists(znn_path):
-        if not _ZIPNN_AVAILABLE:
-            raise ImportError(f"Checkpoint {znn_path} is compressed but zipnn is not installed. "
-                            "Install with: pip install zipnn")
-        try:
-            # Use byte-mode API (file-mode is broken in zipnn 0.5.x)
-            from zipnn import ZipNN
-            with open(znn_path, 'rb') as f:
-                compressed_data = f.read()
-
-            znn = ZipNN()
-            decompressed = znn.decompress(compressed_data)
-
-            with open(pt_path, 'wb') as f:
-                f.write(decompressed)
-            return pt_path
-        except Exception as e:
-            raise RuntimeError(f"Failed to decompress checkpoint: {e}")
-
-    if os.path.exists(pt_path):
-        return pt_path
-
-    raise FileNotFoundError(f"Checkpoint not found: {file_path} (checked .pt and .znn)")
 
 
 def log_epoch_summary(
@@ -171,8 +73,7 @@ def save_full_checkpoint(
     """Save full training checkpoint with model, optimizer, and scheduler state.
 
     Used for best/latest checkpoints by both DiffusionTrainer and VAETrainer.
-    VAE can pass discriminator state via extra_state. Automatically compressed
-    with ZipNN if available.
+    VAE can pass discriminator state via extra_state.
 
     Args:
         model: Model to save.
@@ -186,7 +87,7 @@ def save_full_checkpoint(
         extra_state: Optional dict of additional state (e.g., discriminator for VAE).
 
     Returns:
-        Full path to the saved checkpoint (.pt or .pt.znn if compressed).
+        Full path to the saved checkpoint (.pt).
     """
     os.makedirs(save_dir, exist_ok=True)
     checkpoint = {
@@ -204,9 +105,7 @@ def save_full_checkpoint(
         checkpoint.update(extra_state)
     save_path = os.path.join(save_dir, f"{filename}.pt")
     torch.save(checkpoint, save_path)
-
-    # Compress with ZipNN (removes original .pt file)
-    return _compress_checkpoint(save_path)
+    return save_path
 
 
 def load_checkpoint(
@@ -223,10 +122,8 @@ def load_checkpoint(
     Used by both DiffusionTrainer and VAETrainer. Returns full checkpoint dict
     so caller can handle extra state (e.g., discriminator for VAE).
 
-    Automatically handles ZipNN compressed checkpoints (.znn extension).
-
     Args:
-        checkpoint_path: Path to the checkpoint file (.pt or .pt.znn).
+        checkpoint_path: Path to the checkpoint file (.pt).
         model: Model to load state into.
         optimizer: Optional optimizer to load state into.
         scheduler: Optional scheduler to load state into.
@@ -240,10 +137,10 @@ def load_checkpoint(
     Raises:
         FileNotFoundError: If checkpoint file doesn't exist.
     """
-    # Handle compressed checkpoints (decompresses if needed)
-    actual_path = _decompress_checkpoint(checkpoint_path)
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    checkpoint = torch.load(actual_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
     # Load model state
     model.load_state_dict(checkpoint['model_state_dict'], strict=strict)

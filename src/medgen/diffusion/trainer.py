@@ -44,7 +44,6 @@ from .utils import (
     save_full_checkpoint,
     create_epoch_iterator,
     FLOPsTracker,
-    _decompress_checkpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -944,12 +943,11 @@ class DiffusionTrainer:
         # Load checkpoint if specified
         if checkpoint_name is not None:
             checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
-            try:
-                actual_path = _decompress_checkpoint(checkpoint_path)
-                checkpoint = torch.load(actual_path, map_location=self.device)
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, map_location=self.device)
                 self.model_raw.load_state_dict(checkpoint['model_state_dict'])
                 logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
-            except FileNotFoundError:
+            else:
                 logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
                 checkpoint_name = "current"
 
