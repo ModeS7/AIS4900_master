@@ -3,6 +3,8 @@ CUDA optimization utilities.
 
 This module provides shared CUDA configuration for training and inference.
 """
+import warnings
+
 import torch
 import torch._dynamo.config
 
@@ -15,7 +17,13 @@ def setup_cuda_optimizations() -> None:
     - cuDNN autotuning for optimal convolution algorithms
     - Flash/memory-efficient scaled dot-product attention
     - Increased dynamo cache size for torch.compile
+
+    Also suppresses noisy library warnings (MONAI cache_dir, TorchVision deprecation).
     """
+    # Suppress noisy library warnings
+    warnings.filterwarnings("ignore", message="Setting cache_dir to")  # MONAI
+    warnings.filterwarnings("ignore", message="The parameter 'pretrained' is deprecated")  # TorchVision
+    warnings.filterwarnings("ignore", message="Arguments other than a weight enum")  # TorchVision
     # cuDNN settings
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True

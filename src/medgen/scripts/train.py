@@ -24,12 +24,22 @@ import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, ModeType, setup_cuda_optimizations
+from medgen.core import (
+    DEFAULT_DUAL_IMAGE_KEYS,
+    ModeType,
+    setup_cuda_optimizations,
+    validate_common_config,
+    validate_model_config,
+    validate_diffusion_config,
+    run_validation,
+)
 from medgen.data import (
     create_dataloader,
     create_dual_image_dataloader,
     create_validation_dataloader,
     create_dual_image_validation_dataloader,
+    create_test_dataloader,
+    create_dual_image_test_dataloader,
 )
 from medgen.diffusion import DiffusionTrainer
 from medgen.diffusion.spaces import PixelSpace, load_vae_for_latent_space
@@ -49,41 +59,11 @@ def validate_config(cfg: DictConfig) -> None:
     Raises:
         ValueError: If any configuration value is invalid.
     """
-    errors = []
-
-    # Training params
-    if cfg.training.epochs <= 0:
-        errors.append(f"epochs must be > 0, got {cfg.training.epochs}")
-    if cfg.training.batch_size <= 0:
-        errors.append(f"batch_size must be > 0, got {cfg.training.batch_size}")
-    if cfg.training.learning_rate <= 0:
-        errors.append(f"learning_rate must be > 0, got {cfg.training.learning_rate}")
-
-    # Model params
-    if cfg.model.image_size <= 0:
-        errors.append(f"image_size must be > 0, got {cfg.model.image_size}")
-    if cfg.model.image_size & (cfg.model.image_size - 1) != 0:
-        log.warning(f"image_size {cfg.model.image_size} is not a power of 2 (may cause issues)")
-
-    # Strategy
-    if cfg.strategy.name not in ['ddpm', 'rflow']:
-        errors.append(f"Unknown strategy: {cfg.strategy.name}")
-
-    # Mode
-    valid_modes = [m.value for m in ModeType]
-    if cfg.mode.name not in valid_modes:
-        errors.append(f"Unknown mode: {cfg.mode.name}. Valid modes: {valid_modes}")
-
-    # Paths - check if data directory exists
-    if not os.path.exists(cfg.paths.data_dir):
-        errors.append(f"Data directory does not exist: {cfg.paths.data_dir}")
-
-    # Check CUDA availability
-    if not torch.cuda.is_available():
-        errors.append("CUDA is not available. Training requires GPU.")
-
-    if errors:
-        raise ValueError("Configuration validation failed:\n  - " + "\n  - ".join(errors))
+    run_validation(cfg, [
+        validate_common_config,
+        validate_model_config,
+        validate_diffusion_config,
+    ])
 
 
 @hydra.main(version_base=None, config_path="../../../configs", config_name="config")
@@ -133,6 +113,7 @@ def main(cfg: DictConfig) -> None:
     trainer = DiffusionTrainer(cfg, space=space)
 
     # Create dataloader based on mode
+    augment = cfg.training.get('augment', True)
     if mode == ModeType.DUAL:
         image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
         dataloader, train_dataset = create_dual_image_dataloader(
@@ -141,7 +122,8 @@ def main(cfg: DictConfig) -> None:
             conditioning='seg',
             use_distributed=use_multi_gpu,
             rank=trainer.rank if use_multi_gpu else 0,
-            world_size=trainer.world_size if use_multi_gpu else 1
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment
         )
     else:
         # seg or bravo
@@ -151,7 +133,8 @@ def main(cfg: DictConfig) -> None:
             image_type=image_type,
             use_distributed=use_multi_gpu,
             rank=trainer.rank if use_multi_gpu else 0,
-            world_size=trainer.world_size if use_multi_gpu else 1
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment
         )
 
     log.info(f"Training dataset: {len(train_dataset)} slices")
@@ -182,7 +165,29 @@ def main(cfg: DictConfig) -> None:
     # Train with optional validation loader
     trainer.train(dataloader, train_dataset, val_loader=val_loader)
 
-    # Close TensorBoard writer after training
+    # Create test dataloader and evaluate (if test_new/ directory exists)
+    if mode == ModeType.DUAL:
+        test_result = create_dual_image_test_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            conditioning='seg',
+        )
+    else:
+        test_result = create_test_dataloader(
+            cfg=cfg,
+            image_type=image_type,
+        )
+
+    if test_result is not None:
+        test_loader, test_dataset = test_result
+        log.info(f"Test dataset: {len(test_dataset)} slices")
+        # Evaluate on both best and latest checkpoints
+        trainer.evaluate_test_set(test_loader, checkpoint_name="best")
+        trainer.evaluate_test_set(test_loader, checkpoint_name="latest")
+    else:
+        log.info("No test_new/ directory found - skipping test evaluation")
+
+    # Close TensorBoard writer after all logging
     trainer.close_writer()
 
 

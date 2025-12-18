@@ -17,8 +17,13 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from scipy import ndimage
-from skimage.metrics import structural_similarity as ssim_skimage
 from torch.utils.tensorboard import SummaryWriter
+
+from .quality_metrics import (
+    compute_ssim as _compute_ssim,
+    compute_psnr as _compute_psnr,
+    compute_lpips as _compute_lpips,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,17 +80,6 @@ class MetricsTracker:
         self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
 
-        # LPIPS model (initialized lazily)
-        self._lpips_model: Optional[Any] = None
-        self._lpips_initialized: bool = False
-
-        # FLOPs tracking
-        self._flops_measured: bool = False
-        self.forward_flops: int = 0  # FLOPs for one forward pass
-        self.epoch_flops: int = 0  # Accumulated FLOPs this epoch
-        self.epoch_steps: int = 0  # Steps this epoch
-        self.total_flops: int = 0  # Total FLOPs across all epochs
-
         # Timestep loss tracking
         self.num_timestep_bins: int = 10
         self._timestep_accum_initialized: bool = False
@@ -129,59 +123,36 @@ class MetricsTracker:
         """Set scheduler reference for SNR weight computation."""
         self.scheduler = scheduler
 
-    def measure_forward_flops(
-        self,
-        model: torch.nn.Module,
-        sample_input: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> int:
-        """Measure FLOPs for a single forward pass using torch.profiler.
+    def init_accumulators(self) -> None:
+        """Initialize all GPU accumulators.
 
-        This should be called once during setup with a representative batch.
-        The measured FLOPs are stored and used to estimate total FLOPs per step
-        (forward + backward ≈ 3x forward FLOPs).
-
-        Args:
-            model: The diffusion model (UNet).
-            sample_input: Sample model input tensor [B, C, H, W] (includes conditioning).
-            timesteps: Sample timesteps tensor [B].
-
-        Returns:
-            FLOPs for one forward pass.
+        Call this after construction, before training begins. Makes initialization
+        explicit rather than lazy (hidden in first track_step call).
         """
-        if not self.log_flops:
-            return 0
+        # Timestep loss accumulators
+        if not self._timestep_accum_initialized:
+            self.timestep_loss_sum = torch.zeros(self.num_timestep_bins, device=self.device)
+            self.timestep_loss_count = torch.zeros(self.num_timestep_bins, device=self.device, dtype=torch.long)
+            self._timestep_accum_initialized = True
 
-        if self._flops_measured:
-            return self.forward_flops
+        # Regional loss accumulators
+        if not self._regional_accum_initialized:
+            self._init_regional_accumulators()
 
-        model.eval()
-        with torch.no_grad():
-            from torch.profiler import profile, ProfilerActivity
+        # Timestep-region accumulators
+        if not self._timestep_region_accum_initialized:
+            self._tr_tumor_sum = torch.zeros(self.num_timestep_bins, device=self.device)
+            self._tr_tumor_count = torch.zeros(self.num_timestep_bins, device=self.device, dtype=torch.long)
+            self._tr_bg_sum = torch.zeros(self.num_timestep_bins, device=self.device)
+            self._tr_bg_count = torch.zeros(self.num_timestep_bins, device=self.device, dtype=torch.long)
+            self.timestep_region_loss_sum = None
+            self.timestep_region_loss_count = None
+            self._timestep_region_accum_initialized = True
 
-            # Run profiler to count FLOPs
-            with profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                with_flops=True,
-            ) as prof:
-                _ = model(x=sample_input, timesteps=timesteps)
-
-            # Sum all FLOPs from profiler events
-            total_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
-
-        model.train()
-
-        self.forward_flops = total_flops
-        self._flops_measured = True
-
-        if self.is_main_process and total_flops > 0:
-            batch_size = sample_input.shape[0]
-            flops_per_sample = total_flops / batch_size
-            gflops_per_sample = flops_per_sample / 1e9
-            logger.info(f"Model FLOPs measured: {gflops_per_sample:.2f} GFLOPs/sample "
-                       f"(forward), ~{gflops_per_sample * 3:.2f} GFLOPs/sample (train step)")
-
-        return total_flops
+        # Gradient norm accumulators
+        if self.grad_norm_sum is None:
+            self.grad_norm_sum = torch.tensor(0.0, device=self.device)
+            self.grad_norm_max = torch.tensor(0.0, device=self.device)
 
     def _compute_tumor_size_thresholds(self) -> Dict[str, Tuple[float, float]]:
         """Compute tumor size thresholds based on image resolution.
@@ -341,13 +312,6 @@ class MetricsTracker:
                 'loss': loss,
             }
 
-        # Track FLOPs (no GPU sync - just integer arithmetic)
-        if self.log_flops and self._flops_measured:
-            # Training step ≈ 3x forward FLOPs (forward + backward)
-            # forward_flops was measured for one batch, so just multiply by 3
-            self.epoch_flops += self.forward_flops * 3
-            self.epoch_steps += 1
-
     def _track_timestep_loss_batch(
         self,
         timesteps: torch.Tensor,
@@ -495,11 +459,9 @@ class MetricsTracker:
         if not self.is_main_process:
             return
 
-        # Always log grad norms and FLOPs (lightweight)
+        # Always log grad norms (lightweight)
         if self.log_grad_norm:
             self._log_grad_norms(epoch)
-        if self.log_flops:
-            self._log_flops(epoch)
 
         # Other metrics only at val_interval
         if log_all:
@@ -524,30 +486,6 @@ class MetricsTracker:
         self.grad_norm_sum = torch.tensor(0.0, device=self.device)
         self.grad_norm_max = torch.tensor(0.0, device=self.device)
         self.grad_norm_count = 0
-
-    def _log_flops(self, epoch: int) -> None:
-        """Log FLOPs statistics to TensorBoard and update totals."""
-        if self.epoch_steps == 0 or not self._flops_measured:
-            return
-
-        # Calculate metrics
-        tflops_epoch = self.epoch_flops / 1e12
-        gflops_per_step = (self.epoch_flops / self.epoch_steps) / 1e9
-        self.total_flops += self.epoch_flops
-
-        # Log to TensorBoard
-        if self.writer is not None:
-            self.writer.add_scalar('compute/TFLOPs_epoch', tflops_epoch, epoch)
-            self.writer.add_scalar('compute/GFLOPs_per_step', gflops_per_step, epoch)
-            self.writer.add_scalar('compute/TFLOPs_total', self.total_flops / 1e12, epoch)
-
-        # Log to console on first epoch
-        if epoch == 0:
-            logger.info(f"Epoch compute: {tflops_epoch:.2f} TFLOPs ({gflops_per_step:.1f} GFLOPs/step)")
-
-        # Reset epoch counters
-        self.epoch_flops = 0
-        self.epoch_steps = 0
 
     def _log_timestep_losses(self, epoch: int) -> None:
         """Save timestep loss distribution to JSON file."""
@@ -756,73 +694,35 @@ class MetricsTracker:
     def compute_ssim(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
         """Compute SSIM between generated and reference images.
 
+        Uses shared implementation from quality_metrics module.
+
         Args:
-            generated: Generated images [B, 1, H, W].
-            reference: Reference images [B, 1, H, W].
+            generated: Generated images [B, C, H, W].
+            reference: Reference images [B, C, H, W].
 
         Returns:
             Average SSIM across batch.
         """
-        ssim_values = []
-        gen_np = generated.cpu().numpy()
-        ref_np = reference.cpu().numpy()
-
-        for i in range(gen_np.shape[0]):
-            gen_img = gen_np[i, 0]
-            ref_img = ref_np[i, 0]
-            gen_img = np.clip(gen_img, 0, 1)
-            ref_img = np.clip(ref_img, 0, 1)
-            ssim_val = ssim_skimage(gen_img, ref_img, data_range=1.0)
-            ssim_values.append(ssim_val)
-
-        return float(np.mean(ssim_values))
+        return _compute_ssim(generated, reference)
 
     def compute_psnr(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
         """Compute PSNR between generated and reference images.
 
+        Uses shared implementation from quality_metrics module.
+
         Args:
-            generated: Generated images [B, 1, H, W].
-            reference: Reference images [B, 1, H, W].
+            generated: Generated images [B, C, H, W].
+            reference: Reference images [B, C, H, W].
 
         Returns:
             Average PSNR across batch.
         """
-        gen_np = np.clip(generated.cpu().numpy(), 0, 1)
-        ref_np = np.clip(reference.cpu().numpy(), 0, 1)
-
-        mse = np.mean((gen_np - ref_np) ** 2)
-        if mse < 1e-10:
-            return 100.0
-
-        psnr = 10 * np.log10(1.0 / mse)
-        return float(psnr)
-
-    def _init_lpips(self) -> None:
-        """Initialize LPIPS model lazily on first use."""
-        if self._lpips_initialized:
-            return
-
-        if not self.log_lpips:
-            self._lpips_initialized = True
-            return
-
-        try:
-            import lpips
-            self._lpips_model = lpips.LPIPS(net='alex', verbose=False).to(self.device)
-            self._lpips_model.eval()
-            for param in self._lpips_model.parameters():
-                param.requires_grad = False
-            if self.is_main_process:
-                logger.info("LPIPS metric initialized (AlexNet)")
-        except ImportError:
-            if self.is_main_process:
-                logger.warning("lpips package not installed - LPIPS metric disabled")
-            self.log_lpips = False
-
-        self._lpips_initialized = True
+        return _compute_psnr(generated, reference)
 
     def compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
         """Compute LPIPS (perceptual similarity) between generated and reference images.
+
+        Uses shared implementation from quality_metrics module.
 
         Args:
             generated: Generated images [B, C, H, W].
@@ -831,34 +731,9 @@ class MetricsTracker:
         Returns:
             Average LPIPS across batch (lower is better, 0 = identical).
         """
-        # Initialize LPIPS model lazily
-        if not self._lpips_initialized:
-            self._init_lpips()
-
-        if self._lpips_model is None:
+        if not self.log_lpips:
             return 0.0
-
-        # LPIPS expects images in [-1, 1] range and RGB (3 channels)
-        gen = generated.float()
-        ref = reference.float()
-
-        # Normalize to [-1, 1]
-        gen = gen * 2.0 - 1.0
-        ref = ref * 2.0 - 1.0
-
-        # Handle single channel by replicating to 3 channels
-        if gen.shape[1] == 1:
-            gen = gen.repeat(1, 3, 1, 1)
-            ref = ref.repeat(1, 3, 1, 1)
-        elif gen.shape[1] > 3:
-            # For multi-channel, just use first channel replicated
-            gen = gen[:, :1].repeat(1, 3, 1, 1)
-            ref = ref[:, :1].repeat(1, 3, 1, 1)
-
-        with torch.no_grad():
-            lpips_values = self._lpips_model(gen, ref)
-
-        return float(lpips_values.mean().item())
+        return _compute_lpips(generated, reference, device=self.device)
 
     def compute_boundary_sharpness(
         self,

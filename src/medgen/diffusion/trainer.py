@@ -5,31 +5,32 @@ This module provides the DiffusionTrainer class for training diffusion models
 with various strategies (DDPM, Rectified Flow) and modes (segmentation,
 conditional single, conditional dual).
 """
-import glob
 import json
 import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
-import torch._dynamo.config
 import torch.distributed as dist
 from ema_pytorch import EMA
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.amp import autocast
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LRScheduler
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType
+from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
 from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
@@ -37,7 +38,14 @@ from .metrics import MetricsTracker
 from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
-from .utils import get_vram_usage, log_epoch_summary, save_checkpoint, save_model_only
+from .utils import (
+    get_vram_usage,
+    log_epoch_summary,
+    save_full_checkpoint,
+    create_epoch_iterator,
+    FLOPsTracker,
+    _decompress_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +152,9 @@ class DiffusionTrainer:
         # Validation loader (set in train())
         self.val_loader: Optional[DataLoader] = None
 
+        # FLOPs tracking using shared utility
+        self._flops_tracker = FLOPsTracker()
+
         # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
 
@@ -175,42 +186,7 @@ class DiffusionTrainer:
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
         """Setup distributed training with dynamic port allocation."""
-        if 'SLURM_PROCID' in os.environ:
-            rank = int(os.environ['SLURM_PROCID'])
-            local_rank = int(os.environ['SLURM_LOCALID'])
-
-            if 'SLURM_NTASKS' in os.environ:
-                world_size = int(os.environ['SLURM_NTASKS'])
-            else:
-                nodes = int(os.environ.get('SLURM_JOB_NUM_NODES', 1))
-                tasks_per_node = int(os.environ.get('SLURM_NTASKS_PER_NODE', 1))
-                world_size = nodes * tasks_per_node
-
-            if 'SLURM_JOB_NODELIST' in os.environ:
-                nodelist = os.environ['SLURM_JOB_NODELIST']
-                master_addr = nodelist.split(',')[0].split('[')[0]
-                os.environ['MASTER_ADDR'] = master_addr
-            else:
-                os.environ['MASTER_ADDR'] = os.environ.get('SLURM_LAUNCH_NODE_IPADDR', 'localhost')
-
-            if 'SLURM_JOB_ID' in os.environ:
-                job_id = int(os.environ['SLURM_JOB_ID'])
-                port = 12000 + (job_id % 53000)
-                os.environ['MASTER_PORT'] = str(port)
-                if rank == 0:
-                    logger.info(f"Using dynamic port: {port} (from SLURM_JOB_ID: {job_id})")
-            else:
-                os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
-        else:
-            rank = int(os.environ.get('RANK', 0))
-            local_rank = int(os.environ.get('LOCAL_RANK', 0))
-            world_size = int(os.environ.get('WORLD_SIZE', 1))
-
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f'cuda:{local_rank}')
-        dist.init_process_group(backend='nccl', init_method='env://', rank=rank, world_size=world_size)
-
-        return rank, local_rank, world_size, device
+        return setup_distributed()
 
     def setup_model(self, train_dataset: Dataset) -> None:
         """Initialize model, optimizer, and loss functions."""
@@ -239,33 +215,21 @@ class DiffusionTrainer:
             num_head_channels=num_head_channels
         ).to(self.device)
 
-        if self.use_multi_gpu:
-            self.model_raw = raw_model
+        # Determine if DDPOptimizer should be disabled for large models
+        disable_ddp_opt = self.cfg.training.get('disable_ddp_optimizer', False)
+        if self.mode_name == ModeType.DUAL and self.image_size >= 256:
+            disable_ddp_opt = True
 
-            # Disable DDP optimizer for large models to avoid compilation issues
-            # Can be forced via config: training.disable_ddp_optimizer=true
-            disable_ddp_opt = self.cfg.training.get('disable_ddp_optimizer', False)
-            if disable_ddp_opt or (self.mode_name == ModeType.DUAL and self.image_size >= 256):
-                torch._dynamo.config.optimize_ddp = False
-                if self.is_main_process:
-                    logger.info("Disabled DDPOptimizer for large model (compilation workaround)")
-
-            ddp_model = DDP(
-                raw_model,
-                device_ids=[self.local_rank],
-                output_device=self.local_rank,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-                static_graph=False
-            )
-
-            self.model = torch.compile(ddp_model, mode="reduce-overhead")
-
-            if self.is_main_process:
-                logger.info("Multi-GPU: Compiled DDP wrapper with mode='reduce-overhead'")
-        else:
-            self.model_raw = raw_model
-            self.model = torch.compile(raw_model, mode="default")
+        # Wrap model with DDP and/or torch.compile using shared utility
+        self.model, self.model_raw = wrap_model_for_training(
+            raw_model,
+            use_multi_gpu=self.use_multi_gpu,
+            local_rank=self.local_rank if self.use_multi_gpu else 0,
+            use_compile=True,
+            compile_mode="default",
+            disable_ddp_optimizer=disable_ddp_opt,
+            is_main_process=self.is_main_process,
+        )
 
         # Setup perceptual loss (shared wrapper handles multi-channel inputs)
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
@@ -297,22 +261,12 @@ class DiffusionTrainer:
         # Setup optimizer
         self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
 
-        # Warmup + Cosine scheduler
-        warmup_scheduler = LinearLR(
+        # Warmup + Cosine scheduler (using shared utility)
+        self.lr_scheduler = create_warmup_cosine_scheduler(
             self.optimizer,
-            start_factor=0.1,
-            end_factor=1.0,
-            total_iters=self.warmup_epochs
-        )
-        cosine_scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.n_epochs - self.warmup_epochs,
-            eta_min=1e-6
-        )
-        self.lr_scheduler = SequentialLR(
-            self.optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[self.warmup_epochs]
+            warmup_epochs=self.warmup_epochs,
+            total_epochs=self.n_epochs,
+            eta_min=1e-6,
         )
 
         # Create EMA wrapper if enabled
@@ -342,6 +296,9 @@ class DiffusionTrainer:
         # Save metadata
         if self.is_main_process:
             self._save_metadata()
+
+        # Initialize metrics accumulators (explicit, not lazy)
+        self.metrics.init_accumulators()
 
     def _setup_compiled_forward(self, enabled: bool) -> None:
         """Setup compiled forward functions for fused model + loss computation."""
@@ -482,6 +439,18 @@ class DiffusionTrainer:
 
         logger.info(f"Config saved to: {config_path}")
 
+    def _get_model_config(self) -> Dict[str, Any]:
+        """Get model architecture config for checkpoint saving."""
+        model_cfg = self.mode.get_model_config()
+        return {
+            'channels': list(self.cfg.model.channels),
+            'attention_levels': list(self.cfg.model.attention_levels),
+            'num_res_blocks': self.cfg.model.num_res_blocks,
+            'num_head_channels': self.cfg.model.num_head_channels,
+            'in_channels': model_cfg['in_channels'],
+            'out_channels': model_cfg['out_channels'],
+        }
+
     def _update_metadata_final(self, final_loss: float, final_mse: float, total_time: float) -> None:
         """Update metadata.json with final training results."""
         metadata_path = os.path.join(self.save_dir, 'metadata.json')
@@ -504,31 +473,50 @@ class DiffusionTrainer:
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
-    def _cleanup_old_checkpoints(self, keep_n: int = 3) -> None:
-        """Keep only the N most recent epoch checkpoints."""
-        pattern = os.path.join(self.save_dir, "epoch_*.pt")
-        checkpoints = glob.glob(pattern)
-
-        if len(checkpoints) <= keep_n:
-            return
-
-        def get_epoch_num(path: str) -> int:
-            basename = os.path.basename(path)
-            return int(basename.split('_')[1].split('.')[0])
-
-        checkpoints.sort(key=get_epoch_num)
-
-        for old_ckpt in checkpoints[:-keep_n]:
-            try:
-                os.remove(old_ckpt)
-                logger.debug(f"Removed old checkpoint: {old_ckpt}")
-            except OSError as e:
-                logger.warning(f"Failed to remove checkpoint {old_ckpt}: {e}")
-
     def _update_ema(self) -> None:
         """Update EMA model weights."""
         if self.ema is not None:
             self.ema.update()
+
+    def _compute_min_snr_weighted_mse(
+        self,
+        prediction: torch.Tensor,
+        images: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute MSE loss with Min-SNR weighting.
+
+        Applies per-sample SNR-based weights to the MSE loss to prevent
+        high-noise timesteps from dominating training.
+
+        Args:
+            prediction: Model prediction (noise or velocity).
+            images: Original clean images.
+            noise: Added noise.
+            timesteps: Diffusion timesteps for each sample.
+
+        Returns:
+            Weighted MSE loss scalar.
+        """
+        snr_weights = self.metrics.compute_snr_weights(timesteps)
+
+        if isinstance(images, dict):
+            keys = list(images.keys())
+            if self.strategy_name == 'rflow':
+                target_0 = images[keys[0]] - noise[keys[0]]
+                target_1 = images[keys[1]] - noise[keys[1]]
+            else:
+                target_0, target_1 = noise[keys[0]], noise[keys[1]]
+            pred_0, pred_1 = prediction[:, 0:1, :, :], prediction[:, 1:2, :, :]
+            mse_0 = ((pred_0 - target_0) ** 2).mean(dim=(1, 2, 3))
+            mse_1 = ((pred_1 - target_1) ** 2).mean(dim=(1, 2, 3))
+            mse_per_sample = (mse_0 + mse_1) / 2
+        else:
+            target = images - noise if self.strategy_name == 'rflow' else noise
+            mse_per_sample = ((prediction - target) ** 2).mean(dim=(1, 2, 3))
+
+        return (mse_per_sample * snr_weights).mean()
 
     def train_step(self, batch: torch.Tensor) -> Tuple[float, float, float]:
         """Execute a single training step."""
@@ -595,34 +583,9 @@ class DiffusionTrainer:
                 mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                 if self.use_min_snr:
-                    # Compute per-sample MSE for proper Min-SNR weighting
-                    snr_weights = self.metrics.compute_snr_weights(timesteps)  # [B]
-
-                    if isinstance(images, dict):
-                        # Dual-image case
-                        keys = list(images.keys())
-                        if self.strategy_name == 'rflow':
-                            target_0 = images[keys[0]] - noise[keys[0]]
-                            target_1 = images[keys[1]] - noise[keys[1]]
-                        else:
-                            target_0 = noise[keys[0]]
-                            target_1 = noise[keys[1]]
-                        pred_0 = prediction[:, 0:1, :, :]
-                        pred_1 = prediction[:, 1:2, :, :]
-                        mse_per_sample_0 = ((pred_0 - target_0) ** 2).mean(dim=(1, 2, 3))
-                        mse_per_sample_1 = ((pred_1 - target_1) ** 2).mean(dim=(1, 2, 3))
-                        mse_per_sample = (mse_per_sample_0 + mse_per_sample_1) / 2  # [B]
-                    else:
-                        # Single-image case
-                        if self.strategy_name == 'rflow':
-                            target = images - noise
-                        else:
-                            target = noise
-                        mse_per_sample = ((prediction - target) ** 2).mean(dim=(1, 2, 3))  # [B]
-
-                    # Apply per-sample weights then average
-                    weighted_mse = mse_per_sample * snr_weights  # [B]
-                    mse_loss = weighted_mse.mean()  # scalar
+                    mse_loss = self._compute_min_snr_weighted_mse(
+                        prediction, images, noise, timesteps
+                    )
 
                 # Compute perceptual loss (decode for latent space)
                 if self.perceptual_weight > 0:
@@ -666,31 +629,37 @@ class DiffusionTrainer:
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using the first batch (one-time profiling)."""
-        if not self.metrics.log_flops or self.metrics._flops_measured:
+        if not self.metrics.log_flops:
             return
 
-        # Get first batch
-        batch = next(iter(train_loader))
-        prepared = self.mode.prepare_batch(batch, self.device)
-        images = prepared['images']
-        labels_dict = {'labels': prepared.get('labels')}
+        try:
+            # Get first batch
+            batch = next(iter(train_loader))
+            prepared = self.mode.prepare_batch(batch, self.device)
+            images = prepared['images']
+            labels_dict = {'labels': prepared.get('labels')}
 
-        # Create sample input like in train_step
-        if isinstance(images, dict):
-            noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
-        else:
-            noise = torch.randn_like(images).to(self.device)
+            # Create sample input like in train_step
+            if isinstance(images, dict):
+                noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
+            else:
+                noise = torch.randn_like(images).to(self.device)
 
-        timesteps = self.strategy.sample_timesteps(images)
-        noisy_images = self.strategy.add_noise(images, noise, timesteps)
-        model_input = self.mode.format_model_input(noisy_images, labels_dict)
+            timesteps = self.strategy.sample_timesteps(images)
+            noisy_images = self.strategy.add_noise(images, noise, timesteps)
+            model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
-        # Measure FLOPs (model_input already includes conditioning via format_model_input)
-        self.metrics.measure_forward_flops(
-            self.model_raw,
-            model_input,
-            timesteps,
-        )
+            # Measure FLOPs using shared utility
+            self._flops_tracker.measure(
+                self.model_raw,
+                model_input,
+                steps_per_epoch=len(train_loader),
+                timesteps=timesteps,
+                is_main_process=self.is_main_process,
+            )
+        except Exception as e:
+            if self.is_main_process:
+                logger.warning(f"Could not measure FLOPs: {e}")
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
         """Train the model for one epoch."""
@@ -699,24 +668,19 @@ class DiffusionTrainer:
         epoch_mse_loss = 0
         epoch_perceptual_loss = 0
 
-        use_progress_bars = (not self.is_cluster) and self.is_main_process
+        # Create progress bar iterator (tqdm for main process on non-cluster, plain iterator otherwise)
+        epoch_iter = create_epoch_iterator(data_loader, epoch, self.is_cluster, self.is_main_process)
 
-        if use_progress_bars:
-            progress_bar = tqdm(enumerate(data_loader), total=len(data_loader), ncols=100)
-            progress_bar.set_description(f"Epoch {epoch}")
-            steps_iter = progress_bar
-        else:
-            steps_iter = enumerate(data_loader)
-
-        for step, batch in steps_iter:
+        for step, batch in enumerate(epoch_iter):
             loss, mse_loss, p_loss = self.train_step(batch)
 
             epoch_loss += loss
             epoch_mse_loss += mse_loss
             epoch_perceptual_loss += p_loss
 
-            if use_progress_bars:
-                progress_bar.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
+            # Update progress bar if available (tqdm instance has set_postfix)
+            if hasattr(epoch_iter, 'set_postfix'):
+                epoch_iter.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
 
             if epoch == 1 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
@@ -746,6 +710,10 @@ class DiffusionTrainer:
         total_psnr = 0.0
         total_lpips = 0.0
         n_batches = 0
+
+        # Mark CUDA graph step boundary to prevent tensor caching issues
+        # when perceptual loss (compiled with torch.compile) is called during validation
+        torch.compiler.cudagraph_mark_step_begin()
 
         with torch.no_grad():
             for batch in self.val_loader:
@@ -813,6 +781,11 @@ class DiffusionTrainer:
                 n_batches += 1
 
         model_to_use.train()
+
+        # Handle empty validation set
+        if n_batches == 0:
+            logger.warning("Validation set is empty, skipping metrics")
+            return {}
 
         metrics = {
             'mse': total_mse / n_batches,
@@ -891,6 +864,9 @@ class DiffusionTrainer:
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
                     self.metrics.log_epoch(epoch, log_all=is_val_epoch)
 
+                    # Log FLOPs
+                    self._flops_tracker.log_epoch(self.writer, epoch)
+
                     # Log worst batch at val_interval
                     if is_val_epoch and self.metrics.log_worst_batch:
                         worst_data = self.metrics.get_worst_batch_data()
@@ -901,22 +877,21 @@ class DiffusionTrainer:
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self.visualizer.generate_samples(model_to_use, train_dataset, epoch)
 
-                        filename = f"epoch_{epoch:04d}"
-                        save_model_only(self.model_raw, epoch, self.save_dir, filename, self.ema)
-                        self._cleanup_old_checkpoints(keep_n=3)
+                        model_config = self._get_model_config()
 
-                        save_checkpoint(
-                            self.model_raw, self.optimizer, self.lr_scheduler,
-                            epoch, self.save_dir, "latest", self.ema
+                        # Latest checkpoint (full with optimizer/scheduler)
+                        save_full_checkpoint(
+                            self.model_raw, self.optimizer, epoch, self.save_dir, "latest",
+                            model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
                         )
 
                         # Use validation loss for best model selection (fallback to train if no val_loader)
                         loss_for_selection = val_metrics.get('total', avg_loss)
                         if loss_for_selection < self.best_loss:
                             self.best_loss = loss_for_selection
-                            save_checkpoint(
-                                self.model_raw, self.optimizer, self.lr_scheduler,
-                                epoch, self.save_dir, "best", self.ema
+                            save_full_checkpoint(
+                                self.model_raw, self.optimizer, epoch, self.save_dir, "best",
+                                model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
                             )
                             loss_type = "val" if val_metrics else "train"
                             logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
@@ -939,3 +914,235 @@ class DiffusionTrainer:
         if self.writer is not None:
             self.writer.close()
             self.writer = None
+
+    def evaluate_test_set(
+        self,
+        test_loader: DataLoader,
+        checkpoint_name: Optional[str] = None
+    ) -> Dict[str, float]:
+        """Evaluate diffusion model on test set.
+
+        Runs inference on the entire test set and computes metrics:
+        - MSE (prediction error)
+        - SSIM (Structural Similarity Index)
+        - PSNR (Peak Signal-to-Noise Ratio)
+        - LPIPS (Learned Perceptual Image Patch Similarity)
+
+        Results are saved to test_results_{checkpoint_name}.json and logged to TensorBoard.
+
+        Args:
+            test_loader: DataLoader for test set.
+            checkpoint_name: Name of checkpoint to load ("best", "latest", or None
+                for current model state).
+
+        Returns:
+            Dict with test metrics: 'mse', 'ssim', 'psnr', 'lpips', 'n_samples'.
+        """
+        if not self.is_main_process:
+            return {}
+
+        # Load checkpoint if specified
+        if checkpoint_name is not None:
+            checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
+            try:
+                actual_path = _decompress_checkpoint(checkpoint_path)
+                checkpoint = torch.load(actual_path, map_location=self.device)
+                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
+            except FileNotFoundError:
+                logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
+                checkpoint_name = "current"
+
+        label = checkpoint_name or "current"
+        logger.info("=" * 60)
+        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
+        logger.info("=" * 60)
+
+        # Use EMA model if available and no checkpoint loaded, otherwise raw model
+        if checkpoint_name is None and self.ema is not None:
+            model_to_use = self.ema.ema_model
+        else:
+            model_to_use = self.model_raw
+        model_to_use.eval()
+
+        # Accumulators for metrics
+        total_mse = 0.0
+        total_ssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
+        n_samples = 0
+
+        # Store samples for visualization
+        sample_originals: List[torch.Tensor] = []
+        sample_predictions: List[torch.Tensor] = []
+        max_vis_samples = 16
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
+                prepared = self.mode.prepare_batch(batch, self.device)
+                images = prepared['images']
+                labels = prepared.get('labels')
+                batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
+
+                # Encode to diffusion space (identity for PixelSpace)
+                images = self.space.encode_batch(images)
+                if labels is not None:
+                    labels = self.space.encode(labels)
+
+                labels_dict = {'labels': labels}
+
+                # Sample timesteps and noise
+                if isinstance(images, dict):
+                    noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
+                else:
+                    noise = torch.randn_like(images).to(self.device)
+
+                timesteps = self.strategy.sample_timesteps(images)
+                noisy_images = self.strategy.add_noise(images, noise, timesteps)
+                model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+
+                # Compute metrics
+                total_mse += mse_loss.item()
+
+                if isinstance(predicted_clean, dict):
+                    keys = list(predicted_clean.keys())
+                    ssim_val = (compute_ssim(predicted_clean[keys[0]], images[keys[0]]) +
+                                compute_ssim(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
+                                compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
+                                 compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
+                else:
+                    ssim_val = compute_ssim(predicted_clean, images)
+                    psnr_val = compute_psnr(predicted_clean, images)
+                    lpips_val = compute_lpips(predicted_clean, images, self.device)
+
+                total_ssim += ssim_val
+                total_psnr += psnr_val
+                total_lpips += lpips_val
+                n_batches += 1
+                n_samples += batch_size
+
+                # Collect samples for visualization
+                if len(sample_originals) < max_vis_samples:
+                    remaining = max_vis_samples - len(sample_originals)
+                    # Handle dict (dual mode) vs tensor
+                    if isinstance(images, dict):
+                        # Use first key's images
+                        first_key = list(images.keys())[0]
+                        sample_originals.append(images[first_key][:remaining].cpu())
+                        sample_predictions.append(predicted_clean[first_key][:remaining].cpu())
+                    else:
+                        sample_originals.append(images[:remaining].cpu())
+                        sample_predictions.append(predicted_clean[:remaining].cpu())
+
+        model_to_use.train()
+
+        # Handle empty test set
+        if n_batches == 0:
+            logger.warning(f"Test set ({label}) is empty, skipping evaluation")
+            return {}
+
+        # Compute averages
+        metrics = {
+            'mse': total_mse / n_batches,
+            'ssim': total_ssim / n_batches,
+            'psnr': total_psnr / n_batches,
+            'lpips': total_lpips / n_batches,
+            'n_samples': n_samples,
+        }
+
+        # Log results
+        logger.info(f"Test Results ({label}):")
+        logger.info(f"  MSE:   {metrics['mse']:.6f}")
+        logger.info(f"  SSIM:  {metrics['ssim']:.4f}")
+        logger.info(f"  PSNR:  {metrics['psnr']:.2f} dB")
+        logger.info(f"  LPIPS: {metrics['lpips']:.4f}")
+        logger.info(f"  Samples: {n_samples}")
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_scalar(f'Test/{label}/MSE', metrics['mse'], 0)
+            self.writer.add_scalar(f'Test/{label}/SSIM', metrics['ssim'], 0)
+            self.writer.add_scalar(f'Test/{label}/PSNR', metrics['psnr'], 0)
+            self.writer.add_scalar(f'Test/{label}/LPIPS', metrics['lpips'], 0)
+
+            # Create and save visualization
+            if sample_originals:
+                all_originals = torch.cat(sample_originals, dim=0)[:max_vis_samples]
+                all_predictions = torch.cat(sample_predictions, dim=0)[:max_vis_samples]
+                fig = self._create_test_figure(all_originals, all_predictions, metrics, label)
+                self.writer.add_figure(f'Test/{label}/reconstructions', fig, 0)
+                plt.close(fig)
+
+                # Also save as image file
+                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
+                fig = self._create_test_figure(all_originals, all_predictions, metrics, label)
+                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Test reconstructions saved to: {fig_path}")
+
+        # Save results to JSON
+        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
+        with open(results_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Results saved to: {results_path}")
+
+        return metrics
+
+    def _create_test_figure(
+        self,
+        original: torch.Tensor,
+        predicted: torch.Tensor,
+        metrics: Dict[str, float],
+        label: str,
+    ) -> plt.Figure:
+        """Create side-by-side test evaluation figure.
+
+        Args:
+            original: Original images [B, C, H, W] (CPU).
+            predicted: Predicted clean images [B, C, H, W] (CPU).
+            metrics: Dict with test metrics (mse, ssim, psnr, lpips).
+            label: Checkpoint label (best, latest, current).
+
+        Returns:
+            Matplotlib figure.
+        """
+        n_samples = min(8, original.shape[0])
+
+        orig_np = original[:n_samples, 0].detach().float().numpy()
+        pred_np = predicted[:n_samples, 0].detach().float().numpy()
+        diff_np = np.abs(orig_np - pred_np)
+
+        fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
+
+        for i in range(n_samples):
+            # Original
+            axes[0, i].imshow(orig_np[i], cmap='gray', vmin=0, vmax=1)
+            axes[0, i].axis('off')
+            if i == 0:
+                axes[0, i].set_title('Original', fontsize=10)
+
+            # Predicted
+            axes[1, i].imshow(pred_np[i], cmap='gray', vmin=0, vmax=1)
+            axes[1, i].axis('off')
+            if i == 0:
+                axes[1, i].set_title('Predicted', fontsize=10)
+
+            # Difference
+            axes[2, i].imshow(diff_np[i], cmap='hot', vmin=0, vmax=0.2)
+            axes[2, i].axis('off')
+            if i == 0:
+                axes[2, i].set_title('Difference', fontsize=10)
+
+        # Add title with metrics
+        title = f"Test Results ({label}) - SSIM: {metrics['ssim']:.4f}, PSNR: {metrics['psnr']:.2f} dB, LPIPS: {metrics['lpips']:.4f}"
+        fig.suptitle(title, fontsize=12)
+
+        plt.tight_layout()
+        return fig

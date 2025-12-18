@@ -82,6 +82,14 @@ AIS4900_master/
 │   ├── train/diffusion/         # Diffusion training jobs
 │   ├── train/vae/               # VAE training jobs
 │   └── generate/                # Generation jobs
+│
+├── misc/prepro/                 # Data preprocessing tools
+│   ├── pro.py                   # Main preprocessing (pad + resize)
+│   ├── trim_slices.py           # Interactive slice trimming
+│   ├── trim_empty_slices.py     # Auto-trim empty slices
+│   ├── pad_slices.py            # Pad to consistent slice count
+│   └── split_test_val.py        # Split test into test/val
+│
 ├── docs/                        # Additional documentation
 ├── CLAUDE.md                    # Claude Code context file
 ├── DETAILES.md                  # Detailed technical documentation
@@ -323,8 +331,8 @@ pip install -e .
 sbatch IDUN/train/diffusion/exp1_rflow_128_baseline.slurm
 sbatch IDUN/train/vae/exp1_progressive_baseline.slurm
 
-# Generation jobs (coming soon)
-sbatch IDUN/generate/exp1_generate.slurm
+# Prefer H100, fallback to A100 after 10 min
+./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_progressive_baseline.slurm
 ```
 
 IDUN structure:
@@ -334,11 +342,37 @@ IDUN/
 │   ├── diffusion/    # Diffusion training experiments
 │   └── vae/          # VAE training experiments
 ├── generate/         # Generation jobs
-└── output/           # SLURM logs
-    ├── train/diffusion/
-    ├── train/vae/
-    └── generate/
+├── output/           # SLURM logs
+│   ├── train/diffusion/
+│   ├── train/vae/
+│   └── generate/
+└── submit_prefer_h100.sh  # H100 with A100 fallback script
 ```
+
+## Data Preprocessing
+
+Tools for preparing medical imaging data (`misc/prepro/`):
+
+```bash
+# Main preprocessing: pad + resize to 256x256
+python misc/prepro/pro.py --input /path/to/raw --output /path/to/processed
+
+# Interactive slice trimming (remove slices from start)
+python misc/prepro/trim_slices.py
+
+# Auto-trim empty slices from volumes
+python misc/prepro/trim_empty_slices.py
+
+# Pad volumes to consistent slice count
+python misc/prepro/pad_slices.py
+
+# Split test set into test/val
+python misc/prepro/split_test_val.py
+```
+
+Preprocessing pipeline (`pro.py`):
+- **Images**: Load → Pad to 240x240 (centered) → Resize to 256x256 (bilinear)
+- **Segmentation**: Load → Pad to 240x240 (centered) → Resize to 256x256 (nearest) → Binarize
 
 ## Documentation
 

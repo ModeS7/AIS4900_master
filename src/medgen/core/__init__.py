@@ -19,6 +19,17 @@ from .constants import (
     DEFAULT_DUAL_IMAGE_KEYS,
 )
 from .cuda_utils import setup_cuda_optimizations
+from .distributed import setup_distributed
+from .schedulers import create_warmup_cosine_scheduler, create_constant_scheduler
+from .validation import (
+    validate_common_config,
+    validate_model_config,
+    validate_diffusion_config,
+    validate_vae_config,
+    validate_progressive_config,
+    run_validation,
+)
+from .model_utils import wrap_model_for_training
 
 __all__ = [
     # Enums
@@ -41,4 +52,18 @@ __all__ = [
     'DEFAULT_DUAL_IMAGE_KEYS',
     # Utilities
     'setup_cuda_optimizations',
+    # Distributed training
+    'setup_distributed',
+    # Schedulers
+    'create_warmup_cosine_scheduler',
+    'create_constant_scheduler',
+    # Validation
+    'validate_common_config',
+    'validate_model_config',
+    'validate_diffusion_config',
+    'validate_vae_config',
+    'validate_progressive_config',
+    'run_validation',
+    # Model utilities
+    'wrap_model_for_training',
 ]

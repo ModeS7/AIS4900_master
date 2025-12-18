@@ -43,7 +43,7 @@ DEFAULT_NUM_RES_BLOCKS = 1
 DEFAULT_NUM_HEAD_CHANNELS = 256
 
 # Data loading
-DEFAULT_NUM_WORKERS = 4
+DEFAULT_NUM_WORKERS = 4  # Parallel data loading workers
 
 # Dual mode default image keys
 DEFAULT_DUAL_IMAGE_KEYS = ['t1_pre', 't1_gd']

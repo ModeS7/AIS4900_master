@@ -5,7 +5,10 @@ This module provides dataset classes and utility functions for loading,
 processing, and preparing medical image data (NIfTI format) for training
 diffusion models on brain MRI sequences.
 """
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,6 +26,37 @@ from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
 from medgen.core.constants import BINARY_THRESHOLD_GT, DEFAULT_NUM_WORKERS
+from medgen.data.augmentation import apply_augmentation, build_augmentation
+
+try:
+    import albumentations as A
+except ImportError:
+    A = None  # type: ignore
+
+
+def build_standard_transform(image_size: int) -> Compose:
+    """Build standard transform pipeline for medical images.
+
+    Creates a MONAI Compose transform that:
+    - Loads NIfTI images
+    - Ensures channel-first format
+    - Converts to PyTorch tensor
+    - Scales intensity to [0, 1]
+    - Resizes spatial dimensions (preserves depth)
+
+    Args:
+        image_size: Target size for H and W dimensions.
+
+    Returns:
+        Composed transform pipeline.
+    """
+    return Compose([
+        LoadImage(image_only=True),
+        EnsureChannelFirst(),
+        ToTensor(),
+        ScaleIntensity(minv=0.0, maxv=1.0),
+        Resize(spatial_size=(image_size, image_size, -1))
+    ])
 
 
 def validate_modality_exists(data_dir: str, modality: str) -> None:
@@ -123,7 +157,10 @@ def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD_GT) -> np
     return np.where(image > threshold, 1.0, 0.0)
 
 
-def extract_slices_single(nifti_dataset: Dataset) -> Dataset:
+def extract_slices_single(
+    nifti_dataset: Dataset,
+    augmentation: Optional["A.Compose"] = None
+) -> Dataset:
     """Extract 2D slices from 3D volumes for single-sequence training.
 
     Processes each 3D volume and extracts non-empty 2D slices along
@@ -131,6 +168,7 @@ def extract_slices_single(nifti_dataset: Dataset) -> Dataset:
 
     Args:
         nifti_dataset: Dataset of 3D volumes with shape [C, H, W, D].
+        augmentation: Optional albumentations Compose for data augmentation.
 
     Returns:
         Dataset of 2D slices with shape [C, H, W].
@@ -144,6 +182,8 @@ def extract_slices_single(nifti_dataset: Dataset) -> Dataset:
         for k in range(volume.shape[3]):
             slice_data = volume[:, :, :, k]
             if np.sum(slice_data) > 1.0:
+                # Apply augmentation (no mask for single-channel)
+                slice_data = apply_augmentation(slice_data, augmentation, has_mask=False)
                 all_slices.append(slice_data)
 
     return Dataset(all_slices)
@@ -151,7 +191,8 @@ def extract_slices_single(nifti_dataset: Dataset) -> Dataset:
 
 def extract_slices_dual(
     merged_dataset: Dataset,
-    has_seg: bool = True
+    has_seg: bool = True,
+    augmentation: Optional["A.Compose"] = None
 ) -> Dataset:
     """Extract 2D slices from merged 3D volumes for multi-sequence training.
 
@@ -162,6 +203,7 @@ def extract_slices_dual(
         merged_dataset: Dataset with volumes of shape [C, H, W, D]
             where C = 2 (bravo+seg) or C = 3 (pre+gd+seg).
         has_seg: Whether last channel is segmentation mask to binarize.
+        augmentation: Optional albumentations Compose for data augmentation.
 
     Returns:
         Dataset of 2D slices with shape [C, H, W].
@@ -191,20 +233,32 @@ def extract_slices_dual(
                 # Only keep slice if ALL image channels have content
                 if all_images_have_content:
                     slice_data_copy = slice_data.copy()
-                    seg_channel = slice_data_copy[-1, :, :]
+                    # Apply augmentation (with mask at last channel)
+                    slice_data_copy = apply_augmentation(
+                        slice_data_copy, augmentation, has_mask=True, mask_channel=-1
+                    )
+                    # Binarize seg AFTER augmentation to avoid interpolation artifacts
                     slice_data_copy[-1, :, :] = make_binary(
-                        seg_channel, threshold=BINARY_THRESHOLD_GT
+                        slice_data_copy[-1, :, :], threshold=BINARY_THRESHOLD_GT
                     )
                     all_slices.append(slice_data_copy)
             else:
                 # No seg mask, keep all non-empty slices
                 if np.sum(slice_data) > 1.0:
-                    all_slices.append(slice_data)
+                    slice_data_copy = slice_data.copy()
+                    # Apply augmentation (no mask)
+                    slice_data_copy = apply_augmentation(
+                        slice_data_copy, augmentation, has_mask=False
+                    )
+                    all_slices.append(slice_data_copy)
 
     return Dataset(all_slices)
 
 
-def extract_slices_multi_modality(merged_dataset: Dataset) -> Dataset:
+def extract_slices_multi_modality(
+    merged_dataset: Dataset,
+    augmentation: Optional["A.Compose"] = None
+) -> Dataset:
     """Extract 2D slices ensuring ALL modality channels have content.
 
     For multi-modality VAE training where we need slices that have
@@ -213,6 +267,7 @@ def extract_slices_multi_modality(merged_dataset: Dataset) -> Dataset:
     Args:
         merged_dataset: Dataset with volumes of shape [C, H, W, D]
             where C = number of modalities.
+        augmentation: Optional albumentations Compose for data augmentation.
 
     Returns:
         Dataset of 2D slices with shape [C, H, W].
@@ -237,7 +292,12 @@ def extract_slices_multi_modality(merged_dataset: Dataset) -> Dataset:
 
             # Only keep slice if ALL channels have content
             if all_channels_have_content:
-                all_slices.append(slice_data.copy())
+                slice_data_copy = slice_data.copy()
+                # Apply augmentation (no mask for multi-modality VAE)
+                slice_data_copy = apply_augmentation(
+                    slice_data_copy, augmentation, has_mask=False
+                )
+                all_slices.append(slice_data_copy)
 
     return Dataset(all_slices)
 
@@ -299,7 +359,8 @@ def create_dataloader(
     image_type: str,
     use_distributed: bool = False,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    augment: bool = True
 ) -> Tuple[DataLoader, Dataset]:
     """Create dataloader for single-image training (seg or bravo+seg).
 
@@ -309,6 +370,7 @@ def create_dataloader(
         use_distributed: Whether to use distributed training.
         rank: Process rank for distributed training.
         world_size: Total number of processes for distributed training.
+        augment: Whether to apply data augmentation.
 
     Returns:
         Tuple of (DataLoader, train_dataset).
@@ -324,20 +386,15 @@ def create_dataloader(
         validate_modality_exists(data_dir, 'bravo')
         validate_modality_exists(data_dir, 'seg')
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
+    aug = build_augmentation(enabled=augment)
 
     if image_type == 'seg':
         # Load only segmentation masks
         seg_dataset = NiFTIDataset(
             data_dir=data_dir, mr_sequence="seg", transform=transform
         )
-        train_dataset = extract_slices_single(seg_dataset)
+        train_dataset = extract_slices_single(seg_dataset, augmentation=aug)
 
     elif image_type == 'bravo':
         # Load bravo + seg for conditioning
@@ -350,7 +407,7 @@ def create_dataloader(
 
         datasets_dict = {'bravo': bravo_dataset, 'seg': seg_dataset}
         merged = merge_sequences(datasets_dict)
-        train_dataset = extract_slices_dual(merged, has_seg=True)
+        train_dataset = extract_slices_dual(merged, has_seg=True, augmentation=aug)
     else:
         raise ValueError(f"Unknown image_type: {image_type}")
 
@@ -376,7 +433,8 @@ def create_dataloader(
         sampler=sampler,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, train_dataset
@@ -388,7 +446,8 @@ def create_dual_image_dataloader(
     conditioning: Optional[str],
     use_distributed: bool = False,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    augment: bool = True
 ) -> Tuple[DataLoader, Dataset]:
     """Create dataloader for dual-image training (T1 pre + T1 gd).
 
@@ -399,6 +458,7 @@ def create_dual_image_dataloader(
         use_distributed: Whether to use distributed training.
         rank: Process rank for distributed training.
         world_size: Total number of processes for distributed training.
+        augment: Whether to apply data augmentation.
 
     Returns:
         Tuple of (DataLoader, train_dataset).
@@ -420,13 +480,8 @@ def create_dual_image_dataloader(
     if conditioning:
         validate_modality_exists(data_dir, conditioning)
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
+    aug = build_augmentation(enabled=augment)
 
     # Load all required datasets
     datasets_dict: Dict[str, NiFTIDataset] = {}
@@ -444,7 +499,7 @@ def create_dual_image_dataloader(
 
     # Merge all sequences
     merged = merge_sequences(datasets_dict)
-    train_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None))
+    train_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None), augmentation=aug)
 
     # Setup sampler
     sampler: Optional[DistributedSampler] = None
@@ -468,7 +523,8 @@ def create_dual_image_dataloader(
         sampler=sampler,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, train_dataset
@@ -481,7 +537,8 @@ def create_multi_modality_dataloader(
     batch_size: int,
     use_distributed: bool = False,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    augment: bool = True
 ) -> Tuple[DataLoader, Dataset]:
     """Create dataloader for multi-modality VAE training.
 
@@ -497,6 +554,7 @@ def create_multi_modality_dataloader(
         use_distributed: Whether to use distributed training.
         rank: Process rank for distributed training.
         world_size: Total number of processes for distributed training.
+        augment: Whether to apply data augmentation.
 
     Returns:
         Tuple of (DataLoader, train_dataset).
@@ -508,13 +566,8 @@ def create_multi_modality_dataloader(
     for key in image_keys:
         validate_modality_exists(data_dir, key)
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
+    aug = build_augmentation(enabled=augment)
 
     # Collect all slices from all modalities into one list
     all_slices: List[np.ndarray] = []
@@ -524,7 +577,7 @@ def create_multi_modality_dataloader(
             data_dir=data_dir, mr_sequence=key, transform=transform
         )
         # Extract 2D slices from this modality
-        slices = extract_slices_single(dataset)
+        slices = extract_slices_single(dataset, augmentation=aug)
         all_slices.extend(list(slices))
 
     train_dataset = Dataset(all_slices)
@@ -551,7 +604,8 @@ def create_multi_modality_dataloader(
         sampler=sampler,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, train_dataset
@@ -594,16 +648,11 @@ def create_validation_dataloader(
             validate_modality_exists(val_dir, 'seg')
         else:
             return None
-    except ValueError:
+    except ValueError as e:
+        logger.warning(f"Validation directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     if image_type == 'seg':
         seg_dataset = NiFTIDataset(
@@ -627,7 +676,8 @@ def create_validation_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, val_dataset
@@ -667,16 +717,11 @@ def create_dual_image_validation_dataloader(
             validate_modality_exists(val_dir, key)
         if conditioning:
             validate_modality_exists(val_dir, conditioning)
-    except ValueError:
+    except ValueError as e:
+        logger.warning(f"Validation directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     datasets_dict: Dict[str, NiFTIDataset] = {}
     for key in image_keys:
@@ -697,10 +742,149 @@ def create_dual_image_validation_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, val_dataset
+
+
+# =============================================================================
+# Diffusion Test Dataloaders
+# =============================================================================
+
+
+def create_test_dataloader(
+    cfg: DictConfig,
+    image_type: str,
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create test dataloader for single-image diffusion from test_new/ directory.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        image_type: Image type ('seg' or 'bravo').
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
+    """
+    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
+
+    if not os.path.exists(test_dir):
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist
+    try:
+        if image_type == 'seg':
+            validate_modality_exists(test_dir, 'seg')
+        elif image_type == 'bravo':
+            validate_modality_exists(test_dir, 'bravo')
+            validate_modality_exists(test_dir, 'seg')
+        else:
+            return None
+    except ValueError as e:
+        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        return None
+
+    transform = build_standard_transform(image_size)
+
+    if image_type == 'seg':
+        seg_dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence="seg", transform=transform
+        )
+        test_dataset = extract_slices_single(seg_dataset)
+
+    elif image_type == 'bravo':
+        bravo_dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence="bravo", transform=transform
+        )
+        seg_dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence="seg", transform=transform
+        )
+        datasets_dict = {'bravo': bravo_dataset, 'seg': seg_dataset}
+        merged = merge_sequences(datasets_dict)
+        test_dataset = extract_slices_dual(merged, has_seg=True)
+
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
+    )
+
+    return dataloader, test_dataset
+
+
+def create_dual_image_test_dataloader(
+    cfg: DictConfig,
+    image_keys: List[str],
+    conditioning: Optional[str] = 'seg',
+    batch_size: Optional[int] = None
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create test dataloader for dual-image diffusion from test_new/ directory.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        image_keys: List of two sequences (e.g., ['t1_pre', 't1_gd']).
+        conditioning: Conditioning sequence name (e.g., 'seg') or None.
+        batch_size: Optional batch size override. Defaults to training batch size.
+
+    Returns:
+        Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
+    """
+    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
+
+    if not os.path.exists(test_dir):
+        return None
+
+    if len(image_keys) != 2:
+        return None
+
+    image_size = cfg.model.image_size
+    batch_size = batch_size or cfg.training.batch_size
+
+    # Validate modalities exist
+    try:
+        for key in image_keys:
+            validate_modality_exists(test_dir, key)
+        if conditioning:
+            validate_modality_exists(test_dir, conditioning)
+    except ValueError as e:
+        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        return None
+
+    transform = build_standard_transform(image_size)
+
+    datasets_dict: Dict[str, NiFTIDataset] = {}
+    for key in image_keys:
+        datasets_dict[key] = NiFTIDataset(
+            data_dir=test_dir, mr_sequence=key, transform=transform
+        )
+
+    if conditioning:
+        datasets_dict[conditioning] = NiFTIDataset(
+            data_dir=test_dir, mr_sequence=conditioning, transform=transform
+        )
+
+    merged = merge_sequences(datasets_dict)
+    test_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None))
+
+    dataloader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
+    )
+
+    return dataloader, test_dataset
 
 
 # =============================================================================
@@ -713,7 +897,8 @@ def create_vae_dataloader(
     modality: str,
     use_distributed: bool = False,
     rank: int = 0,
-    world_size: int = 1
+    world_size: int = 1,
+    augment: bool = True
 ) -> Tuple[DataLoader, Dataset]:
     """Create dataloader for VAE training - correct single/dual modality handling.
 
@@ -727,6 +912,7 @@ def create_vae_dataloader(
         use_distributed: Whether to use distributed training.
         rank: Process rank for distributed training.
         world_size: Total number of processes for distributed training.
+        augment: Whether to apply data augmentation.
 
     Returns:
         Tuple of (DataLoader, train_dataset).
@@ -742,13 +928,8 @@ def create_vae_dataloader(
     else:
         validate_modality_exists(data_dir, modality)
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
+    aug = build_augmentation(enabled=augment)
 
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
@@ -760,13 +941,13 @@ def create_vae_dataloader(
             )
         merged = merge_sequences(datasets_dict)
         # Extract slices ensuring both channels have content (no seg binarization)
-        train_dataset = extract_slices_dual(merged, has_seg=False)
+        train_dataset = extract_slices_dual(merged, has_seg=False, augmentation=aug)
     else:
         # Single modality: 1 channel
         nifti_dataset = NiFTIDataset(
             data_dir=data_dir, mr_sequence=modality, transform=transform
         )
-        train_dataset = extract_slices_single(nifti_dataset)
+        train_dataset = extract_slices_single(nifti_dataset, augmentation=aug)
 
     # Setup sampler
     sampler: Optional[DistributedSampler] = None
@@ -790,7 +971,8 @@ def create_vae_dataloader(
         sampler=sampler,
         shuffle=shuffle,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, train_dataset
@@ -831,17 +1013,11 @@ def create_vae_validation_dataloader(
                 validate_modality_exists(val_dir, key)
         else:
             validate_modality_exists(val_dir, modality)
-    except ValueError:
-        # Modality not found in val directory
+    except ValueError as e:
+        logger.warning(f"Validation directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
@@ -866,7 +1042,8 @@ def create_vae_validation_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, val_dataset
@@ -902,16 +1079,11 @@ def create_multi_modality_validation_dataloader(
     try:
         for key in image_keys:
             validate_modality_exists(val_dir, key)
-    except ValueError:
+    except ValueError as e:
+        logger.warning(f"Validation directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     # Collect all slices from all modalities into one list
     all_slices: List[np.ndarray] = []
@@ -931,7 +1103,8 @@ def create_multi_modality_validation_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, val_dataset
@@ -971,17 +1144,11 @@ def create_vae_test_dataloader(
                 validate_modality_exists(test_dir, key)
         else:
             validate_modality_exists(test_dir, modality)
-    except ValueError:
-        # Modality not found in test directory
+    except ValueError as e:
+        logger.warning(f"Test directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
@@ -1006,7 +1173,8 @@ def create_vae_test_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, test_dataset
@@ -1042,16 +1210,11 @@ def create_multi_modality_test_dataloader(
     try:
         for key in image_keys:
             validate_modality_exists(test_dir, key)
-    except ValueError:
+    except ValueError as e:
+        logger.warning(f"Test directory exists but is misconfigured: {e}")
         return None
 
-    transform = Compose([
-        LoadImage(image_only=True),
-        EnsureChannelFirst(),
-        ToTensor(),
-        ScaleIntensity(minv=0.0, maxv=1.0),
-        Resize(spatial_size=(image_size, image_size, -1))
-    ])
+    transform = build_standard_transform(image_size)
 
     # Collect all slices from all modalities into one list
     all_slices: List[np.ndarray] = []
@@ -1071,7 +1234,8 @@ def create_multi_modality_test_dataloader(
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS
+        num_workers=DEFAULT_NUM_WORKERS,
+        persistent_workers=DEFAULT_NUM_WORKERS > 0
     )
 
     return dataloader, test_dataset

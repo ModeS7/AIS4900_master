@@ -17,9 +17,13 @@ scipy
 nibabel
 pillow
 opencv-python
+albumentations>=1.3.0
 
 # Metrics/evaluation
 lpips
+
+# Checkpoint compression (optional but recommended ~17-33% reduction)
+zipnn
 
 # Data handling
 pandas

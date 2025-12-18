@@ -23,19 +23,25 @@ import shutil
 import time
 from collections import deque
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from medgen.core import setup_cuda_optimizations
+from medgen.core import (
+    setup_cuda_optimizations,
+    validate_common_config,
+    validate_vae_config,
+    validate_progressive_config,
+    run_validation,
+)
 from medgen.data import (
     create_multi_modality_dataloader,
     create_multi_modality_validation_dataloader,
     create_multi_modality_test_dataloader,
 )
-from medgen.diffusion.vae_trainer import VAETrainer, log_vae_epoch_summary
+from medgen.diffusion.vae_trainer import VAETrainer
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -78,21 +84,18 @@ class PlateauDetector:
         self.epochs_without_improvement = 0
         self.best_window_avg = float('inf')
 
-    def update(self, loss: float, epoch: int) -> bool:
-        """Update with new loss and check for plateau.
+    def update(self, loss: float, epoch: int) -> None:
+        """Update detector with new loss value (command only).
 
         Args:
             loss: Current epoch loss.
             epoch: Current epoch number (0-indexed).
-
-        Returns:
-            True if plateau detected, False otherwise.
         """
         self.loss_history.append(loss)
 
         # Not enough history yet
         if epoch < self.min_epochs or len(self.loss_history) < self.window_size:
-            return False
+            return
 
         # Calculate rolling average
         recent_losses = list(self.loss_history)[-self.window_size:]
@@ -110,7 +113,12 @@ class PlateauDetector:
         else:
             self.epochs_without_improvement += 1
 
-        # Plateau detected if no improvement for patience epochs
+    def is_plateau(self) -> bool:
+        """Check if plateau has been detected (query only).
+
+        Returns:
+            True if no improvement for patience epochs, False otherwise.
+        """
         return self.epochs_without_improvement >= self.patience
 
 
@@ -222,11 +230,13 @@ class ProgressiveVAETrainer:
 
         # Create dataloader for this resolution
         log.info(f"Creating dataloader for {resolution}x{resolution}...")
+        augment = self.cfg.training.get('augment', True)
         dataloader, dataset = create_multi_modality_dataloader(
             cfg=self.cfg,
             image_keys=self.image_keys,
             image_size=resolution,
-            batch_size=batch_size
+            batch_size=batch_size,
+            augment=augment
         )
         log.info(f"Training dataset: {len(dataset)} slices, {len(dataloader)} batches")
 
@@ -264,110 +274,37 @@ class ProgressiveVAETrainer:
         # Setup model (with optional pretrained weights)
         trainer.setup_model(pretrained_checkpoint=prev_checkpoint)
 
-        # Set validation loader for metrics (if available)
-        trainer.val_loader = val_loader
-
-        # Measure FLOPs (once per phase)
-        if trainer.log_flops and not trainer._flops_measured:
-            try:
-                first_batch = next(iter(dataloader))
-                sample_images = trainer._prepare_batch(first_batch)
-                trainer._measure_model_flops(sample_images)
-            except Exception as e:
-                log.warning(f"Could not measure FLOPs: {e}")
-
-        # Reset plateau detector
+        # Reset plateau detector for this phase
         self.plateau_detector.reset()
 
-        # Training loop with plateau detection
-        epoch = 0
-        max_epochs = 500  # Safety limit
+        # Configure training parameters based on phase type
+        if is_final:
+            # Final phase: fixed number of epochs, no early stopping
+            max_epochs = self.cfg.progressive.final_phase.epochs
+            early_stop_fn = None
+        else:
+            # Earlier phases: plateau detection for early stopping
+            max_epochs = 500  # Safety limit
+            def early_stop_fn(epoch, losses, val_metrics):
+                self.plateau_detector.update(val_metrics.get('gen', losses['gen']), epoch)
+                return self.plateau_detector.is_plateau()
 
-        while epoch < max_epochs:
-            epoch_start = time.time()
+        # Run training using VAETrainer.train() - handles all logging, checkpointing, etc.
+        last_epoch = trainer.train(
+            train_loader=dataloader,
+            train_dataset=dataset,
+            val_loader=val_loader,
+            max_epochs=max_epochs,
+            early_stop_fn=early_stop_fn,
+        )
 
-            # Train one epoch
-            avg_losses = trainer.train_epoch(dataloader, epoch)
-
-            # Step schedulers (only if not using constant LR)
-            if hasattr(trainer, 'lr_scheduler_g') and trainer.lr_scheduler_g is not None:
-                trainer.lr_scheduler_g.step()
-            if hasattr(trainer, 'lr_scheduler_d') and trainer.lr_scheduler_d is not None:
-                trainer.lr_scheduler_d.step()
-
-            # Update EMA if enabled
-            if trainer.ema is not None:
-                trainer.ema.update()
-
-            elapsed = time.time() - epoch_start
-
-            # Compute validation metrics every epoch
-            val_metrics = trainer.compute_validation_losses(epoch)
-
-            # Log progress
-            if is_final:
-                total_epochs = self.cfg.progressive.final_phase.epochs
-            else:
-                total_epochs = "?"  # Unknown for plateau-based phases
-
-            log_vae_epoch_summary(epoch, total_epochs if isinstance(total_epochs, int) else 999, avg_losses, val_metrics, elapsed)
-
-            # Log to tensorboard
-            if trainer.writer is not None:
-                global_step = epoch
-                trainer.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], global_step)
-                trainer.writer.add_scalar('Loss/L1_train', avg_losses['recon'], global_step)
-                trainer.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], global_step)
-                trainer.writer.add_scalar('Loss/KL_train', avg_losses['kl'], global_step)
-                lr_g = trainer.optimizer_g.param_groups[0]['lr']
-                trainer.writer.add_scalar('LR/Generator', lr_g, global_step)
-
-                # Log gradient norms
-                trainer._log_grad_norms(global_step)
-
-            # Visualization logging at intervals
-            is_val_epoch = (epoch + 1) % self.cfg.training.val_interval == 0
-            if is_val_epoch and trainer.writer is not None:
-                # Log worst batch
-                if trainer.log_worst_batch:
-                    trainer._log_worst_batch(epoch)
-
-                # Generate validation visualizations (metrics already logged above)
-                trainer.generate_validation_visualizations(dataset, epoch)
-
-            # Save best checkpoint (use validation loss for proper overfitting detection)
-            val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
-            if val_gen_loss < trainer.best_loss:
-                trainer.best_loss = val_gen_loss
-                trainer._save_vae_checkpoint(epoch, "best")
-                log.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
-
-            # Check termination condition
-            if is_final:
-                # Final phase: fixed number of epochs
-                if epoch >= self.cfg.progressive.final_phase.epochs - 1:
-                    break
-            else:
-                # Earlier phases: plateau detection (use validation loss)
-                if self.plateau_detector.update(val_gen_loss, epoch):
-                    log.info(f"Plateau detected at epoch {epoch + 1}")
-                    break
-
-            # Save periodic checkpoints
-            if (epoch + 1) % self.cfg.training.val_interval == 0:
-                trainer._save_vae_checkpoint(epoch, f"epoch_{epoch + 1:04d}")
-
-            epoch += 1
-
-        # Save phase completion
-        trainer._save_vae_checkpoint(epoch, "latest")
-        self._save_progressive_checkpoint(epoch, resolution)
+        # Save progressive state checkpoint
+        self._save_progressive_checkpoint(last_epoch, resolution)
 
         # Cleanup trainer
-        if trainer.writer is not None:
-            trainer.writer.close()
+        trainer.close_writer()
 
-        return epoch + 1
+        return last_epoch + 1
 
     def _create_phase_config(
         self,
@@ -520,39 +457,11 @@ def validate_config(cfg: DictConfig) -> None:
     Raises:
         ValueError: If configuration is invalid.
     """
-    errors = []
-
-    # Check progressive config
-    if not hasattr(cfg, 'progressive'):
-        errors.append("Missing 'progressive' configuration section")
-    else:
-        if not cfg.progressive.resolutions:
-            errors.append("progressive.resolutions must not be empty")
-
-        for res in cfg.progressive.resolutions:
-            if res not in cfg.progressive.batch_sizes:
-                errors.append(f"Missing batch_size for resolution {res}")
-
-    # Check modalities
-    if not hasattr(cfg, 'modalities'):
-        errors.append("Missing 'modalities' configuration section")
-    elif not cfg.modalities.image_keys:
-        errors.append("modalities.image_keys must not be empty")
-
-    # Check VAE config
-    if not hasattr(cfg, 'vae'):
-        errors.append("Missing 'vae' configuration section")
-
-    # Check paths
-    if not os.path.exists(cfg.paths.data_dir):
-        errors.append(f"Data directory does not exist: {cfg.paths.data_dir}")
-
-    # Check CUDA
-    if not torch.cuda.is_available():
-        errors.append("CUDA is not available. Training requires GPU.")
-
-    if errors:
-        raise ValueError("Configuration validation failed:\n  - " + "\n  - ".join(errors))
+    run_validation(cfg, [
+        validate_common_config,
+        validate_vae_config,
+        validate_progressive_config,
+    ])
 
 
 @hydra.main(version_base=None, config_path="../../../configs", config_name="train_vae_progressive")

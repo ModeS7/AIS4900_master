@@ -1,0 +1,71 @@
+"""Learning rate scheduler utilities.
+
+Provides factory functions for common scheduler configurations used
+across different trainers.
+"""
+from typing import Optional
+
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR,
+    LinearLR,
+    SequentialLR,
+    LRScheduler,
+)
+
+
+def create_warmup_cosine_scheduler(
+    optimizer: Optimizer,
+    warmup_epochs: int,
+    total_epochs: int,
+    eta_min: float = 1e-6,
+    start_factor: float = 0.1,
+) -> SequentialLR:
+    """Create a warmup + cosine annealing scheduler.
+
+    The learning rate starts at start_factor * base_lr, linearly increases
+    to base_lr over warmup_epochs, then follows cosine annealing to eta_min.
+
+    Args:
+        optimizer: The optimizer to schedule.
+        warmup_epochs: Number of epochs for linear warmup.
+        total_epochs: Total number of training epochs.
+        eta_min: Minimum learning rate for cosine annealing.
+        start_factor: Starting LR factor for warmup (0.1 = start at 10% of base LR).
+
+    Returns:
+        SequentialLR scheduler combining warmup and cosine annealing.
+    """
+    warmup_scheduler = LinearLR(
+        optimizer,
+        start_factor=start_factor,
+        end_factor=1.0,
+        total_iters=warmup_epochs
+    )
+    cosine_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=total_epochs - warmup_epochs,
+        eta_min=eta_min
+    )
+    return SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs]
+    )
+
+
+def create_constant_scheduler(
+    optimizer: Optimizer,
+) -> Optional[LRScheduler]:
+    """Create a 'scheduler' that keeps LR constant (returns None).
+
+    This is a helper for when constant LR is desired but the code
+    expects a scheduler interface.
+
+    Args:
+        optimizer: The optimizer (unused, for API consistency).
+
+    Returns:
+        None (no scheduler needed for constant LR).
+    """
+    return None
