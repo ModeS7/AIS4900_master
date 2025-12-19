@@ -1,11 +1,19 @@
 # Fast debug configuration for testing
+#
+# Minimal epochs and batch size for quick iteration.
+# Override default.yaml values for debugging.
 
+# Experiment name prefix
+name: ""
+
+# Core training parameters (reduced for fast testing)
 epochs: 2
 batch_size: 4
 learning_rate: 1.0e-4
 gradient_clip_norm: 1.0
 warmup_epochs: 1
 val_interval: 1
+augment: false  # Disable augmentation for faster debug
 
 # EMA settings
 use_ema: false
@@ -23,3 +31,26 @@ perceptual_weight: 0.001
 
 # Multi-GPU
 use_multi_gpu: false
+disable_ddp_optimizer: false
+
+# Learning rate scheduler
+eta_min: 1.0e-6
+
+# torch.compile (disable for faster startup in debug)
+use_compile: false
+compile_fused_forward: false
+
+# Logging (minimal for fast debug)
+logging:
+  grad_norm: true
+  timestep_losses: false
+  regional_losses: false
+  timestep_region_losses: false
+  ssim: false
+  psnr: false
+  lpips: false
+  boundary_sharpness: false
+  intermediate_steps: false
+  worst_batch: false
+  num_intermediate_steps: 3
+  flops: false

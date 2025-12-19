@@ -24,26 +24,9 @@ defaults:
   - paths: local
   - model: default
   - mode: dual        # Can be seg, bravo, dual, t1_pre, or t1_gd
+  - vae: default      # VAE architecture (shared with vae_progressive)
   - training: default
   - _self_
-
-# VAE architecture configuration (MONAI 2D standard)
-# Reference: https://github.com/Project-MONAI/GenerativeModels/issues/378
-vae:
-  latent_channels: 3                          # Latent space channels
-  channels: [64, 128, 256, 512]               # Encoder/decoder channels
-  attention_levels: [false, false, false, true]  # Where to apply attention
-  num_res_blocks: 2                           # ResBlocks per level
-
-  # Loss weights (MONAI defaults)
-  kl_weight: 1.0e-6         # KL divergence weight
-  perceptual_weight: 0.001  # Perceptual loss weight
-  adv_weight: 0.01          # Adversarial loss weight (GAN)
-
-  # Discriminator config (PatchGAN)
-  disc_lr: 5.0e-4           # Discriminator learning rate
-  disc_num_layers: 3        # PatchDiscriminator depth
-  disc_num_channels: 64     # PatchDiscriminator base channels
 
 # Override training defaults for VAE
 training:

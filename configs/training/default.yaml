@@ -35,6 +35,10 @@ perceptual_weight: 0.001   # Weight for perceptual loss term
 
 # Multi-GPU (DDP)
 use_multi_gpu: false
+disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)
+
+# Learning rate scheduler
+eta_min: 1.0e-6              # Minimum LR for cosine annealing
 
 # torch.compile optimization
 # Compiles model and loss functions for faster training

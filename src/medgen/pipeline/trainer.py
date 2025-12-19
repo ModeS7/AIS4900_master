@@ -87,6 +87,7 @@ class DiffusionTrainer:
         self.perceptual_weight: float = 0.0 if self.mode_name == 'seg' else cfg.training.perceptual_weight
         self.num_timesteps: int = cfg.strategy.num_train_timesteps
         self.warmup_epochs: int = cfg.training.warmup_epochs
+        self.eta_min: float = cfg.training.get('eta_min', 1e-6)
         self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.use_multi_gpu
         self.use_ema: bool = cfg.training.use_ema
@@ -271,7 +272,7 @@ class DiffusionTrainer:
             self.optimizer,
             warmup_epochs=self.warmup_epochs,
             total_epochs=self.n_epochs,
-            eta_min=1e-6,
+            eta_min=self.eta_min,
         )
 
         # Create EMA wrapper if enabled

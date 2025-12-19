@@ -83,10 +83,6 @@ class SegmentationMode(TrainingMode):
     This is a pure generative model for masks without conditioning.
     """
 
-    def __init__(self) -> None:
-        """Initialize segmentation mode."""
-        pass
-
     @property
     def is_conditional(self) -> bool:
         """Segmentation mode is unconditional."""
@@ -155,10 +151,6 @@ class ConditionalSingleMode(TrainingMode):
 
     Uses segmentation mask as conditioning signal.
     """
-
-    def __init__(self) -> None:
-        """Initialize conditional single mode."""
-        pass
 
     @property
     def is_conditional(self) -> bool:

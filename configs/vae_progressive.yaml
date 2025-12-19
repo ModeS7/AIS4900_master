@@ -25,6 +25,7 @@
 defaults:
   - paths: local
   - model: default
+  - vae: default      # VAE architecture (shared with vae.yaml)
   - training: default
   - _self_
 
@@ -61,19 +62,6 @@ modalities:
   image_keys: [bravo, flair, t1_pre, t1_gd]  # All modalities mixed
   in_channels: 1                              # Single channel per image
 
-# VAE architecture (same as train_vae.yaml)
-vae:
-  latent_channels: 3
-  channels: [64, 128, 256, 512]
-  attention_levels: [false, false, false, true]
-  num_res_blocks: 2
-  kl_weight: 1.0e-6
-  perceptual_weight: 0.001
-  adv_weight: 0.01
-  disc_lr: 5.0e-4
-  disc_num_layers: 3
-  disc_num_channels: 64
-
 # Override training defaults
 training:
   learning_rate: 1.0e-4
@@ -94,9 +82,11 @@ training:
     timestep_region_losses: false
     ssim: true
     psnr: true
+    lpips: true
     boundary_sharpness: false
     intermediate_steps: false
     worst_batch: false
+    num_intermediate_steps: 5
     flops: false
 
 # Hydra configuration

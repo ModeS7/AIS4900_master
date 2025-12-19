@@ -53,7 +53,7 @@ def validate_config(cfg: DictConfig) -> None:
     ])
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="train_vae_progressive")
+@hydra.main(version_base=None, config_path="../../../configs", config_name="vae_progressive")
 def main(cfg: DictConfig) -> None:
     """Progressive VAE training entry point.
 

@@ -124,18 +124,18 @@ class VAETrainer:
         self.n_epochs: int = cfg.training.epochs
         self.batch_size: int = cfg.training.batch_size
         self.image_size: int = cfg.model.image_size
-        self.learning_rate: float = cfg.training.get('learning_rate', 1e-5)
-        self.disc_lr: float = cfg.vae.get('disc_lr', 5e-5)
+        self.learning_rate: float = cfg.training.get('learning_rate', 1e-4)
+        self.disc_lr: float = cfg.vae.get('disc_lr', 5e-4)
         self.warmup_epochs: int = cfg.training.warmup_epochs
         self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.use_ema: bool = cfg.training.get('use_ema', True)
         self.ema_decay: float = cfg.training.ema.get('decay', 0.999)
 
-        # Loss weights (MONAI defaults)
-        self.perceptual_weight: float = cfg.vae.get('perceptual_weight', 0.002)
-        self.kl_weight: float = cfg.vae.get('kl_weight', 1e-8)
-        self.adv_weight: float = cfg.vae.get('adv_weight', 0.005)
+        # Loss weights (matching vae/default.yaml)
+        self.perceptual_weight: float = cfg.vae.get('perceptual_weight', 0.001)
+        self.kl_weight: float = cfg.vae.get('kl_weight', 1e-6)
+        self.adv_weight: float = cfg.vae.get('adv_weight', 0.01)
 
         # Staged training options (for progressive training)
         # disable_gan: Skip discriminator entirely (faster, more stable for early training)
@@ -965,8 +965,10 @@ class VAETrainer:
         train_loader: DataLoader,
         train_dataset: Dataset,
         val_loader: Optional[DataLoader] = None,
-        start_epoch: int = 0
-    ) -> None:
+        start_epoch: int = 0,
+        max_epochs: Optional[int] = None,
+        early_stop_fn: Optional[callable] = None,
+    ) -> int:
         """Execute the main training loop.
 
         Args:
@@ -975,7 +977,15 @@ class VAETrainer:
             val_loader: Optional validation data loader. If provided, used for
                 validation metrics instead of sampling from train_dataset.
             start_epoch: Epoch to start from (for resuming training).
+            max_epochs: Maximum epochs to train (overrides self.n_epochs if provided).
+            early_stop_fn: Optional callback(epoch, losses, val_metrics) -> bool.
+                If returns True, training stops early.
+
+        Returns:
+            The last completed epoch number.
         """
+        # Use max_epochs if provided, otherwise use configured n_epochs
+        n_epochs = max_epochs if max_epochs is not None else self.n_epochs
         self.val_loader = val_loader
         total_start = time.time()
 
@@ -995,8 +1005,10 @@ class VAETrainer:
         if start_epoch > 0 and self.is_main_process:
             logger.info(f"Resuming training from epoch {start_epoch + 1}")
 
+        last_epoch = start_epoch
         try:
-            for epoch in range(start_epoch, self.n_epochs):
+            for epoch in range(start_epoch, n_epochs):
+                last_epoch = epoch
                 epoch_start = time.time()
 
                 if self.use_multi_gpu and hasattr(train_loader.sampler, 'set_epoch'):
@@ -1028,7 +1040,7 @@ class VAETrainer:
                     val_metrics = self.compute_validation_losses(epoch)
 
                     # Log epoch summary with train and val metrics
-                    log_vae_epoch_summary(epoch, self.n_epochs, avg_losses, val_metrics, epoch_time)
+                    log_vae_epoch_summary(epoch, n_epochs, avg_losses, val_metrics, epoch_time)
 
                     if self.writer is not None:
                         # Training losses (with _train suffix)
@@ -1059,7 +1071,7 @@ class VAETrainer:
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
-                    if is_val_epoch or (epoch + 1) == self.n_epochs:
+                    if is_val_epoch or (epoch + 1) == n_epochs:
                         # Save latest checkpoint (for resuming)
                         self._save_vae_checkpoint(epoch, "latest")
 
@@ -1069,6 +1081,12 @@ class VAETrainer:
                             self.best_loss = val_gen_loss
                             self._save_vae_checkpoint(epoch, "best")
                             logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
+
+                    # Check early stopping condition
+                    if early_stop_fn is not None:
+                        if early_stop_fn(epoch, avg_losses, val_metrics):
+                            logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                            break
 
         finally:
             total_time = time.time() - total_start
@@ -1083,6 +1101,8 @@ class VAETrainer:
                     dist.destroy_process_group()
                 except Exception as e:
                     logger.warning(f"Error destroying process group: {e}")
+
+        return last_epoch
 
     def evaluate_test_set(
         self,

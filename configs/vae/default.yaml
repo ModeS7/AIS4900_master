@@ -1,0 +1,33 @@
+# VAE Architecture Configuration (AutoencoderKL)
+#
+# Shared VAE architecture settings used by vae.yaml and vae_progressive.yaml.
+# Based on MONAI 2D implementation.
+#
+# Reference: https://github.com/Project-MONAI/GenerativeModels/issues/378
+#
+# Architecture overview:
+#   - Encoder: progressive downsampling with ResBlocks
+#   - Bottleneck: latent space with KL regularization
+#   - Decoder: progressive upsampling with skip connections
+#
+# Memory usage (approximate, batch_size=16):
+#   - 128px: ~6GB VRAM
+#   - 256px: ~16GB VRAM
+
+# Latent space
+latent_channels: 3                          # Latent space channels
+
+# Encoder/Decoder architecture
+channels: [64, 128, 256, 512]               # Channels at each level
+attention_levels: [false, false, false, true]  # Where to apply attention
+num_res_blocks: 2                           # ResBlocks per level
+
+# Loss weights (MONAI defaults)
+kl_weight: 1.0e-6         # KL divergence weight
+perceptual_weight: 0.001  # Perceptual loss weight
+adv_weight: 0.01          # Adversarial loss weight (GAN)
+
+# Discriminator config (PatchGAN)
+disc_lr: 5.0e-4           # Discriminator learning rate
+disc_num_layers: 3        # PatchDiscriminator depth
+disc_num_channels: 64     # PatchDiscriminator base channels

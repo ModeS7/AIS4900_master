@@ -51,7 +51,7 @@ def extract_slices_single(
     all_slices: List[np.ndarray] = []
 
     for i in range(len(nifti_dataset)):
-        volume, patient_name = nifti_dataset[i]  # Shape: [1, H, W, D]
+        volume, _ = nifti_dataset[i]  # Shape: [1, H, W, D]
 
         # Extract non-empty slices along depth dimension (axis 3)
         for k in range(volume.shape[3]):

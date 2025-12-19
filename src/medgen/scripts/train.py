@@ -66,7 +66,7 @@ def validate_config(cfg: DictConfig) -> None:
     ])
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+@hydra.main(version_base=None, config_path="../../../configs", config_name="diffusion")
 def main(cfg: DictConfig) -> None:
     """Main training entry point.
 
