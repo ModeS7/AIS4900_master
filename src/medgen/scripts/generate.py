@@ -32,8 +32,8 @@ from medgen.core import (
     DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS,
     ModeType, setup_cuda_optimizations,
 )
-from medgen.diffusion.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
-from medgen.diffusion.utils import get_vram_usage
+from medgen.pipeline.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
+from medgen.pipeline.utils import get_vram_usage
 from medgen.data import make_binary
 
 # Enable CUDA optimizations

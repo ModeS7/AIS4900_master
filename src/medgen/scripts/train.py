@@ -41,8 +41,8 @@ from medgen.data import (
     create_test_dataloader,
     create_dual_image_test_dataloader,
 )
-from medgen.diffusion import DiffusionTrainer
-from medgen.diffusion.spaces import PixelSpace, load_vae_for_latent_space
+from medgen.pipeline import DiffusionTrainer
+from medgen.pipeline.spaces import PixelSpace, load_vae_for_latent_space
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()

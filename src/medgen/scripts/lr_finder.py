@@ -35,8 +35,8 @@ from monai.networks.nets import AutoencoderKL, DiffusionModelUNet
 
 from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, ModeType, setup_cuda_optimizations
 from medgen.data import create_dataloader, create_dual_image_dataloader, create_vae_dataloader
-from medgen.diffusion.modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode
-from medgen.diffusion.strategies import DDPMStrategy, RFlowStrategy
+from medgen.pipeline.modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode
+from medgen.pipeline.strategies import DDPMStrategy, RFlowStrategy
 
 setup_cuda_optimizations()
 

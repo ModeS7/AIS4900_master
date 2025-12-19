@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from medgen.diffusion import (
+from medgen.pipeline import (
     DiffusionTrainer,
     DDPMStrategy,
     RFlowStrategy,

@@ -28,7 +28,7 @@ from medgen.core import (
     run_validation,
 )
 from medgen.data import create_vae_dataloader, create_vae_validation_dataloader, create_vae_test_dataloader
-from medgen.diffusion.vae_trainer import VAETrainer
+from medgen.pipeline import VAETrainer
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()

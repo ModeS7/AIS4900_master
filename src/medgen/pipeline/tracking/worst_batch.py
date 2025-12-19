@@ -4,6 +4,7 @@ Worst batch tracking and visualization.
 Shared utility for tracking and visualizing the worst performing batch
 during training for both DiffusionTrainer and VAETrainer.
 """
+
 import logging
 from typing import Any, Dict, Optional
 
@@ -15,7 +16,7 @@ import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from .metrics import create_reconstruction_figure
+from ..metrics import create_reconstruction_figure
 
 logger = logging.getLogger(__name__)
 
