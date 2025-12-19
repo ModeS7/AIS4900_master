@@ -254,53 +254,6 @@ def extract_slices_dual(
     return Dataset(all_slices)
 
 
-def extract_slices_multi_modality(
-    merged_dataset: Dataset,
-    augmentation: Optional["A.Compose"] = None
-) -> Dataset:
-    """Extract 2D slices ensuring ALL modality channels have content.
-
-    For multi-modality VAE training where we need slices that have
-    valid data across all input modalities.
-
-    Args:
-        merged_dataset: Dataset with volumes of shape [C, H, W, D]
-            where C = number of modalities.
-        augmentation: Optional albumentations Compose for data augmentation.
-
-    Returns:
-        Dataset of 2D slices with shape [C, H, W].
-    """
-    all_slices: List[np.ndarray] = []
-
-    for i in range(len(merged_dataset)):
-        volume = merged_dataset[i]  # Shape: [C, H, W, D]
-        num_channels = volume.shape[0]
-
-        # Extract slices along depth dimension
-        for k in range(volume.shape[3]):
-            slice_data = volume[:, :, :, k]
-
-            # Check EACH channel independently has content
-            all_channels_have_content = True
-            for ch in range(num_channels):
-                channel_sum = np.sum(slice_data[ch, :, :])
-                if channel_sum <= 1.0:
-                    all_channels_have_content = False
-                    break
-
-            # Only keep slice if ALL channels have content
-            if all_channels_have_content:
-                slice_data_copy = slice_data.copy()
-                # Apply augmentation (no mask for multi-modality VAE)
-                slice_data_copy = apply_augmentation(
-                    slice_data_copy, augmentation, has_mask=False
-                )
-                all_slices.append(slice_data_copy)
-
-    return Dataset(all_slices)
-
-
 def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
     """Merge multiple MR sequences from same patients into single dataset.
 
@@ -931,16 +884,25 @@ def create_vae_dataloader(
     aug = build_augmentation(enabled=augment)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
+        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
         datasets_dict: Dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=data_dir, mr_sequence=key, transform=transform
             )
+        # Load seg for regional metrics if available
+        has_seg = False
+        try:
+            validate_modality_exists(data_dir, 'seg')
+            datasets_dict['seg'] = NiFTIDataset(
+                data_dir=data_dir, mr_sequence='seg', transform=transform
+            )
+            has_seg = True
+        except ValueError:
+            pass
         merged = merge_sequences(datasets_dict)
-        # Extract slices ensuring both channels have content (no seg binarization)
-        train_dataset = extract_slices_dual(merged, has_seg=False, augmentation=aug)
+        train_dataset = extract_slices_dual(merged, has_seg=has_seg, augmentation=aug)
     else:
         # Single modality: 1 channel
         nifti_dataset = NiFTIDataset(
@@ -1019,15 +981,25 @@ def create_vae_validation_dataloader(
     transform = build_standard_transform(image_size)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
+        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
         datasets_dict: Dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=val_dir, mr_sequence=key, transform=transform
             )
+        # Load seg for regional metrics if available
+        has_seg = False
+        try:
+            validate_modality_exists(val_dir, 'seg')
+            datasets_dict['seg'] = NiFTIDataset(
+                data_dir=val_dir, mr_sequence='seg', transform=transform
+            )
+            has_seg = True
+        except ValueError:
+            pass
         merged = merge_sequences(datasets_dict)
-        val_dataset = extract_slices_dual(merged, has_seg=False)
+        val_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
         # Single modality: 1 channel
         nifti_dataset = NiFTIDataset(
@@ -1040,6 +1012,7 @@ def create_vae_validation_dataloader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
+        drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
         pin_memory=True,
         num_workers=DEFAULT_NUM_WORKERS,
         persistent_workers=DEFAULT_NUM_WORKERS > 0
@@ -1101,6 +1074,7 @@ def create_multi_modality_validation_dataloader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
+        drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
         pin_memory=True,
         num_workers=DEFAULT_NUM_WORKERS,
         persistent_workers=DEFAULT_NUM_WORKERS > 0
@@ -1150,15 +1124,25 @@ def create_vae_test_dataloader(
     transform = build_standard_transform(image_size)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels (NO seg)
+        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
         datasets_dict: Dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=test_dir, mr_sequence=key, transform=transform
             )
+        # Load seg for regional metrics if available
+        has_seg = False
+        try:
+            validate_modality_exists(test_dir, 'seg')
+            datasets_dict['seg'] = NiFTIDataset(
+                data_dir=test_dir, mr_sequence='seg', transform=transform
+            )
+            has_seg = True
+        except ValueError:
+            pass
         merged = merge_sequences(datasets_dict)
-        test_dataset = extract_slices_dual(merged, has_seg=False)
+        test_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
         # Single modality: 1 channel
         nifti_dataset = NiFTIDataset(

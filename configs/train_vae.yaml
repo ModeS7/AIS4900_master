@@ -59,18 +59,17 @@ training:
     update_after_step: 100
     update_every: 10
   use_multi_gpu: false
-  # Logging options for VAE (disable diffusion-specific options)
+  # Logging options for VAE
   logging:
     grad_norm: true           # Track gradient norms
-    timestep_losses: false    # N/A for VAE
-    regional_losses: false    # N/A for VAE
-    timestep_region_losses: false  # N/A for VAE
+    timestep_losses: false    # N/A for VAE (no diffusion timesteps)
+    regional_losses: true     # Track L1 loss in tumor vs background regions
+    timestep_region_losses: false  # N/A for VAE (no diffusion timesteps)
     ssim: true                # SSIM metric
     psnr: true                # PSNR metric
     lpips: true               # LPIPS perceptual metric
     boundary_sharpness: false # N/A for VAE
     intermediate_steps: false # N/A for VAE
-    worst_batch: false        # Track worst reconstruction batches
     flops: true               # Measure FLOPs
 
 # Hydra configuration

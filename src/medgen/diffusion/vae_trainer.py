@@ -38,7 +38,7 @@ from medgen.core import (
 )
 from .losses import PerceptualLoss
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
-from .worst_batch import WorstBatchTracker
+from .worst_batch import create_worst_batch_figure
 from .metrics import create_reconstruction_figure
 from .utils import (
     get_vram_usage,
@@ -209,17 +209,19 @@ class VAETrainer:
         self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
         self.log_lpips: bool = logging_cfg.get('lpips', True)
-        self.log_worst_batch: bool = logging_cfg.get('worst_batch', False)
+        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
 
         # Gradient norm tracking (per epoch)
         self._grad_tracker_g = GradientNormTracker()
         self._grad_tracker_d = GradientNormTracker()
 
+        # Regional loss tracking (tumor vs background)
+        self._tumor_loss_sum: float = 0.0
+        self._bg_loss_sum: float = 0.0
+        self._regional_count: int = 0
+
         # FLOPs tracking
         self._flops_tracker = FLOPsTracker()
-
-        # Worst batch tracking
-        self.worst_batch_tracker = WorstBatchTracker(enabled=self.log_worst_batch)
 
         # Validation loader (set in train())
         self.val_loader: Optional[DataLoader] = None
@@ -535,6 +537,59 @@ class VAETrainer:
         kl = kl / mean.numel()
         return kl
 
+    def _track_regional_losses(
+        self,
+        reconstruction: torch.Tensor,
+        target: torch.Tensor,
+        mask: torch.Tensor
+    ) -> None:
+        """Track L1 loss for tumor vs background regions.
+
+        Args:
+            reconstruction: Reconstructed images [B, C, H, W].
+            target: Original images [B, C, H, W].
+            mask: Binary segmentation mask [B, 1, H, W].
+        """
+        with torch.no_grad():
+            abs_error = torch.abs(reconstruction - target)
+
+            # Expand mask to match number of channels
+            tumor_mask = (mask > 0.5).float().expand_as(reconstruction)
+            bg_mask = 1.0 - tumor_mask
+
+            # Compute L1 for each region
+            tumor_pixels = tumor_mask.sum()
+            bg_pixels = bg_mask.sum()
+
+            if tumor_pixels > 0:
+                tumor_loss = (abs_error * tumor_mask).sum() / tumor_pixels
+                self._tumor_loss_sum += tumor_loss.item()
+
+            if bg_pixels > 0:
+                bg_loss = (abs_error * bg_mask).sum() / bg_pixels
+                self._bg_loss_sum += bg_loss.item()
+
+            self._regional_count += 1
+
+    def _reset_regional_loss_tracking(self) -> None:
+        """Reset regional loss accumulators for a new epoch."""
+        self._tumor_loss_sum = 0.0
+        self._bg_loss_sum = 0.0
+        self._regional_count = 0
+
+    def _log_regional_losses(self, epoch: int) -> None:
+        """Log regional loss statistics to TensorBoard."""
+        if not self.log_regional_losses or self._regional_count == 0:
+            return
+
+        avg_tumor = self._tumor_loss_sum / self._regional_count
+        avg_bg = self._bg_loss_sum / self._regional_count
+        ratio = avg_tumor / (avg_bg + 1e-8)
+
+        self.writer.add_scalar('Loss/tumor_region', avg_tumor, epoch)
+        self.writer.add_scalar('Loss/background_region', avg_bg, epoch)
+        self.writer.add_scalar('Loss/tumor_bg_ratio', ratio, epoch)
+
     def _measure_model_flops(self, sample_batch: torch.Tensor, steps_per_epoch: int) -> None:
         """Measure FLOPs for VAE forward pass using FLOPsTracker.
 
@@ -554,30 +609,47 @@ class VAETrainer:
             is_main_process=self.is_main_process,
         )
 
-    def _prepare_batch(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _prepare_batch(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch tensor from dataloader output.
+
+        For VAE dual mode, the batch may contain seg as 3rd channel for
+        regional metrics tracking, but it's NOT used in VAE reconstruction.
 
         Args:
             batch: Input batch - either a dict of tensors or a single tensor.
 
         Returns:
-            Stacked tensor [B, C, H, W].
+            Tuple of (images, mask):
+            - images: Tensor [B, C, H, W] for VAE input (2 channels for dual)
+            - mask: Optional segmentation mask [B, 1, H, W] for regional metrics
         """
         if isinstance(batch, dict):
             # Stack all images into single tensor [B, C, H, W]
-            # Order: image keys first, then seg if present
             image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
             tensors = []
             for key in image_keys:
                 if key in batch:
                     tensors.append(batch[key].to(self.device))
-            if 'seg' in batch:
-                tensors.append(batch['seg'].to(self.device))
-            return torch.cat(tensors, dim=1)
+            images = torch.cat(tensors, dim=1)
+            mask = batch['seg'].to(self.device) if 'seg' in batch else None
+            return images, mask
         elif hasattr(batch, 'as_tensor'):
-            return batch.as_tensor().to(self.device)
+            tensor = batch.as_tensor().to(self.device)
         else:
-            return batch.to(self.device)
+            tensor = batch.to(self.device)
+
+        # For tensor input: check if seg is stacked as last channel
+        # Dual mode: 2 channels (t1_pre, t1_gd) -> 3 channels if seg included
+        n_image_channels = self.cfg.mode.get('in_channels', 2)
+        if tensor.shape[1] > n_image_channels:
+            # Last channel is seg, extract it separately
+            images = tensor[:, :n_image_channels, :, :]
+            mask = tensor[:, n_image_channels:n_image_channels + 1, :, :]
+            return images, mask
+        else:
+            return tensor, None
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Execute a single training step with optional GAN training.
@@ -593,7 +665,7 @@ class VAETrainer:
         Returns:
             Dict with 'gen', 'disc', 'recon', 'perc', 'kl', 'adv' losses.
         """
-        images = self._prepare_batch(batch)
+        images, mask = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
 
         d_loss = torch.tensor(0.0, device=self.device)
@@ -641,6 +713,10 @@ class VAETrainer:
             # L1 reconstruction loss (MONAI uses L1, not MSE)
             l1_loss = torch.abs(reconstruction - images).mean()
 
+            # Track regional losses (tumor vs background) if mask available
+            if mask is not None and self.log_regional_losses:
+                self._track_regional_losses(reconstruction, images, mask)
+
             # Perceptual loss (wrapper handles multi-channel inputs)
             p_loss = self.perceptual_loss_fn(reconstruction, images)
 
@@ -673,14 +749,6 @@ class VAETrainer:
         # Track generator gradient norm
         if self.log_grad_norm:
             self._grad_tracker_g.update(grad_norm_g)
-
-        # Track worst batch (for debugging high loss samples)
-        self.worst_batch_tracker.update(
-            loss=g_loss.item(),
-            original=images,
-            generated=reconstruction,
-            loss_breakdown={'L1': l1_loss.item(), 'Perc': p_loss.item(), 'KL': kl_loss.item()},
-        )
 
         if self.use_ema:
             self._update_ema()
@@ -721,8 +789,9 @@ class VAETrainer:
         if not self.disable_gan and self.discriminator is not None:
             self.discriminator.train()
 
-        # Reset gradient norm tracking for this epoch
+        # Reset tracking for this epoch
         self._reset_grad_norm_tracking()
+        self._reset_regional_loss_tracking()
 
         epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
 
@@ -779,6 +848,10 @@ class VAETrainer:
         total_lpips = 0.0
         n_batches = 0
 
+        # Worst batch tracking
+        worst_loss = 0.0
+        worst_batch_data = None
+
         # Mark CUDA graph step boundary to prevent tensor caching issues
         # when perceptual loss (compiled with torch.compile) is called during validation
         if self.use_compile:
@@ -786,7 +859,7 @@ class VAETrainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                images = self._prepare_batch(batch)
+                images, _ = self._prepare_batch(batch)  # mask unused in validation metrics
 
                 with autocast('cuda', enabled=True, dtype=torch.bfloat16):
                     reconstructed, mean, logvar = model_to_use(images)
@@ -797,10 +870,30 @@ class VAETrainer:
                     kl_loss = self._compute_kl_loss(mean, logvar)
                     g_loss = l1_loss + self.perceptual_weight * p_loss + self.kl_weight * kl_loss
 
+                loss_val = g_loss.item()
                 total_l1 += l1_loss.item()
                 total_perc += p_loss.item()
                 total_kl += kl_loss.item()
-                total_gen += g_loss.item()
+                total_gen += loss_val
+
+                # Track worst batch
+                if loss_val > worst_loss:
+                    worst_loss = loss_val
+                    # Convert to dict for dual mode (triggers dual-channel figure)
+                    n_channels = self.cfg.mode.get('in_channels', 1)
+                    if n_channels == 2:
+                        image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+                        orig_dict = {image_keys[0]: images[:, 0:1].cpu(), image_keys[1]: images[:, 1:2].cpu()}
+                        gen_dict = {image_keys[0]: reconstructed[:, 0:1].float().cpu(), image_keys[1]: reconstructed[:, 1:2].float().cpu()}
+                    else:
+                        orig_dict = images.cpu()
+                        gen_dict = reconstructed.float().cpu()
+                    worst_batch_data = {
+                        'original': orig_dict,
+                        'generated': gen_dict,
+                        'loss': loss_val,
+                        'loss_breakdown': {'L1': l1_loss.item(), 'Perc': p_loss.item(), 'KL': kl_loss.item()},
+                    }
 
                 # Quality metrics
                 total_ssim += compute_ssim(reconstructed, images)
@@ -836,88 +929,18 @@ class VAETrainer:
             if 'lpips' in metrics:
                 self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
 
+            # Log worst batch figure
+            if worst_batch_data is not None:
+                fig = create_worst_batch_figure(
+                    original=worst_batch_data['original'],
+                    generated=worst_batch_data['generated'],
+                    loss=worst_batch_data['loss'],
+                    loss_breakdown=worst_batch_data['loss_breakdown'],
+                )
+                self.writer.add_figure('Validation/worst_batch', fig, epoch)
+                plt.close(fig)
+
         return metrics
-
-    def generate_validation_visualizations(self, dataset: Dataset, epoch: int) -> None:
-        """Generate validation visualization figures (at val_interval only).
-
-        Creates reconstruction comparison figures for TensorBoard.
-
-        Args:
-            dataset: Training dataset (fallback if no val_loader).
-            epoch: Current epoch number.
-        """
-        if self.writer is None:
-            return
-
-        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
-        model_to_use.eval()
-
-        # Get samples for visualization
-        if self.val_loader is not None:
-            val_batch = next(iter(self.val_loader))
-            samples = self._prepare_batch(val_batch)
-            samples = samples[:8]
-        else:
-            n_samples = min(8, len(dataset))
-            indices = torch.randperm(len(dataset))[:n_samples]
-
-            samples_list = []
-            for idx in indices:
-                sample = dataset[idx]
-                if isinstance(sample, dict):
-                    tensors = []
-                    for key in image_keys:
-                        if key in sample:
-                            val = sample[key]
-                            if not isinstance(val, torch.Tensor):
-                                val = torch.from_numpy(np.array(val))
-                            tensors.append(val)
-                    if 'seg' in sample:
-                        val = sample['seg']
-                        if not isinstance(val, torch.Tensor):
-                            val = torch.from_numpy(np.array(val))
-                        tensors.append(val)
-                    sample = torch.cat(tensors, dim=0)
-                elif hasattr(sample, 'as_tensor'):
-                    sample = sample.as_tensor()
-                elif isinstance(sample, np.ndarray):
-                    sample = torch.from_numpy(sample)
-                samples_list.append(sample)
-
-            samples = torch.stack(samples_list).to(self.device)
-
-        # Reconstruct
-        with torch.no_grad():
-            with autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                reconstructed, _, _ = model_to_use(samples)
-
-        # Create visualization figure
-        fig = self._create_reconstruction_figure(samples, reconstructed)
-        self.writer.add_figure('Validation/reconstructions', fig, epoch)
-        plt.close(fig)
-
-        model_to_use.train()
-
-    def _create_reconstruction_figure(
-        self, original: torch.Tensor, reconstructed: torch.Tensor
-    ) -> plt.Figure:
-        """Create side-by-side reconstruction comparison figure.
-
-        Uses shared create_reconstruction_figure for consistent visualization.
-
-        Args:
-            original: Original images [B, C, H, W].
-            reconstructed: Reconstructed images [B, C, H, W].
-
-        Returns:
-            Matplotlib figure.
-        """
-        return create_reconstruction_figure(
-            original=original,
-            generated=reconstructed,
-            max_samples=8,
-        )
 
     def _save_vae_checkpoint(self, epoch: int, filename: str) -> str:
         """Save VAE checkpoint with config for easy loading.
@@ -998,7 +1021,7 @@ class VAETrainer:
         if self.log_flops:
             try:
                 first_batch = next(iter(train_loader))
-                sample_images = self._prepare_batch(first_batch)
+                sample_images, _ = self._prepare_batch(first_batch)
                 self._measure_model_flops(sample_images, len(train_loader))
             except Exception as e:
                 if self.is_main_process:
@@ -1069,19 +1092,15 @@ class VAETrainer:
                         # Log gradient norms
                         self._log_grad_norms(epoch)
 
+                        # Log regional losses (tumor vs background)
+                        self._log_regional_losses(epoch)
+
                         # Log FLOPs per epoch
                         self._flops_tracker.log_epoch(self.writer, epoch)
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
-                    # Log worst batch at validation intervals
-                    if is_val_epoch:
-                        self.worst_batch_tracker.log_and_reset(self.writer, epoch)
-
                     if is_val_epoch or (epoch + 1) == self.n_epochs:
-                        # Generate visualizations (figures only, metrics already logged above)
-                        self.generate_validation_visualizations(train_dataset, epoch)
-
                         # Save latest checkpoint (for resuming)
                         self._save_vae_checkpoint(epoch, "latest")
 
@@ -1163,6 +1182,10 @@ class VAETrainer:
         n_batches = 0
         n_samples = 0
 
+        # Worst batch tracking
+        worst_loss = 0.0
+        worst_batch_data = None
+
         # Store samples for visualization
         sample_inputs = []
         sample_outputs = []
@@ -1170,18 +1193,37 @@ class VAETrainer:
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
-                images = self._prepare_batch(batch)
+                images, _ = self._prepare_batch(batch)
                 batch_size = images.shape[0]
 
                 with autocast('cuda', enabled=True, dtype=torch.bfloat16):
                     reconstructed, _, _ = model_to_use(images)
 
                 # Compute metrics
-                total_l1 += torch.abs(reconstructed - images).mean().item()
+                l1_loss = torch.abs(reconstructed - images).mean().item()
+                total_l1 += l1_loss
                 total_ssim += compute_ssim(reconstructed, images)
                 total_psnr += compute_psnr(reconstructed, images)
                 if self.log_lpips:
                     total_lpips += compute_lpips(reconstructed, images, self.device)
+
+                # Track worst batch
+                if l1_loss > worst_loss:
+                    worst_loss = l1_loss
+                    # Convert to dict for dual mode (triggers dual-channel figure)
+                    n_channels = self.cfg.mode.get('in_channels', 1)
+                    if n_channels == 2:
+                        image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+                        orig_dict = {image_keys[0]: images[:, 0:1].cpu(), image_keys[1]: images[:, 1:2].cpu()}
+                        gen_dict = {image_keys[0]: reconstructed[:, 0:1].float().cpu(), image_keys[1]: reconstructed[:, 1:2].float().cpu()}
+                    else:
+                        orig_dict = images.cpu()
+                        gen_dict = reconstructed.float().cpu()
+                    worst_batch_data = {
+                        'original': orig_dict,
+                        'generated': gen_dict,
+                        'loss': l1_loss,
+                    }
 
                 n_batches += 1
                 n_samples += batch_size
@@ -1240,6 +1282,16 @@ class VAETrainer:
                 fig.savefig(fig_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
                 logger.info(f"Test reconstructions saved to: {fig_path}")
+
+            # Log worst batch figure
+            if worst_batch_data is not None:
+                fig = create_worst_batch_figure(
+                    original=worst_batch_data['original'],
+                    generated=worst_batch_data['generated'],
+                    loss=worst_batch_data['loss'],
+                )
+                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
+                plt.close(fig)
 
         model_to_use.train()
         return metrics

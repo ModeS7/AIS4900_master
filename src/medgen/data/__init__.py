@@ -21,7 +21,6 @@ from .nifti_dataset import (
     # Utilities
     extract_slices_single,
     extract_slices_dual,
-    extract_slices_multi_modality,
     merge_sequences,
     make_binary,
 )

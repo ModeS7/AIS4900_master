@@ -287,12 +287,22 @@ class MetricsTracker:
         if self.log_timestep_losses:
             self._track_timestep_loss_batch(timesteps, predicted_clean, images)
 
-        # Track regional losses for conditional modes
-        if self.is_conditional and mask is not None:
+        # Track regional losses
+        # For conditional modes (bravo, dual): use conditioning mask
+        # For seg mode: use ground truth seg as mask (images IS the seg)
+        regional_mask = mask
+        if not self.is_conditional and mask is None:
+            # Seg mode: use ground truth seg as the mask
+            if isinstance(images, dict):
+                regional_mask = list(images.values())[0]
+            else:
+                regional_mask = images
+
+        if regional_mask is not None:
             if self.log_regional_losses:
-                self._track_regional_losses(predicted_clean, images, mask)
+                self._track_regional_losses(predicted_clean, images, regional_mask)
             if self.log_timestep_region:
-                self._track_timestep_region_loss(timesteps, predicted_clean, images, mask)
+                self._track_timestep_region_loss(timesteps, predicted_clean, images, regional_mask)
 
     def _track_timestep_loss_batch(
         self,

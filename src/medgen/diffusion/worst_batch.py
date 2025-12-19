@@ -145,7 +145,7 @@ def create_worst_batch_figure(
     loss: float,
     loss_breakdown: Optional[Dict[str, float]] = None,
     extra: Optional[Dict[str, Any]] = None,
-    max_samples: int = 4,
+    max_samples: int = 8,
 ) -> plt.Figure:
     """Create visualization figure for worst batch.
 

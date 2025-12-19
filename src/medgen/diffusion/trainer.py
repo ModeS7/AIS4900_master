@@ -77,7 +77,8 @@ class DiffusionTrainer:
         self.batch_size: int = cfg.training.batch_size
         self.image_size: int = cfg.model.image_size
         self.learning_rate: float = cfg.training.learning_rate
-        self.perceptual_weight: float = cfg.training.perceptual_weight
+        # Disable perceptual loss for seg mode (pretrained features don't apply to binary masks)
+        self.perceptual_weight: float = 0.0 if self.mode_name == 'seg' else cfg.training.perceptual_weight
         self.num_timesteps: int = cfg.strategy.num_train_timesteps
         self.warmup_epochs: int = cfg.training.warmup_epochs
         self.val_interval: int = cfg.training.val_interval
@@ -841,6 +842,10 @@ class DiffusionTrainer:
 
         # Measure FLOPs using first batch (one-time profiling)
         self._measure_model_flops(train_loader)
+
+        # Log training config
+        if self.is_main_process and self.mode_name == 'seg':
+            logger.info("Seg mode: perceptual loss disabled (pretrained features don't apply to binary masks)")
 
         avg_loss = float('inf')
         avg_mse = float('inf')

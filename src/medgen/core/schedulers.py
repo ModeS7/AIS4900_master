@@ -3,14 +3,11 @@
 Provides factory functions for common scheduler configurations used
 across different trainers.
 """
-from typing import Optional
-
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import (
     CosineAnnealingLR,
     LinearLR,
     SequentialLR,
-    LRScheduler,
 )
 
 
@@ -52,20 +49,3 @@ def create_warmup_cosine_scheduler(
         schedulers=[warmup_scheduler, cosine_scheduler],
         milestones=[warmup_epochs]
     )
-
-
-def create_constant_scheduler(
-    optimizer: Optimizer,
-) -> Optional[LRScheduler]:
-    """Create a 'scheduler' that keeps LR constant (returns None).
-
-    This is a helper for when constant LR is desired but the code
-    expects a scheduler interface.
-
-    Args:
-        optimizer: The optimizer (unused, for API consistency).
-
-    Returns:
-        None (no scheduler needed for constant LR).
-    """
-    return None

@@ -384,8 +384,34 @@ Resize pipeline:
 - **Images**: Load → Pad to 240x240 (centered) → Resize to 256x256 (bilinear)
 - **Segmentation**: Load → Pad to 240x240 (centered) → Resize to 256x256 (nearest) → Binarize
 
+## Logging & Monitoring
+
+TensorBoard logging with configurable metrics:
+
+```yaml
+# configs/training/default.yaml
+logging:
+  grad_norm: true              # Gradient norm tracking
+  timestep_losses: true        # Loss by diffusion timestep
+  regional_losses: true        # Tumor vs background region losses
+  timestep_region_losses: true # 2D heatmap: timestep x region
+  ssim: true                   # Structural similarity
+  psnr: true                   # Peak signal-to-noise ratio
+  lpips: true                  # Perceptual similarity
+  worst_batch: true            # Highest loss batch visualization
+  flops: true                  # Model FLOPs measurement
+```
+
+Key TensorBoard metrics:
+- `Loss/tumor_region`, `Loss/background_region` - Regional error tracking
+- `Loss/tumor_size/{small,medium,large}` - Error by tumor size
+- `Validation/worst_batch` - Worst performing batch (for debugging)
+- `training/timestep_region_heatmap` - 2D heatmap of loss by timestep and region
+
 ## Documentation
 
+- `docs/architecture.md` - Architecture reference and TensorBoard metrics
+- `docs/common-pitfalls.md` - Common issues and solutions
 - `DETAILES.md` - Detailed technical documentation
 - `FUTURE_WORK.md` - Planned improvements and experiments
 - `docs/pure_bf16_attempts.md` - Notes on pure bf16 training experiments
