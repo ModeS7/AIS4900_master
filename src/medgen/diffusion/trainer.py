@@ -34,6 +34,7 @@ from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .metrics import MetricsTracker, create_reconstruction_figure
+from .regional_metrics import RegionalMetricsTracker
 from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
@@ -714,6 +715,16 @@ class DiffusionTrainer:
         worst_loss = 0.0
         worst_batch_data: Optional[Dict[str, Any]] = None
 
+        # Initialize regional tracker for validation (if enabled)
+        regional_tracker = None
+        if self.metrics.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker(
+                image_size=self.image_size,
+                fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                loss_fn='mse',
+                device=self.device,
+            )
+
         # Mark CUDA graph step boundary to prevent tensor caching issues
         # when perceptual loss (compiled with torch.compile) is called during validation
         torch.compiler.cudagraph_mark_step_begin()
@@ -795,6 +806,10 @@ class DiffusionTrainer:
                 total_lpips += lpips_val
                 n_batches += 1
 
+                # Regional tracking (tumor vs background)
+                if regional_tracker is not None and labels is not None:
+                    regional_tracker.update(predicted_clean, images, labels)
+
         model_to_use.train()
 
         # Handle empty validation set
@@ -819,6 +834,10 @@ class DiffusionTrainer:
             self.writer.add_scalar('Validation/SSIM', metrics['ssim'], epoch)
             self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
             self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+
+            # Log regional metrics (tumor vs background)
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='tumor')
 
         return metrics, worst_batch_data
 

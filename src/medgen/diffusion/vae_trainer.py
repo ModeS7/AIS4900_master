@@ -40,6 +40,7 @@ from .losses import PerceptualLoss
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .worst_batch import create_worst_batch_figure
 from .metrics import create_reconstruction_figure
+from .regional_metrics import RegionalMetricsTracker
 from .utils import (
     get_vram_usage,
     GradientNormTracker,
@@ -214,11 +215,6 @@ class VAETrainer:
         # Gradient norm tracking (per epoch)
         self._grad_tracker_g = GradientNormTracker()
         self._grad_tracker_d = GradientNormTracker()
-
-        # Regional loss tracking (tumor vs background)
-        self._tumor_loss_sum: float = 0.0
-        self._bg_loss_sum: float = 0.0
-        self._regional_count: int = 0
 
         # FLOPs tracking
         self._flops_tracker = FLOPsTracker()
@@ -537,59 +533,6 @@ class VAETrainer:
         kl = kl / mean.numel()
         return kl
 
-    def _track_regional_losses(
-        self,
-        reconstruction: torch.Tensor,
-        target: torch.Tensor,
-        mask: torch.Tensor
-    ) -> None:
-        """Track L1 loss for tumor vs background regions.
-
-        Args:
-            reconstruction: Reconstructed images [B, C, H, W].
-            target: Original images [B, C, H, W].
-            mask: Binary segmentation mask [B, 1, H, W].
-        """
-        with torch.no_grad():
-            abs_error = torch.abs(reconstruction - target)
-
-            # Expand mask to match number of channels
-            tumor_mask = (mask > 0.5).float().expand_as(reconstruction)
-            bg_mask = 1.0 - tumor_mask
-
-            # Compute L1 for each region
-            tumor_pixels = tumor_mask.sum()
-            bg_pixels = bg_mask.sum()
-
-            if tumor_pixels > 0:
-                tumor_loss = (abs_error * tumor_mask).sum() / tumor_pixels
-                self._tumor_loss_sum += tumor_loss.item()
-
-            if bg_pixels > 0:
-                bg_loss = (abs_error * bg_mask).sum() / bg_pixels
-                self._bg_loss_sum += bg_loss.item()
-
-            self._regional_count += 1
-
-    def _reset_regional_loss_tracking(self) -> None:
-        """Reset regional loss accumulators for a new epoch."""
-        self._tumor_loss_sum = 0.0
-        self._bg_loss_sum = 0.0
-        self._regional_count = 0
-
-    def _log_regional_losses(self, epoch: int) -> None:
-        """Log regional loss statistics to TensorBoard."""
-        if not self.log_regional_losses or self._regional_count == 0:
-            return
-
-        avg_tumor = self._tumor_loss_sum / self._regional_count
-        avg_bg = self._bg_loss_sum / self._regional_count
-        ratio = avg_tumor / (avg_bg + 1e-8)
-
-        self.writer.add_scalar('Loss/tumor_region', avg_tumor, epoch)
-        self.writer.add_scalar('Loss/background_region', avg_bg, epoch)
-        self.writer.add_scalar('Loss/tumor_bg_ratio', ratio, epoch)
-
     def _measure_model_flops(self, sample_batch: torch.Tensor, steps_per_epoch: int) -> None:
         """Measure FLOPs for VAE forward pass using FLOPsTracker.
 
@@ -713,10 +656,6 @@ class VAETrainer:
             # L1 reconstruction loss (MONAI uses L1, not MSE)
             l1_loss = torch.abs(reconstruction - images).mean()
 
-            # Track regional losses (tumor vs background) if mask available
-            if mask is not None and self.log_regional_losses:
-                self._track_regional_losses(reconstruction, images, mask)
-
             # Perceptual loss (wrapper handles multi-channel inputs)
             p_loss = self.perceptual_loss_fn(reconstruction, images)
 
@@ -791,7 +730,6 @@ class VAETrainer:
 
         # Reset tracking for this epoch
         self._reset_grad_norm_tracking()
-        self._reset_regional_loss_tracking()
 
         epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
 
@@ -852,6 +790,16 @@ class VAETrainer:
         worst_loss = 0.0
         worst_batch_data = None
 
+        # Initialize regional tracker for validation (if enabled)
+        regional_tracker = None
+        if self.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker(
+                image_size=self.cfg.model.image_size,
+                fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                loss_fn='l1',  # VAE uses L1
+                device=self.device,
+            )
+
         # Mark CUDA graph step boundary to prevent tensor caching issues
         # when perceptual loss (compiled with torch.compile) is called during validation
         if self.use_compile:
@@ -859,7 +807,7 @@ class VAETrainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                images, _ = self._prepare_batch(batch)  # mask unused in validation metrics
+                images, mask = self._prepare_batch(batch)  # mask used for regional tracking
 
                 with autocast('cuda', enabled=True, dtype=torch.bfloat16):
                     reconstructed, mean, logvar = model_to_use(images)
@@ -901,6 +849,10 @@ class VAETrainer:
                 if self.log_lpips:
                     total_lpips += compute_lpips(reconstructed, images, self.device)
 
+                # Regional tracking (tumor vs background)
+                if regional_tracker is not None and mask is not None:
+                    regional_tracker.update(reconstructed, images, mask)
+
                 n_batches += 1
 
         model_to_use.train()
@@ -939,6 +891,10 @@ class VAETrainer:
                 )
                 self.writer.add_figure('Validation/worst_batch', fig, epoch)
                 plt.close(fig)
+
+            # Log regional metrics (tumor vs background)
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='tumor')
 
         return metrics
 
@@ -1091,9 +1047,6 @@ class VAETrainer:
 
                         # Log gradient norms
                         self._log_grad_norms(epoch)
-
-                        # Log regional losses (tumor vs background)
-                        self._log_regional_losses(epoch)
 
                         # Log FLOPs per epoch
                         self._flops_tracker.log_epoch(self.writer, epoch)

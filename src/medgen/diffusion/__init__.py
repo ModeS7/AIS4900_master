@@ -9,6 +9,7 @@ from .metrics import MetricsTracker
 from .visualization import ValidationVisualizer
 from .quality_metrics import compute_ssim, compute_psnr, compute_lpips
 from .worst_batch import WorstBatchTracker, create_worst_batch_figure
+from .regional_metrics import RegionalMetricsTracker
 
 __all__ = [
     'DiffusionTrainer',
@@ -31,4 +32,5 @@ __all__ = [
     'compute_lpips',
     'WorstBatchTracker',
     'create_worst_batch_figure',
+    'RegionalMetricsTracker',
 ]
