@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import torch
 from monai.data import DataLoader, Dataset
 from monai.transforms import (
     Compose,

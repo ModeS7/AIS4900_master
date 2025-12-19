@@ -15,9 +15,8 @@ Usage:
     python -m medgen.scripts.lr_finder min_lr=1e-8 max_lr=1e-2 num_steps=300
 """
 import logging
-import math
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import hydra
 import matplotlib
@@ -26,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.amp import autocast
 from torch.optim import AdamW
 from tqdm import tqdm
