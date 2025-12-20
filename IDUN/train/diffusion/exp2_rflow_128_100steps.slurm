@@ -31,6 +31,7 @@ time python -m medgen.scripts.train \
     mode=bravo \
     strategy.num_train_timesteps=100 \
     model.image_size=128 \
+    training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
     training.name=exp_2_

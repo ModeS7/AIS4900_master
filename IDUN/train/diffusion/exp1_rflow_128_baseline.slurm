@@ -25,11 +25,13 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
+# Baseline: No augmentation, no EMA, no Min-SNR
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
     model.image_size=128 \
+    training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
     training.name=exp_1_

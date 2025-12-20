@@ -25,7 +25,8 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# Progressive VAE: 64 -> 128 -> 256, all modalities, no GAN
+# Progressive VAE: 64 -> 128 -> 256, all modalities (bravo, flair, t1_pre, t1_gd, seg)
+# Features: VAE augmentation (aggressive), batch augmentation (mixup/cutmix), no GAN
 time python -m medgen.scripts.train_vae_progressive \
     paths=cluster \
     training.name=exp1_
