@@ -1,21 +1,23 @@
 """
 Quality metrics for image comparison.
 
-Provides PSNR and MS-SSIM metrics used by both DiffusionTrainer and VAETrainer.
-Uses MONAI's MultiScaleSSIMMetric for native 2D/3D support.
+Provides PSNR, MS-SSIM, and LPIPS metrics used by DiffusionTrainer and VAETrainer.
 
-MS-SSIM replaces both SSIM and LPIPS as a single perceptual quality metric
-that works in both 2D and 3D.
+Metrics:
+- PSNR: Peak Signal-to-Noise Ratio (works with any dimensions)
+- MS-SSIM: Multi-Scale Structural Similarity (2D and 3D via MONAI)
+- LPIPS: Learned Perceptual Image Patch Similarity (2D only, uses pretrained networks)
 """
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 
 logger = logging.getLogger(__name__)
 
-# Cached MS-SSIM metric instances (one per spatial_dims + image_size combo)
+# Cached metric instances
 _msssim_cache: dict = {}
+_lpips_cache: dict = {}
 
 
 def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
@@ -163,4 +165,103 @@ def compute_msssim(
 
     except Exception as e:
         logger.warning(f"MS-SSIM computation failed: {e}")
+        return 0.0
+
+
+def _get_lpips_metric(
+    device: torch.device,
+    network_type: str = "radimagenet_resnet50",
+    cache_dir: Optional[str] = None,
+) -> torch.nn.Module:
+    """Get or create cached LPIPS metric instance.
+
+    Uses MONAI's PerceptualLoss with pretrained networks.
+
+    Args:
+        device: Device to place the metric on.
+        network_type: Pretrained network type. Options:
+            - "radimagenet_resnet50" (default, medical imaging)
+            - "resnet50" (ImageNet)
+            - "vgg" (VGG-based, classic LPIPS)
+            - "alex" (AlexNet-based)
+        cache_dir: Optional cache directory for model weights.
+
+    Returns:
+        MONAI PerceptualLoss module configured as metric.
+    """
+    from monai.losses import PerceptualLoss
+
+    cache_key = (str(device), network_type)
+
+    if cache_key not in _lpips_cache:
+        metric = PerceptualLoss(
+            spatial_dims=2,
+            network_type=network_type,
+            cache_dir=cache_dir,
+            pretrained=True,
+        ).to(device)
+        metric.eval()
+        _lpips_cache[cache_key] = metric
+
+    return _lpips_cache[cache_key]
+
+
+def compute_lpips(
+    generated: torch.Tensor,
+    reference: torch.Tensor,
+    device: Optional[torch.device] = None,
+    network_type: str = "radimagenet_resnet50",
+    cache_dir: Optional[str] = None,
+) -> float:
+    """Compute LPIPS (perceptual distance) between generated and reference images.
+
+    Uses MONAI's PerceptualLoss with pretrained feature extractors.
+    Lower values indicate more similar images (0 = identical).
+
+    Note: Only works with 2D images. For 3D, use MS-SSIM instead.
+
+    Args:
+        generated: Generated images [B, C, H, W] in [0, 1] range.
+        reference: Reference images [B, C, H, W] in [0, 1] range.
+        device: Device for computation (defaults to input tensor device).
+        network_type: Pretrained network type:
+            - "radimagenet_resnet50" (default, best for medical imaging)
+            - "resnet50" (ImageNet pretrained)
+            - "vgg", "alex" (classic LPIPS networks)
+        cache_dir: Optional cache directory for model weights.
+
+    Returns:
+        Average LPIPS score across batch (lower is better, 0 = identical).
+    """
+    try:
+        with torch.no_grad():
+            # Determine device
+            if device is None:
+                device = generated.device
+
+            # Ensure float32 and clamp to valid range
+            gen = torch.clamp(generated.float(), 0, 1).to(device)
+            ref = torch.clamp(reference.float(), 0, 1).to(device)
+
+            # Convert grayscale to RGB (required for pretrained networks)
+            if gen.shape[1] == 1:
+                gen = gen.repeat(1, 3, 1, 1)
+                ref = ref.repeat(1, 3, 1, 1)
+            elif gen.shape[1] == 2:
+                # Dual channel - pad with zeros to make 3 channels
+                zeros = torch.zeros_like(gen[:, :1])
+                gen = torch.cat([gen, zeros], dim=1)
+                ref = torch.cat([ref, zeros], dim=1)
+
+            # Get cached metric
+            metric = _get_lpips_metric(device, network_type, cache_dir)
+
+            # Compute perceptual loss (LPIPS)
+            # PerceptualLoss returns scalar loss averaged over batch
+            result = metric(gen, ref)
+
+            return float(result.item())
+
+    except Exception as e:
+        logger.warning(f"LPIPS computation failed: {e}")
         return 0.0

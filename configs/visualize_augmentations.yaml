@@ -1,0 +1,33 @@
+# Augmentation Visualization Configuration
+#
+# Visualizes diffusion vs VAE augmentation pipelines.
+#
+# Usage:
+#   # Default (local paths)
+#   python -m medgen.scripts.visualize_augmentations
+#
+#   # Use cluster paths
+#   python -m medgen.scripts.visualize_augmentations paths=cluster
+#
+#   # Override settings
+#   python -m medgen.scripts.visualize_augmentations modality=bravo n_samples=8
+#
+#   # Force synthetic data
+#   python -m medgen.scripts.visualize_augmentations synthetic=true
+
+defaults:
+  - paths: local
+  - _self_
+
+# Visualization settings
+synthetic: false          # Use synthetic data instead of real data
+modality: t1_pre          # MR sequence to load (t1_pre, t1_gd, bravo, seg, flair)
+n_samples: 4              # Number of sample slices to visualize
+image_size: 128           # Image size for loading
+output_dir: outputs/augmentation_viz  # Directory to save visualizations
+
+# Disable Hydra's working directory change
+hydra:
+  run:
+    dir: .
+  output_subdir: null

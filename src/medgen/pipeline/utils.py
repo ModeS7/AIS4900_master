@@ -38,7 +38,7 @@ def log_epoch_summary(
     epoch_pct = ((epoch + 1) / total_epochs) * 100
     total_loss, mse_loss, perceptual_loss = avg_losses
 
-    print(
+    logger.info(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) completed | "
         f"Total: {total_loss:.6f} | MSE: {mse_loss:.6f} | Perceptual: {perceptual_loss:.6f} | "
         f"Time: {elapsed_time:.1f}s"

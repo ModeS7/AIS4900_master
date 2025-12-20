@@ -1,6 +1,14 @@
 """Data loading and processing utilities."""
 
-from .augmentation import apply_augmentation, build_augmentation
+from .augmentation import (
+    apply_augmentation,
+    build_augmentation,
+    build_diffusion_augmentation,
+    build_vae_augmentation,
+    create_vae_collate_fn,
+    cutmix,
+    mixup,
+)
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .utils import extract_slices_dual, extract_slices_single, make_binary, merge_sequences
 
@@ -33,6 +41,11 @@ __all__ = [
     # Augmentation
     'apply_augmentation',
     'build_augmentation',
+    'build_diffusion_augmentation',
+    'build_vae_augmentation',
+    'create_vae_collate_fn',
+    'mixup',
+    'cutmix',
     # Slice extraction utilities
     'extract_slices_single',
     'extract_slices_dual',

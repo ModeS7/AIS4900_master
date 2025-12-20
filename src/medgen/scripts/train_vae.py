@@ -77,16 +77,18 @@ def main(cfg: DictConfig) -> None:
         cfg.mode.in_channels = vae_in_channels
         cfg.mode.out_channels = vae_in_channels
 
-    # Print resolved configuration
+    # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-    print(f"\n{'=' * 60}")
-    print(f"Training VAE for {mode} mode")
-    print(f"Channels: {vae_in_channels} | Image size: {cfg.model.image_size}")
-    print(f"Batch size: {cfg.training.batch_size} | Latent channels: {cfg.vae.latent_channels}")
-    print(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
-    print(f"EMA: {cfg.training.use_ema}")
-    print(f"{'=' * 60}\n")
+    log.info("")
+    log.info("=" * 60)
+    log.info(f"Training VAE for {mode} mode")
+    log.info(f"Channels: {vae_in_channels} | Image size: {cfg.model.image_size}")
+    log.info(f"Batch size: {cfg.training.batch_size} | Latent channels: {cfg.vae.latent_channels}")
+    log.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
+    log.info(f"EMA: {cfg.training.use_ema}")
+    log.info("=" * 60)
+    log.info("")
 
     # Create trainer
     trainer = VAETrainer(cfg)

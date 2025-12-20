@@ -37,6 +37,12 @@ training:
   warmup_epochs: 5
   val_interval: 10
   use_ema: false
+  # VAE-specific augmentation (aggressive + batch-level)
+  augment_type: vae         # Aggressive augmentation (noise, blur, scale, elastic)
+  batch_augment:
+    enabled: true           # Enable mixup/cutmix
+    mixup_prob: 0.2         # 20% chance per batch
+    cutmix_prob: 0.2        # 20% chance per batch
   ema:
     decay: 0.999
     update_after_step: 100
@@ -48,8 +54,9 @@ training:
     timestep_losses: false    # N/A for VAE (no diffusion timesteps)
     regional_losses: true     # Track L1 loss in tumor vs background regions
     timestep_region_losses: false  # N/A for VAE (no diffusion timesteps)
-    msssim: true              # MS-SSIM metric (replaces SSIM + LPIPS)
+    msssim: true              # MS-SSIM metric (2D/3D)
     psnr: true                # PSNR metric
+    lpips: true               # LPIPS (2D only, slower)
     boundary_sharpness: false # N/A for VAE
     intermediate_steps: false # N/A for VAE
     flops: true               # Measure FLOPs

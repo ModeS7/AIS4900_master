@@ -14,7 +14,7 @@ Usage:
     # Cluster training
     python -m medgen.scripts.train paths=cluster
 
-    # Quick debug
+    # Fast debug mode
     python -m medgen.scripts.train training=fast_debug
 """
 import logging
@@ -76,7 +76,7 @@ def main(cfg: DictConfig) -> None:
     # Validate configuration before proceeding
     validate_config(cfg)
 
-    # Print resolved configuration
+    # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     mode = cfg.mode.name
@@ -102,12 +102,14 @@ def main(cfg: DictConfig) -> None:
         space = PixelSpace()
         space_name = "pixel"
 
-    print(f"\n{'=' * 60}")
-    print(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
-    print(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
-    print(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
-    print(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
-    print(f"{'=' * 60}\n")
+    log.info("")
+    log.info("=" * 60)
+    log.info(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
+    log.info(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
+    log.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
+    log.info(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
+    log.info("=" * 60)
+    log.info("")
 
     # Create trainer
     trainer = DiffusionTrainer(cfg, space=space)

@@ -22,6 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from .quality import (
     compute_msssim as _compute_msssim,
     compute_psnr as _compute_psnr,
+    compute_lpips as _compute_lpips,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class MetricsTracker:
         self.log_timestep_region: bool = logging_cfg.get('timestep_region_losses', True)
         self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', False)  # Off by default (2D only, slower)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
 
@@ -688,6 +690,24 @@ class MetricsTracker:
             Average PSNR across batch.
         """
         return _compute_psnr(generated, reference)
+
+    def compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
+        """Compute LPIPS (perceptual distance) between generated and reference images.
+
+        Uses MONAI's PerceptualLoss with RadImageNet pretrained features.
+        Only works with 2D images. For 3D, use MS-SSIM instead.
+
+        Args:
+            generated: Generated images [B, C, H, W].
+            reference: Reference images [B, C, H, W].
+
+        Returns:
+            Average LPIPS across batch (lower is better, 0 = identical).
+        """
+        if not self.log_lpips:
+            return 0.0
+        cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
+        return _compute_lpips(generated, reference, cache_dir=cache_dir)
 
     def compute_boundary_sharpness(
         self,

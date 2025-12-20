@@ -3,17 +3,20 @@ VAE dataloaders for training and evaluation.
 
 Provides dataloaders for VAE training with single or dual modality,
 with separate handling for training, validation, and test sets.
+
+Uses aggressive VAE-specific augmentation and optional batch-level
+augmentations (mixup, cutmix) via custom collate function.
 """
 import logging
 import os
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
 from medgen.core.constants import DEFAULT_NUM_WORKERS
-from medgen.data.augmentation import build_augmentation
+from medgen.data.augmentation import build_vae_augmentation, create_vae_collate_fn
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -61,7 +64,7 @@ def create_vae_dataloader(
         validate_modality_exists(data_dir, modality)
 
     transform = build_standard_transform(image_size)
-    aug = build_augmentation(enabled=augment)
+    aug = build_vae_augmentation(enabled=augment)
 
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
@@ -106,14 +109,34 @@ def create_vae_dataloader(
     else:
         batch_size_per_gpu = batch_size
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
+    # Get batch augmentation settings
+    batch_aug_cfg = cfg.training.get('batch_augment', {})
+    batch_aug_enabled = batch_aug_cfg.get('enabled', False)
+
+    # Create collate function with batch augmentations if enabled
+    collate_fn: Optional[Callable] = None
+    if batch_aug_enabled:
+        mixup_prob = batch_aug_cfg.get('mixup_prob', 0.2)
+        cutmix_prob = batch_aug_cfg.get('cutmix_prob', 0.2)
+        collate_fn = create_vae_collate_fn(mixup_prob=mixup_prob, cutmix_prob=cutmix_prob)
+
     dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_per_gpu,
         sampler=sampler,
         shuffle=shuffle,
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        collate_fn=collate_fn,
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, train_dataset
@@ -187,15 +210,23 @@ def create_vae_validation_dataloader(
         )
         val_dataset = extract_slices_single(nifti_dataset)
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
     # Validation loader: shuffle enabled for diverse batch sampling
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -268,14 +299,22 @@ def create_vae_test_dataloader(
         )
         test_dataset = extract_slices_single(nifti_dataset)
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
     # Test loader: shuffle for diverse visualization samples
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, test_dataset

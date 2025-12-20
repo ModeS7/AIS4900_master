@@ -63,19 +63,21 @@ def main(cfg: DictConfig) -> None:
     # Validate configuration
     validate_config(cfg)
 
-    # Print configuration
+    # Log configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
-    print(f"\n{'=' * 60}")
-    print("PROGRESSIVE VAE TRAINING")
-    print(f"{'=' * 60}")
-    print(f"Resolutions: {cfg.progressive.resolutions}")
-    print(f"Modalities: {cfg.modalities.image_keys}")
-    print(f"Plateau detection: window={cfg.progressive.plateau.window_size}, "
-          f"min_improvement={cfg.progressive.plateau.min_improvement}%, "
-          f"patience={cfg.progressive.plateau.patience}")
-    print(f"Final phase epochs: {cfg.progressive.final_phase.epochs}")
-    print(f"{'=' * 60}\n")
+    log.info("")
+    log.info("=" * 60)
+    log.info("PROGRESSIVE VAE TRAINING")
+    log.info("=" * 60)
+    log.info(f"Resolutions: {cfg.progressive.resolutions}")
+    log.info(f"Modalities: {cfg.modalities.image_keys}")
+    log.info(f"Plateau detection: window={cfg.progressive.plateau.window_size}, "
+             f"min_improvement={cfg.progressive.plateau.min_improvement}%, "
+             f"patience={cfg.progressive.plateau.patience}")
+    log.info(f"Final phase epochs: {cfg.progressive.final_phase.epochs}")
+    log.info("=" * 60)
+    log.info("")
 
     # Create and run trainer
     trainer = ProgressiveVAETrainer(cfg)

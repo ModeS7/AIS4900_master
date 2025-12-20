@@ -15,8 +15,8 @@ Usage:
         --num_images 10000 --output_dir gen_dual
 """
 import argparse
+import logging
 import os
-import sys
 import time
 from typing import List, Literal, Tuple
 
@@ -38,6 +38,8 @@ from medgen.data import make_binary
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
+
+log = logging.getLogger(__name__)
 
 GenerationMode = Literal['bravo', 'dual']
 StrategyType = Literal['ddpm', 'rflow']
@@ -108,8 +110,8 @@ def auto_adjust_batch_size(base_batch_size: int, device: torch.device) -> int:
 
     adjusted_batch_size = int(base_batch_size * multiplier)
 
-    print(f"GPU tier detected: {gpu_tier} ({total_vram_gb:.1f}GB)")
-    print(f"Batch size auto-adjusted: {base_batch_size} -> {adjusted_batch_size} (x{multiplier})")
+    log.info(f"GPU tier detected: {gpu_tier} ({total_vram_gb:.1f}GB)")
+    log.info(f"Batch size auto-adjusted: {base_batch_size} -> {adjusted_batch_size} (x{multiplier})")
 
     return adjusted_batch_size
 
@@ -192,12 +194,11 @@ def log_mask_batch(
     batch_time = tracker.get_batch_time()
     vram_info = get_vram_usage(device)
 
-    print(
+    log.info(
         f"[{timestamp}] Mask: {valid_count:3d}/{batch_size:3d} valid | "
         f"Success: {success_rate:5.1f}% | Cache: {cache_count:4d} | "
         f"Time: {batch_time:6.1f}s | {vram_info}"
     )
-    sys.stdout.flush()
 
 
 def log_image_batch(
@@ -214,11 +215,10 @@ def log_image_batch(
     vram_info = get_vram_usage(device)
 
     mode_label = "Bravo" if mode == ModeType.BRAVO else "Dual"
-    print(
+    log.info(
         f"[{timestamp}] Image {current_image:6d}/{target_images:6d} ({progress_pct:5.1f}%) | "
         f"{mode_label}: {batch_size:3d} saved | Time: {batch_time:6.1f}s | {vram_info}"
     )
-    sys.stdout.flush()
 
 
 def _process_mask_batch(
@@ -308,7 +308,7 @@ def generate_images_from_masks(
                 output_path = os.path.join(save_dir, f"{start_counters[i]:05d}.nii.gz")
                 nib.save(nifti_image, output_path)
             except Exception as e:
-                print(f"ERROR: Failed to save image {start_counters[i]:05d}: {e}")
+                log.error(f"Failed to save image {start_counters[i]:05d}: {e}")
                 raise
 
     elif mode == ModeType.DUAL:
@@ -339,7 +339,7 @@ def generate_images_from_masks(
                 output_path = os.path.join(save_dir, f"{start_counters[i]:05d}.nii.gz")
                 nib.save(nifti_image, output_path)
             except Exception as e:
-                print(f"ERROR: Failed to save image {start_counters[i]:05d}: {e}")
+                log.error(f"Failed to save image {start_counters[i]:05d}: {e}")
                 raise
 
     return True
@@ -364,18 +364,19 @@ def main() -> None:
     mask_cache: List[Tuple[np.ndarray, int]] = []
 
     mode_description = "BRAVO images" if args.mode == ModeType.BRAVO else "T1 pre+gd images"
-    print(f"\n{'=' * 60}")
-    print(f"Generating {mode_description} with {args.strategy}")
-    print(f"Target: {args.num_images} image pairs | Batch size: {batch_size}")
-    print(f"Steps: {args.num_steps} | {get_vram_usage(device)}")
-    print(f"{'=' * 60}\n")
-    sys.stdout.flush()
+    log.info("")
+    log.info("=" * 60)
+    log.info(f"Generating {mode_description} with {args.strategy}")
+    log.info(f"Target: {args.num_images} image pairs | Batch size: {batch_size}")
+    log.info(f"Steps: {args.num_steps} | {get_vram_usage(device)}")
+    log.info("=" * 60)
+    log.info("")
 
     # Load models
-    print("Loading segmentation model...")
+    log.info("Loading segmentation model...")
     seg_model = load_model(args.seg_model, in_channels=1, out_channels=1, device=device)
 
-    print(f"Loading image model ({args.mode})...")
+    log.info(f"Loading image model ({args.mode})...")
 
     if args.mode == ModeType.BRAVO:
         in_channels = 2
@@ -391,8 +392,8 @@ def main() -> None:
 
     save_dir = args.output_dir
     os.makedirs(save_dir, exist_ok=True)
-    print(f"Saving to: {save_dir}\n")
-    sys.stdout.flush()
+    log.info(f"Saving to: {save_dir}")
+    log.info("")
 
     # Generation loop
     start_time = time.time()
@@ -464,7 +465,7 @@ def main() -> None:
 
     # Final partial batch
     if len(mask_cache) > 0:
-        print(f"Processing final partial batch: {len(mask_cache)} masks")
+        log.info(f"Processing final partial batch: {len(mask_cache)} masks")
         batch_masks = [mask_cache[i][0] for i in range(len(mask_cache))]
         batch_counters = [mask_cache[i][1] for i in range(len(mask_cache))]
 
@@ -478,13 +479,14 @@ def main() -> None:
     total_time = time.time() - start_time
     final_success_rate = tracker.get_success_rate()
 
-    print(f"\n{'=' * 60}")
-    print(f"Generation complete | {get_vram_usage(device)}")
-    print(f"Total time: {total_time:.1f}s ({total_time / 60:.1f} minutes)")
-    print(f"Generated: {current_image}/{args.num_images} valid image pairs")
-    print(f"Final success rate: {final_success_rate:.1f}%")
-    print(f"Average time per valid image: {total_time / max(current_image, 1):.2f}s")
-    print(f"{'=' * 60}")
+    log.info("")
+    log.info("=" * 60)
+    log.info(f"Generation complete | {get_vram_usage(device)}")
+    log.info(f"Total time: {total_time:.1f}s ({total_time / 60:.1f} minutes)")
+    log.info(f"Generated: {current_image}/{args.num_images} valid image pairs")
+    log.info(f"Final success rate: {final_success_rate:.1f}%")
+    log.info(f"Average time per valid image: {total_time / max(current_image, 1):.2f}s")
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,9 @@ Potential improvements and experiments for the diffusion-based medical image syn
 - [x] **Separate training pipelines** - Different configs for seg vs bravo via Hydra YAML configs
 - [ ] **Classifier-free guidance** - Train with random mask dropout, interpolate conditional/unconditional at inference
 - [ ] **Controllable mask generation** - Cross-attention conditioning for tumor count/size/location
+  - Implementation plan: `docs/seg_cond_implementation_plan.md`
+  - Uses MONAI's built-in `with_conditioning=True` + `cross_attention_dim=8`
+  - Input: `[n_tiny, n_small, n_medium, n_large]` counts
 - [x] **Min-SNR weighting** - Reweight loss across timesteps to prevent high-noise step domination (IMPLEMENTED)
 - [x] **EMA weights** - Maintain slowly-updated parameter copy for higher quality samples (IMPLEMENTED)
 - [x] **LR Finder** - Automatically find optimal learning rate (IMPLEMENTED in trainer)

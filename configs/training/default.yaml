@@ -15,6 +15,20 @@ gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
 warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
 val_interval: 30           # Validation frequency (epochs)
 augment: true              # Data augmentation (horizontal flip, small rotation)
+augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
+
+# Batch-level augmentations (VAE only - mixup/cutmix)
+batch_augment:
+  enabled: false           # Disabled by default, enabled in VAE configs
+  mixup_prob: 0.0          # Probability of mixup per batch
+  cutmix_prob: 0.0         # Probability of cutmix per batch
+
+# DataLoader optimization for CPU augmentation
+dataloader:
+  num_workers: 8           # Parallel data loading workers
+  prefetch_factor: 4       # Batches to prefetch per worker
+  pin_memory: true         # Faster CPU->GPU transfer
+  persistent_workers: true # Avoid worker respawn overhead
 
 # EMA (Exponential Moving Average)
 # Maintains slowly-updated weight copy for higher quality samples
@@ -59,8 +73,9 @@ logging:
   timestep_region_losses: true # [cond] 2D heatmap: timestep x region
 
   # Validation metrics
-  msssim: true                 # [cond] Multi-Scale Structural Similarity (replaces SSIM + LPIPS)
+  msssim: true                 # [cond] Multi-Scale Structural Similarity (2D/3D)
   psnr: true                   # [cond] Peak signal-to-noise ratio
+  lpips: true                  # [cond] Learned Perceptual (2D only, slower)
   boundary_sharpness: true     # [cond] Edge quality in tumor regions
 
   # Visualization

@@ -86,7 +86,7 @@ def log_vae_epoch_summary(
         val_l1 = ""
         msssim_str = ""
 
-    print(
+    logger.info(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
         f"G: {avg_losses['gen']:.4f}{val_gen} | "
         f"L1: {avg_losses['recon']:.4f}{val_l1} | "

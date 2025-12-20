@@ -47,6 +47,7 @@ from .metrics import (
     RegionalMetricsTracker,
     compute_msssim,
     compute_psnr,
+    compute_lpips,
 )
 from .tracking import FLOPsTracker
 
@@ -713,6 +714,7 @@ class DiffusionTrainer:
         total_loss = 0.0
         total_msssim = 0.0
         total_psnr = 0.0
+        total_lpips = 0.0
         n_batches = 0
 
         # Track worst validation batch
@@ -790,7 +792,7 @@ class DiffusionTrainer:
                         'loss': loss_val,
                     }
 
-                # Quality metrics (MS-SSIM, PSNR) on predicted vs ground truth
+                # Quality metrics (MS-SSIM, PSNR, optionally LPIPS) on predicted vs ground truth
                 if isinstance(predicted_clean, dict):
                     # Dual mode: average metrics across channels
                     keys = list(predicted_clean.keys())
@@ -798,12 +800,22 @@ class DiffusionTrainer:
                                   compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
                     psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
                                 compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    if self.metrics.log_lpips:
+                        lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
+                                     compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
+                    else:
+                        lpips_val = 0.0
                 else:
                     msssim_val = compute_msssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
+                    if self.metrics.log_lpips:
+                        lpips_val = compute_lpips(predicted_clean, images, self.device)
+                    else:
+                        lpips_val = 0.0
 
                 total_msssim += msssim_val
                 total_psnr += psnr_val
+                total_lpips += lpips_val
                 n_batches += 1
 
                 # Regional tracking (tumor vs background)
@@ -824,6 +836,8 @@ class DiffusionTrainer:
             'msssim': total_msssim / n_batches,
             'psnr': total_psnr / n_batches,
         }
+        if self.metrics.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
 
         # Log to TensorBoard
         if self.writer is not None:
@@ -832,6 +846,8 @@ class DiffusionTrainer:
             self.writer.add_scalar('Loss/Total_val', metrics['total'], epoch)
             self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
             self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            if 'lpips' in metrics:
+                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
 
             # Log regional metrics (tumor vs background)
             if regional_tracker is not None:
@@ -1001,6 +1017,7 @@ class DiffusionTrainer:
         total_mse = 0.0
         total_msssim = 0.0
         total_psnr = 0.0
+        total_lpips = 0.0
         n_batches = 0
         n_samples = 0
 
@@ -1046,9 +1063,18 @@ class DiffusionTrainer:
                                   compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
                     psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
                                 compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    if self.metrics.log_lpips:
+                        lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
+                                     compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
+                    else:
+                        lpips_val = 0.0
                 else:
                     msssim_val = compute_msssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
+                    if self.metrics.log_lpips:
+                        lpips_val = compute_lpips(predicted_clean, images, self.device)
+                    else:
+                        lpips_val = 0.0
 
                 # Track worst batch
                 if loss_val > worst_batch_loss:
@@ -1071,6 +1097,7 @@ class DiffusionTrainer:
 
                 total_msssim += msssim_val
                 total_psnr += psnr_val
+                total_lpips += lpips_val
                 n_batches += 1
                 n_samples += batch_size
 
@@ -1088,12 +1115,16 @@ class DiffusionTrainer:
             'psnr': total_psnr / n_batches,
             'n_samples': n_samples,
         }
+        if self.metrics.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
 
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
         logger.info(f"  MSE:     {metrics['mse']:.6f}")
         logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
         logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
+        if 'lpips' in metrics:
+            logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
 
         # Save results to JSON
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -1107,6 +1138,8 @@ class DiffusionTrainer:
             self.writer.add_scalar(f'{tb_prefix}/MSE', metrics['mse'], 0)
             self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            if 'lpips' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:
@@ -1150,7 +1183,7 @@ class DiffusionTrainer:
         Args:
             original: Original images [B, C, H, W] (CPU).
             predicted: Predicted clean images [B, C, H, W] (CPU).
-            metrics: Dict with test metrics (mse, msssim, psnr).
+            metrics: Dict with test metrics (mse, msssim, psnr, optionally lpips).
             label: Checkpoint label (best, latest, current).
             timesteps: Optional timesteps for each sample.
 
@@ -1162,6 +1195,8 @@ class DiffusionTrainer:
             'MS-SSIM': metrics['msssim'],
             'PSNR': metrics['psnr'],
         }
+        if 'lpips' in metrics:
+            display_metrics['LPIPS'] = metrics['lpips']
         return create_reconstruction_figure(
             original=original,
             generated=predicted,

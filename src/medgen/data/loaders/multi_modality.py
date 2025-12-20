@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
 from medgen.core.constants import DEFAULT_NUM_WORKERS
-from medgen.data.augmentation import build_augmentation
+from medgen.data.augmentation import build_vae_augmentation
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -62,7 +62,7 @@ def create_multi_modality_dataloader(
         validate_modality_exists(data_dir, key)
 
     transform = build_standard_transform(image_size)
-    aug = build_augmentation(enabled=augment)
+    aug = build_vae_augmentation(enabled=augment)
 
     # Collect all slices from all modalities into one list
     all_slices: List[np.ndarray] = []
@@ -93,14 +93,22 @@ def create_multi_modality_dataloader(
     else:
         batch_size_per_gpu = batch_size
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
     dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_per_gpu,
         sampler=sampler,
         shuffle=shuffle,
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, train_dataset
@@ -154,15 +162,23 @@ def create_multi_modality_validation_dataloader(
 
     val_dataset = Dataset(all_slices)
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
     # Validation loader: shuffle enabled for diverse batch sampling
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -216,14 +232,22 @@ def create_multi_modality_test_dataloader(
 
     test_dataset = Dataset(all_slices)
 
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
     # Test loader: shuffle for diverse visualization samples
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
-        num_workers=DEFAULT_NUM_WORKERS,
-        persistent_workers=DEFAULT_NUM_WORKERS > 0
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
 
     return dataloader, test_dataset
