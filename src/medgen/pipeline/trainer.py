@@ -45,9 +45,8 @@ from .metrics import (
     MetricsTracker,
     create_reconstruction_figure,
     RegionalMetricsTracker,
-    compute_ssim,
+    compute_msssim,
     compute_psnr,
-    compute_lpips,
 )
 from .tracking import FLOPsTracker
 
@@ -700,7 +699,7 @@ class DiffusionTrainer:
 
         Returns:
             Tuple of (metrics dict, worst_batch_data or None).
-            Metrics dict contains: mse, perceptual, total, ssim, psnr, lpips.
+            Metrics dict contains: mse, perceptual, total, msssim, psnr.
             Worst batch data contains: images, predicted, mask, timesteps, loss.
         """
         if self.val_loader is None:
@@ -712,9 +711,8 @@ class DiffusionTrainer:
         total_mse = 0.0
         total_perc = 0.0
         total_loss = 0.0
-        total_ssim = 0.0
+        total_msssim = 0.0
         total_psnr = 0.0
-        total_lpips = 0.0
         n_batches = 0
 
         # Track worst validation batch
@@ -792,24 +790,20 @@ class DiffusionTrainer:
                         'loss': loss_val,
                     }
 
-                # Quality metrics (SSIM, PSNR, LPIPS) on predicted vs ground truth
+                # Quality metrics (MS-SSIM, PSNR) on predicted vs ground truth
                 if isinstance(predicted_clean, dict):
                     # Dual mode: average metrics across channels
                     keys = list(predicted_clean.keys())
-                    ssim_val = (compute_ssim(predicted_clean[keys[0]], images[keys[0]]) +
-                                compute_ssim(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    msssim_val = (compute_msssim(predicted_clean[keys[0]], images[keys[0]]) +
+                                  compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
                     psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
                                 compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
-                    lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
-                                 compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
                 else:
-                    ssim_val = compute_ssim(predicted_clean, images)
+                    msssim_val = compute_msssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
-                    lpips_val = compute_lpips(predicted_clean, images, self.device)
 
-                total_ssim += ssim_val
+                total_msssim += msssim_val
                 total_psnr += psnr_val
-                total_lpips += lpips_val
                 n_batches += 1
 
                 # Regional tracking (tumor vs background)
@@ -827,9 +821,8 @@ class DiffusionTrainer:
             'mse': total_mse / n_batches,
             'perceptual': total_perc / n_batches,
             'total': total_loss / n_batches,
-            'ssim': total_ssim / n_batches,
+            'msssim': total_msssim / n_batches,
             'psnr': total_psnr / n_batches,
-            'lpips': total_lpips / n_batches,
         }
 
         # Log to TensorBoard
@@ -837,9 +830,8 @@ class DiffusionTrainer:
             self.writer.add_scalar('Loss/MSE_val', metrics['mse'], epoch)
             self.writer.add_scalar('Loss/Perceptual_val', metrics['perceptual'], epoch)
             self.writer.add_scalar('Loss/Total_val', metrics['total'], epoch)
-            self.writer.add_scalar('Validation/SSIM', metrics['ssim'], epoch)
+            self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
             self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
-            self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
 
             # Log regional metrics (tumor vs background)
             if regional_tracker is not None:
@@ -966,9 +958,8 @@ class DiffusionTrainer:
 
         Runs inference on the entire test set and computes metrics:
         - MSE (prediction error)
-        - SSIM (Structural Similarity Index)
+        - MS-SSIM (Multi-Scale Structural Similarity)
         - PSNR (Peak Signal-to-Noise Ratio)
-        - LPIPS (Learned Perceptual Image Patch Similarity)
 
         Results are saved to test_results_{checkpoint_name}.json and logged to TensorBoard.
 
@@ -978,7 +969,7 @@ class DiffusionTrainer:
                 for current model state).
 
         Returns:
-            Dict with test metrics: 'mse', 'ssim', 'psnr', 'lpips', 'n_samples'.
+            Dict with test metrics: 'mse', 'msssim', 'psnr', 'n_samples'.
         """
         if not self.is_main_process:
             return {}
@@ -1008,9 +999,8 @@ class DiffusionTrainer:
 
         # Accumulators for metrics
         total_mse = 0.0
-        total_ssim = 0.0
+        total_msssim = 0.0
         total_psnr = 0.0
-        total_lpips = 0.0
         n_batches = 0
         n_samples = 0
 
@@ -1052,16 +1042,13 @@ class DiffusionTrainer:
 
                 if isinstance(predicted_clean, dict):
                     keys = list(predicted_clean.keys())
-                    ssim_val = (compute_ssim(predicted_clean[keys[0]], images[keys[0]]) +
-                                compute_ssim(predicted_clean[keys[1]], images[keys[1]])) / 2
+                    msssim_val = (compute_msssim(predicted_clean[keys[0]], images[keys[0]]) +
+                                  compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
                     psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
                                 compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
-                    lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
-                                 compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
                 else:
-                    ssim_val = compute_ssim(predicted_clean, images)
+                    msssim_val = compute_msssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
-                    lpips_val = compute_lpips(predicted_clean, images, self.device)
 
                 # Track worst batch
                 if loss_val > worst_batch_loss:
@@ -1082,9 +1069,8 @@ class DiffusionTrainer:
                             'loss': loss_val,
                         }
 
-                total_ssim += ssim_val
+                total_msssim += msssim_val
                 total_psnr += psnr_val
-                total_lpips += lpips_val
                 n_batches += 1
                 n_samples += batch_size
 
@@ -1098,18 +1084,16 @@ class DiffusionTrainer:
         # Compute averages
         metrics = {
             'mse': total_mse / n_batches,
-            'ssim': total_ssim / n_batches,
+            'msssim': total_msssim / n_batches,
             'psnr': total_psnr / n_batches,
-            'lpips': total_lpips / n_batches,
             'n_samples': n_samples,
         }
 
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
-        logger.info(f"  MSE:   {metrics['mse']:.6f}")
-        logger.info(f"  SSIM:  {metrics['ssim']:.4f}")
-        logger.info(f"  PSNR:  {metrics['psnr']:.2f} dB")
-        logger.info(f"  LPIPS: {metrics['lpips']:.4f}")
+        logger.info(f"  MSE:     {metrics['mse']:.6f}")
+        logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
 
         # Save results to JSON
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -1121,9 +1105,8 @@ class DiffusionTrainer:
         tb_prefix = f'test_{label}'
         if self.writer is not None:
             self.writer.add_scalar(f'{tb_prefix}/MSE', metrics['mse'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/SSIM', metrics['ssim'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:
@@ -1167,7 +1150,7 @@ class DiffusionTrainer:
         Args:
             original: Original images [B, C, H, W] (CPU).
             predicted: Predicted clean images [B, C, H, W] (CPU).
-            metrics: Dict with test metrics (mse, ssim, psnr, lpips).
+            metrics: Dict with test metrics (mse, msssim, psnr).
             label: Checkpoint label (best, latest, current).
             timesteps: Optional timesteps for each sample.
 
@@ -1176,9 +1159,8 @@ class DiffusionTrainer:
         """
         title = f"Worst Test Batch ({label})"
         display_metrics = {
-            'SSIM': metrics['ssim'],
+            'MS-SSIM': metrics['msssim'],
             'PSNR': metrics['psnr'],
-            'LPIPS': metrics['lpips'],
         }
         return create_reconstruction_figure(
             original=original,

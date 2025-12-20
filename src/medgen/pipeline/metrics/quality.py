@@ -1,151 +1,166 @@
 """
 Quality metrics for image comparison.
 
-Provides SSIM, PSNR, and LPIPS metrics used by both DiffusionTrainer and VAETrainer.
+Provides PSNR and MS-SSIM metrics used by both DiffusionTrainer and VAETrainer.
+Uses MONAI's MultiScaleSSIMMetric for native 2D/3D support.
+
+MS-SSIM replaces both SSIM and LPIPS as a single perceptual quality metric
+that works in both 2D and 3D.
 """
 import logging
-from typing import Any, Optional
+from typing import Tuple
 
-import numpy as np
 import torch
-from skimage.metrics import structural_similarity as ssim_skimage
 
 logger = logging.getLogger(__name__)
 
-# Global LPIPS model (lazy-loaded, shared across calls)
-_lpips_model: Optional[Any] = None
-_lpips_device: Optional[torch.device] = None
+# Cached MS-SSIM metric instances (one per spatial_dims + image_size combo)
+_msssim_cache: dict = {}
 
 
-def compute_ssim(generated: torch.Tensor, reference: torch.Tensor) -> float:
-    """Compute SSIM between generated and reference images.
+def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
+    """Get MS-SSIM weights based on image size.
 
-    Args:
-        generated: Generated images [B, C, H, W] in [0, 1] range.
-        reference: Reference images [B, C, H, W] in [0, 1] range.
-
-    Returns:
-        Average SSIM across batch and channels.
-    """
-    # Convert to float32 for numpy compatibility (handles BFloat16)
-    gen_np = np.clip(generated.float().cpu().numpy(), 0, 1)
-    ref_np = np.clip(reference.float().cpu().numpy(), 0, 1)
-
-    ssim_values = []
-    batch_size, num_channels = gen_np.shape[:2]
-
-    for b in range(batch_size):
-        for c in range(num_channels):
-            gen_img = gen_np[b, c]
-            ref_img = ref_np[b, c]
-            ssim_val = ssim_skimage(gen_img, ref_img, data_range=1.0)
-            ssim_values.append(ssim_val)
-
-    return float(np.mean(ssim_values))
-
-
-def compute_psnr(generated: torch.Tensor, reference: torch.Tensor) -> float:
-    """Compute PSNR between generated and reference images.
+    MS-SSIM requires minimum image size for each scale (halved at each level).
+    Adjust number of scales based on smallest spatial dimension.
 
     Args:
-        generated: Generated images [B, C, H, W] in [0, 1] range.
-        reference: Reference images [B, C, H, W] in [0, 1] range.
+        min_size: Minimum spatial dimension of the image.
 
     Returns:
-        Average PSNR across batch.
+        Tuple of weights for MS-SSIM scales.
     """
-    # Convert to float32 for numpy compatibility (handles BFloat16)
-    gen_np = np.clip(generated.float().cpu().numpy(), 0, 1)
-    ref_np = np.clip(reference.float().cpu().numpy(), 0, 1)
+    if min_size >= 160:
+        # 5 scales (default) - needs 160+ pixels
+        return (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
+    elif min_size >= 80:
+        # 4 scales - needs 80+ pixels
+        return (0.0448, 0.2856, 0.3001, 0.3695)
+    elif min_size >= 40:
+        # 3 scales - needs 40+ pixels
+        return (0.0448, 0.2856, 0.6696)
+    else:
+        # 2 scales - minimum for very small images
+        return (0.5, 0.5)
 
-    mse = np.mean((gen_np - ref_np) ** 2)
-    if mse < 1e-10:
-        return 100.0
 
-    psnr = 10 * np.log10(1.0 / mse)
-    return float(psnr)
-
-
-def _get_lpips_model(device: torch.device) -> Optional[Any]:
-    """Get or initialize the global LPIPS model.
+def _get_msssim_metric(
+    spatial_dims: int,
+    min_size: int,
+    device: torch.device,
+) -> 'MultiScaleSSIMMetric':
+    """Get or create cached MS-SSIM metric instance.
 
     Args:
-        device: Device to load model on.
+        spatial_dims: Number of spatial dimensions (2 or 3).
+        min_size: Minimum spatial dimension for weight selection.
+        device: Device to place the metric on.
 
     Returns:
-        LPIPS model or None if not available.
+        MONAI MultiScaleSSIMMetric instance.
     """
-    global _lpips_model, _lpips_device
+    from monai.metrics import MultiScaleSSIMMetric
 
-    # Return existing model if on same device
-    if _lpips_model is not None and _lpips_device == device:
-        return _lpips_model
+    weights = _get_weights_for_size(min_size)
+    cache_key = (spatial_dims, len(weights), str(device))
 
-    # Initialize LPIPS model
-    try:
-        import lpips
-        _lpips_model = lpips.LPIPS(net='alex', verbose=False).to(device)
-        _lpips_model.eval()
-        for param in _lpips_model.parameters():
-            param.requires_grad = False
-        _lpips_device = device
-        logger.info("LPIPS model loaded (AlexNet)")
-        return _lpips_model
-    except ImportError:
-        logger.warning("lpips package not installed - LPIPS metric disabled")
-        return None
+    if cache_key not in _msssim_cache:
+        metric = MultiScaleSSIMMetric(
+            spatial_dims=spatial_dims,
+            data_range=1.0,
+            weights=weights,
+        )
+        _msssim_cache[cache_key] = metric
+
+    return _msssim_cache[cache_key]
 
 
-def compute_lpips(
+def compute_psnr(
     generated: torch.Tensor,
     reference: torch.Tensor,
-    device: Optional[torch.device] = None
+    data_range: float = 1.0,
 ) -> float:
-    """Compute LPIPS (perceptual similarity) between generated and reference images.
+    """Compute PSNR between generated and reference images.
+
+    Pure PyTorch implementation for GPU acceleration.
+    Works with any tensor shape (2D, 3D, any number of channels).
 
     Args:
-        generated: Generated images [B, C, H, W] in [0, 1] range.
-        reference: Reference images [B, C, H, W] in [0, 1] range.
-        device: Device for LPIPS model. Defaults to generated.device.
+        generated: Generated images in [0, 1] range.
+        reference: Reference images in [0, 1] range.
+        data_range: Maximum pixel value (default 1.0 for normalized images).
 
     Returns:
-        Average LPIPS across batch (lower is better, 0 = identical).
+        Average PSNR in dB across batch.
     """
-    if device is None:
-        device = generated.device
-
-    lpips_model = _get_lpips_model(device)
-    if lpips_model is None:
-        return 0.0
-
-    # LPIPS expects images in [-1, 1] range
-    gen = generated.float() * 2.0 - 1.0
-    ref = reference.float() * 2.0 - 1.0
-
-    # Handle different channel counts (LPIPS expects 3-channel RGB)
-    num_channels = gen.shape[1]
-
     with torch.no_grad():
-        if num_channels == 1:
-            # Single channel: replicate to 3
-            gen = gen.repeat(1, 3, 1, 1)
-            ref = ref.repeat(1, 3, 1, 1)
-            lpips_values = lpips_model(gen, ref)
-        elif num_channels <= 3:
-            # 2-3 channels: compute per-channel LPIPS and average
-            lpips_per_channel = []
-            for ch in range(num_channels):
-                ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
-                ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
-                lpips_per_channel.append(lpips_model(ch_gen, ch_ref))
-            lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
-        else:
-            # >3 channels: compute per-channel for first 3 and average
-            lpips_per_channel = []
-            for ch in range(3):
-                ch_gen = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
-                ch_ref = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
-                lpips_per_channel.append(lpips_model(ch_gen, ch_ref))
-            lpips_values = torch.stack(lpips_per_channel).mean(dim=0)
+        gen = torch.clamp(generated.float(), 0, 1)
+        ref = torch.clamp(reference.float(), 0, 1)
 
-    return float(lpips_values.mean().item())
+        mse = torch.mean((gen - ref) ** 2)
+
+        # Avoid log(0)
+        if mse < 1e-10:
+            return 100.0
+
+        psnr = 20 * torch.log10(torch.tensor(data_range, device=mse.device) / torch.sqrt(mse))
+        return float(psnr.item())
+
+
+def compute_msssim(
+    generated: torch.Tensor,
+    reference: torch.Tensor,
+    data_range: float = 1.0,
+    spatial_dims: int = 2,
+) -> float:
+    """Compute MS-SSIM between generated and reference images.
+
+    Uses MONAI's MultiScaleSSIMMetric for native 2D/3D support.
+    Multi-Scale Structural Similarity measures perceptual quality at multiple
+    scales, combining structural similarity with multi-resolution analysis.
+
+    Replaces both SSIM and LPIPS as a single metric that works in 2D and 3D.
+
+    Args:
+        generated: Generated images [B, C, H, W] or [B, C, D, H, W] in [0, 1] range.
+        reference: Reference images [B, C, H, W] or [B, C, D, H, W] in [0, 1] range.
+        data_range: Value range of input images (default: 1.0 for [0, 1]).
+        spatial_dims: Number of spatial dimensions (2 or 3).
+
+    Returns:
+        Average MS-SSIM across batch (higher is better, 1.0 = identical).
+    """
+    try:
+        with torch.no_grad():
+            # Ensure float32 and clamp to valid range
+            gen = torch.clamp(generated.float(), 0, data_range)
+            ref = torch.clamp(reference.float(), 0, data_range)
+
+            # Normalize to [0, 1] if data_range != 1.0
+            if data_range != 1.0:
+                gen = gen / data_range
+                ref = ref / data_range
+
+            # Get minimum spatial dimension for weight selection
+            if spatial_dims == 2:
+                min_size = min(gen.shape[2], gen.shape[3])
+            else:  # 3D
+                min_size = min(gen.shape[2], gen.shape[3], gen.shape[4])
+
+            # Get cached metric
+            metric = _get_msssim_metric(spatial_dims, min_size, gen.device)
+
+            # Compute MS-SSIM
+            # MONAI returns [B, C] tensor, we want scalar mean
+            result = metric(gen, ref)
+
+            # Handle NaN values (can occur with edge cases)
+            if torch.isnan(result).any():
+                logger.warning("MS-SSIM returned NaN values, replacing with 0")
+                result = torch.nan_to_num(result, nan=0.0)
+
+            return float(result.mean().item())
+
+    except Exception as e:
+        logger.warning(f"MS-SSIM computation failed: {e}")
+        return 0.0

@@ -12,9 +12,8 @@ from .visualization import ValidationVisualizer
 # Metrics (from metrics/ subdirectory)
 from .metrics import (
     MetricsTracker,
-    compute_ssim,
+    compute_msssim,
     compute_psnr,
-    compute_lpips,
     RegionalMetricsTracker,
     create_reconstruction_figure,
 )
@@ -51,9 +50,8 @@ __all__ = [
     # Metrics and visualization
     'MetricsTracker',
     'ValidationVisualizer',
-    'compute_ssim',
+    'compute_msssim',
     'compute_psnr',
-    'compute_lpips',
     'RegionalMetricsTracker',
     'create_reconstruction_figure',
     # Tracking utilities

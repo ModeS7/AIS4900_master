@@ -46,9 +46,8 @@ logging:
   timestep_losses: false
   regional_losses: false
   timestep_region_losses: false
-  ssim: false
+  msssim: false
   psnr: false
-  lpips: false
   boundary_sharpness: false
   intermediate_steps: false
   worst_batch: false

@@ -48,9 +48,8 @@ training:
     timestep_losses: false    # N/A for VAE (no diffusion timesteps)
     regional_losses: true     # Track L1 loss in tumor vs background regions
     timestep_region_losses: false  # N/A for VAE (no diffusion timesteps)
-    ssim: true                # SSIM metric
+    msssim: true              # MS-SSIM metric (replaces SSIM + LPIPS)
     psnr: true                # PSNR metric
-    lpips: true               # LPIPS perceptual metric
     boundary_sharpness: false # N/A for VAE
     intermediate_steps: false # N/A for VAE
     flops: true               # Measure FLOPs

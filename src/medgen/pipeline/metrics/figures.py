@@ -38,7 +38,7 @@ def create_reconstruction_figure(
         timesteps: Optional per-sample timesteps [B] (shown in column titles).
         mask: Optional segmentation mask [B, 1, H, W] for contour overlay.
         max_samples: Maximum number of samples to display.
-        metrics: Optional dict of metrics to show in subtitle (e.g., {'SSIM': 0.95}).
+        metrics: Optional dict of metrics to show in subtitle (e.g., {'MS-SSIM': 0.95}).
 
     Returns:
         Matplotlib figure.

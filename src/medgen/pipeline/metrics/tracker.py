@@ -20,9 +20,8 @@ from scipy import ndimage
 from torch.utils.tensorboard import SummaryWriter
 
 from .quality import (
-    compute_ssim as _compute_ssim,
+    compute_msssim as _compute_msssim,
     compute_psnr as _compute_psnr,
-    compute_lpips as _compute_lpips,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,9 +72,8 @@ class MetricsTracker:
         self.log_timestep_losses: bool = logging_cfg.get('timestep_losses', True)
         self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
         self.log_timestep_region: bool = logging_cfg.get('timestep_region_losses', True)
-        self.log_ssim: bool = logging_cfg.get('ssim', True)
+        self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
-        self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
 
@@ -660,24 +658,27 @@ class MetricsTracker:
         self._tr_bg_sum = torch.zeros(self.num_timestep_bins, device=self.device)
         self._tr_bg_count = torch.zeros(self.num_timestep_bins, device=self.device, dtype=torch.long)
 
-    def compute_ssim(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
-        """Compute SSIM between generated and reference images.
+    def compute_msssim(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
+        """Compute MS-SSIM between generated and reference images.
 
-        Uses shared implementation from quality_metrics module.
+        Multi-Scale Structural Similarity replaces both SSIM and LPIPS.
+        Uses shared implementation from quality module.
 
         Args:
             generated: Generated images [B, C, H, W].
             reference: Reference images [B, C, H, W].
 
         Returns:
-            Average SSIM across batch.
+            Average MS-SSIM across batch (higher is better, 1.0 = identical).
         """
-        return _compute_ssim(generated, reference)
+        if not self.log_msssim:
+            return 0.0
+        return _compute_msssim(generated, reference)
 
     def compute_psnr(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
         """Compute PSNR between generated and reference images.
 
-        Uses shared implementation from quality_metrics module.
+        Uses shared implementation from quality module.
 
         Args:
             generated: Generated images [B, C, H, W].
@@ -687,22 +688,6 @@ class MetricsTracker:
             Average PSNR across batch.
         """
         return _compute_psnr(generated, reference)
-
-    def compute_lpips(self, generated: torch.Tensor, reference: torch.Tensor) -> float:
-        """Compute LPIPS (perceptual similarity) between generated and reference images.
-
-        Uses shared implementation from quality_metrics module.
-
-        Args:
-            generated: Generated images [B, C, H, W].
-            reference: Reference images [B, C, H, W].
-
-        Returns:
-            Average LPIPS across batch (lower is better, 0 = identical).
-        """
-        if not self.log_lpips:
-            return 0.0
-        return _compute_lpips(generated, reference, device=self.device)
 
     def compute_boundary_sharpness(
         self,

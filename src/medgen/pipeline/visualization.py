@@ -75,9 +75,8 @@ class ValidationVisualizer:
 
         # Logging config
         logging_cfg = cfg.training.get('logging', {})
-        self.log_ssim: bool = logging_cfg.get('ssim', True)
+        self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
-        self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_intermediate_steps: bool = logging_cfg.get('intermediate_steps', True)
         self.num_intermediate_steps: int = logging_cfg.get('num_intermediate_steps', 5)
@@ -317,7 +316,7 @@ class ValidationVisualizer:
                     model_input = noise
 
                 elif self.mode_name == ModeType.BRAVO:
-                    need_gt = self.log_ssim or self.log_psnr
+                    need_gt = self.log_msssim or self.log_psnr
                     if need_gt:
                         seg_masks, gt_images = self._sample_positive_masks(
                             train_dataset, num_samples, seg_channel_idx=1, return_images=True
@@ -328,7 +327,7 @@ class ValidationVisualizer:
                     model_input = torch.cat([noise, seg_masks], dim=1)
 
                 elif self.mode_name == ModeType.DUAL:
-                    need_gt = self.log_ssim or self.log_psnr
+                    need_gt = self.log_msssim or self.log_psnr
                     if need_gt:
                         seg_masks, gt_images = self._sample_positive_masks(
                             train_dataset, num_samples, seg_channel_idx=2, return_images=True
@@ -378,23 +377,17 @@ class ValidationVisualizer:
                         gt_pre = gt_images[:, 0:1, :, :]
                         gt_gd = gt_images[:, 1:2, :, :]
 
-                        if self.log_ssim:
-                            ssim_pre = self.metrics.compute_ssim(samples_pre_norm, gt_pre)
-                            ssim_gd = self.metrics.compute_ssim(samples_gd_norm, gt_gd)
-                            self.writer.add_scalar('metrics/ssim_t1_pre', ssim_pre, epoch)
-                            self.writer.add_scalar('metrics/ssim_t1_gd', ssim_gd, epoch)
+                        if self.log_msssim:
+                            msssim_pre = self.metrics.compute_msssim(samples_pre_norm, gt_pre)
+                            msssim_gd = self.metrics.compute_msssim(samples_gd_norm, gt_gd)
+                            self.writer.add_scalar('metrics/msssim_t1_pre', msssim_pre, epoch)
+                            self.writer.add_scalar('metrics/msssim_t1_gd', msssim_gd, epoch)
 
                         if self.log_psnr:
                             psnr_pre = self.metrics.compute_psnr(samples_pre_norm, gt_pre)
                             psnr_gd = self.metrics.compute_psnr(samples_gd_norm, gt_gd)
                             self.writer.add_scalar('metrics/psnr_t1_pre', psnr_pre, epoch)
                             self.writer.add_scalar('metrics/psnr_t1_gd', psnr_gd, epoch)
-
-                        if self.log_lpips:
-                            lpips_pre = self.metrics.compute_lpips(samples_pre_norm, gt_pre)
-                            lpips_gd = self.metrics.compute_lpips(samples_gd_norm, gt_gd)
-                            self.writer.add_scalar('metrics/lpips_t1_pre', lpips_pre, epoch)
-                            self.writer.add_scalar('metrics/lpips_t1_gd', lpips_gd, epoch)
 
                     if self.log_boundary_sharpness and seg_masks is not None:
                         sharpness_pre = self.metrics.compute_boundary_sharpness(samples_pre_norm, seg_masks)
@@ -412,17 +405,13 @@ class ValidationVisualizer:
                     self.writer.add_images('Generated_Images', samples_rgb, epoch)
 
                     if gt_images is not None and self.mode_name == ModeType.BRAVO:
-                        if self.log_ssim:
-                            ssim_val = self.metrics.compute_ssim(samples_normalized, gt_images)
-                            self.writer.add_scalar('metrics/ssim', ssim_val, epoch)
+                        if self.log_msssim:
+                            msssim_val = self.metrics.compute_msssim(samples_normalized, gt_images)
+                            self.writer.add_scalar('metrics/msssim', msssim_val, epoch)
 
                         if self.log_psnr:
                             psnr_val = self.metrics.compute_psnr(samples_normalized, gt_images)
                             self.writer.add_scalar('metrics/psnr', psnr_val, epoch)
-
-                        if self.log_lpips:
-                            lpips_val = self.metrics.compute_lpips(samples_normalized, gt_images)
-                            self.writer.add_scalar('metrics/lpips', lpips_val, epoch)
 
                     if self.log_boundary_sharpness and seg_masks is not None and self.mode_name == ModeType.BRAVO:
                         sharpness = self.metrics.compute_boundary_sharpness(samples_normalized, seg_masks)

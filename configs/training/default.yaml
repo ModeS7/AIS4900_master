@@ -59,9 +59,8 @@ logging:
   timestep_region_losses: true # [cond] 2D heatmap: timestep x region
 
   # Validation metrics
-  ssim: true                   # [cond] Structural similarity
+  msssim: true                 # [cond] Multi-Scale Structural Similarity (replaces SSIM + LPIPS)
   psnr: true                   # [cond] Peak signal-to-noise ratio
-  lpips: true                  # [cond] Learned Perceptual Image Patch Similarity
   boundary_sharpness: true     # [cond] Edge quality in tumor regions
 
   # Visualization

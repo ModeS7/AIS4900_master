@@ -45,9 +45,8 @@ from .utils import (
 from .metrics import (
     create_reconstruction_figure,
     RegionalMetricsTracker,
-    compute_ssim,
+    compute_msssim,
     compute_psnr,
-    compute_lpips,
 )
 from .tracking import (
     GradientNormTracker,
@@ -71,7 +70,7 @@ def log_vae_epoch_summary(
         epoch: Current epoch number (0-indexed).
         total_epochs: Total number of epochs.
         avg_losses: Dict with 'gen', 'disc', 'recon', 'perc', 'kl', 'adv' training losses.
-        val_metrics: Dict with 'gen', 'l1', 'ssim', 'psnr' validation metrics (can be empty).
+        val_metrics: Dict with 'gen', 'l1', 'msssim', 'psnr' validation metrics (can be empty).
         elapsed_time: Time taken for the epoch in seconds.
     """
     timestamp = time.strftime("%H:%M:%S")
@@ -81,18 +80,18 @@ def log_vae_epoch_summary(
     if val_metrics:
         val_gen = f"(v:{val_metrics.get('gen', 0):.4f})"
         val_l1 = f"(v:{val_metrics.get('l1', 0):.4f})"
-        ssim_str = f"SSIM: {val_metrics.get('ssim', 0):.3f}"
+        msssim_str = f"MS-SSIM: {val_metrics.get('msssim', 0):.3f}"
     else:
         val_gen = ""
         val_l1 = ""
-        ssim_str = ""
+        msssim_str = ""
 
     print(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
         f"G: {avg_losses['gen']:.4f}{val_gen} | "
         f"L1: {avg_losses['recon']:.4f}{val_l1} | "
         f"D: {avg_losses['disc']:.4f} | "
-        f"{ssim_str} | "
+        f"{msssim_str} | "
         f"Time: {elapsed_time:.1f}s"
     )
 
@@ -215,7 +214,7 @@ class VAETrainer:
         logging_cfg = cfg.training.get('logging', {})
         self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
-        self.log_lpips: bool = logging_cfg.get('lpips', True)
+        self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
 
         # Gradient norm tracking (per epoch)
@@ -768,13 +767,13 @@ class VAETrainer:
 
         Runs inference on entire val_loader and computes:
         - L1, Perceptual, KL, Generator losses (for train/val comparison)
-        - SSIM, PSNR, LPIPS quality metrics
+        - MS-SSIM, PSNR quality metrics
 
         Args:
             epoch: Current epoch number.
 
         Returns:
-            Dict with validation metrics: 'l1', 'perc', 'kl', 'gen', 'ssim', 'psnr', 'lpips'.
+            Dict with validation metrics: 'l1', 'perc', 'kl', 'gen', 'msssim', 'psnr'.
         """
         if self.val_loader is None:
             return {}
@@ -787,9 +786,8 @@ class VAETrainer:
         total_perc = 0.0
         total_kl = 0.0
         total_gen = 0.0
-        total_ssim = 0.0
+        total_msssim = 0.0
         total_psnr = 0.0
-        total_lpips = 0.0
         n_batches = 0
 
         # Worst batch tracking
@@ -850,10 +848,9 @@ class VAETrainer:
                     }
 
                 # Quality metrics
-                total_ssim += compute_ssim(reconstructed, images)
+                if self.log_msssim:
+                    total_msssim += compute_msssim(reconstructed, images)
                 total_psnr += compute_psnr(reconstructed, images)
-                if self.log_lpips:
-                    total_lpips += compute_lpips(reconstructed, images, self.device)
 
                 # Regional tracking (tumor vs background)
                 if regional_tracker is not None and mask is not None:
@@ -869,12 +866,11 @@ class VAETrainer:
             'perc': total_perc / n_batches,
             'kl': total_kl / n_batches,
             'gen': total_gen / n_batches,
-            'ssim': total_ssim / n_batches,
             'psnr': total_psnr / n_batches,
         }
 
-        if self.log_lpips:
-            metrics['lpips'] = total_lpips / n_batches
+        if self.log_msssim:
+            metrics['msssim'] = total_msssim / n_batches
 
         # Log to TensorBoard
         if self.writer is not None:
@@ -882,10 +878,9 @@ class VAETrainer:
             self.writer.add_scalar('Loss/Perceptual_val', metrics['perc'], epoch)
             self.writer.add_scalar('Loss/KL_val', metrics['kl'], epoch)
             self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
-            self.writer.add_scalar('Validation/SSIM', metrics['ssim'], epoch)
             self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
-            if 'lpips' in metrics:
-                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+            if 'msssim' in metrics:
+                self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
 
             # Log worst batch figure
             if worst_batch_data is not None:
@@ -1113,9 +1108,8 @@ class VAETrainer:
 
         Runs inference on the entire test set and computes metrics:
         - L1 reconstruction loss
-        - SSIM (Structural Similarity Index)
+        - MS-SSIM (Multi-Scale Structural Similarity)
         - PSNR (Peak Signal-to-Noise Ratio)
-        - LPIPS (Learned Perceptual Image Patch Similarity) if enabled
 
         Results are saved to test_results_{checkpoint_name}.json and logged to TensorBoard.
 
@@ -1125,7 +1119,7 @@ class VAETrainer:
                 for current model state).
 
         Returns:
-            Dict with test metrics: 'l1', 'ssim', 'psnr', 'lpips', 'n_samples'.
+            Dict with test metrics: 'l1', 'msssim', 'psnr', 'n_samples'.
         """
         if not self.is_main_process:
             return {}
@@ -1155,9 +1149,8 @@ class VAETrainer:
 
         # Accumulators for metrics
         total_l1 = 0.0
-        total_ssim = 0.0
+        total_msssim = 0.0
         total_psnr = 0.0
-        total_lpips = 0.0
         n_batches = 0
         n_samples = 0
 
@@ -1181,10 +1174,9 @@ class VAETrainer:
                 # Compute metrics
                 l1_loss = torch.abs(reconstructed - images).mean().item()
                 total_l1 += l1_loss
-                total_ssim += compute_ssim(reconstructed, images)
+                if self.log_msssim:
+                    total_msssim += compute_msssim(reconstructed, images)
                 total_psnr += compute_psnr(reconstructed, images)
-                if self.log_lpips:
-                    total_lpips += compute_lpips(reconstructed, images, self.device)
 
                 # Track worst batch
                 if l1_loss > worst_loss:
@@ -1216,21 +1208,19 @@ class VAETrainer:
         # Compute averages
         metrics = {
             'l1': total_l1 / n_batches,
-            'ssim': total_ssim / n_batches,
             'psnr': total_psnr / n_batches,
             'n_samples': n_samples,
         }
 
-        if self.log_lpips:
-            metrics['lpips'] = total_lpips / n_batches
+        if self.log_msssim:
+            metrics['msssim'] = total_msssim / n_batches
 
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
         logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
-        logger.info(f"  SSIM:    {metrics['ssim']:.4f}")
+        if 'msssim' in metrics:
+            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
         logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-        if 'lpips' in metrics:
-            logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
 
         # Save results to JSON (with checkpoint name suffix)
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -1242,10 +1232,9 @@ class VAETrainer:
         tb_prefix = f'test_{label}'
         if self.writer is not None:
             self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/SSIM', metrics['ssim'], 0)
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            if 'lpips' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+            if 'msssim' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
 
             # Create and save visualization
             if sample_inputs:
@@ -1296,9 +1285,9 @@ class VAETrainer:
             Matplotlib figure.
         """
         title = f"Test Results ({label})"
-        display_metrics = {'SSIM': metrics['ssim'], 'PSNR': metrics['psnr']}
-        if 'lpips' in metrics:
-            display_metrics['LPIPS'] = metrics['lpips']
+        display_metrics = {'PSNR': metrics['psnr']}
+        if 'msssim' in metrics:
+            display_metrics['MS-SSIM'] = metrics['msssim']
 
         return create_reconstruction_figure(
             original=original,
