@@ -9,7 +9,7 @@ This module provides:
 """
 
 from .tracker import MetricsTracker
-from .quality import compute_msssim, compute_psnr, compute_lpips
+from .quality import compute_msssim, compute_psnr, compute_lpips, reset_msssim_nan_warning
 from .regional import RegionalMetricsTracker
 from .figures import create_reconstruction_figure
 
@@ -20,6 +20,7 @@ __all__ = [
     'compute_msssim',
     'compute_psnr',
     'compute_lpips',
+    'reset_msssim_nan_warning',
     # Regional metrics
     'RegionalMetricsTracker',
     # Visualization

@@ -4,7 +4,7 @@
 #SBATCH --time=5-00:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp1_vae_prog"

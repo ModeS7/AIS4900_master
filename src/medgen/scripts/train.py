@@ -142,17 +142,21 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Training dataset: {len(train_dataset)} slices")
 
     # Create validation dataloader (if val/ directory exists)
+    # Pass world_size to reduce batch size for DDP (avoids OOM on single GPU)
     val_loader = None
+    world_size = trainer.world_size if use_multi_gpu else 1
     if mode == ModeType.DUAL:
         val_result = create_dual_image_validation_dataloader(
             cfg=cfg,
             image_keys=image_keys,
             conditioning='seg',
+            world_size=world_size,
         )
     else:
         val_result = create_validation_dataloader(
             cfg=cfg,
             image_type=image_type,
+            world_size=world_size,
         )
 
     if val_result is not None:

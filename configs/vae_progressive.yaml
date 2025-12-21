@@ -59,8 +59,8 @@ progressive:
 
 # Multi-modality training (each modality as separate 1-channel image)
 modalities:
-  image_keys: [bravo, flair, t1_pre, t1_gd, seg]  # All modalities mixed (including seg)
-  in_channels: 1                                   # Single channel per image
+  image_keys: [bravo, flair, t1_pre, t1_gd]  # All modalities mixed (excluding seg)
+  in_channels: 1                              # Single channel per image
 
 # Override training defaults
 training:

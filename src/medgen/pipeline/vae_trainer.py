@@ -47,6 +47,7 @@ from .metrics import (
     RegionalMetricsTracker,
     compute_msssim,
     compute_psnr,
+    reset_msssim_nan_warning,
 )
 from .tracking import (
     GradientNormTracker,
@@ -506,11 +507,11 @@ class VAETrainer:
             metadata = {}
 
         metadata['results'] = {
-            'final_loss': final_loss,
-            'final_recon_loss': final_recon,
-            'best_loss': self.best_loss,
-            'total_time_seconds': total_time,
-            'total_time_hours': total_time / 3600,
+            'final_loss': float(final_loss),
+            'final_recon_loss': float(final_recon),
+            'best_loss': float(self.best_loss),
+            'total_time_seconds': float(total_time),
+            'total_time_hours': float(total_time / 3600),
             'completed_at': datetime.now().isoformat(),
         }
 
@@ -808,6 +809,9 @@ class VAETrainer:
         # when perceptual loss (compiled with torch.compile) is called during validation
         if self.use_compile:
             torch.compiler.cudagraph_mark_step_begin()
+
+        # Reset MS-SSIM NaN warning for this validation run
+        reset_msssim_nan_warning()
 
         with torch.no_grad():
             for batch in self.val_loader:

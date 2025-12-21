@@ -473,11 +473,11 @@ class DiffusionTrainer:
             metadata = {}
 
         metadata['results'] = {
-            'final_loss': final_loss,
-            'final_mse': final_mse,
-            'best_loss': self.best_loss,
-            'total_time_seconds': total_time,
-            'total_time_hours': total_time / 3600,
+            'final_loss': float(final_loss),
+            'final_mse': float(final_mse),
+            'best_loss': float(self.best_loss),
+            'total_time_seconds': float(total_time),
+            'total_time_hours': float(total_time / 3600),
             'completed_at': datetime.now().isoformat(),
         }
 

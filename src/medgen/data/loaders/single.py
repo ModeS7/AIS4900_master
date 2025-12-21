@@ -130,7 +130,8 @@ def create_dataloader(
 def create_validation_dataloader(
     cfg: DictConfig,
     image_type: str,
-    batch_size: Optional[int] = None
+    batch_size: Optional[int] = None,
+    world_size: int = 1,
 ) -> Optional[Tuple[DataLoader, Dataset]]:
     """Create validation dataloader for single-image diffusion from val/ directory.
 
@@ -138,6 +139,8 @@ def create_validation_dataloader(
         cfg: Hydra configuration with paths, model, and training settings.
         image_type: Image type ('seg' or 'bravo').
         batch_size: Optional batch size override. Defaults to training batch size.
+        world_size: Number of GPUs for DDP. Validation batch size is reduced
+            when world_size > 1 to avoid OOM (validation runs on single GPU).
 
     Returns:
         Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
@@ -149,6 +152,10 @@ def create_validation_dataloader(
 
     image_size = cfg.model.image_size
     batch_size = batch_size or cfg.training.batch_size
+
+    # Reduce batch size for DDP (validation runs on single GPU)
+    if world_size > 1:
+        batch_size = max(1, batch_size // world_size)
 
     # Validate modalities exist
     try:

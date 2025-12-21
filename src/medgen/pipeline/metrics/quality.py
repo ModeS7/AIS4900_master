@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 _msssim_cache: dict = {}
 _lpips_cache: dict = {}
 
+# Rate-limit MS-SSIM NaN warnings (avoid log spam)
+_msssim_nan_warned: bool = False
+
+
+def reset_msssim_nan_warning() -> None:
+    """Reset MS-SSIM NaN warning flag. Call at start of each validation run."""
+    global _msssim_nan_warned
+    _msssim_nan_warned = False
+
 
 def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
     """Get MS-SSIM weights based on image size.
@@ -156,9 +165,12 @@ def compute_msssim(
             # MONAI returns [B, C] tensor, we want scalar mean
             result = metric(gen, ref)
 
-            # Handle NaN values (can occur with edge cases)
+            # Handle NaN values (can occur with edge cases like early epoch garbage)
             if torch.isnan(result).any():
-                logger.warning("MS-SSIM returned NaN values, replacing with 0")
+                global _msssim_nan_warned
+                if not _msssim_nan_warned:
+                    logger.warning("MS-SSIM returned NaN values, replacing with 0 (logging once per validation)")
+                    _msssim_nan_warned = True
                 result = torch.nan_to_num(result, nan=0.0)
 
             return float(result.mean().item())
