@@ -7,11 +7,6 @@
 #   - Encoder: progressive downsampling with ResBlocks
 #   - Middle: attention blocks at bottleneck
 #   - Decoder: progressive upsampling with skip connections
-#
-# Memory usage (approximate, batch_size=16):
-#   - 128px: ~8GB VRAM
-#   - 256px: ~24GB VRAM
-#   - 512px: ~80GB+ VRAM
 
 image_size: 128                      # Input image size (must be power of 2)
 channels: [128, 256, 256]            # Channels at each encoder level

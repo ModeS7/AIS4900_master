@@ -9,10 +9,6 @@
 #   - Encoder: progressive downsampling with ResBlocks
 #   - Bottleneck: latent space with KL regularization
 #   - Decoder: progressive upsampling with skip connections
-#
-# Memory usage (approximate, batch_size=16):
-#   - 128px: ~6GB VRAM
-#   - 256px: ~16GB VRAM
 
 # Latent space
 latent_channels: 3                          # Latent space channels
