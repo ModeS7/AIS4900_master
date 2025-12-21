@@ -23,6 +23,29 @@ batch_augment:
   mixup_prob: 0.0          # Probability of mixup per batch
   cutmix_prob: 0.0         # Probability of cutmix per batch
 
+# Score Augmentation - applies transforms to noisy data (after noise addition)
+# Reference: https://arxiv.org/abs/2508.07926
+# Unlike traditional augmentation (which augments clean data), ScoreAug transforms
+# the noisy input and target together, teaching equivariant denoising.
+#
+# Per paper: "one augmentation method is randomly selected with equal probability
+# across all types" - identity is always included, so with 4 transforms enabled,
+# each has 20% probability (1/5).
+#
+# Conditioning requirements (per paper):
+# - rotation: REQUIRES omega conditioning (noise is rotation-invariant)
+# - translation/cutout: Work without conditioning but risk data leakage
+# - brightness: Linear transform, works without conditioning
+score_aug:
+  enabled: false             # Disabled by default
+  # Transforms (from paper) - each enabled transform has equal probability
+  rotation: true             # 90, 180, 270 degree rotations (requires omega)
+  translation: false         # +-10% translation with zero-pad
+  cutout: false              # Random square cutout (10-30% of image)
+  brightness: false          # Brightness scaling (experimental with normalized data)
+  brightness_range: 1.2      # Max scale factor B, samples in [1/B, B]
+  use_omega_conditioning: false  # Required for rotation, optional for others
+
 # DataLoader optimization for CPU augmentation
 dataloader:
   num_workers: 8           # Parallel data loading workers

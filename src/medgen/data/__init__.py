@@ -10,6 +10,7 @@ from .augmentation import (
     mixup,
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
+from .score_aug import ScoreAugTransform
 from .utils import extract_slices_dual, extract_slices_single, make_binary, merge_sequences
 
 # Import all loaders from loaders subpackage
@@ -46,6 +47,8 @@ __all__ = [
     'create_vae_collate_fn',
     'mixup',
     'cutmix',
+    # Score Augmentation
+    'ScoreAugTransform',
     # Slice extraction utilities
     'extract_slices_single',
     'extract_slices_dual',

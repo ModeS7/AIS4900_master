@@ -164,6 +164,39 @@ class DiffusionTrainer:
         # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
 
+        # ScoreAug initialization (applies transforms to noisy data)
+        # Reference: https://arxiv.org/abs/2508.07926
+        self.score_aug = None
+        self.use_omega_conditioning = False
+        score_aug_cfg = cfg.training.get('score_aug', {})
+        if score_aug_cfg.get('enabled', False):
+            from medgen.data.score_aug import ScoreAugTransform
+            self.score_aug = ScoreAugTransform(
+                rotation=score_aug_cfg.get('rotation', True),
+                translation=score_aug_cfg.get('translation', False),
+                cutout=score_aug_cfg.get('cutout', False),
+                brightness=score_aug_cfg.get('brightness', False),
+                brightness_range=score_aug_cfg.get('brightness_range', 1.2),
+            )
+            self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
+            if self.is_main_process:
+                transforms = []
+                if score_aug_cfg.get('rotation', True):
+                    transforms.append('rotation')
+                if score_aug_cfg.get('translation', False):
+                    transforms.append('translation')
+                if score_aug_cfg.get('cutout', False):
+                    transforms.append('cutout')
+                if score_aug_cfg.get('brightness', False):
+                    transforms.append(f"brightness({score_aug_cfg.get('brightness_range', 1.2)})")
+                # Per paper: uniform sampling across enabled transforms + identity
+                n_options = len(transforms) + 1  # +1 for identity
+                logger.info(
+                    f"ScoreAug enabled: transforms=[{', '.join(transforms)}], "
+                    f"each with 1/{n_options} prob (uniform), "
+                    f"omega_conditioning={self.use_omega_conditioning}"
+                )
+
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
         strategies: Dict[str, type] = {
@@ -226,16 +259,39 @@ class DiffusionTrainer:
         if self.mode_name == ModeType.DUAL and self.image_size >= 256:
             disable_ddp_opt = True
 
-        # Wrap model with DDP and/or torch.compile using shared utility
-        self.model, self.model_raw = wrap_model_for_training(
-            raw_model,
-            use_multi_gpu=self.use_multi_gpu,
-            local_rank=self.local_rank if self.use_multi_gpu else 0,
-            use_compile=True,
-            compile_mode="default",
-            disable_ddp_optimizer=disable_ddp_opt,
-            is_main_process=self.is_main_process,
-        )
+        use_compile = self.cfg.training.get('use_compile', True)
+
+        # Handle omega conditioning: wrap FIRST (modifies time_embed), then compile INNER model
+        # This keeps omega encoding logic (with data-dependent branches) outside compiled graph
+        if self.use_omega_conditioning:
+            from medgen.data.score_aug import ScoreAugModelWrapper
+            # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
+            time_embed_dim = 4 * channels[0]
+            # Wrap raw model - this replaces time_embed with OmegaTimeEmbed
+            wrapper = ScoreAugModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
+            if self.is_main_process:
+                logger.info(f"ScoreAug: wrapped model with omega conditioning (embed_dim={time_embed_dim})")
+
+            # Compile only the INNER model (the UNet), not the wrapper
+            # The wrapper's forward (with encode_omega) stays uncompiled
+            if use_compile:
+                wrapper.model = torch.compile(wrapper.model, mode="default")
+                if self.is_main_process:
+                    logger.info("Single-GPU: Compiled inner UNet (omega wrapper uncompiled)")
+
+            self.model = wrapper
+            self.model_raw = wrapper  # For optimizer.parameters()
+        else:
+            # No omega conditioning - use standard wrap_model_for_training
+            self.model, self.model_raw = wrap_model_for_training(
+                raw_model,
+                use_multi_gpu=self.use_multi_gpu,
+                local_rank=self.local_rank if self.use_multi_gpu else 0,
+                use_compile=use_compile,
+                compile_mode="default",
+                disable_ddp_optimizer=disable_ddp_opt,
+                is_main_process=self.is_main_process,
+            )
 
         # Setup perceptual loss (shared wrapper handles multi-channel inputs)
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
@@ -245,7 +301,7 @@ class DiffusionTrainer:
             cache_dir=cache_dir,
             pretrained=True,
             device=self.device,
-            use_compile=True,
+            use_compile=use_compile,
         )
 
         # Compile fused forward pass (disabled for latent space, Min-SNR, and DDP)
@@ -265,6 +321,10 @@ class DiffusionTrainer:
             compile_fused = False
             if self.is_main_process:
                 logger.info("Disabled compiled fused forward for Min-SNR weighting")
+        elif self.score_aug is not None:
+            compile_fused = False
+            if self.is_main_process:
+                logger.info("Disabled compiled fused forward for ScoreAug")
         elif compile_fused and self.is_main_process:
             logger.info("Compiling fused forward pass")
         self._setup_compiled_forward(compile_fused)
@@ -590,30 +650,127 @@ class DiffusionTrainer:
                 )
 
             else:
-                prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
-                mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
-
-                if self.use_min_snr:
-                    mse_loss = self._compute_min_snr_weighted_mse(
-                        prediction, images, noise, timesteps
-                    )
-
-                # Compute perceptual loss (decode for latent space)
-                if self.perceptual_weight > 0:
-                    if self.space.scale_factor > 1:
-                        # Decode to pixel space for perceptual loss
-                        pred_decoded = self.space.decode_batch(predicted_clean)
-                        images_decoded = self.space.decode_batch(images)
+                # ScoreAug path: transform noisy input and target together
+                if self.score_aug is not None:
+                    # Compute velocity target BEFORE ScoreAug
+                    if self.strategy_name == 'rflow':
+                        if isinstance(images, dict):
+                            velocity_target = {k: images[k] - noise[k] for k in images.keys()}
+                        else:
+                            velocity_target = images - noise
                     else:
-                        pred_decoded = predicted_clean
-                        images_decoded = images
+                        # DDPM predicts noise
+                        velocity_target = noise
 
-                    # Wrapper handles both tensor and dict inputs
-                    p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
+                    # For dual mode, stack velocity targets for joint transform
+                    if isinstance(velocity_target, dict):
+                        keys = list(velocity_target.keys())
+                        stacked_target = torch.cat([velocity_target[k] for k in keys], dim=1)
+                        aug_input, aug_target, omega = self.score_aug(model_input, stacked_target)
+                        # Unstack back to dict
+                        aug_velocity = {
+                            keys[0]: aug_target[:, 0:1],
+                            keys[1]: aug_target[:, 1:2],
+                        }
+                    else:
+                        aug_input, aug_velocity, omega = self.score_aug(model_input, velocity_target)
+
+                    # Get prediction from augmented input
+                    if self.use_omega_conditioning:
+                        # Model is ScoreAugModelWrapper, pass omega for conditioning
+                        prediction = self.model(aug_input, timesteps, omega=omega)
+                    else:
+                        prediction = self.strategy.predict_noise_or_velocity(self.model, aug_input, timesteps)
+
+                    # Compute MSE loss with augmented target
+                    if isinstance(aug_velocity, dict):
+                        keys = list(aug_velocity.keys())
+                        pred_0 = prediction[:, 0:1, :, :]
+                        pred_1 = prediction[:, 1:2, :, :]
+                        mse_loss = (((pred_0 - aug_velocity[keys[0]]) ** 2).mean() +
+                                    ((pred_1 - aug_velocity[keys[1]]) ** 2).mean()) / 2
+                    else:
+                        mse_loss = ((prediction - aug_velocity) ** 2).mean()
+
+                    # Compute predicted_clean in augmented space, then inverse transform
+                    if self.perceptual_weight > 0:
+                        # Reconstruct from augmented noisy images
+                        if isinstance(noisy_images, dict):
+                            keys = list(noisy_images.keys())
+                            # Apply same transform to noisy_images for reconstruction
+                            stacked_noisy = torch.cat([noisy_images[k] for k in keys], dim=1)
+                            aug_noisy = self.score_aug.apply(stacked_noisy, omega['type'] if omega else 'identity',
+                                                              omega['params'] if omega else {})
+                            aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
+
+                            if self.strategy_name == 'rflow':
+                                t_norm = timesteps.float() / float(self.num_timesteps)
+                                t_exp = t_norm.view(-1, 1, 1, 1)
+                                aug_clean = {k: torch.clamp(aug_noisy_dict[k] + t_exp * prediction[:, i:i+1], 0, 1)
+                                             for i, k in enumerate(keys)}
+                            else:
+                                aug_clean = {k: torch.clamp(aug_noisy_dict[k] - prediction[:, i:i+1], 0, 1)
+                                             for i, k in enumerate(keys)}
+
+                            # Inverse transform to original space
+                            inv_clean = {k: self.score_aug.inverse_apply(v, omega) for k, v in aug_clean.items()}
+                            if any(v is None for v in inv_clean.values()):
+                                # Phase 2 transform, skip perceptual loss
+                                p_loss = torch.tensor(0.0, device=self.device)
+                                predicted_clean = aug_clean  # Use augmented for metrics
+                            else:
+                                predicted_clean = inv_clean
+                                p_loss = self.perceptual_loss_fn(predicted_clean, images)
+                        else:
+                            # Single channel mode
+                            aug_noisy = self.score_aug.apply(noisy_images, omega['type'] if omega else 'identity',
+                                                              omega['params'] if omega else {})
+                            if self.strategy_name == 'rflow':
+                                t_norm = timesteps.float() / float(self.num_timesteps)
+                                t_exp = t_norm.view(-1, 1, 1, 1)
+                                aug_clean = torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
+                            else:
+                                aug_clean = torch.clamp(aug_noisy - prediction, 0, 1)
+
+                            inv_clean = self.score_aug.inverse_apply(aug_clean, omega)
+                            if inv_clean is None:
+                                p_loss = torch.tensor(0.0, device=self.device)
+                                predicted_clean = aug_clean
+                            else:
+                                predicted_clean = inv_clean
+                                p_loss = self.perceptual_loss_fn(predicted_clean, images)
+                    else:
+                        p_loss = torch.tensor(0.0, device=self.device)
+                        predicted_clean = images  # Placeholder for metrics
+
+                    total_loss = mse_loss + self.perceptual_weight * p_loss
+
                 else:
-                    p_loss = torch.tensor(0.0, device=self.device)
+                    # Standard path (no ScoreAug)
+                    prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
+                    mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
-                total_loss = mse_loss + self.perceptual_weight * p_loss
+                    if self.use_min_snr:
+                        mse_loss = self._compute_min_snr_weighted_mse(
+                            prediction, images, noise, timesteps
+                        )
+
+                    # Compute perceptual loss (decode for latent space)
+                    if self.perceptual_weight > 0:
+                        if self.space.scale_factor > 1:
+                            # Decode to pixel space for perceptual loss
+                            pred_decoded = self.space.decode_batch(predicted_clean)
+                            images_decoded = self.space.decode_batch(images)
+                        else:
+                            pred_decoded = predicted_clean
+                            images_decoded = images
+
+                        # Wrapper handles both tensor and dict inputs
+                        p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
+                    else:
+                        p_loss = torch.tensor(0.0, device=self.device)
+
+                    total_loss = mse_loss + self.perceptual_weight * p_loss
 
         total_loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(
