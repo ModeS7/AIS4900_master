@@ -35,6 +35,7 @@ time python -m medgen.scripts.train \
     model.image_size=128 \
     model.channels=[32,64,128] \
     model.attention_levels=[false,false,true] \
+    model.num_head_channels=32 \
     training.augment=true \
     training.use_ema=false \
     training.use_min_snr=false \
