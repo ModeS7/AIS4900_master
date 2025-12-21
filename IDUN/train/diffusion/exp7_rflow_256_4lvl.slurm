@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --gres=gpu:4
-#SBATCH --constraint="a100|h100"
+#SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp7_rflow_256_4lvl"
 #SBATCH --output=IDUN/output/train/diffusion/exp7_rflow_256_4lvl_%j.out
 #SBATCH --error=IDUN/output/train/diffusion/exp7_rflow_256_4lvl_%j.err
