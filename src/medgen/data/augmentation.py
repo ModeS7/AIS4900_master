@@ -203,7 +203,14 @@ def create_vae_collate_fn(
         Collate function for DataLoader.
     """
     def collate_fn(batch: List[torch.Tensor]) -> torch.Tensor:
-        images = torch.stack(batch)
+        # Convert numpy arrays to tensors if needed
+        tensors = []
+        for item in batch:
+            if isinstance(item, np.ndarray):
+                tensors.append(torch.from_numpy(item).float())
+            else:
+                tensors.append(item)
+        images = torch.stack(tensors)
 
         r = random.random()
         if r < mixup_prob:

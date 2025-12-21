@@ -533,8 +533,14 @@ class VAETrainer:
         Returns:
             KL divergence loss (scalar).
         """
+        # Clamp logvar to prevent exp() overflow with bfloat16
+        # bfloat16 max is ~3.4e38, so exp(88) ≈ 1.6e38 is safe
+        # Also clamp mean to prevent pow(2) overflow
+        logvar_clamped = torch.clamp(logvar, min=-30.0, max=20.0)
+        mean_clamped = torch.clamp(mean, min=-10.0, max=10.0)
+
         # KL divergence: -0.5 * sum(1 + logvar - mean^2 - exp(logvar))
-        kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        kl = -0.5 * torch.sum(1 + logvar_clamped - mean_clamped.pow(2) - logvar_clamped.exp())
         # Normalize by batch size and spatial dimensions
         kl = kl / mean.numel()
         return kl
@@ -658,6 +664,22 @@ class VAETrainer:
         with autocast('cuda', enabled=True, dtype=torch.bfloat16):
             # Fresh forward pass for generator gradients
             reconstruction, mean, logvar = self.model(images)
+
+            # NaN detection for debugging (log once if NaN detected)
+            if not hasattr(self, '_nan_logged') and (
+                torch.isnan(reconstruction).any() or
+                torch.isnan(mean).any() or
+                torch.isnan(logvar).any()
+            ):
+                self._nan_logged = True
+                logger.error(
+                    f"NaN detected in VAE forward pass:\n"
+                    f"  Input range: [{images.min():.4f}, {images.max():.4f}]\n"
+                    f"  Input has NaN: {torch.isnan(images).any()}\n"
+                    f"  Reconstruction has NaN: {torch.isnan(reconstruction).any()}\n"
+                    f"  Mean range: [{mean.min():.4f}, {mean.max():.4f}], has NaN: {torch.isnan(mean).any()}\n"
+                    f"  Logvar range: [{logvar.min():.4f}, {logvar.max():.4f}], has NaN: {torch.isnan(logvar).any()}"
+                )
 
             # L1 reconstruction loss (MONAI uses L1, not MSE)
             l1_loss = torch.abs(reconstruction - images).mean()
