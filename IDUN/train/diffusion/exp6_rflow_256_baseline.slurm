@@ -8,7 +8,7 @@
 #SBATCH --mem=128G
 #SBATCH --gres=gpu:4
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="exp6_256"
+#SBATCH --job-name="exp6_rflow_256"
 #SBATCH --output=IDUN/output/train/diffusion/exp6_rflow_256_%j.out
 #SBATCH --error=IDUN/output/train/diffusion/exp6_rflow_256_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no

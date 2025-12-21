@@ -248,11 +248,16 @@ class DiffusionTrainer:
             use_compile=True,
         )
 
-        # Compile fused forward pass (disabled for latent space and Min-SNR)
+        # Compile fused forward pass (disabled for latent space, Min-SNR, and DDP)
         # - Latent space: perceptual loss needs pixel space decoding
         # - Min-SNR: requires per-sample loss weighting (compiled version incorrectly weights total loss)
+        # - DDP: torch.compile can't trace DDP's internal logging (set_runtime_stats_and_log)
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
-        if self.space.scale_factor > 1:
+        if self.use_multi_gpu:
+            compile_fused = False
+            if self.is_main_process:
+                logger.info("Disabled compiled fused forward for DDP (multi-GPU)")
+        elif self.space.scale_factor > 1:
             compile_fused = False
             if self.is_main_process:
                 logger.info("Disabled compiled fused forward for latent space")
