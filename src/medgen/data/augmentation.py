@@ -1,17 +1,72 @@
 """Data augmentation for medical image training.
 
 Separate augmentation pipelines for diffusion and VAE training:
-- Diffusion: Conservative (flip, rotate, translate) - preserves image quality
+- Diffusion: Conservative (flip, discrete translate) - preserves image quality
 - VAE: Aggressive (+ noise, blur, scale, mixup, cutmix) - learns robust features
 
 Batch-level augmentations (mixup, cutmix) are applied via collate function.
 """
 import random
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import albumentations as A
+from albumentations.core.transforms_interface import ImageOnlyTransform
 import numpy as np
 import torch
+
+
+# =============================================================================
+# Custom Discrete Translation (Lossless)
+# =============================================================================
+
+class DiscreteTranslate(ImageOnlyTransform):
+    """Discrete pixel translation - truly lossless.
+
+    Shifts image by integer pixels using np.roll, then zeros out
+    the wrapped edges. No interpolation, no quality loss.
+
+    Args:
+        max_percent_x: Maximum translation as fraction of width (e.g., 0.2 = 20%).
+        max_percent_y: Maximum translation as fraction of height (e.g., 0.1 = 10%).
+        p: Probability of applying the transform.
+    """
+
+    def __init__(self, max_percent_x: float = 0.2, max_percent_y: float = 0.1, p: float = 0.5):
+        super().__init__(p=p)
+        self.max_percent_x = max_percent_x
+        self.max_percent_y = max_percent_y
+
+    def apply(self, img: np.ndarray, dx: int = 0, dy: int = 0, **params) -> np.ndarray:
+        if dx == 0 and dy == 0:
+            return img
+
+        # Roll pixels
+        result = np.roll(img, shift=(dy, dx), axis=(0, 1))
+
+        # Zero out wrapped edges
+        if dy > 0:
+            result[:dy, :] = 0
+        elif dy < 0:
+            result[dy:, :] = 0
+
+        if dx > 0:
+            result[:, :dx] = 0
+        elif dx < 0:
+            result[:, dx:] = 0
+
+        return result
+
+    def get_params_dependent_on_data(self, params: Dict, data: Dict) -> Dict[str, int]:
+        h, w = params["shape"][:2]
+        max_dx = int(w * self.max_percent_x)
+        max_dy = int(h * self.max_percent_y)
+        return {
+            "dx": random.randint(-max_dx, max_dx) if max_dx > 0 else 0,
+            "dy": random.randint(-max_dy, max_dy) if max_dy > 0 else 0,
+        }
+
+    def get_transform_init_args_names(self) -> Tuple[str, ...]:
+        return ("max_percent_x", "max_percent_y")
 
 
 # =============================================================================
@@ -21,13 +76,13 @@ import torch
 def build_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
     """Build conservative augmentation for diffusion training.
 
-    Only spatial transforms that preserve image quality. Any distortion
-    would teach the model to generate distorted images.
+    Only lossless spatial transforms that preserve image quality.
+    Rotation is avoided because interpolation causes blurring.
 
     Transforms:
-        - HorizontalFlip (p=0.5)
-        - Rotate ±10° (p=0.5)
-        - Translate ±5% (p=0.5)
+        - HorizontalFlip (p=0.5) - lossless
+        - DiscreteTranslate ±20% X, ±10% Y (p=0.5) - lossless integer pixel shift
+          (more horizontal room since brain is oval/vertical)
 
     Args:
         enabled: Whether to enable augmentation.
@@ -40,14 +95,7 @@ def build_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
 
     return A.Compose([
         A.HorizontalFlip(p=0.5),
-        A.Rotate(limit=10, border_mode=0, p=0.5),
-        A.Affine(
-            translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
-            scale=1.0,
-            rotate=0,
-            border_mode=0,
-            p=0.5,
-        ),
+        DiscreteTranslate(max_percent_x=0.2, max_percent_y=0.1, p=1.0),
     ])
 
 

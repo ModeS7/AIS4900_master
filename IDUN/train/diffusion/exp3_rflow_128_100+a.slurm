@@ -7,9 +7,9 @@
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="exp3_rflow_100+a"
-#SBATCH --output=IDUN/output/train/diffusion/exp3_rflow_100+a_%j.out
-#SBATCH --error=IDUN/output/train/diffusion/exp3_rflow_100+a_%j.err
+#SBATCH --job-name="exp3_1_rflow_100+a"
+#SBATCH --output=IDUN/output/train/diffusion/exp3_1_rflow_100+a_%j.out
+#SBATCH --error=IDUN/output/train/diffusion/exp3_1_rflow_100+a_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
@@ -25,6 +25,7 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
+# Ran again with different augmentation settings taken out rotation, made transformation losses by moving in pixels
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
@@ -33,6 +34,6 @@ time python -m medgen.scripts.train \
     model.image_size=128 \
     training.use_ema=false \
     training.use_min_snr=false \
-    training.name=exp_3_
+    training.name=exp_3_1_
 
 conda deactivate

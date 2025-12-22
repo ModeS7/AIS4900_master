@@ -3,14 +3,20 @@ Unified regional loss tracking for validation data.
 
 This module provides RegionalMetricsTracker for computing regional losses
 (tumor vs background) on validation data for both Diffusion and VAE trainers.
+
+Uses connected component analysis to identify individual tumors and compute
+loss per tumor, categorized by size using RANO-BM clinical thresholds with
+Feret diameter (longest edge-to-edge distance).
 """
 import logging
-import math
 from typing import Dict, Optional, Tuple, Union
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
+from scipy.ndimage import label as scipy_label
+from skimage.measure import regionprops
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +63,10 @@ class RegionalMetricsTracker:
         self.reset()
 
     def _compute_thresholds(self) -> Dict[str, Tuple[float, float]]:
-        """Compute tumor size thresholds based on image resolution.
+        """RANO-BM clinical diameter thresholds in mm.
+
+        Uses Feret diameter (longest edge-to-edge distance) for measurement,
+        matching clinical RANO-BM/RECIST standards.
 
         Clinical definitions (diameter):
             - tiny:   <10mm  (often non-measurable per RANO-BM)
@@ -66,39 +75,39 @@ class RegionalMetricsTracker:
             - large:  >30mm  (often surgical)
 
         Returns:
-            Dictionary mapping size names to (low, high) area percentage ranges.
+            Dictionary mapping size names to (low, high) diameter in mm.
         """
-        mm_per_pixel = self.fov_mm / self.image_size
-        total_pixels = self.image_size ** 2
-
-        diameter_thresholds = {
+        return {
             'tiny': (0, 10),
             'small': (10, 20),
             'medium': (20, 30),
-            'large': (30, 150),
+            'large': (30, 200),
         }
 
-        thresholds = {}
-        for size_name, (d_low, d_high) in diameter_thresholds.items():
-            d_low_px = d_low / mm_per_pixel
-            d_high_px = d_high / mm_per_pixel
-            area_low = math.pi * (d_low_px / 2) ** 2
-            area_high = math.pi * (d_high_px / 2) ** 2
-            pct_low = area_low / total_pixels
-            pct_high = area_high / total_pixels
-            thresholds[size_name] = (pct_low, pct_high)
+    def _classify_tumor_size(self, diameter_mm: float) -> str:
+        """Classify tumor by Feret diameter using RANO-BM thresholds.
 
-        return thresholds
+        Args:
+            diameter_mm: Feret diameter (longest axis) in millimeters.
+
+        Returns:
+            Size category: 'tiny', 'small', 'medium', or 'large'.
+        """
+        for size_name, (low, high) in self.tumor_size_thresholds.items():
+            if low <= diameter_mm < high:
+                return size_name
+        return 'large'  # Fallback for very large tumors
 
     def reset(self) -> None:
         """Reset accumulators for new validation run."""
-        self.tumor_loss_sum = 0.0
+        self.tumor_error_sum = 0.0  # Total error across all tumor pixels
+        self.tumor_pixels_total = 0  # Total tumor pixels (for pixel-weighted avg)
         self.bg_loss_sum = 0.0
-        self.count = 0
+        self.count = 0  # Number of samples with tumors
 
-        # Per-size accumulators
-        self.size_loss_sum = {k: 0.0 for k in self.tumor_size_thresholds}
-        self.size_count = {k: 0 for k in self.tumor_size_thresholds}
+        # Per-size accumulators (pixel-weighted)
+        self.size_error_sum = {k: 0.0 for k in self.tumor_size_thresholds}
+        self.size_pixels = {k: 0 for k in self.tumor_size_thresholds}
 
     def update(
         self,
@@ -108,8 +117,9 @@ class RegionalMetricsTracker:
     ) -> None:
         """Accumulate regional losses for a batch.
 
-        Handles both tensor and dict inputs (for dual mode).
-        Uses L1 or MSE based on loss_fn parameter.
+        Uses connected component analysis to identify individual tumors and
+        compute loss per tumor. Each tumor is categorized by its Feret diameter
+        (longest edge-to-edge distance) using RANO-BM clinical thresholds.
 
         Args:
             prediction: Predicted images [B, C, H, W] or dict of channel tensors.
@@ -129,57 +139,88 @@ class RegionalMetricsTracker:
         else:  # mse
             error = (pred - tgt) ** 2
 
-        # Create masks
-        tumor_mask = (mask > 0.5).float()
-        if error.shape[1] > 1:
-            tumor_mask_expanded = tumor_mask.expand_as(error)
-        else:
-            tumor_mask_expanded = tumor_mask
-        bg_mask_expanded = 1.0 - tumor_mask_expanded
+        mm_per_pixel = self.fov_mm / self.image_size
+        batch_size = mask.shape[0]
 
-        # Compute per-sample tumor pixel counts
-        tumor_pixels = tumor_mask.sum(dim=(1, 2, 3))  # [B]
-        total_pixels = mask.shape[2] * mask.shape[3]
+        # Process each sample individually (needed for connected components)
+        for i in range(batch_size):
+            mask_np = mask[i, 0].cpu().numpy() > 0.5
+            error_i = error[i]  # [C, H, W]
 
-        # Safe divisors
-        tumor_pixels_safe = tumor_pixels.clamp(min=1)
-        bg_pixels = total_pixels - tumor_pixels
-        bg_pixels_safe = bg_pixels.clamp(min=1)
+            # Find connected components
+            labeled, num_tumors = scipy_label(mask_np)
 
-        # Compute per-sample losses
-        tumor_loss_per_sample = (error * tumor_mask_expanded).sum(dim=(1, 2, 3)) / tumor_pixels_safe
-        bg_loss_per_sample = (error * bg_mask_expanded).sum(dim=(1, 2, 3)) / bg_pixels_safe
+            if num_tumors == 0:
+                continue
 
-        # Only count samples with meaningful tumor pixels (>10 pixels)
-        has_tumor = (tumor_pixels > 10).float()
-        num_valid = has_tumor.sum().item()
+            # Get region properties including Feret diameter
+            regions = regionprops(labeled)
 
-        if num_valid > 0:
-            # Accumulate weighted by validity
-            self.tumor_loss_sum += (tumor_loss_per_sample * has_tumor).sum().item()
-            self.bg_loss_sum += (bg_loss_per_sample * has_tumor).sum().item()
-            self.count += int(num_valid)
+            # Track background loss for this sample
+            bg_mask_np = ~mask_np
+            bg_pixels = bg_mask_np.sum()
+            if bg_pixels > 0:
+                bg_mask_tensor = torch.from_numpy(bg_mask_np).to(error_i.device).float()
+                # Average over channels then over spatial
+                if error_i.dim() == 3 and error_i.shape[0] > 1:
+                    # Multi-channel: mean over channels first
+                    error_mean = error_i.mean(dim=0)
+                else:
+                    error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
+                bg_loss = (error_mean * bg_mask_tensor).sum() / bg_pixels
+                self.bg_loss_sum += bg_loss.item()
 
-            # Track by tumor size
-            tumor_ratios = tumor_pixels / total_pixels
-            for size_name, (low, high) in self.tumor_size_thresholds.items():
-                size_mask = has_tumor * ((tumor_ratios >= low) & (tumor_ratios < high)).float()
-                size_count = size_mask.sum().item()
-                if size_count > 0:
-                    self.size_loss_sum[size_name] += (tumor_loss_per_sample * size_mask).sum().item()
-                    self.size_count[size_name] += int(size_count)
+            sample_has_valid_tumor = False
+
+            # Process each tumor individually
+            for region in regions:
+                # Skip tiny fragments (<5 pixels)
+                if region.area < 5:
+                    continue
+
+                # Get Feret diameter (longest edge-to-edge distance)
+                feret_px = region.feret_diameter_max
+                feret_mm = feret_px * mm_per_pixel
+
+                # Classify by size using RANO-BM thresholds
+                size_cat = self._classify_tumor_size(feret_mm)
+
+                # Create mask for this tumor only
+                tumor_mask_np = (labeled == region.label)
+                tumor_mask_tensor = torch.from_numpy(tumor_mask_np).to(error_i.device).float()
+                tumor_pixels = tumor_mask_tensor.sum()
+
+                # Compute total error on this tumor's pixels
+                if error_i.dim() == 3 and error_i.shape[0] > 1:
+                    error_mean = error_i.mean(dim=0)
+                else:
+                    error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
+                tumor_error = (error_mean * tumor_mask_tensor).sum().item()
+                tumor_px = int(tumor_pixels.item())
+
+                # Accumulate raw error and pixel counts (for pixel-weighted average)
+                self.tumor_error_sum += tumor_error
+                self.tumor_pixels_total += tumor_px
+                self.size_error_sum[size_cat] += tumor_error
+                self.size_pixels[size_cat] += tumor_px
+                sample_has_valid_tumor = True
+
+            if sample_has_valid_tumor:
+                self.count += 1  # Count samples with valid tumors
 
     def compute(self) -> Dict[str, float]:
         """Compute final metrics after all batches processed.
 
         Returns:
-            Dict with 'tumor', 'background', 'ratio', and per-size metrics.
+            Dict with 'tumor', 'background', 'ratio', and per-size loss metrics.
+            All tumor metrics are pixel-weighted averages.
             Empty dict if no samples were tracked.
         """
         if self.count == 0:
             return {}
 
-        tumor_avg = self.tumor_loss_sum / self.count
+        # Pixel-weighted average: total error / total pixels
+        tumor_avg = self.tumor_error_sum / max(self.tumor_pixels_total, 1)
         bg_avg = self.bg_loss_sum / self.count
 
         metrics = {
@@ -188,11 +229,11 @@ class RegionalMetricsTracker:
             'ratio': tumor_avg / (bg_avg + 1e-8),
         }
 
-        # Add per-size metrics
+        # Per-size metrics: pixel-weighted average within each category
         for size_name in self.tumor_size_thresholds:
-            count = self.size_count[size_name]
-            if count > 0:
-                metrics[f'tumor_size_{size_name}'] = self.size_loss_sum[size_name] / count
+            pixels = self.size_pixels[size_name]
+            if pixels > 0:
+                metrics[f'tumor_size_{size_name}'] = self.size_error_sum[size_name] / pixels
             else:
                 metrics[f'tumor_size_{size_name}'] = 0.0
 
@@ -202,14 +243,14 @@ class RegionalMetricsTracker:
         self,
         writer: Optional[SummaryWriter],
         epoch: int,
-        prefix: str = 'tumor',
+        prefix: str = 'regional',
     ) -> None:
         """Log all metrics to TensorBoard.
 
         Args:
             writer: TensorBoard SummaryWriter.
             epoch: Current epoch number.
-            prefix: TensorBoard tag prefix. Default: 'tumor'.
+            prefix: TensorBoard tag prefix. Default: 'regional'.
         """
         if writer is None:
             return
@@ -218,9 +259,9 @@ class RegionalMetricsTracker:
         if not metrics:
             return
 
-        writer.add_scalar(f'{prefix}/region_loss', metrics['tumor'], epoch)
+        writer.add_scalar(f'{prefix}/tumor_loss', metrics['tumor'], epoch)
         writer.add_scalar(f'{prefix}/background_loss', metrics['background'], epoch)
-        writer.add_scalar(f'{prefix}/region_bg_ratio', metrics['ratio'], epoch)
+        writer.add_scalar(f'{prefix}/tumor_bg_ratio', metrics['ratio'], epoch)
 
         for size in ['tiny', 'small', 'medium', 'large']:
-            writer.add_scalar(f'{prefix}/size_{size}', metrics[f'tumor_size_{size}'], epoch)
+            writer.add_scalar(f'{prefix}/{size}', metrics[f'tumor_size_{size}'], epoch)

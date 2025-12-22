@@ -403,8 +403,8 @@ logging:
 ```
 
 Key TensorBoard metrics:
-- `Loss/tumor_region`, `Loss/background_region` - Regional error tracking
-- `Loss/tumor_size/{small,medium,large}` - Error by tumor size
+- `regional/tumor_loss`, `regional/background_loss` - Per-pixel regional error (pixel-weighted)
+- `regional/{tiny,small,medium,large}` - Error by tumor size (Feret diameter, RANO-BM thresholds)
 - `Validation/worst_batch` - Worst performing batch (for debugging)
 - `training/timestep_region_heatmap` - 2D heatmap of loss by timestep and region
 
