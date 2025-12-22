@@ -380,6 +380,68 @@ class ScoreAugTransform:
         """
         return x * scale
 
+    def apply_omega(
+        self,
+        x: torch.Tensor,
+        omega: Optional[Dict[str, Any]],
+    ) -> torch.Tensor:
+        """Apply transform(s) from omega dict to tensor.
+
+        Handles both single-transform and compose mode omega formats.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            omega: Transform parameters (single or compose format), or None for identity
+
+        Returns:
+            Transformed tensor
+        """
+        if omega is None:
+            return x
+
+        if omega.get('compose', False):
+            # Compose mode: apply all transforms in sequence
+            result = x
+            for transform_type, params in omega['transforms']:
+                result = self.apply(result, transform_type, params)
+            return result
+        else:
+            # Single transform mode
+            return self.apply(x, omega['type'], omega['params'])
+
+    def inverse_apply_omega(
+        self,
+        x: torch.Tensor,
+        omega: Optional[Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        """Apply inverse transform(s) from omega dict to tensor.
+
+        Handles both single-transform and compose mode omega formats.
+        For compose mode, applies inverses in reverse order.
+
+        Args:
+            x: Transformed tensor [B, C, H, W]
+            omega: Transform parameters (single or compose format), or None for identity
+
+        Returns:
+            Inverse-transformed tensor, or None if any transform is non-invertible
+        """
+        if omega is None:
+            return x
+
+        if omega.get('compose', False):
+            # Compose mode: apply inverse transforms in REVERSE order
+            result = x
+            for transform_type, params in reversed(omega['transforms']):
+                single_omega = {'type': transform_type, 'params': params}
+                result = self.inverse_apply(result, single_omega)
+                if result is None:
+                    return None  # Non-invertible transform encountered
+            return result
+        else:
+            # Single transform mode
+            return self.inverse_apply(x, omega)
+
     def __call__(
         self,
         noisy_input: torch.Tensor,

@@ -704,8 +704,7 @@ class DiffusionTrainer:
                             keys = list(noisy_images.keys())
                             # Apply same transform to noisy_images for reconstruction
                             stacked_noisy = torch.cat([noisy_images[k] for k in keys], dim=1)
-                            aug_noisy = self.score_aug.apply(stacked_noisy, omega['type'] if omega else 'identity',
-                                                              omega['params'] if omega else {})
+                            aug_noisy = self.score_aug.apply_omega(stacked_noisy, omega)
                             aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
 
                             if self.strategy_name == 'rflow':
@@ -718,9 +717,9 @@ class DiffusionTrainer:
                                              for i, k in enumerate(keys)}
 
                             # Inverse transform to original space
-                            inv_clean = {k: self.score_aug.inverse_apply(v, omega) for k, v in aug_clean.items()}
+                            inv_clean = {k: self.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
                             if any(v is None for v in inv_clean.values()):
-                                # Phase 2 transform, skip perceptual loss
+                                # Non-invertible transform, skip perceptual loss
                                 p_loss = torch.tensor(0.0, device=self.device)
                                 predicted_clean = aug_clean  # Use augmented for metrics
                             else:
@@ -728,8 +727,7 @@ class DiffusionTrainer:
                                 p_loss = self.perceptual_loss_fn(predicted_clean, images)
                         else:
                             # Single channel mode
-                            aug_noisy = self.score_aug.apply(noisy_images, omega['type'] if omega else 'identity',
-                                                              omega['params'] if omega else {})
+                            aug_noisy = self.score_aug.apply_omega(noisy_images, omega)
                             if self.strategy_name == 'rflow':
                                 t_norm = timesteps.float() / float(self.num_timesteps)
                                 t_exp = t_norm.view(-1, 1, 1, 1)
@@ -737,7 +735,7 @@ class DiffusionTrainer:
                             else:
                                 aug_clean = torch.clamp(aug_noisy - prediction, 0, 1)
 
-                            inv_clean = self.score_aug.inverse_apply(aug_clean, omega)
+                            inv_clean = self.score_aug.inverse_apply_omega(aug_clean, omega)
                             if inv_clean is None:
                                 p_loss = torch.tensor(0.0, device=self.device)
                                 predicted_clean = aug_clean
