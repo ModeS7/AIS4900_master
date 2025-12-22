@@ -173,16 +173,21 @@ class DiffusionTrainer:
             from medgen.data.score_aug import ScoreAugTransform
             self.score_aug = ScoreAugTransform(
                 rotation=score_aug_cfg.get('rotation', True),
+                flip=score_aug_cfg.get('flip', True),
                 translation=score_aug_cfg.get('translation', False),
                 cutout=score_aug_cfg.get('cutout', False),
                 brightness=score_aug_cfg.get('brightness', False),
                 brightness_range=score_aug_cfg.get('brightness_range', 1.2),
+                compose=score_aug_cfg.get('compose', False),
+                compose_prob=score_aug_cfg.get('compose_prob', 0.5),
             )
             self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
             if self.is_main_process:
                 transforms = []
                 if score_aug_cfg.get('rotation', True):
                     transforms.append('rotation')
+                if score_aug_cfg.get('flip', True):
+                    transforms.append('flip')
                 if score_aug_cfg.get('translation', False):
                     transforms.append('translation')
                 if score_aug_cfg.get('cutout', False):

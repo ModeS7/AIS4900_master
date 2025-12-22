@@ -18,7 +18,7 @@ Conditioning requirements (per paper):
 """
 
 import random
-from typing import Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any
 
 import torch
 import torch.nn as nn
@@ -41,28 +41,38 @@ class ScoreAugTransform:
     def __init__(
         self,
         rotation: bool = True,
+        flip: bool = True,
         translation: bool = False,
         cutout: bool = False,
         brightness: bool = False,
         brightness_range: float = 1.2,
+        compose: bool = False,
+        compose_prob: float = 0.5,
     ):
         """Initialize ScoreAug transform.
 
-        Per paper: one augmentation is randomly selected with equal probability
-        across all enabled types, including identity (no transform).
+        Two modes:
+        - compose=False (default): One transform sampled with equal probability (per paper)
+        - compose=True: Each transform applied independently with compose_prob
 
         Args:
             rotation: Enable 90, 180, 270 degree rotations (requires omega conditioning)
-            translation: Enable +/-10% translation with zero-padding
-            cutout: Enable random square cutout (10-30% of image)
+            flip: Enable horizontal flip (requires omega conditioning for consistency)
+            translation: Enable ±40% X, ±20% Y translation with zero-padding
+            cutout: Enable random rectangle cutout (10-30% each dimension)
             brightness: Enable brightness scaling (experimental with normalized data)
             brightness_range: Max brightness factor B, scales in [1/B, B]
+            compose: If True, apply transforms independently instead of picking one
+            compose_prob: Probability for each transform when compose=True (default 0.5)
         """
         self.rotation = rotation
+        self.flip = flip
         self.translation = translation
         self.cutout = cutout
         self.brightness = brightness
         self.brightness_range = brightness_range
+        self.compose = compose
+        self.compose_prob = compose_prob
 
     def sample_transform(self) -> Tuple[str, Dict[str, Any]]:
         """Sample a random transform with equal probability (per paper).
@@ -75,8 +85,8 @@ class ScoreAugTransform:
         """
         # Build list of all enabled transforms + identity
         transforms = ['identity']
-        if self.rotation:
-            transforms.append('rotation')  # Will sample k=1,2,3 uniformly
+        if self.rotation or self.flip:
+            transforms.append('spatial')  # Unified D4 symmetries (rotations + flips)
         if self.translation:
             transforms.append('translate')
         if self.cutout:
@@ -89,19 +99,45 @@ class ScoreAugTransform:
 
         if transform_type == 'identity':
             return 'identity', {}
-        elif transform_type == 'rotation':
-            # Sample rotation angle uniformly: 90, 180, 270
-            k = random.choice([1, 2, 3])
-            return 'rot90', {'k': k}
+        elif transform_type == 'spatial':
+            # D4 dihedral group: 7 non-identity symmetries
+            # Build list based on enabled options
+            spatial_options = []
+            if self.rotation:
+                spatial_options.extend([
+                    ('rot90', {'k': 1}),
+                    ('rot90', {'k': 2}),  # 180°
+                    ('rot90', {'k': 3}),  # 270°
+                ])
+            if self.flip:
+                spatial_options.extend([
+                    ('hflip', {}),
+                    ('vflip', {}),
+                ])
+            if self.rotation and self.flip:
+                # Combined transforms (diagonal/anti-diagonal reflections)
+                spatial_options.extend([
+                    ('rot90_hflip', {'k': 1}),  # rot90 then hflip
+                    ('rot90_hflip', {'k': 3}),  # rot270 then hflip
+                ])
+
+            if not spatial_options:
+                return 'identity', {}
+
+            return random.choice(spatial_options)
         elif transform_type == 'translate':
-            dx = random.uniform(-0.1, 0.1)
-            dy = random.uniform(-0.1, 0.1)
+            # Asymmetric: ±40% X, ±20% Y (brain is oval, more vertical space taken)
+            # Aggressive is fine for ScoreAug - doesn't affect output distribution
+            dx = random.uniform(-0.4, 0.4)
+            dy = random.uniform(-0.2, 0.2)
             return 'translate', {'dx': dx, 'dy': dy}
         elif transform_type == 'cutout':
-            size = random.uniform(0.1, 0.3)
-            cx = random.uniform(size / 2, 1 - size / 2)
-            cy = random.uniform(size / 2, 1 - size / 2)
-            return 'cutout', {'cx': cx, 'cy': cy, 'size': size}
+            # Random rectangle (not square) - sample width/height independently
+            size_x = random.uniform(0.1, 0.3)  # 10-30% of width
+            size_y = random.uniform(0.1, 0.3)  # 10-30% of height
+            cx = random.uniform(size_x / 2, 1 - size_x / 2)
+            cy = random.uniform(size_y / 2, 1 - size_y / 2)
+            return 'cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y}
         elif transform_type == 'brightness':
             # Sample scale factor uniformly in log space for symmetric distribution
             log_scale = random.uniform(-1, 1) * abs(self.brightness_range - 1)
@@ -111,6 +147,62 @@ class ScoreAugTransform:
             return 'brightness', {'scale': scale}
 
         return 'identity', {}
+
+    def sample_compose_transforms(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Sample multiple transforms independently for compose mode.
+
+        Each enabled transform has compose_prob chance of being applied.
+        Order: spatial → translate → cutout → brightness
+
+        Returns:
+            List of (transform_type, params) tuples to apply in sequence
+        """
+        transforms = []
+
+        # Spatial (rotation/flip) - sample one from D4 if triggered
+        if (self.rotation or self.flip) and random.random() < self.compose_prob:
+            spatial_options = []
+            if self.rotation:
+                spatial_options.extend([
+                    ('rot90', {'k': 1}),
+                    ('rot90', {'k': 2}),
+                    ('rot90', {'k': 3}),
+                ])
+            if self.flip:
+                spatial_options.extend([
+                    ('hflip', {}),
+                    ('vflip', {}),
+                ])
+            if self.rotation and self.flip:
+                spatial_options.extend([
+                    ('rot90_hflip', {'k': 1}),
+                    ('rot90_hflip', {'k': 3}),
+                ])
+            if spatial_options:
+                transforms.append(random.choice(spatial_options))
+
+        # Translation
+        if self.translation and random.random() < self.compose_prob:
+            dx = random.uniform(-0.4, 0.4)
+            dy = random.uniform(-0.2, 0.2)
+            transforms.append(('translate', {'dx': dx, 'dy': dy}))
+
+        # Cutout
+        if self.cutout and random.random() < self.compose_prob:
+            size_x = random.uniform(0.1, 0.3)
+            size_y = random.uniform(0.1, 0.3)
+            cx = random.uniform(size_x / 2, 1 - size_x / 2)
+            cy = random.uniform(size_y / 2, 1 - size_y / 2)
+            transforms.append(('cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y}))
+
+        # Brightness
+        if self.brightness and random.random() < self.compose_prob:
+            log_scale = random.uniform(-1, 1) * abs(self.brightness_range - 1)
+            scale = 1.0 + log_scale
+            scale = max(1.0 / self.brightness_range, min(self.brightness_range, scale))
+            transforms.append(('brightness', {'scale': scale}))
+
+        return transforms
 
     def apply(
         self,
@@ -132,10 +224,18 @@ class ScoreAugTransform:
             return x
         elif transform_type == 'rot90':
             return torch.rot90(x, k=params['k'], dims=(-2, -1))
+        elif transform_type == 'hflip':
+            return torch.flip(x, dims=[-1])
+        elif transform_type == 'vflip':
+            return torch.flip(x, dims=[-2])
+        elif transform_type == 'rot90_hflip':
+            # Rotate then flip horizontally (diagonal/anti-diagonal reflections)
+            rotated = torch.rot90(x, k=params['k'], dims=(-2, -1))
+            return torch.flip(rotated, dims=[-1])
         elif transform_type == 'translate':
             return self._translate(x, params['dx'], params['dy'])
         elif transform_type == 'cutout':
-            return self._cutout(x, params['cx'], params['cy'], params['size'])
+            return self._cutout(x, params['cx'], params['cy'], params['size_x'], params['size_y'])
         elif transform_type == 'brightness':
             return self._brightness(x, params['scale'])
         else:
@@ -169,6 +269,17 @@ class ScoreAugTransform:
             # Inverse of rot90(k) is rot90(4-k)
             inv_k = 4 - params['k']
             return torch.rot90(x, k=inv_k, dims=(-2, -1))
+        elif transform_type == 'hflip':
+            # Flip is self-inverse: flip(flip(x)) = x
+            return torch.flip(x, dims=[-1])
+        elif transform_type == 'vflip':
+            # Flip is self-inverse
+            return torch.flip(x, dims=[-2])
+        elif transform_type == 'rot90_hflip':
+            # Inverse: flip first, then inverse rotate
+            flipped = torch.flip(x, dims=[-1])
+            inv_k = 4 - params['k']
+            return torch.rot90(flipped, k=inv_k, dims=(-2, -1))
         elif transform_type == 'brightness':
             # Inverse of multiply by scale is divide by scale
             return x / params['scale']
@@ -182,6 +293,7 @@ class ScoreAugTransform:
         """Check if transform requires omega conditioning.
 
         Per paper: rotation requires conditioning because noise is rotation-invariant.
+        Flip uses omega conditioning for consistency (same reasoning applies).
 
         Args:
             omega: Transform parameters
@@ -191,7 +303,8 @@ class ScoreAugTransform:
         """
         if omega is None:
             return False
-        return omega['type'] == 'rot90'
+        # All spatial transforms (D4 symmetries) require omega conditioning
+        return omega['type'] in ('rot90', 'hflip', 'vflip', 'rot90_hflip')
 
     def _translate(self, x: torch.Tensor, dx: float, dy: float) -> torch.Tensor:
         """Translate tensor by (dx, dy) fraction, zero-pad edges.
@@ -223,22 +336,23 @@ class ScoreAugTransform:
 
         return result
 
-    def _cutout(self, x: torch.Tensor, cx: float, cy: float, size: float) -> torch.Tensor:
-        """Apply square cutout centered at (cx, cy) with given size fraction.
+    def _cutout(self, x: torch.Tensor, cx: float, cy: float, size_x: float, size_y: float) -> torch.Tensor:
+        """Apply rectangular cutout centered at (cx, cy) with given size fractions.
 
         Args:
             x: Input tensor [B, C, H, W]
             cx: Center x as fraction of width (0 to 1)
             cy: Center y as fraction of height (0 to 1)
-            size: Size of cutout as fraction of image (0 to 1)
+            size_x: Width of cutout as fraction of image width (0 to 1)
+            size_y: Height of cutout as fraction of image height (0 to 1)
 
         Returns:
-            Tensor with square region zeroed
+            Tensor with rectangular region zeroed
         """
         B, C, H, W = x.shape
 
-        half_h = int(size * H / 2)
-        half_w = int(size * W / 2)
+        half_h = int(size_y * H / 2)
+        half_w = int(size_x * W / 2)
         center_y = int(cy * H)
         center_x = int(cx * W)
 
@@ -282,29 +396,56 @@ class ScoreAugTransform:
             aug_target: Transformed target
             omega: Transform parameters for conditioning, None if identity
         """
-        transform_type, params = self.sample_transform()
+        if self.compose:
+            # Compose mode: apply multiple transforms independently
+            transforms = self.sample_compose_transforms()
 
-        aug_input = self.apply(noisy_input, transform_type, params)
-        aug_target = self.apply(target, transform_type, params)
+            if not transforms:
+                return noisy_input, target, None
 
-        if transform_type == 'identity':
-            return aug_input, aug_target, None
+            # Apply all transforms in sequence
+            aug_input = noisy_input
+            aug_target = target
+            for transform_type, params in transforms:
+                aug_input = self.apply(aug_input, transform_type, params)
+                aug_target = self.apply(aug_target, transform_type, params)
 
-        omega = {
-            'type': transform_type,
-            'params': params,
-        }
+            # Return list of transforms for omega encoding
+            omega = {
+                'compose': True,
+                'transforms': transforms,  # List of (type, params) tuples
+            }
+            return aug_input, aug_target, omega
 
-        return aug_input, aug_target, omega
+        else:
+            # Single transform mode (per paper)
+            transform_type, params = self.sample_transform()
+
+            aug_input = self.apply(noisy_input, transform_type, params)
+            aug_target = self.apply(target, transform_type, params)
+
+            if transform_type == 'identity':
+                return aug_input, aug_target, None
+
+            omega = {
+                'type': transform_type,
+                'params': params,
+            }
+
+            return aug_input, aug_target, omega
 
 
 # =============================================================================
 # Omega Conditioning (compile-compatible implementation)
 # =============================================================================
 
-# Omega encoding format: [type_onehot(5), rot_k_norm, dx, dy, cx, cy, size, brightness_scale]
-# Types: 0=identity, 1=rotation, 2=translation, 3=cutout, 4=brightness
-OMEGA_ENCODING_DIM = 12
+# Omega encoding format:
+# Single mode: [type_onehot(8), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
+#   Types: 0=identity, 1=rotation, 2=hflip, 3=vflip, 4=rot90_hflip, 5=translation, 6=cutout, 7=brightness
+# Compose mode: [active_mask(4), rot_type(4), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
+#   Active mask: spatial, translation, cutout, brightness (1=active)
+#   Rot type: identity, rot90, hflip, vflip, rot90_hflip (one-hot within spatial)
+OMEGA_ENCODING_DIM = 16
 
 
 def encode_omega(
@@ -313,9 +454,11 @@ def encode_omega(
 ) -> torch.Tensor:
     """Encode omega dict into tensor format for MLP.
 
-    All samples in a batch get the same transform, so we return shape (1, 12)
-    which broadcasts to (B, 12) in the MLP. This keeps the buffer shape constant
+    All samples in a batch get the same transform, so we return shape (1, 16)
+    which broadcasts to (B, 16) in the MLP. This keeps the buffer shape constant
     for torch.compile compatibility.
+
+    Supports both single-transform mode and compose mode.
 
     Args:
         omega: Transform parameters dict or None
@@ -331,24 +474,68 @@ def encode_omega(
         enc[0, 0] = 1.0
         return enc
 
+    # Check for compose mode
+    if omega.get('compose', False):
+        # Compose mode: encode all active transforms
+        # Format: [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, brightness]
+        transforms = omega['transforms']
+
+        for t, p in transforms:
+            if t in ('rot90', 'hflip', 'vflip', 'rot90_hflip'):
+                enc[0, 0] = 1.0  # spatial active
+                if t == 'rot90':
+                    enc[0, 4] = 1.0  # rot90 type
+                    enc[0, 8] = p['k'] / 3.0
+                elif t == 'hflip':
+                    enc[0, 5] = 1.0  # hflip type
+                elif t == 'vflip':
+                    enc[0, 6] = 1.0  # vflip type
+                elif t == 'rot90_hflip':
+                    enc[0, 7] = 1.0  # rot90_hflip type
+                    enc[0, 8] = p['k'] / 3.0
+            elif t == 'translate':
+                enc[0, 1] = 1.0  # translation active
+                enc[0, 9] = p['dx']
+                enc[0, 10] = p['dy']
+            elif t == 'cutout':
+                enc[0, 2] = 1.0  # cutout active
+                enc[0, 11] = p['cx']
+                enc[0, 12] = p['cy']
+                enc[0, 13] = p['size_x']
+                enc[0, 14] = p['size_y']
+            elif t == 'brightness':
+                enc[0, 3] = 1.0  # brightness active
+                enc[0, 15] = p['scale'] - 1.0
+
+        return enc
+
+    # Single transform mode
     t = omega['type']
     p = omega['params']
 
     if t == 'rot90':
         enc[0, 1] = 1.0  # rotation type
-        enc[0, 5] = p['k'] / 3.0  # normalized k (1,2,3 -> 0.33, 0.67, 1.0)
+        enc[0, 8] = p['k'] / 3.0  # normalized k (1,2,3 -> 0.33, 0.67, 1.0)
+    elif t == 'hflip':
+        enc[0, 2] = 1.0  # hflip type (no extra params)
+    elif t == 'vflip':
+        enc[0, 3] = 1.0  # vflip type (no extra params)
+    elif t == 'rot90_hflip':
+        enc[0, 4] = 1.0  # rot90_hflip type
+        enc[0, 8] = p['k'] / 3.0  # normalized k (1 or 3 -> 0.33 or 1.0)
     elif t == 'translate':
-        enc[0, 2] = 1.0  # translation type
-        enc[0, 6] = p['dx']  # already in [-0.1, 0.1]
-        enc[0, 7] = p['dy']
+        enc[0, 5] = 1.0  # translation type
+        enc[0, 9] = p['dx']  # in [-0.4, 0.4]
+        enc[0, 10] = p['dy']  # in [-0.2, 0.2]
     elif t == 'cutout':
-        enc[0, 3] = 1.0  # cutout type
-        enc[0, 8] = p['cx']  # in [0, 1]
-        enc[0, 9] = p['cy']
-        enc[0, 10] = p['size']  # in [0.1, 0.3]
+        enc[0, 6] = 1.0  # cutout type
+        enc[0, 11] = p['cx']  # in [0, 1]
+        enc[0, 12] = p['cy']
+        enc[0, 13] = p['size_x']  # in [0.1, 0.3]
+        enc[0, 14] = p['size_y']  # in [0.1, 0.3]
     elif t == 'brightness':
-        enc[0, 4] = 1.0  # brightness type
-        enc[0, 11] = p['scale'] - 1.0  # centered around 0
+        enc[0, 7] = 1.0  # brightness type
+        enc[0, 15] = p['scale'] - 1.0  # centered around 0
 
     return enc
 

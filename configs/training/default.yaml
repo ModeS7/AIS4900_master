@@ -32,19 +32,27 @@ batch_augment:
 # across all types" - identity is always included, so with 4 transforms enabled,
 # each has 20% probability (1/5).
 #
-# Conditioning requirements (per paper):
-# - rotation: REQUIRES omega conditioning (noise is rotation-invariant)
+# Conditioning requirements:
+# - rotation/flip: REQUIRES omega conditioning (noise distribution is invariant)
 # - translation/cutout: Work without conditioning but risk data leakage
 # - brightness: Linear transform, works without conditioning
 score_aug:
   enabled: false             # Disabled by default
-  # Transforms (from paper) - each enabled transform has equal probability
+  # Transforms - each enabled transform has equal probability
+  # Spatial transforms (D4 dihedral symmetries) - rotation and flip are combined:
+  #   - rotation only: 3 options (90°, 180°, 270°)
+  #   - flip only: 2 options (hflip, vflip)
+  #   - both: 7 options (3 rot + 2 flip + 2 rot+flip combos)
   rotation: true             # 90, 180, 270 degree rotations (requires omega)
-  translation: false         # +-10% translation with zero-pad
-  cutout: false              # Random square cutout (10-30% of image)
+  flip: true                 # Horizontal + vertical flip (requires omega)
+  translation: false         # +-40% X, +-20% Y translation with zero-pad
+  cutout: false              # Random rectangle cutout (10-30% each dimension)
   brightness: false          # Brightness scaling (experimental with normalized data)
   brightness_range: 1.2      # Max scale factor B, samples in [1/B, B]
-  use_omega_conditioning: false  # Required for rotation, optional for others
+  use_omega_conditioning: false  # Required for rotation/flip, optional for others
+  # Compose mode: apply transforms independently instead of picking one
+  compose: false             # If true, each transform applied with compose_prob
+  compose_prob: 0.5          # Probability for each transform in compose mode
 
 # DataLoader optimization for CPU augmentation
 dataloader:
