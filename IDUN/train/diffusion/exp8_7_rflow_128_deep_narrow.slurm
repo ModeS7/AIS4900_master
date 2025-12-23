@@ -25,17 +25,17 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# exp8_7: Deep narrow 4-level [48,96,192,256]
-# Hypothesis: Even narrower than exp8_4, gradual growth
+# exp8_7: Deep narrow 4-level [32,64,128,256]
+# Hypothesis: Even narrower than exp8_4, gradual 2x growth
 # Tests minimum viable width with 4 levels
-# Starting at 48 (very narrow) to maximize regularization effect
+# All channels divisible by 32 for clean attention heads
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
     strategy.num_train_timesteps=100 \
     model.image_size=128 \
-    model.channels=[48,96,192,256] \
+    model.channels=[32,64,128,256] \
     model.attention_levels=[false,false,true,true] \
     model.num_head_channels=32 \
     training.augment=true \
