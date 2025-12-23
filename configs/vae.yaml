@@ -28,6 +28,9 @@ defaults:
   - training: default
   - _self_
 
+# Pretrained checkpoint (for fine-tuning from progressive VAE)
+pretrained_checkpoint: null  # Path to checkpoint (.pt) to load weights from
+
 # Override training defaults for VAE
 training:
   epochs: 100

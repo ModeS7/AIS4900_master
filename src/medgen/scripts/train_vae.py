@@ -115,8 +115,11 @@ def main(cfg: DictConfig) -> None:
     else:
         log.info("No val/ directory found - using train samples for validation")
 
-    # Setup model
-    trainer.setup_model()
+    # Setup model (with optional pretrained weights)
+    pretrained_checkpoint = cfg.get('pretrained_checkpoint', None)
+    if pretrained_checkpoint:
+        log.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
+    trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
     # Train with optional validation loader
     trainer.train(dataloader, train_dataset, val_loader=val_loader)
