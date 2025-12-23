@@ -32,8 +32,9 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 # Key improvements over DDPM:
 # - Wider base channels (more capacity)
 # - Attention at more resolutions
-# - channels = [160, 160, 320, 320, 640] (base 160, slightly wider)
+# - channels = [160, 160, 320, 320, 640] (base 160, slightly wider than DDPM's 128)
 # - num_res_blocks = 2
+# - num_head_channels = 32 (160/32=5, 320/32=10, 640/32=20)
 # - Attention at 32, 16, 8 (more attention than original DDPM)
 time python -m medgen.scripts.train \
     paths=cluster \
@@ -44,7 +45,7 @@ time python -m medgen.scripts.train \
     model.channels=[160,160,320,320,640] \
     model.attention_levels=[false,true,true,true,true] \
     model.num_res_blocks=2 \
-    model.num_head_channels=64 \
+    model.num_head_channels=32 \
     training.augment=true \
     training.use_ema=false \
     training.use_min_snr=false \
