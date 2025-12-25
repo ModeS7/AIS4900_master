@@ -29,6 +29,14 @@ from .multi_modality import (
     create_single_modality_validation_loader,
 )
 
+# Multi-modality diffusion dataloaders (with mode_id)
+from .multi_diffusion import (
+    create_multi_diffusion_dataloader,
+    create_multi_diffusion_test_dataloader,
+    create_multi_diffusion_validation_dataloader,
+    create_single_modality_diffusion_val_loader,
+)
+
 __all__ = [
     # Single-image
     'create_dataloader',
@@ -42,9 +50,14 @@ __all__ = [
     'create_vae_dataloader',
     'create_vae_validation_dataloader',
     'create_vae_test_dataloader',
-    # Multi-modality
+    # Multi-modality VAE
     'create_multi_modality_dataloader',
     'create_multi_modality_validation_dataloader',
     'create_multi_modality_test_dataloader',
     'create_single_modality_validation_loader',
+    # Multi-modality diffusion
+    'create_multi_diffusion_dataloader',
+    'create_multi_diffusion_validation_dataloader',
+    'create_multi_diffusion_test_dataloader',
+    'create_single_modality_diffusion_val_loader',
 ]

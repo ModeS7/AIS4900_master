@@ -15,7 +15,8 @@ class ModeType(str, Enum):
     SEG = "seg"
     BRAVO = "bravo"
     DUAL = "dual"
-    MULTI_MODALITY = "multi_modality"
+    MULTI = "multi"  # Multi-modality diffusion with mode embedding
+    MULTI_MODALITY = "multi_modality"  # Multi-modality VAE (no mode embedding)
 
 
 # Data processing thresholds

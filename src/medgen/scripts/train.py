@@ -40,6 +40,10 @@ from medgen.data import (
     create_dual_image_validation_dataloader,
     create_test_dataloader,
     create_dual_image_test_dataloader,
+    create_multi_diffusion_dataloader,
+    create_multi_diffusion_validation_dataloader,
+    create_multi_diffusion_test_dataloader,
+    create_single_modality_diffusion_val_loader,
 )
 from medgen.pipeline import DiffusionTrainer
 from medgen.pipeline.spaces import PixelSpace, load_vae_for_latent_space
@@ -116,7 +120,20 @@ def main(cfg: DictConfig) -> None:
 
     # Create dataloader based on mode
     augment = cfg.training.get('augment', True)
-    if mode == ModeType.DUAL:
+    image_keys = None  # Will be set for multi and dual modes
+
+    if mode == 'multi':
+        # Multi-modality diffusion with mode embedding
+        image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
+        dataloader, train_dataset = create_multi_diffusion_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            use_distributed=use_multi_gpu,
+            rank=trainer.rank if use_multi_gpu else 0,
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment
+        )
+    elif mode == ModeType.DUAL:
         image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
         dataloader, train_dataset = create_dual_image_dataloader(
             cfg=cfg,
@@ -145,7 +162,23 @@ def main(cfg: DictConfig) -> None:
     # Pass world_size to reduce batch size for DDP (avoids OOM on single GPU)
     val_loader = None
     world_size = trainer.world_size if use_multi_gpu else 1
-    if mode == ModeType.DUAL:
+
+    if mode == 'multi':
+        val_result = create_multi_diffusion_validation_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            world_size=world_size,
+        )
+        # Create per-modality validation loaders for multi-modality metrics
+        per_modality_val_loaders = {}
+        for modality in image_keys:
+            loader = create_single_modality_diffusion_val_loader(cfg, modality)
+            if loader:
+                per_modality_val_loaders[modality] = loader
+        trainer.per_modality_val_loaders = per_modality_val_loaders
+        if per_modality_val_loaders:
+            log.info(f"Per-modality validation loaders: {list(per_modality_val_loaders.keys())}")
+    elif mode == ModeType.DUAL:
         val_result = create_dual_image_validation_dataloader(
             cfg=cfg,
             image_keys=image_keys,
@@ -172,7 +205,12 @@ def main(cfg: DictConfig) -> None:
     trainer.train(dataloader, train_dataset, val_loader=val_loader)
 
     # Create test dataloader and evaluate (if test_new/ directory exists)
-    if mode == ModeType.DUAL:
+    if mode == 'multi':
+        test_result = create_multi_diffusion_test_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+        )
+    elif mode == ModeType.DUAL:
         test_result = create_dual_image_test_dataloader(
             cfg=cfg,
             image_keys=image_keys,

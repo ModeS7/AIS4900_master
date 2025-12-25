@@ -49,7 +49,7 @@ score_aug:
   cutout: false              # Random rectangle cutout (10-30% each dimension)
   brightness: false          # Brightness scaling (experimental with normalized data)
   brightness_range: 1.2      # Max scale factor B, samples in [1/B, B]
-  use_omega_conditioning: false  # Required for rotation/flip, optional for others
+  use_omega_conditioning: true   # Always use omega conditioning when ScoreAug is enabled
   # Compose mode: apply transforms independently instead of picking one
   compose: false             # If true, each transform applied with compose_prob
   compose_prob: 0.5          # Probability for each transform in compose mode

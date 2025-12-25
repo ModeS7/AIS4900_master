@@ -11,6 +11,8 @@ from .augmentation import (
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .score_aug import ScoreAugTransform
+from .mode_embed import ModeEmbedModelWrapper, ModeTimeEmbed, MODE_ID_MAP, encode_mode_id
+from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed
 from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
 
 # Import all loaders from loaders subpackage
@@ -27,11 +29,16 @@ from .loaders import (
     create_vae_dataloader,
     create_vae_validation_dataloader,
     create_vae_test_dataloader,
-    # Multi-modality
+    # Multi-modality VAE
     create_multi_modality_dataloader,
     create_multi_modality_validation_dataloader,
     create_multi_modality_test_dataloader,
     create_single_modality_validation_loader,
+    # Multi-modality diffusion
+    create_multi_diffusion_dataloader,
+    create_multi_diffusion_validation_dataloader,
+    create_multi_diffusion_test_dataloader,
+    create_single_modality_diffusion_val_loader,
 )
 
 __all__ = [
@@ -68,9 +75,21 @@ __all__ = [
     'create_vae_dataloader',
     'create_vae_validation_dataloader',
     'create_vae_test_dataloader',
-    # Multi-modality loaders
+    # Multi-modality VAE loaders
     'create_multi_modality_dataloader',
     'create_multi_modality_validation_dataloader',
     'create_multi_modality_test_dataloader',
     'create_single_modality_validation_loader',
+    # Multi-modality diffusion loaders
+    'create_multi_diffusion_dataloader',
+    'create_multi_diffusion_validation_dataloader',
+    'create_multi_diffusion_test_dataloader',
+    'create_single_modality_diffusion_val_loader',
+    # Mode embedding
+    'ModeEmbedModelWrapper',
+    'ModeTimeEmbed',
+    'MODE_ID_MAP',
+    'encode_mode_id',
+    'CombinedModelWrapper',
+    'CombinedTimeEmbed',
 ]

@@ -1,0 +1,20 @@
+# Multi Mode - Multi-modality diffusion with mode embedding
+#
+# Trains on all modalities (bravo, flair, t1_pre, t1_gd) conditioned on seg mask.
+# Each sample includes mode_id so the model knows which modality to generate.
+#
+# Architecture:
+#   in_channels: 2 = [noisy_image, seg_mask] - same as bravo mode
+#   out_channels: 1 = predicted noise/velocity
+#   Extra: mode_id embedding added to time_embed
+#
+# Dataloader: create_multi_diffusion_dataloader()
+# Returns: (image, seg, mode_id) tuples where mode_id is 0-3
+
+name: multi
+is_conditional: true
+in_channels: 2   # [noisy_image, seg_mask] - same as bravo
+out_channels: 1  # predicted noise/velocity
+image_keys: [bravo, flair, t1_pre, t1_gd]
+use_mode_embedding: true
+description: "Multi-modality diffusion with mode embedding (4x training data)"

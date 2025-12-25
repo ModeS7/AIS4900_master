@@ -307,3 +307,100 @@ class ConditionalDualMode(TrainingMode):
         channels = [noisy_images[key] for key in self.image_keys]
         channels.append(labels_dict['labels'])
         return torch.cat(channels, dim=1)
+
+
+class MultiModalityMode(TrainingMode):
+    """Multi-modality diffusion training mode with mode embedding.
+
+    Trains on all modalities (bravo, flair, t1_pre, t1_gd) conditioned on
+    segmentation mask, with mode embedding to identify the modality.
+
+    Input: tuple (image [B,1,H,W], seg [B,1,H,W], mode_id [B])
+    Model: [B, 2, H, W] -> [B, 1, H, W] (same as bravo mode)
+    Extra: mode_id for embedding (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+
+    This is a conditional model like bravo, but trained on pooled modalities
+    with mode embedding to identify which modality is being generated.
+    """
+
+    def __init__(self, image_keys: List[str] = None) -> None:
+        """Initialize multi-modality mode.
+
+        Args:
+            image_keys: Names of modalities to train on.
+                Default: ['bravo', 'flair', 't1_pre', 't1_gd']
+        """
+        if image_keys is None:
+            image_keys = ['bravo', 'flair', 't1_pre', 't1_gd']
+        self.image_keys: List[str] = image_keys
+
+    @property
+    def is_conditional(self) -> bool:
+        """Multi-modality mode uses conditioning (seg + mode_id)."""
+        return True
+
+    def prepare_batch(
+        self, batch: Union[torch.Tensor, tuple], device: torch.device
+    ) -> Dict[str, Any]:
+        """Prepare multi-modality batch with mode_id.
+
+        Args:
+            batch: Tuple (image, seg, mode_id) where:
+                - image: [B, 1, H, W] single modality image
+                - seg: [B, 1, H, W] segmentation mask
+                - mode_id: [B] integer tensor (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            device: Target device.
+
+        Returns:
+            Dictionary with images, labels (seg), and mode_id.
+        """
+        if isinstance(batch, (tuple, list)):
+            image, seg, mode_id = batch
+            image = image.to(device)
+            seg = seg.to(device)
+            mode_id = mode_id.to(device)
+        else:
+            # Fallback for tensor format (shouldn't happen with multi dataloader)
+            if hasattr(batch, 'as_tensor'):
+                batch = batch.as_tensor().to(device)
+            else:
+                batch = batch.to(device)
+            image = batch[:, 0:1, :, :]
+            seg = batch[:, 1:2, :, :]
+            mode_id = None
+
+        return {
+            'images': image,
+            'labels': seg,
+            'mode_id': mode_id,
+        }
+
+    def get_model_config(self) -> Dict[str, int]:
+        """Get model channel configuration.
+
+        Model takes: [noisy_image, seg_mask] = 2 input channels (same as bravo)
+        Model outputs: [noise_pred] or [velocity_pred] = 1 output channel
+
+        Returns:
+            Channel configuration dictionary.
+        """
+        return {
+            'in_channels': 2,
+            'out_channels': 1
+        }
+
+    def format_model_input(
+        self,
+        noisy_images: torch.Tensor,
+        labels_dict: Dict[str, Optional[torch.Tensor]]
+    ) -> torch.Tensor:
+        """Concatenate noisy image with segmentation mask.
+
+        Args:
+            noisy_images: [B, 1, H, W] noisy modality image.
+            labels_dict: Dictionary with 'labels' key containing seg masks.
+
+        Returns:
+            [B, 2, H, W] - [noisy_image, seg_mask] concatenated.
+        """
+        return torch.cat([noisy_images, labels_dict['labels']], dim=1)

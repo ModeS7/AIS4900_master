@@ -31,7 +31,7 @@ from monai.networks.nets import DiffusionModelUNet
 
 from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
 from .losses import PerceptualLoss
-from .modes import ConditionalDualMode, ConditionalSingleMode, SegmentationMode, TrainingMode
+from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
@@ -202,6 +202,11 @@ class DiffusionTrainer:
                     f"omega_conditioning={self.use_omega_conditioning}"
                 )
 
+        # Mode embedding for multi-modality training
+        self.use_mode_embedding = cfg.mode.get('use_mode_embedding', False)
+        if self.use_mode_embedding and self.is_main_process:
+            logger.info("Mode embedding enabled for multi-modality training")
+
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
         strategies: Dict[str, type] = {
@@ -217,7 +222,8 @@ class DiffusionTrainer:
         modes: Dict[str, type] = {
             'seg': SegmentationMode,
             'bravo': ConditionalSingleMode,
-            'dual': ConditionalDualMode
+            'dual': ConditionalDualMode,
+            'multi': MultiModalityMode,
         }
         if mode not in modes:
             raise ValueError(f"Unknown mode: {mode}. Choose from {list(modes.keys())}")
@@ -226,6 +232,12 @@ class DiffusionTrainer:
         if mode == ModeType.DUAL or mode == 'dual':
             image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
             return ConditionalDualMode(image_keys)
+
+        # Pass image_keys to MultiModalityMode if configured
+        if mode == 'multi':
+            image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
+            return MultiModalityMode(image_keys)
+
         return modes[mode]()
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
@@ -266,28 +278,59 @@ class DiffusionTrainer:
 
         use_compile = self.cfg.training.get('use_compile', True)
 
-        # Handle omega conditioning: wrap FIRST (modifies time_embed), then compile INNER model
-        # This keeps omega encoding logic (with data-dependent branches) outside compiled graph
-        if self.use_omega_conditioning:
+        # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
+        time_embed_dim = 4 * channels[0]
+
+        # Handle embedding wrappers: omega, mode, or both
+        # Wrap FIRST (modifies time_embed), then compile INNER model
+        # This keeps encoding logic (with data-dependent branches) outside compiled graph
+        if self.use_omega_conditioning and self.use_mode_embedding:
+            # Both omega + mode embedding
+            from medgen.data.combined_embed import CombinedModelWrapper
+            wrapper = CombinedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
+            if self.is_main_process:
+                logger.info(f"Combined: wrapped model with omega + mode conditioning (embed_dim={time_embed_dim})")
+
+            if use_compile:
+                wrapper.model = torch.compile(wrapper.model, mode="default")
+                if self.is_main_process:
+                    logger.info("Single-GPU: Compiled inner UNet (combined wrapper uncompiled)")
+
+            self.model = wrapper
+            self.model_raw = wrapper
+
+        elif self.use_omega_conditioning:
+            # Omega conditioning only
             from medgen.data.score_aug import ScoreAugModelWrapper
-            # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
-            time_embed_dim = 4 * channels[0]
-            # Wrap raw model - this replaces time_embed with OmegaTimeEmbed
             wrapper = ScoreAugModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
             if self.is_main_process:
                 logger.info(f"ScoreAug: wrapped model with omega conditioning (embed_dim={time_embed_dim})")
 
-            # Compile only the INNER model (the UNet), not the wrapper
-            # The wrapper's forward (with encode_omega) stays uncompiled
             if use_compile:
                 wrapper.model = torch.compile(wrapper.model, mode="default")
                 if self.is_main_process:
                     logger.info("Single-GPU: Compiled inner UNet (omega wrapper uncompiled)")
 
             self.model = wrapper
-            self.model_raw = wrapper  # For optimizer.parameters()
+            self.model_raw = wrapper
+
+        elif self.use_mode_embedding:
+            # Mode embedding only
+            from medgen.data.mode_embed import ModeEmbedModelWrapper
+            wrapper = ModeEmbedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
+            if self.is_main_process:
+                logger.info(f"Mode embedding: wrapped model with mode conditioning (embed_dim={time_embed_dim})")
+
+            if use_compile:
+                wrapper.model = torch.compile(wrapper.model, mode="default")
+                if self.is_main_process:
+                    logger.info("Single-GPU: Compiled inner UNet (mode wrapper uncompiled)")
+
+            self.model = wrapper
+            self.model_raw = wrapper
+
         else:
-            # No omega conditioning - use standard wrap_model_for_training
+            # No special conditioning - use standard wrap_model_for_training
             self.model, self.model_raw = wrap_model_for_training(
                 raw_model,
                 use_multi_gpu=self.use_multi_gpu,
@@ -602,6 +645,7 @@ class DiffusionTrainer:
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
             labels = prepared.get('labels')
+            mode_id = prepared.get('mode_id')  # For multi-modality mode
 
             # Encode to diffusion space (identity for PixelSpace)
             images = self.space.encode_batch(images)
@@ -681,9 +725,15 @@ class DiffusionTrainer:
                         aug_input, aug_velocity, omega = self.score_aug(model_input, velocity_target)
 
                     # Get prediction from augmented input
-                    if self.use_omega_conditioning:
+                    if self.use_omega_conditioning and self.use_mode_embedding:
+                        # Model is CombinedModelWrapper, pass both omega and mode_id
+                        prediction = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
+                    elif self.use_omega_conditioning:
                         # Model is ScoreAugModelWrapper, pass omega for conditioning
                         prediction = self.model(aug_input, timesteps, omega=omega)
+                    elif self.use_mode_embedding:
+                        # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
+                        prediction = self.model(aug_input, timesteps, mode_id=mode_id)
                     else:
                         prediction = self.strategy.predict_noise_or_velocity(self.model, aug_input, timesteps)
 
@@ -750,7 +800,11 @@ class DiffusionTrainer:
 
                 else:
                     # Standard path (no ScoreAug)
-                    prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
+                    if self.use_mode_embedding:
+                        # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
+                        prediction = self.model(model_input, timesteps, mode_id=mode_id)
+                    else:
+                        prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
                     mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                     if self.use_min_snr:
