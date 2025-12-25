@@ -130,6 +130,63 @@ def extract_slices_dual(
     return Dataset(all_slices)
 
 
+def extract_slices_single_with_seg(
+    image_dataset: Dataset,
+    seg_dataset: Dataset,
+    augmentation: Optional["A.Compose"] = None
+) -> Dataset:
+    """Extract 2D slices with paired segmentation masks for regional metrics.
+
+    Each slice is returned as a tuple (image, seg) where:
+    - image: [1, H, W] single-channel image
+    - seg: [1, H, W] binary segmentation mask
+
+    Args:
+        image_dataset: Dataset of 3D image volumes with shape [1, H, W, D].
+        seg_dataset: Dataset of 3D seg volumes with shape [1, H, W, D].
+        augmentation: Optional albumentations Compose for data augmentation.
+
+    Returns:
+        Dataset of tuples (image_slice, seg_slice).
+    """
+    all_slices: List[tuple] = []
+
+    if len(image_dataset) != len(seg_dataset):
+        raise ValueError(
+            f"Image dataset ({len(image_dataset)}) and seg dataset ({len(seg_dataset)}) "
+            "must have same number of patients"
+        )
+
+    for i in range(len(image_dataset)):
+        image_volume, image_name = image_dataset[i]  # Shape: [1, H, W, D]
+        seg_volume, seg_name = seg_dataset[i]  # Shape: [1, H, W, D]
+
+        # Verify same patient
+        if image_name != seg_name:
+            raise ValueError(f"Patient mismatch: {image_name} vs {seg_name}")
+
+        # Extract non-empty slices along depth dimension (axis 3)
+        for k in range(image_volume.shape[3]):
+            image_slice = image_volume[:, :, :, k]
+            seg_slice = seg_volume[:, :, :, k]
+
+            if np.sum(image_slice) > 1.0:
+                if augmentation is not None:
+                    # Stack for joint augmentation, then split
+                    combined = np.concatenate([image_slice, seg_slice], axis=0)
+                    combined = apply_augmentation(
+                        combined, augmentation, has_mask=True, mask_channel=-1
+                    )
+                    image_slice = combined[:1, :, :]
+                    seg_slice = combined[1:, :, :]
+
+                # Binarize seg
+                seg_slice = make_binary(seg_slice, threshold=BINARY_THRESHOLD_GT)
+                all_slices.append((image_slice, seg_slice))
+
+    return Dataset(all_slices)
+
+
 def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
     """Merge multiple MR sequences from same patients into single dataset.
 

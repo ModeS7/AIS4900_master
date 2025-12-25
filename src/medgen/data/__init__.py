@@ -11,7 +11,7 @@ from .augmentation import (
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .score_aug import ScoreAugTransform
-from .utils import extract_slices_dual, extract_slices_single, make_binary, merge_sequences
+from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
 
 # Import all loaders from loaders subpackage
 from .loaders import (
@@ -31,6 +31,7 @@ from .loaders import (
     create_multi_modality_dataloader,
     create_multi_modality_validation_dataloader,
     create_multi_modality_test_dataloader,
+    create_single_modality_validation_loader,
 )
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     'ScoreAugTransform',
     # Slice extraction utilities
     'extract_slices_single',
+    'extract_slices_single_with_seg',
     'extract_slices_dual',
     'merge_sequences',
     'make_binary',
@@ -70,4 +72,5 @@ __all__ = [
     'create_multi_modality_dataloader',
     'create_multi_modality_validation_dataloader',
     'create_multi_modality_test_dataloader',
+    'create_single_modality_validation_loader',
 ]

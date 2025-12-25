@@ -26,6 +26,7 @@ from .multi_modality import (
     create_multi_modality_dataloader,
     create_multi_modality_test_dataloader,
     create_multi_modality_validation_dataloader,
+    create_single_modality_validation_loader,
 )
 
 __all__ = [
@@ -45,4 +46,5 @@ __all__ = [
     'create_multi_modality_dataloader',
     'create_multi_modality_validation_dataloader',
     'create_multi_modality_test_dataloader',
+    'create_single_modality_validation_loader',
 ]

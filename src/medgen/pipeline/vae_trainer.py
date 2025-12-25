@@ -47,6 +47,7 @@ from .metrics import (
     RegionalMetricsTracker,
     compute_msssim,
     compute_psnr,
+    compute_lpips,
     reset_msssim_nan_warning,
 )
 from .tracking import (
@@ -565,7 +566,7 @@ class VAETrainer:
         )
 
     def _prepare_batch(
-        self, batch: Dict[str, torch.Tensor]
+        self, batch
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch tensor from dataloader output.
 
@@ -573,13 +574,25 @@ class VAETrainer:
         regional metrics tracking, but it's NOT used in VAE reconstruction.
 
         Args:
-            batch: Input batch - either a dict of tensors or a single tensor.
+            batch: Input batch - can be:
+                - Dict of tensors (keyed by modality)
+                - Tuple of (image, seg) tensors
+                - Single tensor (with optional seg as extra channel)
 
         Returns:
             Tuple of (images, mask):
             - images: Tensor [B, C, H, W] for VAE input (2 channels for dual)
             - mask: Optional segmentation mask [B, 1, H, W] for regional metrics
         """
+        # Handle tuple of (image, seg) from multi-modality loaders
+        if isinstance(batch, (tuple, list)) and len(batch) == 2:
+            images, mask = batch
+            if hasattr(images, 'as_tensor'):
+                images = images.as_tensor()
+            if hasattr(mask, 'as_tensor'):
+                mask = mask.as_tensor()
+            return images.to(self.device), mask.to(self.device)
+
         if isinstance(batch, dict):
             # Stack all images into single tensor [B, C, H, W]
             image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
@@ -811,6 +824,7 @@ class VAETrainer:
         total_gen = 0.0
         total_msssim = 0.0
         total_psnr = 0.0
+        total_lpips = 0.0
         n_batches = 0
 
         # Worst batch tracking
@@ -877,6 +891,7 @@ class VAETrainer:
                 if self.log_msssim:
                     total_msssim += compute_msssim(reconstructed, images)
                 total_psnr += compute_psnr(reconstructed, images)
+                total_lpips += compute_lpips(reconstructed, images, device=self.device)
 
                 # Regional tracking (tumor vs background)
                 if regional_tracker is not None and mask is not None:
@@ -893,6 +908,7 @@ class VAETrainer:
             'kl': total_kl / n_batches,
             'gen': total_gen / n_batches,
             'psnr': total_psnr / n_batches,
+            'lpips': total_lpips / n_batches,
         }
 
         if self.log_msssim:
@@ -905,6 +921,7 @@ class VAETrainer:
             self.writer.add_scalar('Loss/KL_val', metrics['kl'], epoch)
             self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
             self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
             if 'msssim' in metrics:
                 self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
 
@@ -981,6 +998,75 @@ class VAETrainer:
             extra_state=extra_state,
         )
 
+    def _compute_per_modality_validation(self, epoch: int) -> None:
+        """Compute and log validation metrics for each modality separately.
+
+        For multi-modality training, this logs PSNR, LPIPS, MS-SSIM and regional
+        metrics for each modality (bravo, t1_pre, t1_gd) to compare with
+        single-modality experiments.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if not hasattr(self, 'per_modality_val_loaders') or not self.per_modality_val_loaders:
+            return
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        for modality, loader in self.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim = 0.0
+            n_batches = 0
+
+            # Initialize regional tracker for this modality
+            regional_tracker = None
+            if self.log_regional_losses:
+                regional_tracker = RegionalMetricsTracker(
+                    image_size=self.cfg.model.image_size,
+                    fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                    loss_fn='l1',
+                    device=self.device,
+                )
+
+            with torch.no_grad():
+                for batch in loader:
+                    images, mask = self._prepare_batch(batch)
+
+                    with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                        reconstructed, _, _ = model_to_use(images)
+
+                    # Compute metrics
+                    total_psnr += compute_psnr(reconstructed, images)
+                    total_lpips += compute_lpips(reconstructed, images, device=self.device)
+                    if self.log_msssim:
+                        total_msssim += compute_msssim(reconstructed, images)
+
+                    # Regional tracking (tumor vs background)
+                    if regional_tracker is not None and mask is not None:
+                        regional_tracker.update(reconstructed, images, mask)
+
+                    n_batches += 1
+
+            # Compute averages and log
+            if n_batches > 0 and self.writer is not None:
+                avg_psnr = total_psnr / n_batches
+                avg_lpips = total_lpips / n_batches
+                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
+                self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+                if self.log_msssim:
+                    avg_msssim = total_msssim / n_batches
+                    self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+
+                # Log regional metrics for this modality
+                if regional_tracker is not None:
+                    regional_tracker.log_to_tensorboard(
+                        self.writer, epoch, prefix=f'tumor_{modality}'
+                    )
+
+        model_to_use.train()
+
     def train(
         self,
         train_loader: DataLoader,
@@ -989,6 +1075,7 @@ class VAETrainer:
         start_epoch: int = 0,
         max_epochs: Optional[int] = None,
         early_stop_fn: Optional[callable] = None,
+        per_modality_val_loaders: Optional[Dict[str, DataLoader]] = None,
     ) -> int:
         """Execute the main training loop.
 
@@ -1001,6 +1088,9 @@ class VAETrainer:
             max_epochs: Maximum epochs to train (overrides self.n_epochs if provided).
             early_stop_fn: Optional callback(epoch, losses, val_metrics) -> bool.
                 If returns True, training stops early.
+            per_modality_val_loaders: Optional dict mapping modality names to
+                separate validation loaders for per-modality metric tracking.
+                e.g., {'bravo': loader, 't1_pre': loader, 't1_gd': loader}
 
         Returns:
             The last completed epoch number.
@@ -1008,6 +1098,7 @@ class VAETrainer:
         # Use max_epochs if provided, otherwise use configured n_epochs
         n_epochs = max_epochs if max_epochs is not None else self.n_epochs
         self.val_loader = val_loader
+        self.per_modality_val_loaders = per_modality_val_loaders
         total_start = time.time()
 
         # Measure FLOPs on first batch (once at start of training)
@@ -1059,6 +1150,9 @@ class VAETrainer:
                 if self.is_main_process:
                     # Compute validation metrics every epoch
                     val_metrics = self.compute_validation_losses(epoch)
+
+                    # Compute per-modality validation metrics (for multi-modality mode)
+                    self._compute_per_modality_validation(epoch)
 
                     # Log epoch summary with train and val metrics
                     log_vae_epoch_summary(epoch, n_epochs, avg_losses, val_metrics, epoch_time)

@@ -20,7 +20,7 @@ from medgen.data.dataset import (
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.utils import extract_slices_single
+from medgen.data.utils import extract_slices_single, extract_slices_single_with_seg
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,9 @@ def create_multi_modality_validation_dataloader(
     Loads data from the val/ subdirectory if it exists. Returns None if
     val/ directory doesn't exist.
 
+    Includes seg masks paired with each modality for regional metrics tracking.
+    Batches are tuples of (image [B,1,H,W], seg [B,1,H,W]).
+
     Args:
         cfg: Hydra configuration with paths.
         image_keys: List of MR sequences to load.
@@ -148,17 +151,39 @@ def create_multi_modality_validation_dataloader(
         logger.warning(f"Validation directory exists but is misconfigured: {e}")
         return None
 
+    # Check if seg exists for regional metrics
+    has_seg = False
+    try:
+        validate_modality_exists(val_dir, 'seg')
+        has_seg = True
+    except ValueError:
+        logger.info("No seg masks in val/ - regional metrics will be disabled")
+
     transform = build_standard_transform(image_size)
 
-    # Collect all slices from all modalities into one list
-    all_slices: List[np.ndarray] = []
+    # Collect all slices from all modalities
+    all_slices: List = []
 
-    for key in image_keys:
-        dataset = NiFTIDataset(
-            data_dir=val_dir, mr_sequence=key, transform=transform
+    if has_seg:
+        # Load seg dataset once (shared across all modalities)
+        seg_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence='seg', transform=transform
         )
-        slices = extract_slices_single(dataset)
-        all_slices.extend(list(slices))
+        for key in image_keys:
+            image_dataset = NiFTIDataset(
+                data_dir=val_dir, mr_sequence=key, transform=transform
+            )
+            # Extract paired (image, seg) tuples
+            slices = extract_slices_single_with_seg(image_dataset, seg_dataset)
+            all_slices.extend(list(slices))
+    else:
+        # No seg - just load images
+        for key in image_keys:
+            dataset = NiFTIDataset(
+                data_dir=val_dir, mr_sequence=key, transform=transform
+            )
+            slices = extract_slices_single(dataset)
+            all_slices.extend(list(slices))
 
     val_dataset = Dataset(all_slices)
 
@@ -184,6 +209,88 @@ def create_multi_modality_validation_dataloader(
     return dataloader, val_dataset
 
 
+def create_single_modality_validation_loader(
+    cfg: DictConfig,
+    modality: str,
+    image_size: int,
+    batch_size: int
+) -> Optional[DataLoader]:
+    """Create validation loader for a single modality (for per-modality metrics).
+
+    Includes seg masks paired with each slice for regional metrics tracking.
+    Batches are tuples of (image [B,1,H,W], seg [B,1,H,W]).
+
+    Args:
+        cfg: Hydra configuration with paths.
+        modality: Single modality to load (e.g., 'bravo', 't1_pre', 't1_gd').
+        image_size: Target image size.
+        batch_size: Batch size.
+
+    Returns:
+        DataLoader for single modality or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, "val")
+
+    # Check if validation directory exists
+    if not os.path.exists(val_dir):
+        return None
+
+    # Validate modality exists in val directory
+    try:
+        validate_modality_exists(val_dir, modality)
+    except ValueError as e:
+        logger.warning(f"Validation directory exists but modality {modality} not found: {e}")
+        return None
+
+    # Check if seg exists for regional metrics
+    has_seg = False
+    try:
+        validate_modality_exists(val_dir, 'seg')
+        has_seg = True
+    except ValueError:
+        pass  # No seg, will just load images
+
+    transform = build_standard_transform(image_size)
+
+    if has_seg:
+        # Load with paired seg masks
+        image_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=modality, transform=transform
+        )
+        seg_dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence='seg', transform=transform
+        )
+        slices = extract_slices_single_with_seg(image_dataset, seg_dataset)
+        val_dataset = Dataset(list(slices))
+    else:
+        # No seg - just load images
+        dataset = NiFTIDataset(
+            data_dir=val_dir, mr_sequence=modality, transform=transform
+        )
+        slices = extract_slices_single(dataset)
+        val_dataset = Dataset(list(slices))
+
+    # Get DataLoader settings from config
+    dl_cfg = cfg.training.get('dataloader', {})
+    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+    pin_memory = dl_cfg.get('pin_memory', True)
+    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
+    dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        pin_memory=pin_memory,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
+    )
+
+    return dataloader
+
+
 def create_multi_modality_test_dataloader(
     cfg: DictConfig,
     image_keys: List[str],
@@ -194,6 +301,9 @@ def create_multi_modality_test_dataloader(
 
     Loads data from the test_new/ subdirectory if it exists. Returns None if
     test_new/ directory doesn't exist.
+
+    Includes seg masks paired with each modality for regional metrics tracking.
+    Batches are tuples of (image [B,1,H,W], seg [B,1,H,W]).
 
     Args:
         cfg: Hydra configuration with paths.
@@ -218,17 +328,39 @@ def create_multi_modality_test_dataloader(
         logger.warning(f"Test directory exists but is misconfigured: {e}")
         return None
 
+    # Check if seg exists for regional metrics
+    has_seg = False
+    try:
+        validate_modality_exists(test_dir, 'seg')
+        has_seg = True
+    except ValueError:
+        logger.info("No seg masks in test_new/ - regional metrics will be disabled")
+
     transform = build_standard_transform(image_size)
 
-    # Collect all slices from all modalities into one list
-    all_slices: List[np.ndarray] = []
+    # Collect all slices from all modalities
+    all_slices: List = []
 
-    for key in image_keys:
-        dataset = NiFTIDataset(
-            data_dir=test_dir, mr_sequence=key, transform=transform
+    if has_seg:
+        # Load seg dataset once (shared across all modalities)
+        seg_dataset = NiFTIDataset(
+            data_dir=test_dir, mr_sequence='seg', transform=transform
         )
-        slices = extract_slices_single(dataset)
-        all_slices.extend(list(slices))
+        for key in image_keys:
+            image_dataset = NiFTIDataset(
+                data_dir=test_dir, mr_sequence=key, transform=transform
+            )
+            # Extract paired (image, seg) tuples
+            slices = extract_slices_single_with_seg(image_dataset, seg_dataset)
+            all_slices.extend(list(slices))
+    else:
+        # No seg - just load images
+        for key in image_keys:
+            dataset = NiFTIDataset(
+                data_dir=test_dir, mr_sequence=key, transform=transform
+            )
+            slices = extract_slices_single(dataset)
+            all_slices.extend(list(slices))
 
     test_dataset = Dataset(all_slices)
 

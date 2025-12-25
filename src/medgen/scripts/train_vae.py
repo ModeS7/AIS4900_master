@@ -27,7 +27,15 @@ from medgen.core import (
     validate_vae_config,
     run_validation,
 )
-from medgen.data import create_vae_dataloader, create_vae_validation_dataloader, create_vae_test_dataloader
+from medgen.data import (
+    create_vae_dataloader,
+    create_vae_validation_dataloader,
+    create_vae_test_dataloader,
+    create_multi_modality_dataloader,
+    create_multi_modality_validation_dataloader,
+    create_multi_modality_test_dataloader,
+    create_single_modality_validation_loader,
+)
 from medgen.pipeline import VAETrainer
 
 # Enable CUDA optimizations
@@ -65,12 +73,15 @@ def main(cfg: DictConfig) -> None:
     mode = cfg.mode.name
     use_multi_gpu = cfg.training.get('use_multi_gpu', False)
 
+    # Check if multi_modality mode
+    is_multi_modality = mode == 'multi_modality'
+
     # Override in_channels for VAE training (mode configs are shared with diffusion)
     # VAE: single modality = 1 channel, dual = 2 channels (t1_pre + t1_gd, NO seg)
     if mode == ModeType.DUAL:
         vae_in_channels = 2  # t1_pre + t1_gd
     else:
-        vae_in_channels = 1  # bravo, seg, t1_pre, t1_gd individually
+        vae_in_channels = 1  # bravo, seg, t1_pre, t1_gd, multi_modality individually
 
     # Override mode.in_channels for VAE
     with open_dict(cfg):
@@ -95,24 +106,71 @@ def main(cfg: DictConfig) -> None:
 
     # Create dataloader using correct VAE data loading (no seg concatenation)
     augment = cfg.training.get('augment', True)
-    dataloader, train_dataset = create_vae_dataloader(
-        cfg=cfg,
-        modality=mode,
-        use_distributed=use_multi_gpu,
-        rank=trainer.rank if use_multi_gpu else 0,
-        world_size=trainer.world_size if use_multi_gpu else 1,
-        augment=augment
-    )
-    log.info(f"Training VAE on {mode} mode ({vae_in_channels} channel{'s' if vae_in_channels > 1 else ''})")
-    log.info(f"Training dataset: {len(train_dataset)} slices")
 
-    # Create validation dataloader (if val/ directory exists)
-    val_loader = None
-    val_result = create_vae_validation_dataloader(cfg=cfg, modality=mode)
-    if val_result is not None:
-        val_loader, val_dataset = val_result
-        log.info(f"Validation dataset: {len(val_dataset)} slices")
+    # Per-modality validation loaders for multi_modality mode
+    per_modality_val_loaders = {}
+
+    if is_multi_modality:
+        # Multi-modality mode: pool all modalities
+        image_keys = cfg.mode.get('image_keys', ['bravo', 't1_pre', 't1_gd'])
+        dataloader, train_dataset = create_multi_modality_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            image_size=cfg.model.image_size,
+            batch_size=cfg.training.batch_size,
+            use_distributed=use_multi_gpu,
+            rank=trainer.rank if use_multi_gpu else 0,
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment
+        )
+        log.info(f"Training VAE on multi_modality mode (modalities: {image_keys})")
+        log.info(f"Training dataset: {len(train_dataset)} slices")
+
+        # Create combined validation dataloader
+        val_loader = None
+        val_result = create_multi_modality_validation_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            image_size=cfg.model.image_size,
+            batch_size=cfg.training.batch_size
+        )
+        if val_result is not None:
+            val_loader, val_dataset = val_result
+            log.info(f"Validation dataset: {len(val_dataset)} slices (combined)")
+
+        # Create per-modality validation loaders for individual metrics
+        for modality in image_keys:
+            loader = create_single_modality_validation_loader(
+                cfg=cfg,
+                modality=modality,
+                image_size=cfg.model.image_size,
+                batch_size=cfg.training.batch_size
+            )
+            if loader is not None:
+                per_modality_val_loaders[modality] = loader
+                log.info(f"  Per-modality validation for {modality}: {len(loader.dataset)} slices")
+
     else:
+        # Standard single/dual modality mode
+        dataloader, train_dataset = create_vae_dataloader(
+            cfg=cfg,
+            modality=mode,
+            use_distributed=use_multi_gpu,
+            rank=trainer.rank if use_multi_gpu else 0,
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment
+        )
+        log.info(f"Training VAE on {mode} mode ({vae_in_channels} channel{'s' if vae_in_channels > 1 else ''})")
+        log.info(f"Training dataset: {len(train_dataset)} slices")
+
+        # Create validation dataloader (if val/ directory exists)
+        val_loader = None
+        val_result = create_vae_validation_dataloader(cfg=cfg, modality=mode)
+        if val_result is not None:
+            val_loader, val_dataset = val_result
+            log.info(f"Validation dataset: {len(val_dataset)} slices")
+
+    if val_loader is None:
         log.info("No val/ directory found - using train samples for validation")
 
     # Setup model (with optional pretrained weights)
@@ -121,11 +179,26 @@ def main(cfg: DictConfig) -> None:
         log.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
-    # Train with optional validation loader
-    trainer.train(dataloader, train_dataset, val_loader=val_loader)
+    # Train with optional validation loader and per-modality loaders
+    trainer.train(
+        dataloader,
+        train_dataset,
+        val_loader=val_loader,
+        per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None
+    )
 
     # Run test evaluation if test_new/ directory exists
-    test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
+    if is_multi_modality:
+        image_keys = cfg.mode.get('image_keys', ['bravo', 't1_pre', 't1_gd'])
+        test_result = create_multi_modality_test_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            image_size=cfg.model.image_size,
+            batch_size=cfg.training.batch_size
+        )
+    else:
+        test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
+
     if test_result is not None:
         test_loader, test_dataset = test_result
         log.info(f"Test dataset: {len(test_dataset)} slices")
