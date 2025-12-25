@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="h100"
+#SBATCH --constraint="gpu80gb"
 #SBATCH --job-name="exp4_vae_mm64lat"
 #SBATCH --output=IDUN/output/train/vae/exp4_multimodal_64lat_%j.out
 #SBATCH --error=IDUN/output/train/vae/exp4_multimodal_64lat_%j.err
@@ -44,6 +44,7 @@ time python -m medgen.scripts.train_vae \
     training.batch_size=16 \
     training.val_interval=30 \
     training.augment=false \
+    training.epochs=125 \
     training.name=exp4_
 
 conda deactivate
