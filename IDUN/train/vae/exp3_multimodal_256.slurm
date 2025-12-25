@@ -3,10 +3,10 @@
 #SBATCH --account=share-ie-idi
 #SBATCH --time=5-00:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=256G
-#SBATCH --gres=gpu:4
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp3_vae_mm256"
 #SBATCH --output=IDUN/output/train/vae/exp3_multimodal_256_%j.out
@@ -31,15 +31,14 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 # Exp3: Multi-modality VAE 256x256
 # - Pools all modalities (bravo, flair, t1_pre, t1_gd) = 4x training data
 # - Per-modality validation metrics + regional tumor metrics
-# - DDP: 4 H100 GPUs, batch_size=16 (4 per GPU)
+# - Single H100 GPU with torch.compile
 # - 500 epochs
-time srun python -m medgen.scripts.train_vae \
+time python -m medgen.scripts.train_vae \
     paths=cluster \
     mode=multi_modality \
     model.image_size=256 \
     training.epochs=500 \
     training.batch_size=16 \
-    training.use_multi_gpu=true \
     training.val_interval=30 \
     training.augment=false \
     training.name=exp3_
