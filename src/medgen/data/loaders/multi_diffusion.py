@@ -66,8 +66,9 @@ def _extract_slices_with_mode_id(
 
         # Extract non-empty slices along depth dimension (axis 3)
         for k in range(image_volume.shape[3]):
-            image_slice = image_volume[:, :, :, k]
-            seg_slice = seg_volume[:, :, :, k]
+            # Convert MetaTensor to numpy array
+            image_slice = np.array(image_volume[:, :, :, k])
+            seg_slice = np.array(seg_volume[:, :, :, k])
 
             if np.sum(image_slice) > 1.0:
                 # Apply augmentation if provided
@@ -109,8 +110,8 @@ class MultiDiffusionDataset(Dataset):
     def __getitem__(self, idx):
         image, seg, mode_id = self.slices[idx]
         return (
-            torch.from_numpy(image.copy()).float(),
-            torch.from_numpy(seg.copy()).float(),
+            torch.from_numpy(image).float(),
+            torch.from_numpy(seg).float(),
             torch.tensor(mode_id, dtype=torch.long),
         )
 
