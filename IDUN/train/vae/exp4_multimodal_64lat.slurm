@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:4
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp4_vae_mm64lat"
