@@ -39,6 +39,15 @@ python -m medgen.scripts.generate \
 - **torch.compile**: Fused forward pass optimization (~10% speedup)
 - **Multi-GPU support**: Distributed training with DDP
 
+### Data Augmentation
+- **Standard augmentation**: Applied to clean images before noise addition
+  - `diffusion`: Conservative (flip, discrete translate) - preserves distribution
+  - `vae`: Aggressive (+ noise, blur, elastic, scale, rotate) - learns robust features
+- **ScoreAug**: Applied to noisy images during training (rotation, flip, translation, cutout)
+  - Omega conditioning for non-invertible transforms (rotation/flip)
+- **Batch augmentation** (VAE): Mixup and CutMix for regularization
+- **Visualization tool**: `python -m medgen.scripts.visualize_augmentations`
+
 ### Configuration & Monitoring
 - **Hydra configuration**: Composable YAML configs with CLI overrides
 - **LR Finder**: Automatic learning rate discovery for both diffusion and VAE
@@ -63,20 +72,28 @@ AIS4900_master/
 ├── src/medgen/                  # Main package
 │   ├── core/                    # Constants, ModeType enum, CUDA setup
 │   ├── data/                    # NIfTI dataset, transforms, dataloaders
-│   ├── diffusion/               # Trainers, strategies, modes, spaces
+│   │   ├── dataset.py           # NiFTIDataset class
+│   │   ├── loaders/             # Dataloader factory functions
+│   │   ├── augmentation.py      # Standard augmentation builders
+│   │   ├── score_aug.py         # ScoreAug + omega conditioning
+│   │   ├── mode_embed.py        # Mode embedding for multi-modality
+│   │   └── combined_embed.py    # Combined omega + mode conditioning
+│   ├── pipeline/                # Training pipeline components
 │   │   ├── trainer.py           # DiffusionTrainer class
 │   │   ├── vae_trainer.py       # VAETrainer class
 │   │   ├── strategies.py        # DDPM, RFlow strategies
 │   │   ├── modes.py             # Seg, Bravo, Dual modes
 │   │   ├── spaces.py            # Pixel/Latent space abstractions
-│   │   ├── metrics.py           # MetricsTracker
+│   │   ├── metrics/             # MetricsTracker, quality, regional
+│   │   ├── tracking/            # Gradient, FLOPs, worst batch
 │   │   └── visualization.py     # ValidationVisualizer
 │   └── scripts/                 # Training entry points
 │       ├── train.py             # Diffusion training
 │       ├── train_vae.py         # VAE training
 │       ├── train_vae_progressive.py  # Progressive VAE
 │       ├── lr_finder.py         # Learning rate finder
-│       └── generate.py          # Image generation
+│       ├── generate.py          # Image generation
+│       └── visualize_augmentations.py  # Augmentation visualization
 │
 ├── IDUN/                        # SLURM job scripts for cluster
 │   ├── train/diffusion/         # Diffusion training jobs

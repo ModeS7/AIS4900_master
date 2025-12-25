@@ -920,7 +920,7 @@ class DiffusionTrainer:
         Returns:
             Tuple of (metrics dict, worst_batch_data or None).
             Metrics dict contains: mse, perceptual, total, msssim, psnr.
-            Worst batch data contains: images, predicted, mask, timesteps, loss.
+            Worst batch data contains: original, generated, mask, timesteps, loss.
         """
         if self.val_loader is None:
             return {}, None
@@ -936,9 +936,13 @@ class DiffusionTrainer:
         total_lpips = 0.0
         n_batches = 0
 
-        # Track worst validation batch
+        # Per-channel metrics for dual/multi modes
+        per_channel_metrics: Dict[str, Dict[str, float]] = {}
+
+        # Track worst validation batch (only from full-sized batches)
         worst_loss = 0.0
         worst_batch_data: Optional[Dict[str, Any]] = None
+        min_batch_size = self.batch_size  # Don't track small last batches
 
         # Initialize regional tracker for validation (if enabled)
         regional_tracker = None
@@ -959,6 +963,13 @@ class DiffusionTrainer:
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')
+
+                # Get current batch size
+                if isinstance(images, dict):
+                    first_key = list(images.keys())[0]
+                    current_batch_size = images[first_key].shape[0]
+                else:
+                    current_batch_size = images.shape[0]
 
                 # Encode to diffusion space (identity for PixelSpace)
                 images = self.space.encode_batch(images)
@@ -1000,30 +1011,54 @@ class DiffusionTrainer:
                 total_perc += p_loss.item()
                 total_loss += loss_val
 
-                # Track worst batch
-                if loss_val > worst_loss:
+                # Track worst batch (only from full-sized batches to ensure consistent visualization)
+                if loss_val > worst_loss and current_batch_size >= min_batch_size:
                     worst_loss = loss_val
-                    worst_batch_data = {
-                        'images': images.cpu() if not isinstance(images, dict) else {k: v.cpu() for k, v in images.items()},
-                        'predicted': predicted_clean.cpu() if not isinstance(predicted_clean, dict) else {k: v.cpu() for k, v in predicted_clean.items()},
-                        'mask': labels.cpu() if labels is not None else None,
-                        'timesteps': timesteps.cpu(),
-                        'loss': loss_val,
-                    }
+                    # Convert to dict format for dual mode (consistent with VAE and create_reconstruction_figure)
+                    if isinstance(images, dict):
+                        worst_batch_data = {
+                            'original': {k: v.cpu() for k, v in images.items()},
+                            'generated': {k: v.cpu() for k, v in predicted_clean.items()},
+                            'mask': labels.cpu() if labels is not None else None,
+                            'timesteps': timesteps.cpu(),
+                            'loss': loss_val,
+                        }
+                    else:
+                        worst_batch_data = {
+                            'original': images.cpu(),
+                            'generated': predicted_clean.cpu(),
+                            'mask': labels.cpu() if labels is not None else None,
+                            'timesteps': timesteps.cpu(),
+                            'loss': loss_val,
+                        }
 
                 # Quality metrics (MS-SSIM, PSNR, optionally LPIPS) on predicted vs ground truth
                 if isinstance(predicted_clean, dict):
-                    # Dual mode: average metrics across channels
+                    # Dual/multi mode: compute per-channel AND average metrics
                     keys = list(predicted_clean.keys())
-                    msssim_val = (compute_msssim(predicted_clean[keys[0]], images[keys[0]]) +
-                                  compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
-                    psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
-                                compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
-                    if self.metrics.log_lpips:
-                        lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
-                                     compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
-                    else:
-                        lpips_val = 0.0
+                    channel_msssim = {}
+                    channel_psnr = {}
+                    channel_lpips = {}
+
+                    for key in keys:
+                        channel_msssim[key] = compute_msssim(predicted_clean[key], images[key])
+                        channel_psnr[key] = compute_psnr(predicted_clean[key], images[key])
+                        if self.metrics.log_lpips:
+                            channel_lpips[key] = compute_lpips(predicted_clean[key], images[key], self.device)
+
+                        # Accumulate per-channel metrics
+                        if key not in per_channel_metrics:
+                            per_channel_metrics[key] = {'msssim': 0.0, 'psnr': 0.0, 'lpips': 0.0, 'count': 0}
+                        per_channel_metrics[key]['msssim'] += channel_msssim[key]
+                        per_channel_metrics[key]['psnr'] += channel_psnr[key]
+                        if self.metrics.log_lpips:
+                            per_channel_metrics[key]['lpips'] += channel_lpips[key]
+                        per_channel_metrics[key]['count'] += 1
+
+                    # Average across channels for combined metrics
+                    msssim_val = sum(channel_msssim.values()) / len(keys)
+                    psnr_val = sum(channel_psnr.values()) / len(keys)
+                    lpips_val = sum(channel_lpips.values()) / len(keys) if self.metrics.log_lpips else 0.0
                 else:
                     msssim_val = compute_msssim(predicted_clean, images)
                     psnr_val = compute_psnr(predicted_clean, images)
@@ -1068,11 +1103,105 @@ class DiffusionTrainer:
             if 'lpips' in metrics:
                 self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
 
+            # Log per-channel metrics for dual/multi modes
+            for channel_key, channel_data in per_channel_metrics.items():
+                count = channel_data['count']
+                if count > 0:
+                    self.writer.add_scalar(f'Validation/MS-SSIM_{channel_key}', channel_data['msssim'] / count, epoch)
+                    self.writer.add_scalar(f'Validation/PSNR_{channel_key}', channel_data['psnr'] / count, epoch)
+                    if self.metrics.log_lpips:
+                        self.writer.add_scalar(f'Validation/LPIPS_{channel_key}', channel_data['lpips'] / count, epoch)
+
             # Log regional metrics (tumor vs background)
             if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='tumor')
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
         return metrics, worst_batch_data
+
+    def _compute_per_modality_validation(self, epoch: int) -> None:
+        """Compute and log validation metrics for each modality separately.
+
+        For multi-modality training, this logs PSNR, LPIPS, MS-SSIM and regional
+        metrics for each modality (bravo, t1_pre, t1_gd) to compare with
+        single-modality experiments.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if not hasattr(self, 'per_modality_val_loaders') or not self.per_modality_val_loaders:
+            return
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        for modality, loader in self.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim = 0.0
+            n_batches = 0
+
+            # Initialize regional tracker for this modality
+            regional_tracker = None
+            if self.metrics.log_regional_losses:
+                regional_tracker = RegionalMetricsTracker(
+                    image_size=self.image_size,
+                    fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                    loss_fn='mse',
+                    device=self.device,
+                )
+
+            with torch.no_grad():
+                for batch in loader:
+                    prepared = self.mode.prepare_batch(batch, self.device)
+                    images = prepared['images']
+                    labels = prepared.get('labels')
+
+                    # Encode to diffusion space (identity for PixelSpace)
+                    images = self.space.encode_batch(images)
+                    if labels is not None:
+                        labels = self.space.encode(labels)
+
+                    labels_dict = {'labels': labels}
+
+                    # Sample timesteps and noise
+                    noise = torch.randn_like(images).to(self.device)
+                    timesteps = self.strategy.sample_timesteps(images)
+                    noisy_images = self.strategy.add_noise(images, noise, timesteps)
+                    model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                    # Predict
+                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    _, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+
+                    # Compute metrics
+                    total_psnr += compute_psnr(predicted_clean, images)
+                    if self.metrics.log_lpips:
+                        total_lpips += compute_lpips(predicted_clean, images, device=self.device)
+                    total_msssim += compute_msssim(predicted_clean, images)
+
+                    # Regional tracking (tumor vs background)
+                    if regional_tracker is not None and labels is not None:
+                        regional_tracker.update(predicted_clean, images, labels)
+
+                    n_batches += 1
+
+            # Compute averages and log
+            if n_batches > 0 and self.writer is not None:
+                avg_psnr = total_psnr / n_batches
+                avg_msssim = total_msssim / n_batches
+                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
+                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+                if self.metrics.log_lpips:
+                    avg_lpips = total_lpips / n_batches
+                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+
+                # Log regional metrics for this modality
+                if regional_tracker is not None:
+                    regional_tracker.log_to_tensorboard(
+                        self.writer, epoch, prefix=f'regional_{modality}'
+                    )
+
+        model_to_use.train()
 
     def train(
         self,
@@ -1141,6 +1270,10 @@ class DiffusionTrainer:
                     # Log worst validation batch at val_interval
                     if is_val_epoch and worst_val_data is not None:
                         self.visualizer.log_worst_batch(epoch, worst_val_data)
+
+                    # Per-modality validation metrics (for multi-modality training)
+                    if is_val_epoch:
+                        self._compute_per_modality_validation(epoch)
 
                     if is_val_epoch or (epoch + 1) == self.n_epochs:
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
@@ -1295,21 +1428,20 @@ class DiffusionTrainer:
                     else:
                         lpips_val = 0.0
 
-                # Track worst batch
-                if loss_val > worst_batch_loss:
+                # Track worst batch (only from full-sized batches)
+                if loss_val > worst_batch_loss and batch_size >= self.batch_size:
                     worst_batch_loss = loss_val
                     if isinstance(images, dict):
-                        first_key = list(images.keys())[0]
                         worst_batch_data = {
-                            'images': images[first_key].cpu(),
-                            'predicted': predicted_clean[first_key].cpu(),
+                            'original': {k: v.cpu() for k, v in images.items()},
+                            'generated': {k: v.cpu() for k, v in predicted_clean.items()},
                             'timesteps': timesteps.cpu(),
                             'loss': loss_val,
                         }
                     else:
                         worst_batch_data = {
-                            'images': images.cpu(),
-                            'predicted': predicted_clean.cpu(),
+                            'original': images.cpu(),
+                            'generated': predicted_clean.cpu(),
                             'timesteps': timesteps.cpu(),
                             'loss': loss_val,
                         }
@@ -1363,8 +1495,8 @@ class DiffusionTrainer:
             # Create visualization of worst batch
             if worst_batch_data is not None:
                 fig = self._create_test_reconstruction_figure(
-                    worst_batch_data['images'],
-                    worst_batch_data['predicted'],
+                    worst_batch_data['original'],
+                    worst_batch_data['generated'],
                     metrics,
                     label,
                     worst_batch_data['timesteps'],
@@ -1375,8 +1507,8 @@ class DiffusionTrainer:
                 # Also save as image file
                 fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
                 fig = self._create_test_reconstruction_figure(
-                    worst_batch_data['images'],
-                    worst_batch_data['predicted'],
+                    worst_batch_data['original'],
+                    worst_batch_data['generated'],
                     metrics,
                     label,
                     worst_batch_data['timesteps'],

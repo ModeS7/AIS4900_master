@@ -89,7 +89,7 @@ class ValidationVisualizer:
 
         Args:
             epoch: Current epoch number.
-            data: Dictionary with 'images', 'predicted', 'mask', 'timesteps', 'loss' keys.
+            data: Dictionary with 'original', 'generated', 'mask', 'timesteps', 'loss' keys.
         """
         if self.writer is None:
             return
@@ -100,8 +100,8 @@ class ValidationVisualizer:
         title = f'Worst Validation Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}'
 
         fig = create_reconstruction_figure(
-            original=data['images'],
-            generated=data['predicted'],
+            original=data['original'],
+            generated=data['generated'],
             title=title,
             timesteps=timesteps,
             mask=data.get('mask'),

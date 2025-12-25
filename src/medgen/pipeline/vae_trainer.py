@@ -938,7 +938,7 @@ class VAETrainer:
 
             # Log regional metrics (tumor vs background)
             if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='tumor')
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
         return metrics
 
@@ -1062,7 +1062,7 @@ class VAETrainer:
                 # Log regional metrics for this modality
                 if regional_tracker is not None:
                     regional_tracker.log_to_tensorboard(
-                        self.writer, epoch, prefix=f'tumor_{modality}'
+                        self.writer, epoch, prefix=f'regional_{modality}'
                     )
 
         model_to_use.train()
