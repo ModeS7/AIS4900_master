@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80gb"
+#SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp3_vae_mm256"
 #SBATCH --output=IDUN/output/train/vae/exp3_multimodal_256_%j.out
 #SBATCH --error=IDUN/output/train/vae/exp3_multimodal_256_%j.err
