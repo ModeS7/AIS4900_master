@@ -32,16 +32,14 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 # - Pools all modalities (bravo, flair, t1_pre, t1_gd) = 4x training data
 # - Per-modality validation metrics + regional tumor metrics
 # - Single H100 GPU with torch.compile
-# - 500 epochs
+# - 125 epochs, 20 validations
 time python -m medgen.scripts.train_vae \
     paths=cluster \
     mode=multi_modality \
     model.image_size=256 \
-    training.epochs=500 \
-    training.batch_size=16 \
-    training.val_interval=30 \
-    training.augment=false \
     training.epochs=125 \
+    training.batch_size=16 \
+    training.augment=false \
     training.name=exp3_
 
 conda deactivate

@@ -88,7 +88,12 @@ class DiffusionTrainer:
         self.num_timesteps: int = cfg.strategy.num_train_timesteps
         self.warmup_epochs: int = cfg.training.warmup_epochs
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
-        self.val_interval: int = cfg.training.val_interval
+        # Compute val_interval: num_validations takes priority over val_interval
+        num_validations = cfg.training.get('num_validations', None)
+        if num_validations and num_validations > 0:
+            self.val_interval: int = max(1, self.n_epochs // num_validations)
+        else:
+            self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.use_multi_gpu
         self.use_ema: bool = cfg.training.use_ema
         self.ema_decay: float = cfg.training.ema.decay

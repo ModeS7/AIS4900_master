@@ -128,7 +128,12 @@ class VAETrainer:
         self.learning_rate: float = cfg.training.get('learning_rate', 1e-4)
         self.disc_lr: float = cfg.vae.get('disc_lr', 5e-4)
         self.warmup_epochs: int = cfg.training.warmup_epochs
-        self.val_interval: int = cfg.training.val_interval
+        # Compute val_interval: num_validations takes priority over val_interval
+        num_validations = cfg.training.get('num_validations', None)
+        if num_validations and num_validations > 0:
+            self.val_interval: int = max(1, self.n_epochs // num_validations)
+        else:
+            self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.use_ema: bool = cfg.training.get('use_ema', True)
         self.ema_decay: float = cfg.training.ema.get('decay', 0.999)
