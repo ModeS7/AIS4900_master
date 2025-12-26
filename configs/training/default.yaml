@@ -92,6 +92,13 @@ use_compile: true            # Compile VAE/discriminator/perceptual loss
 compile_fused_forward: true  # Compile fused forward pass (diffusion only, ~10% speedup)
                              # Auto-disabled for latent space or Min-SNR
 
+# Precision settings (VAE only)
+# Pure BF16 training stores model weights in BF16 for memory savings
+# Autocast continues to work as usual - this only affects weight storage
+precision:
+  dtype: bf16                # bf16, fp16, fp32 - model weight dtype when pure_weights=true
+  pure_weights: false        # If true, model weights stored in low precision (saves ~50% memory)
+
 # Logging and metrics (all logged at val_interval)
 # Mode compatibility:
 #   [seg] = segmentation only

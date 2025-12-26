@@ -157,6 +157,16 @@ class VAETrainer:
         # torch.compile option (default: True)
         self.use_compile: bool = cfg.training.get('use_compile', True)
 
+        # Precision config (for pure BF16 weights / NVIDIA 2:4 sparsity)
+        precision_cfg = cfg.training.get('precision', {})
+        self.pure_weights: bool = precision_cfg.get('pure_weights', False)
+        dtype_str = precision_cfg.get('dtype', 'bf16')
+        self.weight_dtype: torch.dtype = {
+            'bf16': torch.bfloat16,
+            'fp16': torch.float16,
+            'fp32': torch.float32,
+        }.get(dtype_str, torch.bfloat16)
+
         # VAE architecture config
         self.latent_channels: int = cfg.vae.latent_channels
         self.vae_channels: tuple = tuple(cfg.vae.channels)
@@ -288,6 +298,15 @@ class VAETrainer:
             except FileNotFoundError:
                 if self.is_main_process:
                     logger.warning(f"Pretrained checkpoint not found: {pretrained_checkpoint}")
+
+        # Convert weights to target dtype if pure_weights is enabled
+        # This is for memory savings and NVIDIA 2:4 sparsity compatibility
+        if self.pure_weights and self.weight_dtype != torch.float32:
+            raw_model = raw_model.to(self.weight_dtype)
+            if raw_disc is not None:
+                raw_disc = raw_disc.to(self.weight_dtype)
+            if self.is_main_process:
+                logger.info(f"Converted model weights to {self.weight_dtype}")
 
         # Wrap VAE model with DDP and/or torch.compile
         self.model, self.model_raw = wrap_model_for_training(
