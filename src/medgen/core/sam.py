@@ -56,6 +56,8 @@ class SAM(Optimizer):
         self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
         self.param_groups = self.base_optimizer.param_groups
         self.defaults.update(self.base_optimizer.defaults)
+        # Track step count for LR scheduler compatibility
+        self._step_count = 0
 
     @torch.no_grad()
     def first_step(self, zero_grad: bool = False) -> None:
@@ -111,6 +113,7 @@ class SAM(Optimizer):
 
         # Update with base optimizer using gradient from perturbed point
         self.base_optimizer.step()
+        self._step_count += 1  # Track for LR scheduler compatibility
 
         if zero_grad:
             self.zero_grad()

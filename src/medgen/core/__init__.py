@@ -20,6 +20,7 @@ from .validation import (
     validate_model_config,
     validate_diffusion_config,
     validate_vae_config,
+    validate_vqvae_config,
     validate_progressive_config,
     run_validation,
 )
@@ -50,6 +51,7 @@ __all__ = [
     'validate_model_config',
     'validate_diffusion_config',
     'validate_vae_config',
+    'validate_vqvae_config',
     'validate_progressive_config',
     'run_validation',
     # Model utilities

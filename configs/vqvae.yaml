@@ -1,0 +1,39 @@
+# VQ-VAE Training Configuration
+#
+# Trains VQ-VAE/VQ-GAN for codebook-based latent space generation.
+# Uses discrete vector quantization instead of continuous KL-regularized latent.
+#
+# Usage:
+#   # Default: dual mode VQ-VAE
+#   python -m medgen.scripts.train_vqvae
+#
+#   # Single modality
+#   python -m medgen.scripts.train_vqvae mode=bravo
+#
+#   # Larger codebook
+#   python -m medgen.scripts.train_vqvae vqvae.num_embeddings=1024
+#
+#   # Pure VQ-VAE (no GAN)
+#   python -m medgen.scripts.train_vqvae vqvae.disable_gan=true
+
+defaults:
+  - paths: local
+  - model: default
+  - mode: dual
+  - vqvae: default
+  - training: default
+  - _self_
+
+# Pretrained checkpoint (for fine-tuning)
+pretrained_checkpoint: null
+
+# VQ-VAE specific training defaults (can be overridden by training=fast_debug etc.)
+training:
+  augment_type: vae
+
+hydra:
+  run:
+    dir: ${paths.model_dir}/vqvae_2d/${mode.name}/${oc.select:training.name,""}${model.image_size}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/vqvae_2d/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

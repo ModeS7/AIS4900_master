@@ -130,6 +130,36 @@ def validate_vae_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
+def validate_vqvae_config(cfg: DictConfig) -> List[str]:
+    """Validate VQ-VAE specific configuration.
+
+    Checks:
+    - vqvae section exists
+    - vqvae.num_embeddings > 0
+    - vqvae.embedding_dim > 0
+    - vqvae.channels not empty
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+
+    if not hasattr(cfg, 'vqvae'):
+        errors.append("VQ-VAE configuration missing. Add 'vqvae' section to config.")
+    else:
+        if cfg.vqvae.num_embeddings <= 0:
+            errors.append(f"vqvae.num_embeddings must be > 0, got {cfg.vqvae.num_embeddings}")
+        if cfg.vqvae.embedding_dim <= 0:
+            errors.append(f"vqvae.embedding_dim must be > 0, got {cfg.vqvae.embedding_dim}")
+        if len(cfg.vqvae.channels) == 0:
+            errors.append("vqvae.channels must not be empty")
+
+    return errors
+
+
 def validate_progressive_config(cfg: DictConfig) -> List[str]:
     """Validate progressive training configuration.
 

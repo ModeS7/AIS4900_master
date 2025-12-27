@@ -2,6 +2,7 @@
 
 from .trainer import DiffusionTrainer
 from .vae_trainer import VAETrainer
+from .vqvae_trainer import VQVAETrainer
 from .progressive_vae_trainer import ProgressiveVAETrainer
 from .plateau_detection import PlateauDetector
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
@@ -32,6 +33,7 @@ __all__ = [
     # Trainers
     'DiffusionTrainer',
     'VAETrainer',
+    'VQVAETrainer',
     'ProgressiveVAETrainer',
     'PlateauDetector',
     # Diffusion strategies

@@ -393,6 +393,10 @@ class DiffusionTrainer:
             compile_fused = False
             if self.is_main_process:
                 logger.info("Disabled compiled fused forward for ScoreAug")
+        elif self.use_sam:
+            compile_fused = False
+            if self.is_main_process:
+                logger.info("Disabled compiled fused forward for SAM (incompatible with CUDA graphs)")
         elif compile_fused and self.is_main_process:
             logger.info("Compiling fused forward pass")
         self._setup_compiled_forward(compile_fused)

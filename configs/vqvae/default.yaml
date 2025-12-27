@@ -1,0 +1,69 @@
+# VQ-VAE Architecture Configuration
+#
+# Vector Quantized VAE for discrete latent space learning.
+# Based on: https://arxiv.org/abs/1711.00937 (VQ-VAE)
+# Medical imaging adaptation from: https://arxiv.org/abs/2209.03177 (MONAI)
+#
+# Key differences from AutoencoderKL:
+#   - Uses codebook (learned embeddings) instead of Gaussian latent
+#   - Quantization: z_q = codebook[nearest(z_e)]
+#   - Commitment loss encourages encoder to match codebook
+#   - No KL divergence (discrete, not continuous)
+
+# ============================================================================
+# Vector Quantization Parameters
+# ============================================================================
+num_embeddings: 512              # Codebook size (512-8192 for medical imaging)
+embedding_dim: 64                # Embedding dimension (must match encoder output)
+commitment_cost: 0.25            # Commitment loss weight (standard: 0.25)
+decay: 0.99                      # EMA decay for codebook updates (0.99 stable)
+epsilon: 1.0e-5                  # Numerical stability for EMA
+
+# ============================================================================
+# Encoder/Decoder Architecture
+# ============================================================================
+# Matches VAE pattern for consistency
+channels:
+  - 96
+  - 96
+  - 192
+
+num_res_layers: 3                # Residual blocks per level
+
+num_res_channels:
+  - 96
+  - 96
+  - 192
+
+# Downsampling: stride, kernel_size, dilation, padding
+# 3 levels: 256->128->64->32 (8x spatial compression)
+downsample_parameters:
+  - [2, 4, 1, 1]
+  - [2, 4, 1, 1]
+  - [2, 4, 1, 1]
+
+# Upsampling: stride, kernel_size, dilation, padding, output_padding
+upsample_parameters:
+  - [2, 4, 1, 1, 0]
+  - [2, 4, 1, 1, 0]
+  - [2, 4, 1, 1, 0]
+
+# ============================================================================
+# Loss Weights
+# ============================================================================
+# VQ loss is computed internally by the model (commitment_cost above)
+# These are additional reconstruction losses
+perceptual_weight: 0.1           # Higher than KL-VAE for sharper results
+adv_weight: 0.1                  # GAN loss weight (0 to disable)
+
+# ============================================================================
+# Discriminator (PatchGAN)
+# ============================================================================
+disc_lr: 5.0e-4                  # Discriminator learning rate
+disc_num_layers: 3               # PatchDiscriminator depth
+disc_num_channels: 64            # Base channels
+
+# ============================================================================
+# Training Options
+# ============================================================================
+disable_gan: false               # Set true for pure VQ-VAE (no adversarial)
