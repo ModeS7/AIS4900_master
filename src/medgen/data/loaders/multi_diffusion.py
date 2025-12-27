@@ -162,7 +162,12 @@ def create_multi_diffusion_dataloader(
     all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
-        mode_id = MODE_ID_MAP.get(key, 0)
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            raise ValueError(
+                f"Unknown modality key '{key}'. "
+                f"Valid keys: {list(MODE_ID_MAP.keys())}"
+            )
         image_dataset = NiFTIDataset(
             data_dir=data_dir, mr_sequence=key, transform=transform
         )
@@ -258,7 +263,12 @@ def create_multi_diffusion_validation_dataloader(
     all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
-        mode_id = MODE_ID_MAP.get(key, 0)
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            raise ValueError(
+                f"Unknown modality key '{key}'. "
+                f"Valid keys: {list(MODE_ID_MAP.keys())}"
+            )
         image_dataset = NiFTIDataset(
             data_dir=val_dir, mr_sequence=key, transform=transform
         )
@@ -290,12 +300,14 @@ def create_multi_diffusion_validation_dataloader(
 def create_multi_diffusion_test_dataloader(
     cfg: DictConfig,
     image_keys: List[str],
+    world_size: int = 1,
 ) -> Optional[Tuple[DataLoader, Dataset]]:
     """Create test dataloader for multi-modality diffusion.
 
     Args:
         cfg: Hydra configuration with paths.
         image_keys: List of MR sequences to load.
+        world_size: Number of GPUs for DDP (for batch size adjustment).
 
     Returns:
         Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
@@ -306,6 +318,10 @@ def create_multi_diffusion_test_dataloader(
 
     image_size = cfg.model.image_size
     batch_size = cfg.training.batch_size
+
+    # Reduce batch size for DDP (test runs on single GPU)
+    if world_size > 1:
+        batch_size = max(1, batch_size // world_size)
 
     # Validate modalities exist
     try:
@@ -327,7 +343,12 @@ def create_multi_diffusion_test_dataloader(
     all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
-        mode_id = MODE_ID_MAP.get(key, 0)
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            raise ValueError(
+                f"Unknown modality key '{key}'. "
+                f"Valid keys: {list(MODE_ID_MAP.keys())}"
+            )
         image_dataset = NiFTIDataset(
             data_dir=test_dir, mr_sequence=key, transform=transform
         )
@@ -394,7 +415,12 @@ def create_single_modality_diffusion_val_loader(
         data_dir=val_dir, mr_sequence='seg', transform=transform
     )
 
-    mode_id = MODE_ID_MAP.get(modality, 0)
+    mode_id = MODE_ID_MAP.get(modality)
+    if mode_id is None:
+        raise ValueError(
+            f"Unknown modality '{modality}'. "
+            f"Valid modalities: {list(MODE_ID_MAP.keys())}"
+        )
     slices = _extract_slices_with_mode_id(image_dataset, seg_dataset, mode_id)
     val_dataset = MultiDiffusionDataset(slices)
 

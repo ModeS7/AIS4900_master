@@ -667,12 +667,12 @@ class VAETrainer:
         if not self.disable_gan:
             # Forward through generator (no grad needed for D step)
             with torch.no_grad():
-                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
                     reconstruction_for_d, _, _ = self.model(images)
 
             self.optimizer_d.zero_grad(set_to_none=True)
 
-            with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+            with autocast('cuda', enabled=True, dtype=self.weight_dtype):
                 # Real images -> discriminator should output 1
                 logits_real = self.discriminator(images.contiguous())
                 # Fake images -> discriminator should output 0
@@ -698,7 +698,7 @@ class VAETrainer:
         # ==================== Generator Step ====================
         self.optimizer_g.zero_grad(set_to_none=True)
 
-        with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+        with autocast('cuda', enabled=True, dtype=self.weight_dtype):
             # Fresh forward pass for generator gradients
             reconstruction, mean, logvar = self.model(images)
 
@@ -877,7 +877,7 @@ class VAETrainer:
             for batch in self.val_loader:
                 images, mask = self._prepare_batch(batch)  # mask used for regional tracking
 
-                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
                     reconstructed, mean, logvar = model_to_use(images)
 
                     # Compute losses (same as training)
@@ -1058,7 +1058,7 @@ class VAETrainer:
                 for batch in loader:
                     images, mask = self._prepare_batch(batch)
 
-                    with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    with torch.amp.autocast('cuda', enabled=True, dtype=self.weight_dtype):
                         reconstructed, _, _ = model_to_use(images)
 
                     # Compute metrics
@@ -1295,8 +1295,17 @@ class VAETrainer:
         total_l1 = 0.0
         total_msssim = 0.0
         total_psnr = 0.0
+        total_lpips = 0.0
         n_batches = 0
         n_samples = 0
+
+        # Initialize regional tracker for test evaluation (if enabled)
+        regional_tracker = None
+        if self.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker(
+                loss_fn='l1',
+                device=self.device,
+            )
 
         # Worst batch tracking
         worst_loss = 0.0
@@ -1309,10 +1318,10 @@ class VAETrainer:
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
-                images, _ = self._prepare_batch(batch)
+                images, mask = self._prepare_batch(batch)  # mask for regional tracking
                 batch_size = images.shape[0]
 
-                with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
                     reconstructed, _, _ = model_to_use(images)
 
                 # Compute metrics
@@ -1321,6 +1330,11 @@ class VAETrainer:
                 if self.log_msssim:
                     total_msssim += compute_msssim(reconstructed, images)
                 total_psnr += compute_psnr(reconstructed, images)
+                total_lpips += compute_lpips(reconstructed, images, device=self.device)
+
+                # Regional tracking (tumor vs background)
+                if regional_tracker is not None and mask is not None:
+                    regional_tracker.update(reconstructed, images, mask)
 
                 # Track worst batch
                 if l1_loss > worst_loss:
@@ -1353,6 +1367,7 @@ class VAETrainer:
         metrics = {
             'l1': total_l1 / n_batches,
             'psnr': total_psnr / n_batches,
+            'lpips': total_lpips / n_batches,
             'n_samples': n_samples,
         }
 
@@ -1365,6 +1380,7 @@ class VAETrainer:
         if 'msssim' in metrics:
             logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
         logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
+        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
 
         # Save results to JSON (with checkpoint name suffix)
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -1377,8 +1393,13 @@ class VAETrainer:
         if self.writer is not None:
             self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
             if 'msssim' in metrics:
                 self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
+
+            # Log regional metrics (tumor vs background)
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
 
             # Create and save visualization
             if sample_inputs:

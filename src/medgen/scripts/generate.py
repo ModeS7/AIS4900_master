@@ -35,6 +35,9 @@ from medgen.core import (
 from medgen.pipeline.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from medgen.pipeline.utils import get_vram_usage
 from medgen.data import make_binary
+from medgen.data.score_aug import ScoreAugModelWrapper
+from medgen.data.mode_embed import ModeEmbedModelWrapper
+from medgen.data.combined_embed import CombinedModelWrapper
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -124,14 +127,57 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
     return 0.0 < white_percentage < max_white_percentage
 
 
+def _detect_wrapper_type(state_dict: dict) -> str:
+    """Detect wrapper type from checkpoint state dict keys.
+
+    Args:
+        state_dict: Model state dictionary from checkpoint.
+
+    Returns:
+        Wrapper type: 'raw', 'score_aug', 'mode_embed', or 'combined'.
+    """
+    keys = list(state_dict.keys())
+    has_inner_model = any('inner_model' in k for k in keys)
+
+    if not has_inner_model:
+        return 'raw'
+
+    has_omega_mlp = any('omega_mlp' in k for k in keys)
+    has_mode_mlp = any('mode_mlp' in k for k in keys)
+
+    if has_omega_mlp and has_mode_mlp:
+        return 'combined'
+    elif has_omega_mlp:
+        return 'score_aug'
+    elif has_mode_mlp:
+        return 'mode_embed'
+
+    return 'raw'
+
+
 def load_model(
     model_path: str,
     in_channels: int,
     out_channels: int,
     device: torch.device
 ) -> torch.nn.Module:
-    """Load and compile trained diffusion model."""
-    model = DiffusionModelUNet(
+    """Load and compile trained diffusion model.
+
+    Automatically detects and handles wrapped models (ScoreAug, ModeEmbed, Combined).
+    """
+    # Load checkpoint first to detect wrapper type
+    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+
+    if 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
+    else:
+        state_dict = checkpoint
+
+    wrapper_type = _detect_wrapper_type(state_dict)
+    log.info(f"Detected model type: {wrapper_type}")
+
+    # Create base model
+    base_model = DiffusionModelUNet(
         spatial_dims=2,
         in_channels=in_channels,
         out_channels=out_channels,
@@ -141,13 +187,21 @@ def load_model(
         num_head_channels=DEFAULT_NUM_HEAD_CHANNELS,
     )
 
-    pre_trained_model = torch.load(model_path, map_location=device, weights_only=True)
-
-    # Handle different checkpoint formats
-    if 'model_state_dict' in pre_trained_model:
-        model.load_state_dict(pre_trained_model['model_state_dict'], strict=True)
+    # Wrap model if needed
+    if wrapper_type == 'raw':
+        model = base_model
+    elif wrapper_type == 'score_aug':
+        model = ScoreAugModelWrapper(base_model)
+    elif wrapper_type == 'mode_embed':
+        # Default to 4 modes (bravo, flair, t1_pre, t1_gd)
+        model = ModeEmbedModelWrapper(base_model, num_modes=4)
+    elif wrapper_type == 'combined':
+        model = CombinedModelWrapper(base_model, num_modes=4)
     else:
-        model.load_state_dict(pre_trained_model, strict=True)
+        raise ValueError(f"Unknown wrapper type: {wrapper_type}")
+
+    # Load state dict
+    model.load_state_dict(state_dict, strict=True)
 
     model.to(device)
     model.eval()

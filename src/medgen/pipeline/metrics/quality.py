@@ -255,22 +255,35 @@ def compute_lpips(
             gen = torch.clamp(generated.float(), 0, 1).to(device)
             ref = torch.clamp(reference.float(), 0, 1).to(device)
 
-            # Convert grayscale to RGB (required for pretrained networks)
-            if gen.shape[1] == 1:
-                gen = gen.repeat(1, 3, 1, 1)
-                ref = ref.repeat(1, 3, 1, 1)
-            elif gen.shape[1] == 2:
-                # Dual channel - pad with zeros to make 3 channels
-                zeros = torch.zeros_like(gen[:, :1])
-                gen = torch.cat([gen, zeros], dim=1)
-                ref = torch.cat([ref, zeros], dim=1)
-
             # Get cached metric
             metric = _get_lpips_metric(device, network_type, cache_dir)
 
-            # Compute perceptual loss (LPIPS)
-            # PerceptualLoss returns scalar loss averaged over batch
-            result = metric(gen, ref)
+            # Handle channel count (pretrained networks expect 3 channels)
+            num_channels = gen.shape[1]
+            if num_channels == 1:
+                # Grayscale: repeat to 3 channels (standard grayscale→RGB)
+                gen = gen.repeat(1, 3, 1, 1)
+                ref = ref.repeat(1, 3, 1, 1)
+                result = metric(gen, ref)
+            elif num_channels == 2:
+                # Dual channel: compute per-channel LPIPS and average
+                # This matches PerceptualLoss in losses.py for consistency
+                gen_0 = gen[:, 0:1].repeat(1, 3, 1, 1)
+                ref_0 = ref[:, 0:1].repeat(1, 3, 1, 1)
+                gen_1 = gen[:, 1:2].repeat(1, 3, 1, 1)
+                ref_1 = ref[:, 1:2].repeat(1, 3, 1, 1)
+                result = (metric(gen_0, ref_0) + metric(gen_1, ref_1)) / 2.0
+            elif num_channels == 3:
+                # Already 3 channels, use directly
+                result = metric(gen, ref)
+            else:
+                # More than 3 channels: compute per-channel and average
+                total_lpips = 0.0
+                for ch in range(num_channels):
+                    gen_ch = gen[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    ref_ch = ref[:, ch:ch+1].repeat(1, 3, 1, 1)
+                    total_lpips += metric(gen_ch, ref_ch)
+                result = total_lpips / num_channels
 
             return float(result.item())
 

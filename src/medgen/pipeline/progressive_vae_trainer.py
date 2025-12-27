@@ -81,8 +81,13 @@ class ProgressiveVAETrainer:
             self._resume_from_checkpoint(self.cfg.progressive.resume_from)
 
         for phase_idx, resolution in enumerate(self.resolutions):
-            if phase_idx < self.current_phase:
-                continue  # Skip completed phases on resume
+            # Skip phases that were fully completed in a previous run
+            if resolution in self.phase_epochs:
+                log.info(
+                    f"Skipping phase {resolution}x{resolution} "
+                    f"(completed with {self.phase_epochs[resolution]} epochs)"
+                )
+                continue
 
             self.current_phase = phase_idx
             is_final_phase = (resolution == self.resolutions[-1])
@@ -330,7 +335,7 @@ class ProgressiveVAETrainer:
         trainer.setup_model()
 
         # Evaluate on best and latest checkpoints from final phase
-        best_checkpoint = os.path.join(self.base_dir, "best.pt")
+        best_checkpoint = os.path.join(phase_dir, "best.pt")
         latest_checkpoint = os.path.join(self.base_dir, "final_model.pt")
 
         # Evaluate best model

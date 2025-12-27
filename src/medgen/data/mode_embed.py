@@ -28,18 +28,21 @@ MODE_ENCODING_DIM = 4
 
 
 def encode_mode_id(
-    mode_id: torch.Tensor,
+    mode_id: Optional[torch.Tensor],
     device: torch.device,
 ) -> torch.Tensor:
     """Encode mode_id to one-hot tensor.
 
     Args:
-        mode_id: Integer tensor [B] with mode IDs (0-3)
-        device: Device to create tensor on
+        mode_id: Optional integer tensor [B] with mode IDs (0-3), or None for identity.
+        device: Device to create tensor on.
 
     Returns:
         One-hot tensor [1, MODE_ENCODING_DIM] - uses single encoding
-        that broadcasts to batch in MLP
+        that broadcasts to batch in MLP.
+
+    Raises:
+        ValueError: If mode_id contains invalid values outside [0, MODE_ENCODING_DIM).
     """
     if mode_id is None:
         return torch.zeros(1, MODE_ENCODING_DIM, device=device)
@@ -51,9 +54,15 @@ def encode_mode_id(
     else:
         idx = mode_id[0].item()
 
+    # Validate mode_id range
+    if not (0 <= idx < MODE_ENCODING_DIM):
+        raise ValueError(
+            f"Invalid mode_id: {idx}. Expected value in [0, {MODE_ENCODING_DIM - 1}]. "
+            f"Valid modes: {list(MODE_ID_MAP.keys())}"
+        )
+
     enc = torch.zeros(1, MODE_ENCODING_DIM, device=device)
-    if 0 <= idx < MODE_ENCODING_DIM:
-        enc[0, idx] = 1.0
+    enc[0, idx] = 1.0
 
     return enc
 

@@ -5,7 +5,7 @@ This module provides abstract and concrete implementations of diffusion
 strategies including DDPM and Rectified Flow algorithms.
 """
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -118,7 +118,9 @@ class DiffusionStrategy(ABC):
         noise: torch.Tensor,
         num_steps: int,
         device: torch.device,
-        use_progress_bars: bool = False
+        use_progress_bars: bool = False,
+        omega: Optional[torch.Tensor] = None,
+        mode_id: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate samples using the diffusion process.
 
@@ -128,6 +130,8 @@ class DiffusionStrategy(ABC):
             num_steps: Number of sampling steps.
             device: Computation device.
             use_progress_bars: Whether to show progress bars.
+            omega: Optional ScoreAug omega conditioning tensor.
+            mode_id: Optional mode ID tensor for multi-modality conditioning.
 
         Returns:
             Generated image tensor.
@@ -260,7 +264,16 @@ class DDPMStrategy(DiffusionStrategy):
             (batch_size,), device=device
         ).long()
 
-    def generate(self, model, model_input, num_steps, device, use_progress_bars=False):
+    def generate(
+        self,
+        model,
+        model_input,
+        num_steps,
+        device,
+        use_progress_bars=False,
+        omega: Optional[torch.Tensor] = None,
+        mode_id: Optional[torch.Tensor] = None,
+    ):
         """
         Generate using DDPM sampling
 
@@ -268,6 +281,15 @@ class DDPMStrategy(DiffusionStrategy):
         - Unconditional: model_input is [B, 1, H, W] (just noise)
         - Conditional single: model_input is [B, 2, H, W] (noise + conditioning)
         - Conditional dual: model_input is [B, 3, H, W] (noise_pre + noise_gd + conditioning)
+
+        Args:
+            model: Trained diffusion model (may be wrapped with ScoreAug/ModeEmbed).
+            model_input: Input tensor with noise and optional conditioning.
+            num_steps: Number of sampling steps.
+            device: Computation device.
+            use_progress_bars: Whether to show progress bars.
+            omega: Optional ScoreAug omega conditioning tensor [B, 5].
+            mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
         """
         batch_size = model_input.shape[0]
         num_channels = model_input.shape[1]
@@ -310,7 +332,11 @@ class DDPMStrategy(DiffusionStrategy):
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
 
                 with torch.no_grad():
-                    noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
+                    # Pass omega/mode_id if model supports them (wrappers)
+                    if omega is not None or mode_id is not None:
+                        noise_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
+                    else:
+                        noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
 
                 # Split predictions for each channel
                 noise_pred_pre = noise_pred[:, 0:1, :, :]
@@ -328,7 +354,11 @@ class DDPMStrategy(DiffusionStrategy):
                     current_model_input = noisy_images
 
                 with torch.no_grad():
-                    noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
+                    # Pass omega/mode_id if model supports them (wrappers)
+                    if omega is not None or mode_id is not None:
+                        noise_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
+                    else:
+                        noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
 
                 noisy_images, _ = self.scheduler.step(noise_pred, t, noisy_images)
 
@@ -425,7 +455,16 @@ class RFlowStrategy(DiffusionStrategy):
             sample_tensor = images
         return self.scheduler.sample_timesteps(sample_tensor)
 
-    def generate(self, model, model_input, num_steps, device, use_progress_bars=False):
+    def generate(
+        self,
+        model,
+        model_input,
+        num_steps,
+        device,
+        use_progress_bars=False,
+        omega: Optional[torch.Tensor] = None,
+        mode_id: Optional[torch.Tensor] = None,
+    ):
         """
         Generate using RFlow sampling
 
@@ -433,6 +472,15 @@ class RFlowStrategy(DiffusionStrategy):
         - Unconditional: model_input is [B, 1, H, W]
         - Conditional single: model_input is [B, 2, H, W]
         - Conditional dual: model_input is [B, 3, H, W]
+
+        Args:
+            model: Trained diffusion model (may be wrapped with ScoreAug/ModeEmbed).
+            model_input: Input tensor with noise and optional conditioning.
+            num_steps: Number of sampling steps.
+            device: Computation device.
+            use_progress_bars: Whether to show progress bars.
+            omega: Optional ScoreAug omega conditioning tensor [B, 5].
+            mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
         """
         batch_size = model_input.shape[0]
         num_channels = model_input.shape[1]
@@ -486,7 +534,11 @@ class RFlowStrategy(DiffusionStrategy):
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
 
                 with torch.no_grad():
-                    velocity_pred = model(current_model_input, timesteps=timesteps_batch)
+                    # Pass omega/mode_id if model supports them (wrappers)
+                    if omega is not None or mode_id is not None:
+                        velocity_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
+                    else:
+                        velocity_pred = model(current_model_input, timesteps=timesteps_batch)
 
                 # Split predictions for each channel
                 velocity_pred_pre = velocity_pred[:, 0:1, :, :]
@@ -504,7 +556,11 @@ class RFlowStrategy(DiffusionStrategy):
                     current_model_input = noisy_images
 
                 with torch.no_grad():
-                    velocity_pred = model(current_model_input, timesteps=timesteps_batch)
+                    # Pass omega/mode_id if model supports them (wrappers)
+                    if omega is not None or mode_id is not None:
+                        velocity_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
+                    else:
+                        velocity_pred = model(current_model_input, timesteps=timesteps_batch)
 
                 noisy_images, _ = self.scheduler.step(velocity_pred, t, noisy_images, next_timestep)
 

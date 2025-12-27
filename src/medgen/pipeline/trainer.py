@@ -346,6 +346,15 @@ class DiffusionTrainer:
                 is_main_process=self.is_main_process,
             )
 
+        # Warn about DDP incompatibility with embedding wrappers
+        if self.use_multi_gpu and (self.use_omega_conditioning or self.use_mode_embedding):
+            if self.is_main_process:
+                logger.warning(
+                    "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
+                    "Embeddings will NOT be synchronized across GPUs. "
+                    "For multi-GPU training with embeddings, consider using FSDP or single-GPU."
+                )
+
         # Setup perceptual loss (shared wrapper handles multi-channel inputs)
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
         self.perceptual_loss_fn = PerceptualLoss(
@@ -774,7 +783,10 @@ class DiffusionTrainer:
                             # Inverse transform to original space
                             inv_clean = {k: self.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
                             if any(v is None for v in inv_clean.values()):
-                                # Non-invertible transform, skip perceptual loss
+                                # Non-invertible transform (rotation/flip), skip perceptual loss
+                                # This is expected when omega contains rotation/flip codes
+                                if self.perceptual_weight > 0:
+                                    logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
                                 p_loss = torch.tensor(0.0, device=self.device)
                                 predicted_clean = aug_clean  # Use augmented for metrics
                             else:
@@ -792,6 +804,9 @@ class DiffusionTrainer:
 
                             inv_clean = self.score_aug.inverse_apply_omega(aug_clean, omega)
                             if inv_clean is None:
+                                # Non-invertible transform (rotation/flip), skip perceptual loss
+                                if self.perceptual_weight > 0:
+                                    logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
                                 p_loss = torch.tensor(0.0, device=self.device)
                                 predicted_clean = aug_clean
                             else:
@@ -968,6 +983,7 @@ class DiffusionTrainer:
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')
+                mode_id = prepared.get('mode_id')  # For multi-modality mode
 
                 # Get current batch size
                 if isinstance(images, dict):
@@ -994,7 +1010,10 @@ class DiffusionTrainer:
                 model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
                 # Predict and compute loss
-                prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                if self.use_mode_embedding and mode_id is not None:
+                    prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
+                else:
+                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                 mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                 # Compute perceptual loss
@@ -1160,6 +1179,7 @@ class DiffusionTrainer:
                     prepared = self.mode.prepare_batch(batch, self.device)
                     images = prepared['images']
                     labels = prepared.get('labels')
+                    mode_id = prepared.get('mode_id')  # For multi-modality mode
 
                     # Encode to diffusion space (identity for PixelSpace)
                     images = self.space.encode_batch(images)
@@ -1175,7 +1195,10 @@ class DiffusionTrainer:
                     model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
                     # Predict
-                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    if self.use_mode_embedding and mode_id is not None:
+                        prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
+                    else:
+                        prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                     # Compute metrics
@@ -1354,6 +1377,11 @@ class DiffusionTrainer:
                 checkpoint = torch.load(checkpoint_path, map_location=self.device)
                 self.model_raw.load_state_dict(checkpoint['model_state_dict'])
                 logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
+
+                # Load EMA state if available and EMA is configured
+                if self.ema is not None and 'ema_state_dict' in checkpoint:
+                    self.ema.load_state_dict(checkpoint['ema_state_dict'])
+                    logger.info("Loaded EMA state from checkpoint")
             else:
                 logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
                 checkpoint_name = "current"
@@ -1363,9 +1391,10 @@ class DiffusionTrainer:
         logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
         logger.info("=" * 60)
 
-        # Use EMA model if available and no checkpoint loaded, otherwise raw model
-        if checkpoint_name is None and self.ema is not None:
+        # Use EMA model if available (whether from current state or loaded from checkpoint)
+        if self.ema is not None:
             model_to_use = self.ema.ema_model
+            logger.info("Using EMA model for evaluation")
         else:
             model_to_use = self.model_raw
         model_to_use.eval()
@@ -1387,6 +1416,7 @@ class DiffusionTrainer:
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')
+                mode_id = prepared.get('mode_id')  # For multi-modality mode
                 batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
 
                 # Encode to diffusion space (identity for PixelSpace)
@@ -1407,7 +1437,10 @@ class DiffusionTrainer:
                 model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
                 with autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    if self.use_mode_embedding and mode_id is not None:
+                        prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
+                    else:
+                        prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                 # Compute metrics

@@ -167,7 +167,8 @@ class ValidationVisualizer:
         self,
         model: nn.Module,
         model_input: torch.Tensor,
-        num_steps: int
+        num_steps: int,
+        mode_id: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """Generate samples while saving intermediate denoising steps.
 
@@ -175,6 +176,7 @@ class ValidationVisualizer:
             model: The diffusion model.
             model_input: Initial noisy input (may include condition channels).
             num_steps: Number of denoising steps.
+            mode_id: Optional mode ID tensor for multi-modality models.
 
         Returns:
             Tuple of (final_samples, list_of_intermediate_samples).
@@ -214,7 +216,10 @@ class ValidationVisualizer:
                 full_input = current
 
             with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
-                pred = model(full_input, t)
+                if mode_id is not None:
+                    pred = model(full_input, t, mode_id=mode_id)
+                else:
+                    pred = model(full_input, t)
 
             if self.strategy_name == 'rflow':
                 dt = 1.0 / num_steps
@@ -311,6 +316,7 @@ class ValidationVisualizer:
                 seg_masks = None
                 gt_images = None
                 intermediates = None
+                mode_id = None  # For multi-modality modes
 
                 if self.mode_name == ModeType.SEG:
                     noise = torch.randn((num_samples, 1, self.image_size, self.image_size), device=self.device)
@@ -339,15 +345,31 @@ class ValidationVisualizer:
                     noise_gd = torch.randn_like(seg_masks, device=self.device)
                     model_input = torch.cat([noise_pre, noise_gd, seg_masks], dim=1)
 
+                elif self.mode_name in (ModeType.MULTI, ModeType.MULTI_MODALITY):
+                    # Multi-modality mode: single channel output with mode_id conditioning
+                    # For visualization, generate samples for bravo modality (mode_id=0)
+                    need_gt = self.log_msssim or self.log_psnr or self.log_lpips
+                    if need_gt:
+                        seg_masks, gt_images = self._sample_positive_masks(
+                            train_dataset, num_samples, seg_channel_idx=1, return_images=True
+                        )
+                    else:
+                        seg_masks = self._sample_positive_masks(train_dataset, num_samples, seg_channel_idx=1)
+                    noise = torch.randn_like(seg_masks, device=self.device)
+                    model_input = torch.cat([noise, seg_masks], dim=1)
+                    # Use bravo modality (mode_id=0) for visualization
+                    mode_id = torch.zeros(num_samples, dtype=torch.long, device=self.device)
+
                 else:
                     raise ValueError(f"Unknown mode: {self.mode_name}")
 
                 with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                     if self.log_intermediate_steps and self.mode_name != ModeType.SEG:
                         samples, intermediates = self._generate_with_intermediate_steps(
-                            model, model_input, self.num_timesteps
+                            model, model_input, self.num_timesteps, mode_id=mode_id
                         )
                     else:
+                        # Note: strategy.generate() doesn't support mode_id yet (Bug 20)
                         samples = self.strategy.generate(
                             model, model_input, num_steps=self.num_timesteps, device=self.device
                         )
