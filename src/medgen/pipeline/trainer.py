@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
+from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training, SAM
 from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
@@ -99,6 +99,12 @@ class DiffusionTrainer:
         self.ema_decay: float = cfg.training.ema.decay
         self.use_min_snr: bool = cfg.training.use_min_snr
         self.min_snr_gamma: float = cfg.training.min_snr_gamma
+
+        # SAM (Sharpness-Aware Minimization)
+        sam_cfg = cfg.training.get('sam', {})
+        self.use_sam: bool = sam_cfg.get('enabled', False)
+        self.sam_rho: float = sam_cfg.get('rho', 0.05)
+        self.sam_adaptive: bool = sam_cfg.get('adaptive', False)
 
         # Determine if running on cluster
         self.is_cluster: bool = (cfg.paths.name == "cluster")
@@ -391,10 +397,22 @@ class DiffusionTrainer:
             logger.info("Compiling fused forward pass")
         self._setup_compiled_forward(compile_fused)
 
-        # Setup optimizer
-        self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
+        # Setup optimizer (with optional SAM wrapper)
+        if self.use_sam:
+            self.optimizer = SAM(
+                self.model_raw.parameters(),
+                base_optimizer=AdamW,
+                rho=self.sam_rho,
+                adaptive=self.sam_adaptive,
+                lr=self.learning_rate,
+            )
+            if self.is_main_process:
+                logger.info(f"Using SAM optimizer (rho={self.sam_rho}, adaptive={self.sam_adaptive})")
+        else:
+            self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
 
         # Warmup + Cosine scheduler (using shared utility)
+        # Note: SAM wraps the base optimizer, scheduler works with base_optimizer's param_groups
         self.lr_scheduler = create_warmup_cosine_scheduler(
             self.optimizer,
             warmup_epochs=self.warmup_epochs,
@@ -849,27 +867,121 @@ class DiffusionTrainer:
 
                     total_loss = mse_loss + self.perceptual_weight * p_loss
 
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
-        )
-        self.optimizer.step()
+        if self.use_sam:
+            # SAM requires two forward-backward passes
+            # Save values before second pass (CUDA graphs may overwrite tensors)
+            total_loss_val = total_loss.item()
+            mse_loss_val = mse_loss.item()
+            p_loss_val = p_loss.item()
+            # Clone predicted_clean for metrics tracking (may be dict for dual mode)
+            if isinstance(predicted_clean, dict):
+                predicted_clean_saved = {k: v.detach().clone() for k, v in predicted_clean.items()}
+            else:
+                predicted_clean_saved = predicted_clean.detach().clone()
 
-        if self.use_ema:
-            self._update_ema()
-
-        # Track metrics using MetricsTracker
-        mask = labels_dict.get('labels')
-        with torch.no_grad():
-            self.metrics.track_step(
-                timesteps=timesteps,
-                predicted_clean=predicted_clean,
-                images=images,
-                mask=mask,
-                grad_norm=grad_norm,
+            # First pass: compute gradient and perturb weights
+            total_loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
             )
+            self.optimizer.first_step(zero_grad=True)
 
-        return total_loss.item(), mse_loss.item(), p_loss.item()
+            # Second pass: compute gradient at perturbed point
+            # Need to recompute forward pass with same batch data
+            with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
+                    keys = list(images.keys())
+                    total_loss_2, _, _, _, _ = self._compiled_forward_dual(
+                        self.model, self.perceptual_loss_fn, model_input, timesteps,
+                        images[keys[0]], images[keys[1]], noise[keys[0]], noise[keys[1]],
+                        noisy_images[keys[0]], noisy_images[keys[1]],
+                        self.perceptual_weight, self.strategy_name, self.num_timesteps,
+                    )
+                elif self._use_compiled_forward and self.mode_name in (ModeType.SEG, ModeType.BRAVO):
+                    total_loss_2, _, _, _ = self._compiled_forward_single(
+                        self.model, self.perceptual_loss_fn, model_input, timesteps,
+                        images, noise, noisy_images,
+                        self.perceptual_weight, self.strategy_name, self.num_timesteps,
+                    )
+                elif self.score_aug is not None:
+                    # ScoreAug path - recompute with same augmentation (omega)
+                    # Skip perceptual loss in SAM second pass (augmented space, minor contribution)
+                    if self.use_omega_conditioning and self.use_mode_embedding:
+                        prediction_2 = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
+                    elif self.use_omega_conditioning:
+                        prediction_2 = self.model(aug_input, timesteps, omega=omega)
+                    elif self.use_mode_embedding:
+                        prediction_2 = self.model(aug_input, timesteps, mode_id=mode_id)
+                    else:
+                        prediction_2 = self.strategy.predict_noise_or_velocity(self.model, aug_input, timesteps)
+                    if isinstance(aug_velocity, dict):
+                        keys = list(aug_velocity.keys())
+                        mse_loss_2 = (((prediction_2[:, 0:1] - aug_velocity[keys[0]]) ** 2).mean() +
+                                      ((prediction_2[:, 1:2] - aug_velocity[keys[1]]) ** 2).mean()) / 2
+                    else:
+                        mse_loss_2 = ((prediction_2 - aug_velocity) ** 2).mean()
+                    total_loss_2 = mse_loss_2  # MSE only, perceptual loss not recomputed
+                else:
+                    # Standard path - recompute
+                    if self.use_mode_embedding:
+                        prediction_2 = self.model(model_input, timesteps, mode_id=mode_id)
+                    else:
+                        prediction_2 = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
+                    mse_loss_2, predicted_clean_2 = self.strategy.compute_loss(prediction_2, images, noise, noisy_images, timesteps)
+                    if self.use_min_snr:
+                        mse_loss_2 = self._compute_min_snr_weighted_mse(prediction_2, images, noise, timesteps)
+                    if self.perceptual_weight > 0:
+                        if self.space.scale_factor > 1:
+                            pred_decoded_2 = self.space.decode_batch(predicted_clean_2)
+                            images_decoded_2 = self.space.decode_batch(images)
+                        else:
+                            pred_decoded_2, images_decoded_2 = predicted_clean_2, images
+                        p_loss_2 = self.perceptual_loss_fn(pred_decoded_2, images_decoded_2)
+                    else:
+                        p_loss_2 = torch.tensor(0.0, device=self.device)
+                    total_loss_2 = mse_loss_2 + self.perceptual_weight * p_loss_2
+
+            total_loss_2.backward()
+            self.optimizer.second_step(zero_grad=True)
+
+            if self.use_ema:
+                self._update_ema()
+
+            # Track metrics using MetricsTracker (use saved predicted_clean)
+            mask = labels_dict.get('labels')
+            with torch.no_grad():
+                self.metrics.track_step(
+                    timesteps=timesteps,
+                    predicted_clean=predicted_clean_saved,
+                    images=images,
+                    mask=mask,
+                    grad_norm=grad_norm,
+                )
+
+            return total_loss_val, mse_loss_val, p_loss_val
+        else:
+            # Standard optimizer step
+            total_loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
+            )
+            self.optimizer.step()
+
+            if self.use_ema:
+                self._update_ema()
+
+            # Track metrics using MetricsTracker
+            mask = labels_dict.get('labels')
+            with torch.no_grad():
+                self.metrics.track_step(
+                    timesteps=timesteps,
+                    predicted_clean=predicted_clean,
+                    images=images,
+                    mask=mask,
+                    grad_norm=grad_norm,
+                )
+
+            return total_loss.item(), mse_loss.item(), p_loss.item()
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using the first batch (one-time profiling)."""

@@ -24,6 +24,7 @@ from .validation import (
     run_validation,
 )
 from .model_utils import wrap_model_for_training
+from .sam import SAM
 
 __all__ = [
     # Enums
@@ -53,4 +54,6 @@ __all__ = [
     'run_validation',
     # Model utilities
     'wrap_model_for_training',
+    # Optimizers
+    'SAM',
 ]

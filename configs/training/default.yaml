@@ -76,6 +76,14 @@ ema:
 use_min_snr: false
 min_snr_gamma: 5.0         # SNR clipping threshold
 
+# SAM (Sharpness-Aware Minimization)
+# Seeks flat minima for better generalization. Requires 2x compute per step.
+# Reference: https://arxiv.org/abs/2010.01412
+sam:
+  enabled: false             # Enable SAM optimizer
+  rho: 0.05                  # Perturbation radius (0.01-0.1 typical)
+  adaptive: false            # Use ASAM (adaptive, weight-scale invariant)
+
 # Perceptual loss (SqueezeNet features)
 perceptual_weight: 0.001   # Weight for perceptual loss term
 
