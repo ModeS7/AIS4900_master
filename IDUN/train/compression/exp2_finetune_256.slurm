@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp2_vae_ft"
-#SBATCH --output=IDUN/output/train/vae/exp2_finetune_%j.out
-#SBATCH --error=IDUN/output/train/vae/exp2_finetune_%j.err
+#SBATCH --output=IDUN/output/train/compression/exp2_finetune_%j.out
+#SBATCH --error=IDUN/output/train/compression/exp2_finetune_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 

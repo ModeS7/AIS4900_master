@@ -9,8 +9,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp4_vae_mm64lat"
-#SBATCH --output=IDUN/output/train/vae/exp4_multimodal_64lat_%j.out
-#SBATCH --error=IDUN/output/train/vae/exp4_multimodal_64lat_%j.err
+#SBATCH --output=IDUN/output/train/compression/exp4_multimodal_64lat_%j.out
+#SBATCH --error=IDUN/output/train/compression/exp4_multimodal_64lat_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
