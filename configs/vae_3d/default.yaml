@@ -1,0 +1,53 @@
+# 3D VAE Architecture Configuration (AutoencoderKL)
+#
+# Based on: https://arxiv.org/abs/2307.15208 (MONAI Generative)
+# Proven config for 3D medical imaging.
+#
+# Key differences from 2D:
+#   - Smaller channels (memory)
+#   - No attention layers (O(n²) too expensive for 3D)
+#   - Lower learning rate (smaller batches)
+
+# ============================================================================
+# Latent Space
+# ============================================================================
+latent_channels: 3                # Latent space channels
+
+# ============================================================================
+# Encoder/Decoder Architecture (MONAI 3D proven config)
+# ============================================================================
+# 4 levels: 256->128->64->32 (8x compression per dimension)
+channels:
+  - 32
+  - 64
+  - 128
+  - 128
+
+num_res_blocks: 2                 # ResBlocks per level
+
+# No attention for 3D (memory constraints)
+attention_levels:
+  - false
+  - false
+  - false
+  - false
+
+# ============================================================================
+# Loss Weights (MONAI 3D values)
+# ============================================================================
+kl_weight: 1.0e-6                 # KL divergence weight
+perceptual_weight: 0.001          # Perceptual loss (2.5D: 25% slices)
+adv_weight: 0.01                  # Adversarial loss weight
+
+# ============================================================================
+# Discriminator (PatchGAN 3D)
+# ============================================================================
+disc_lr: 1.0e-4                   # Discriminator learning rate (higher than gen)
+disc_num_layers: 3                # PatchDiscriminator depth
+disc_num_channels: 64             # PatchDiscriminator base channels
+
+# ============================================================================
+# 3D Specific Options
+# ============================================================================
+use_2_5d_perceptual: true         # Use 2.5D perceptual loss (sample 25% slices)
+perceptual_slice_fraction: 0.25   # Fraction of slices for perceptual loss

@@ -39,6 +39,15 @@ from .loaders import (
     create_multi_diffusion_validation_dataloader,
     create_multi_diffusion_test_dataloader,
     create_single_modality_diffusion_val_loader,
+    # 3D VAE loaders
+    create_vae_3d_dataloader,
+    create_vae_3d_validation_dataloader,
+    create_vae_3d_test_dataloader,
+    create_vae_3d_multi_modality_dataloader,
+    create_vae_3d_multi_modality_validation_dataloader,
+    Volume3DDataset,
+    DualVolume3DDataset,
+    MultiModality3DDataset,
 )
 
 __all__ = [
@@ -85,6 +94,15 @@ __all__ = [
     'create_multi_diffusion_validation_dataloader',
     'create_multi_diffusion_test_dataloader',
     'create_single_modality_diffusion_val_loader',
+    # 3D VAE loaders
+    'create_vae_3d_dataloader',
+    'create_vae_3d_validation_dataloader',
+    'create_vae_3d_test_dataloader',
+    'create_vae_3d_multi_modality_dataloader',
+    'create_vae_3d_multi_modality_validation_dataloader',
+    'Volume3DDataset',
+    'DualVolume3DDataset',
+    'MultiModality3DDataset',
     # Mode embedding
     'ModeEmbedModelWrapper',
     'ModeTimeEmbed',

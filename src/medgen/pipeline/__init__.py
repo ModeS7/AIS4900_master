@@ -2,6 +2,7 @@
 
 from .trainer import DiffusionTrainer
 from .vae_trainer import VAETrainer
+from .vae_3d_trainer import VAE3DTrainer
 from .vqvae_trainer import VQVAETrainer
 from .progressive_vae_trainer import ProgressiveVAETrainer
 from .plateau_detection import PlateauDetector
@@ -33,6 +34,7 @@ __all__ = [
     # Trainers
     'DiffusionTrainer',
     'VAETrainer',
+    'VAE3DTrainer',
     'VQVAETrainer',
     'ProgressiveVAETrainer',
     'PlateauDetector',

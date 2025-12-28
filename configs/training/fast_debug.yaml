@@ -36,9 +36,9 @@ disable_ddp_optimizer: false
 # Learning rate scheduler
 eta_min: 1.0e-6
 
-# torch.compile (disable for faster startup in debug)
-use_compile: false
-compile_fused_forward: false
+# torch.compile (keep enabled to test same code paths as production)
+use_compile: true
+compile_fused_forward: false  # Only used in diffusion, not VAE
 
 # Logging (minimal for fast debug)
 logging:

@@ -1,0 +1,68 @@
+# 3D VAE Training Configuration
+#
+# Trains 3D AutoencoderKL for volumetric latent diffusion.
+# Based on MONAI Generative proven configuration.
+#
+# Usage:
+#   python -m medgen.scripts.train_vae_3d
+#
+#   # Pure VAE (no GAN)
+#   python -m medgen.scripts.train_vae_3d vae_3d.adv_weight=0
+#
+#   # Cluster training
+#   python -m medgen.scripts.train_vae_3d paths=cluster
+
+defaults:
+  - paths: local
+  - model: default
+  - mode: dual
+  - vae_3d: default
+  - training: default
+  - _self_
+
+# Pretrained checkpoint (for fine-tuning)
+pretrained_checkpoint: null
+
+# ============================================================================
+# 3D Volume Configuration
+# ============================================================================
+volume:
+  # Input dimensions (after padding)
+  depth: 160                      # Pad 150 -> 160 for clean 8x compression
+  height: 256
+  width: 256
+  # Padding
+  pad_depth_to: 160               # Target depth after padding
+  pad_mode: replicate             # replicate or constant (zeros)
+  # Slice subsampling (for quick testing)
+  slice_step: 1                   # 1=all slices, 2=every 2nd, 3=every 3rd
+
+# ============================================================================
+# Training Overrides for 3D
+# ============================================================================
+training:
+  epochs: 100
+  batch_size: 2                   # Small batch for 3D (memory)
+  learning_rate: 5.0e-5           # Lower LR for 3D (MONAI recommendation)
+  gradient_clip_norm: 1.0
+  warmup_epochs: 5
+  val_interval: 10
+  use_ema: false                  # EMA doubles memory
+  augment_type: vae_3d
+  # Gradient checkpointing for memory
+  gradient_checkpointing: true
+  # Logging
+  logging:
+    grad_norm: true
+    regional_losses: false        # Disable for 3D (memory)
+    msssim: false                 # 3D MS-SSIM expensive
+    psnr: true
+    lpips: false                  # 2D only
+    flops: false                  # 3D measurement slow
+
+hydra:
+  run:
+    dir: ${paths.model_dir}/compression_3d/${mode.name}/${oc.select:training.name,""}${volume.height}x${volume.depth}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/compression_3d/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}
