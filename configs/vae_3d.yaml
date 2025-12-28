@@ -41,7 +41,7 @@ volume:
 # Training Overrides for 3D
 # ============================================================================
 training:
-  epochs: 100
+  epochs: 125
   batch_size: 2                   # Small batch for 3D (memory)
   learning_rate: 5.0e-5           # Lower LR for 3D (MONAI recommendation)
   gradient_clip_norm: 1.0
@@ -49,6 +49,7 @@ training:
   val_interval: 10
   use_ema: false                  # EMA doubles memory
   augment_type: vae_3d
+  use_compile: true
   # Gradient checkpointing for memory
   gradient_checkpointing: true
   # Logging

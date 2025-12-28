@@ -495,12 +495,12 @@ class VAE3DTrainer:
         if not self.is_main_process:
             return
 
-        checkpoint_path = os.path.join(self.save_dir, f"checkpoint_{name}.pt")
         save_full_checkpoint(
-            path=checkpoint_path,
-            epoch=epoch,
             model=self.model_raw,
             optimizer=self.optimizer_g,
+            epoch=epoch,
+            save_dir=self.save_dir,
+            filename=f"checkpoint_{name}.pt",
             scheduler=self.lr_scheduler_g,
         )
 

@@ -181,6 +181,9 @@ class VQVAETrainer:
         # torch.compile option (default: True)
         self.use_compile: bool = cfg.training.get('use_compile', True)
 
+        # Precision settings
+        self.weight_dtype = torch.bfloat16
+
         # Determine if running on cluster
         self.is_cluster: bool = (cfg.paths.name == "cluster")
 

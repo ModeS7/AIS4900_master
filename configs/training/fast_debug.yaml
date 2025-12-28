@@ -7,7 +7,7 @@
 name: ""
 
 # Core training parameters (reduced for fast testing)
-epochs: 2
+epochs: 6
 batch_size: 4
 learning_rate: 1.0e-4
 gradient_clip_norm: 1.0
