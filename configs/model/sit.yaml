@@ -1,0 +1,25 @@
+# SiT (Scalable Interpolant Transformer) Configuration
+#
+# Transformer-based diffusion model designed for flow matching.
+# Override via CLI: python -m medgen.scripts.train model=sit model.variant=L
+#
+# Variants:
+#   S:  hidden_size=384,  depth=12, heads=6  (~33M params)
+#   B:  hidden_size=768,  depth=12, heads=12 (~130M params)
+#   L:  hidden_size=1024, depth=24, heads=16 (~458M params)
+#   XL: hidden_size=1152, depth=28, heads=16 (~675M params)
+
+type: sit                            # Model type (sit for transformer)
+spatial_dims: 2                      # Spatial dimensions (2 or 3)
+image_size: 128                      # Input image size
+patch_size: 2                        # Patch size (2, 4, or 8)
+variant: B                           # Model variant: S, B, L, XL
+mlp_ratio: 4.0                       # MLP expansion ratio
+conditioning: concat                 # Conditioning mode: concat or cross_attn
+drop_rate: 0.0                       # Dropout rate
+
+# UNet fallback fields (for compatibility, not used by SiT)
+channels: [128, 256, 256]
+attention_levels: [false, true, true]
+num_res_blocks: 1
+num_head_channels: 256

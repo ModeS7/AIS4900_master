@@ -30,6 +30,7 @@ from tqdm import tqdm
 from monai.networks.nets import DiffusionModelUNet
 
 from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training, SAM
+from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
@@ -267,20 +268,40 @@ class DiffusionTrainer:
             logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
                        f"scale factor {self.space.scale_factor}x")
 
-        channels = tuple(self.cfg.model.channels)
-        attention_levels = tuple(self.cfg.model.attention_levels)
-        num_res_blocks = self.cfg.model.num_res_blocks
-        num_head_channels = self.cfg.model.num_head_channels
+        # Get model type and check if transformer-based
+        self.model_type = get_model_type(self.cfg)
+        self.is_transformer = is_transformer_model(self.cfg)
 
-        raw_model = DiffusionModelUNet(
-            spatial_dims=2,
-            in_channels=in_channels,
-            out_channels=out_channels,
-            channels=channels,
-            attention_levels=attention_levels,
-            num_res_blocks=num_res_blocks,
-            num_head_channels=num_head_channels
-        ).to(self.device)
+        # Create raw model via factory
+        if self.is_transformer:
+            # SiT / transformer models use factory
+            raw_model = create_diffusion_model(self.cfg, self.device, in_channels, out_channels)
+
+            # Warn if embedding wrappers requested (not supported for transformers yet)
+            if self.use_omega_conditioning or self.use_mode_embedding:
+                if self.is_main_process:
+                    logger.warning(
+                        "Omega/mode conditioning wrappers not yet supported for transformer models. "
+                        "Disabling wrappers."
+                    )
+                self.use_omega_conditioning = False
+                self.use_mode_embedding = False
+        else:
+            # UNet via MONAI
+            channels = tuple(self.cfg.model.channels)
+            attention_levels = tuple(self.cfg.model.attention_levels)
+            num_res_blocks = self.cfg.model.num_res_blocks
+            num_head_channels = self.cfg.model.num_head_channels
+
+            raw_model = DiffusionModelUNet(
+                spatial_dims=self.cfg.model.get('spatial_dims', 2),
+                in_channels=in_channels,
+                out_channels=out_channels,
+                channels=channels,
+                attention_levels=attention_levels,
+                num_res_blocks=num_res_blocks,
+                num_head_channels=num_head_channels
+            ).to(self.device)
 
         # Determine if DDPOptimizer should be disabled for large models
         disable_ddp_opt = self.cfg.training.get('disable_ddp_optimizer', False)
@@ -289,13 +310,18 @@ class DiffusionTrainer:
 
         use_compile = self.cfg.training.get('use_compile', True)
 
-        # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
-        time_embed_dim = 4 * channels[0]
+        # Handle embedding wrappers (UNet only)
+        if not self.is_transformer:
+            # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
+            channels = tuple(self.cfg.model.channels)
+            time_embed_dim = 4 * channels[0]
+        else:
+            time_embed_dim = None  # Not used for transformers
 
         # Handle embedding wrappers: omega, mode, or both
         # Wrap FIRST (modifies time_embed), then compile INNER model
         # This keeps encoding logic (with data-dependent branches) outside compiled graph
-        if self.use_omega_conditioning and self.use_mode_embedding:
+        if not self.is_transformer and self.use_omega_conditioning and self.use_mode_embedding:
             # Both omega + mode embedding
             from medgen.data.combined_embed import CombinedModelWrapper
             wrapper = CombinedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
@@ -310,8 +336,8 @@ class DiffusionTrainer:
             self.model = wrapper
             self.model_raw = wrapper
 
-        elif self.use_omega_conditioning:
-            # Omega conditioning only
+        elif not self.is_transformer and self.use_omega_conditioning:
+            # Omega conditioning only (UNet)
             from medgen.data.score_aug import ScoreAugModelWrapper
             wrapper = ScoreAugModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
             if self.is_main_process:
@@ -325,8 +351,8 @@ class DiffusionTrainer:
             self.model = wrapper
             self.model_raw = wrapper
 
-        elif self.use_mode_embedding:
-            # Mode embedding only
+        elif not self.is_transformer and self.use_mode_embedding:
+            # Mode embedding only (UNet)
             from medgen.data.mode_embed import ModeEmbedModelWrapper
             wrapper = ModeEmbedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
             if self.is_main_process:
@@ -1173,18 +1199,26 @@ class DiffusionTrainer:
                         }
 
                 # Quality metrics (MS-SSIM, PSNR, optionally LPIPS) on predicted vs ground truth
-                if isinstance(predicted_clean, dict):
+                # Decode to pixel space for latent diffusion (metrics must be in pixel space)
+                if self.space.scale_factor > 1:
+                    metrics_pred = self.space.decode_batch(predicted_clean)
+                    metrics_gt = self.space.decode_batch(images)
+                else:
+                    metrics_pred = predicted_clean
+                    metrics_gt = images
+
+                if isinstance(metrics_pred, dict):
                     # Dual/multi mode: compute per-channel AND average metrics
-                    keys = list(predicted_clean.keys())
+                    keys = list(metrics_pred.keys())
                     channel_msssim = {}
                     channel_psnr = {}
                     channel_lpips = {}
 
                     for key in keys:
-                        channel_msssim[key] = compute_msssim(predicted_clean[key], images[key])
-                        channel_psnr[key] = compute_psnr(predicted_clean[key], images[key])
+                        channel_msssim[key] = compute_msssim(metrics_pred[key], metrics_gt[key])
+                        channel_psnr[key] = compute_psnr(metrics_pred[key], metrics_gt[key])
                         if self.metrics.log_lpips:
-                            channel_lpips[key] = compute_lpips(predicted_clean[key], images[key], self.device)
+                            channel_lpips[key] = compute_lpips(metrics_pred[key], metrics_gt[key], self.device)
 
                         # Accumulate per-channel metrics
                         if key not in per_channel_metrics:
@@ -1200,10 +1234,10 @@ class DiffusionTrainer:
                     psnr_val = sum(channel_psnr.values()) / len(keys)
                     lpips_val = sum(channel_lpips.values()) / len(keys) if self.metrics.log_lpips else 0.0
                 else:
-                    msssim_val = compute_msssim(predicted_clean, images)
-                    psnr_val = compute_psnr(predicted_clean, images)
+                    msssim_val = compute_msssim(metrics_pred, metrics_gt)
+                    psnr_val = compute_psnr(metrics_pred, metrics_gt)
                     if self.metrics.log_lpips:
-                        lpips_val = compute_lpips(predicted_clean, images, self.device)
+                        lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
                     else:
                         lpips_val = 0.0
 
@@ -1317,11 +1351,19 @@ class DiffusionTrainer:
                         prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
+                    # Decode to pixel space for latent diffusion (metrics must be in pixel space)
+                    if self.space.scale_factor > 1:
+                        metrics_pred = self.space.decode(predicted_clean)
+                        metrics_gt = self.space.decode(images)
+                    else:
+                        metrics_pred = predicted_clean
+                        metrics_gt = images
+
                     # Compute metrics
-                    total_psnr += compute_psnr(predicted_clean, images)
+                    total_psnr += compute_psnr(metrics_pred, metrics_gt)
                     if self.metrics.log_lpips:
-                        total_lpips += compute_lpips(predicted_clean, images, device=self.device)
-                    total_msssim += compute_msssim(predicted_clean, images)
+                        total_lpips += compute_lpips(metrics_pred, metrics_gt, device=self.device)
+                    total_msssim += compute_msssim(metrics_pred, metrics_gt)
 
                     # Regional tracking (tumor vs background)
                     if regional_tracker is not None and labels is not None:
@@ -1563,22 +1605,30 @@ class DiffusionTrainer:
                 loss_val = mse_loss.item()
                 total_mse += loss_val
 
-                if isinstance(predicted_clean, dict):
-                    keys = list(predicted_clean.keys())
-                    msssim_val = (compute_msssim(predicted_clean[keys[0]], images[keys[0]]) +
-                                  compute_msssim(predicted_clean[keys[1]], images[keys[1]])) / 2
-                    psnr_val = (compute_psnr(predicted_clean[keys[0]], images[keys[0]]) +
-                                compute_psnr(predicted_clean[keys[1]], images[keys[1]])) / 2
+                # Decode to pixel space for latent diffusion (metrics must be in pixel space)
+                if self.space.scale_factor > 1:
+                    metrics_pred = self.space.decode_batch(predicted_clean)
+                    metrics_gt = self.space.decode_batch(images)
+                else:
+                    metrics_pred = predicted_clean
+                    metrics_gt = images
+
+                if isinstance(metrics_pred, dict):
+                    keys = list(metrics_pred.keys())
+                    msssim_val = (compute_msssim(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
+                                  compute_msssim(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
+                    psnr_val = (compute_psnr(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
+                                compute_psnr(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
                     if self.metrics.log_lpips:
-                        lpips_val = (compute_lpips(predicted_clean[keys[0]], images[keys[0]], self.device) +
-                                     compute_lpips(predicted_clean[keys[1]], images[keys[1]], self.device)) / 2
+                        lpips_val = (compute_lpips(metrics_pred[keys[0]], metrics_gt[keys[0]], self.device) +
+                                     compute_lpips(metrics_pred[keys[1]], metrics_gt[keys[1]], self.device)) / 2
                     else:
                         lpips_val = 0.0
                 else:
-                    msssim_val = compute_msssim(predicted_clean, images)
-                    psnr_val = compute_psnr(predicted_clean, images)
+                    msssim_val = compute_msssim(metrics_pred, metrics_gt)
+                    psnr_val = compute_psnr(metrics_pred, metrics_gt)
                     if self.metrics.log_lpips:
-                        lpips_val = compute_lpips(predicted_clean, images, self.device)
+                        lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
                     else:
                         lpips_val = 0.0
 

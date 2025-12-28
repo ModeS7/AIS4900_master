@@ -1,0 +1,25 @@
+# SiT 3D (Scalable Interpolant Transformer for Volumes) Configuration
+#
+# 3D Transformer-based diffusion model for volumetric data.
+# Override via CLI: python -m medgen.scripts.train model=sit_3d model.variant=B
+#
+# Note: 3D has higher memory requirements. Consider using:
+#   - Smaller variants (S or B)
+#   - Gradient checkpointing
+#   - Smaller input sizes in latent space
+
+type: sit                            # Model type (sit for transformer)
+spatial_dims: 3                      # 3D volumes
+image_size: 32                       # Spatial size (e.g., latent 256/8)
+depth_size: 20                       # Depth size (e.g., latent 160/8)
+patch_size: 2                        # Patch size (2 or 4)
+variant: B                           # Model variant: S, B, L, XL
+mlp_ratio: 4.0                       # MLP expansion ratio
+conditioning: concat                 # Conditioning mode: concat or cross_attn
+drop_rate: 0.0                       # Dropout rate
+
+# UNet fallback fields (for compatibility, not used by SiT)
+channels: [128, 256, 256]
+attention_levels: [false, true, true]
+num_res_blocks: 1
+num_head_channels: 256
