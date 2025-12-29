@@ -16,7 +16,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp7 3D VAE Multi-Modality 256x256x160 (8x compression) ==="
+echo "=== Exp7 3D VAE Multi-Modality 128x128x160 (8x compression) ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -32,7 +32,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-# Exp7: 3D VAE 256x256x160, all modalities, pure VAE (no GAN)
+# Exp7: 3D VAE 128x128x160, all modalities, pure VAE (no GAN)
 time python -m medgen.scripts.train_vae_3d \
     paths=cluster \
     mode=multi_modality \
@@ -40,6 +40,8 @@ time python -m medgen.scripts.train_vae_3d \
     training.batch_size=1 \
     training.gradient_checkpointing=true \
     vae_3d.adv_weight=0 \
-    training.name=exp7_
+    volume.height=128 \
+    volume.width=128 \
+    training.name=exp7_128x128x160_
 
 conda deactivate
