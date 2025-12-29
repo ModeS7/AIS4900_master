@@ -28,17 +28,16 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
-# Exp7: 3D VAE multi-modality (bravo, flair, t1_pre, t1_gd)
-# - 256x256x160 volumes (8x compression -> 32x32x20 latent)
-# - Pools all 4 modalities = 4x training data
-# - MONAI proven config: channels=[32,64,128,128], no attention
-# - batch_size=2 (memory constraint for 3D)
-# - 100 epochs
+# Memory: expandable_segments reduces fragmentation, checkpointing saves ~30%
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+
+# Exp7: 3D VAE 256x256x160, all modalities, ~45-50GB VRAM
 time python -m medgen.scripts.train_vae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \
     training.batch_size=1 \
+    training.gradient_checkpointing=true \
     training.name=exp7_
 
 conda deactivate

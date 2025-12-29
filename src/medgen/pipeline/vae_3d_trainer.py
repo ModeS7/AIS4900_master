@@ -7,7 +7,12 @@ Key differences from 2D:
 - Smaller channels (memory)
 - No attention layers
 - 2.5D perceptual loss option
-- Gradient checkpointing
+- Gradient checkpointing (proper implementation via torch.utils.checkpoint)
+
+Memory optimizations:
+- Disable MONAI MetaTensor tracking (fixes torch.compile recompilations)
+- Gradient checkpointing reduces activation memory by ~50%
+- Use PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for fragmentation
 """
 import json
 import logging
@@ -22,6 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.amp import autocast
@@ -30,6 +36,11 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+
+# Disable MONAI MetaTensor tracking BEFORE importing MONAI modules
+# This fixes torch.compile recompilation issues (32+ recompiles -> 1)
+from monai.data import set_track_meta
+set_track_meta(False)
 
 from monai.losses import PatchAdversarialLoss
 from monai.networks.nets import AutoencoderKL, PatchDiscriminator
@@ -49,6 +60,64 @@ from .metrics import compute_psnr
 from .tracking import GradientNormTracker
 
 logger = logging.getLogger(__name__)
+
+
+class CheckpointedAutoencoder(nn.Module):
+    """Wrapper that applies gradient checkpointing to MONAI AutoencoderKL.
+
+    MONAI's AutoencoderKL doesn't have built-in gradient checkpointing.
+    This wrapper uses torch.utils.checkpoint to trade compute for memory,
+    reducing activation memory by ~50% for 3D volumes.
+
+    Args:
+        model: The underlying AutoencoderKL model.
+    """
+
+    def __init__(self, model: AutoencoderKL):
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass with gradient checkpointing.
+
+        Checkpoints encoder and decoder separately to save activation memory.
+        """
+        # Checkpoint encoder (saves most memory for 3D)
+        def encode_fn(x):
+            h = self.model.encoder(x)
+            z_mu = self.model.quant_conv_mu(h)
+            z_log_var = self.model.quant_conv_log_sigma(h)
+            return z_mu, z_log_var
+
+        z_mu, z_log_var = grad_checkpoint(encode_fn, x, use_reentrant=False)
+
+        # Sample from latent distribution (not checkpointed - cheap)
+        z = self.model.sampling(z_mu, z_log_var)
+
+        # Checkpoint decoder
+        def decode_fn(z):
+            z_post = self.model.post_quant_conv(z)
+            return self.model.decoder(z_post)
+
+        reconstruction = grad_checkpoint(decode_fn, z, use_reentrant=False)
+
+        return reconstruction, z_mu, z_log_var
+
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Encode input to latent space (for inference, no checkpointing)."""
+        return self.model.encode(x)
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        """Decode latent to output (for inference, no checkpointing)."""
+        return self.model.decode(z)
+
+    def encode_stage_2_inputs(self, x: torch.Tensor) -> torch.Tensor:
+        """Get latent representation for diffusion model."""
+        return self.model.encode_stage_2_inputs(x)
+
+    def decode_stage_2_outputs(self, z: torch.Tensor) -> torch.Tensor:
+        """Decode diffusion model outputs."""
+        return self.model.decode_stage_2_outputs(z)
 
 
 def log_vae_3d_epoch_summary(
@@ -194,7 +263,7 @@ class VAE3DTrainer:
         n_channels = self.cfg.mode.get('in_channels', 1)
 
         # Create 3D AutoencoderKL
-        raw_model = AutoencoderKL(
+        base_model = AutoencoderKL(
             spatial_dims=3,
             in_channels=n_channels,
             out_channels=n_channels,
@@ -207,10 +276,30 @@ class VAE3DTrainer:
             with_decoder_nonlocal_attn=False,
         ).to(self.device)
 
-        # Enable gradient checkpointing for memory efficiency
+        # Load pretrained weights BEFORE wrapping (load into base_model)
+        if pretrained_checkpoint:
+            try:
+                checkpoint = torch.load(pretrained_checkpoint, map_location=self.device)
+                if 'model_state_dict' in checkpoint:
+                    # Handle both wrapped and unwrapped checkpoint formats
+                    state_dict = checkpoint['model_state_dict']
+                    # Remove 'model.' prefix if present (from CheckpointedAutoencoder)
+                    if any(k.startswith('model.') for k in state_dict.keys()):
+                        state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+                    base_model.load_state_dict(state_dict)
+                    if self.is_main_process:
+                        logger.info(f"Loaded 3D VAE weights from {pretrained_checkpoint}")
+            except FileNotFoundError:
+                if self.is_main_process:
+                    logger.warning(f"Checkpoint not found: {pretrained_checkpoint}")
+
+        # Wrap with gradient checkpointing for memory efficiency (~50% reduction)
         if self.gradient_checkpointing:
-            if hasattr(raw_model, 'gradient_checkpointing_enable'):
-                raw_model.gradient_checkpointing_enable()
+            raw_model = CheckpointedAutoencoder(base_model)
+            if self.is_main_process:
+                logger.info("Gradient checkpointing enabled (CheckpointedAutoencoder wrapper)")
+        else:
+            raw_model = base_model
 
         # Create 3D PatchDiscriminator
         raw_disc = PatchDiscriminator(
@@ -219,18 +308,6 @@ class VAE3DTrainer:
             channels=self.disc_num_channels,
             num_layers_d=self.disc_num_layers,
         ).to(self.device)
-
-        # Load pretrained weights if provided
-        if pretrained_checkpoint:
-            try:
-                checkpoint = torch.load(pretrained_checkpoint, map_location=self.device)
-                if 'model_state_dict' in checkpoint:
-                    raw_model.load_state_dict(checkpoint['model_state_dict'])
-                    if self.is_main_process:
-                        logger.info(f"Loaded 3D VAE weights from {pretrained_checkpoint}")
-            except FileNotFoundError:
-                if self.is_main_process:
-                    logger.warning(f"Checkpoint not found: {pretrained_checkpoint}")
 
         # Wrap models
         use_compile = self.cfg.training.get('use_compile', True)

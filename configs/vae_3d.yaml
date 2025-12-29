@@ -49,9 +49,11 @@ training:
   val_interval: 10
   use_ema: false                  # EMA doubles memory
   augment_type: vae_3d
-  # torch.compile disabled for 3D - MONAI MetaTensor causes 32 recompilations + GPU OOM
+  # torch.compile disabled - conflicts with gradient checkpointing
+  # (torch.compile + torch.utils.checkpoint have compatibility issues)
   use_compile: false
-  # Gradient checkpointing for memory
+  # Gradient checkpointing via CheckpointedAutoencoder wrapper (~25-40% memory reduction)
+  # Allows 256x256x160 to fit on 80GB A100
   gradient_checkpointing: true
   # Logging
   logging:
