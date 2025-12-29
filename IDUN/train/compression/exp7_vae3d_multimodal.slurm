@@ -38,7 +38,7 @@ time python -m medgen.scripts.train_vae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \
-    training.batch_size=2 \
+    training.batch_size=1 \
     training.name=exp7_
 
 conda deactivate
