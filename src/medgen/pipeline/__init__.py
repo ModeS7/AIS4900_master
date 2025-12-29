@@ -4,6 +4,7 @@ from .trainer import DiffusionTrainer
 from .vae_trainer import VAETrainer
 from .vae_3d_trainer import VAE3DTrainer
 from .vqvae_trainer import VQVAETrainer
+from .vqvae_3d_trainer import VQVAE3DTrainer
 from .progressive_vae_trainer import ProgressiveVAETrainer
 from .plateau_detection import PlateauDetector
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
@@ -36,6 +37,7 @@ __all__ = [
     'VAETrainer',
     'VAE3DTrainer',
     'VQVAETrainer',
+    'VQVAE3DTrainer',
     'ProgressiveVAETrainer',
     'PlateauDetector',
     # Diffusion strategies

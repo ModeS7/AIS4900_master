@@ -1,0 +1,59 @@
+# 3D VQ-VAE Architecture Configuration
+#
+# Vector Quantized VAE for volumetric medical imaging.
+# Key advantages over KL-VAE for 3D:
+# - Lower memory (no mu/logvar branches)
+# - Discrete codebook (simpler latent space for diffusion)
+
+# ============================================================================
+# Vector Quantization Parameters
+# ============================================================================
+num_embeddings: 512              # Codebook size
+embedding_dim: 3                 # Latent channels (matches 2D config)
+commitment_cost: 0.25            # Commitment loss weight
+decay: 0.99                      # EMA decay for codebook updates
+epsilon: 1.0e-5                  # Numerical stability
+
+# ============================================================================
+# Encoder/Decoder Architecture
+# ============================================================================
+# 2 levels for 4x compression: 256->128->64
+channels:
+  - 64
+  - 128
+
+num_res_layers: 2                # Residual blocks per level
+
+num_res_channels:
+  - 64
+  - 128
+
+# Downsampling: stride, kernel_size, dilation, padding
+downsample_parameters:
+  - [2, 4, 1, 1]
+  - [2, 4, 1, 1]
+
+# Upsampling: stride, kernel_size, dilation, padding, output_padding
+upsample_parameters:
+  - [2, 4, 1, 1, 0]
+  - [2, 4, 1, 1, 0]
+
+# ============================================================================
+# Loss Weights
+# ============================================================================
+perceptual_weight: 0.002         # 2.5D perceptual loss weight
+adv_weight: 0.005                # GAN loss weight (set 0 to disable)
+
+# ============================================================================
+# Discriminator (3D PatchGAN)
+# ============================================================================
+disc_lr: 5.0e-4                  # Discriminator learning rate
+disc_num_layers: 3               # PatchDiscriminator depth
+disc_num_channels: 64            # Base channels
+
+# ============================================================================
+# 3D Specific Options
+# ============================================================================
+use_2_5d_perceptual: true        # Use 2.5D perceptual loss (sample slices)
+perceptual_slice_fraction: 0.25  # Fraction of slices for perceptual loss
+disable_gan: false               # Set true for pure VQ-VAE
