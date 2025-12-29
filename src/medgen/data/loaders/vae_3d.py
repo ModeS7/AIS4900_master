@@ -34,7 +34,7 @@ def build_3d_transform(height: int, width: int) -> Compose:
 
     return Compose([
         LoadImage(image_only=True),
-        EnsureChannelFirst(),
+        EnsureChannelFirst(channel_dim="no_channel"),  # NIfTI has no channel dim
         ScaleIntensity(minv=0.0, maxv=1.0),
         Resize(spatial_size=(height, width, -1)),  # Preserve depth
     ])
