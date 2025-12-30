@@ -33,7 +33,11 @@ def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
     """Get MS-SSIM weights based on image size.
 
     MS-SSIM requires minimum image size for each scale (halved at each level).
-    Adjust number of scales based on smallest spatial dimension.
+    With kernel size 11, minimum size = 11 * 2^(num_scales-1) + 1.
+    - 5 scales: 11 * 16 + 1 = 177
+    - 4 scales: 11 * 8 + 1 = 89
+    - 3 scales: 11 * 4 + 1 = 45
+    - 2 scales: 11 * 2 + 1 = 23
 
     Args:
         min_size: Minimum spatial dimension of the image.
@@ -41,14 +45,14 @@ def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
     Returns:
         Tuple of weights for MS-SSIM scales.
     """
-    if min_size >= 160:
-        # 5 scales (default) - needs 160+ pixels
+    if min_size > 176:
+        # 5 scales (default) - needs 177+ pixels
         return (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
-    elif min_size >= 80:
-        # 4 scales - needs 80+ pixels
+    elif min_size > 88:
+        # 4 scales - needs 89+ pixels
         return (0.0448, 0.2856, 0.3001, 0.3695)
-    elif min_size >= 40:
-        # 3 scales - needs 40+ pixels
+    elif min_size > 44:
+        # 3 scales - needs 45+ pixels
         return (0.0448, 0.2856, 0.6696)
     else:
         # 2 scales - minimum for very small images
