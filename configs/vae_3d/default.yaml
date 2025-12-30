@@ -42,6 +42,7 @@ adv_weight: 0.01                  # Adversarial loss weight
 # ============================================================================
 # Discriminator (PatchGAN 3D)
 # ============================================================================
+disable_gan: false                # Set true to skip discriminator entirely (saves ~15GB VRAM)
 disc_lr: 1.0e-4                   # Discriminator learning rate (higher than gen)
 disc_num_layers: 3                # PatchDiscriminator depth
 disc_num_channels: 64             # PatchDiscriminator base channels
