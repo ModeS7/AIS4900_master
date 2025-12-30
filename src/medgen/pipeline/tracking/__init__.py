@@ -9,7 +9,7 @@ This module provides:
 
 from .gradient import GradientNormTracker
 from .flops import FLOPsTracker, measure_model_flops
-from .worst_batch import WorstBatchTracker, create_worst_batch_figure
+from .worst_batch import WorstBatchTracker, create_worst_batch_figure, create_worst_batch_figure_3d
 
 __all__ = [
     'GradientNormTracker',
@@ -17,4 +17,5 @@ __all__ = [
     'measure_model_flops',
     'WorstBatchTracker',
     'create_worst_batch_figure',
+    'create_worst_batch_figure_3d',
 ]

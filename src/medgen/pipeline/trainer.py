@@ -1461,28 +1461,29 @@ class DiffusionTrainer:
                     if is_val_epoch:
                         self._compute_per_modality_validation(epoch)
 
+                    # Generate samples at val_interval
                     if is_val_epoch or (epoch + 1) == self.n_epochs:
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self.visualizer.generate_samples(model_to_use, train_dataset, epoch)
 
-                        model_config = self._get_model_config()
+                    model_config = self._get_model_config()
 
-                        # Latest checkpoint (full with optimizer/scheduler)
+                    # Save checkpoints every epoch
+                    save_full_checkpoint(
+                        self.model_raw, self.optimizer, epoch, self.save_dir, "latest",
+                        model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
+                    )
+
+                    # Use validation loss for best model selection (fallback to train if no val_loader)
+                    loss_for_selection = val_metrics.get('total', avg_loss)
+                    if loss_for_selection < self.best_loss:
+                        self.best_loss = loss_for_selection
                         save_full_checkpoint(
-                            self.model_raw, self.optimizer, epoch, self.save_dir, "latest",
+                            self.model_raw, self.optimizer, epoch, self.save_dir, "best",
                             model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
                         )
-
-                        # Use validation loss for best model selection (fallback to train if no val_loader)
-                        loss_for_selection = val_metrics.get('total', avg_loss)
-                        if loss_for_selection < self.best_loss:
-                            self.best_loss = loss_for_selection
-                            save_full_checkpoint(
-                                self.model_raw, self.optimizer, epoch, self.save_dir, "best",
-                                model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
-                            )
-                            loss_type = "val" if val_metrics else "train"
-                            logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
+                        loss_type = "val" if val_metrics else "train"
+                        logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
 
         finally:
             total_time = time.time() - total_start

@@ -1044,14 +1044,14 @@ class VQVAETrainer:
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
-                    if is_val_epoch or (epoch + 1) == n_epochs:
-                        self._save_vqvae_checkpoint(epoch, "latest")
+                    # Save checkpoints every epoch
+                    self._save_vqvae_checkpoint(epoch, "latest")
 
-                        val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
-                        if val_gen_loss < self.best_loss:
-                            self.best_loss = val_gen_loss
-                            self._save_vqvae_checkpoint(epoch, "best")
-                            logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
+                    val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
+                    if val_gen_loss < self.best_loss:
+                        self.best_loss = val_gen_loss
+                        self._save_vqvae_checkpoint(epoch, "best")
+                        logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
 
                     if early_stop_fn is not None:
                         if early_stop_fn(epoch, avg_losses, val_metrics):

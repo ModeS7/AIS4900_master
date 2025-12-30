@@ -33,13 +33,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Exp7: 3D VAE 128x128x160, all modalities, pure VAE (no GAN)
+# disable_gan=true skips discriminator creation entirely (saves ~15GB VRAM)
 time python -m medgen.scripts.train_vae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \
     training.batch_size=1 \
     training.gradient_checkpointing=true \
-    vae_3d.adv_weight=0 \
+    vae_3d.disable_gan=true \
     volume.height=128 \
     volume.width=128 \
     training.name=exp7_128x128x160_

@@ -290,3 +290,36 @@ def compute_lpips(
     except Exception as e:
         logger.warning(f"LPIPS computation failed: {e}")
         return 0.0
+
+
+def compute_lpips_3d(
+    generated: torch.Tensor,
+    reference: torch.Tensor,
+    device: Optional[torch.device] = None,
+    network_type: str = "radimagenet_resnet50",
+) -> float:
+    """Compute LPIPS slice-by-slice for 3D volumes.
+
+    Since LPIPS uses 2D pretrained networks, this computes LPIPS for each
+    corresponding slice pair (slice 0 vs slice 0, slice 1 vs slice 1, etc.)
+    and averages across all slices.
+
+    Args:
+        generated: Generated volumes [B, C, D, H, W] in [0, 1] range.
+        reference: Reference volumes [B, C, D, H, W] in [0, 1] range.
+        device: Device for computation (defaults to input tensor device).
+        network_type: Pretrained network type (default: radimagenet_resnet50).
+
+    Returns:
+        Average LPIPS score across all slices (lower is better, 0 = identical).
+    """
+    depth = generated.shape[2]
+    total_lpips = 0.0
+
+    for d in range(depth):
+        # Extract 2D slice: [B, C, H, W]
+        gen_slice = generated[:, :, d, :, :]
+        ref_slice = reference[:, :, d, :, :]
+        total_lpips += compute_lpips(gen_slice, ref_slice, device=device, network_type=network_type)
+
+    return total_lpips / depth

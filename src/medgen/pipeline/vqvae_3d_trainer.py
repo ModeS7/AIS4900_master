@@ -16,6 +16,7 @@ from typing import Dict, Optional, Tuple
 
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
@@ -44,8 +45,13 @@ from .utils import (
     get_vram_usage,
     save_full_checkpoint,
 )
-from .metrics import compute_psnr
-from .tracking import GradientNormTracker
+from .metrics import (
+    compute_psnr,
+    compute_lpips_3d,
+    compute_msssim,
+    RegionalMetricsTracker3D,
+)
+from .tracking import GradientNormTracker, FLOPsTracker, create_worst_batch_figure_3d
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +194,11 @@ class VQVAE3DTrainer:
         logging_cfg = cfg.training.get('logging', {})
         self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', True)
+        self.log_msssim: bool = logging_cfg.get('msssim', True)
+        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
+        self.log_flops: bool = logging_cfg.get('flops', True)
+        self.fov_mm: float = cfg.paths.get('fov_mm', 240.0)
 
         # Precision
         self.weight_dtype = torch.bfloat16
@@ -222,6 +233,8 @@ class VQVAE3DTrainer:
 
         # Tracking
         self._grad_norm_tracker = GradientNormTracker()
+        self._grad_norm_tracker_d = GradientNormTracker()
+        self._flops_tracker = FLOPsTracker()
         self.best_loss = float('inf')
 
         # Model placeholders
@@ -386,6 +399,25 @@ class VQVAE3DTrainer:
 
         return total_loss / n_slices
 
+    def _measure_model_flops(self, sample_batch: torch.Tensor, steps_per_epoch: int) -> None:
+        """Measure FLOPs for 3D VQ-VAE forward pass.
+
+        Should be called once at the start of training with a sample batch.
+
+        Args:
+            sample_batch: Sample input tensor [B, C, D, H, W].
+            steps_per_epoch: Number of training steps per epoch.
+        """
+        if not self.log_flops:
+            return
+        self._flops_tracker.measure(
+            model=self.model_raw,
+            sample_input=sample_batch[:1],  # Single sample
+            steps_per_epoch=steps_per_epoch,
+            timesteps=None,  # VQ-VAE has no timesteps
+            is_main_process=self.is_main_process,
+        )
+
     def _prepare_batch(self, batch) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch for training."""
         if isinstance(batch, dict):
@@ -429,7 +461,9 @@ class VQVAE3DTrainer:
 
             d_loss.backward()
             if self.gradient_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.gradient_clip_norm)
+                grad_norm_d = torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.gradient_clip_norm)
+                if self.log_grad_norm and isinstance(grad_norm_d, torch.Tensor):
+                    self._grad_norm_tracker_d.update(grad_norm_d.item())
             self.optimizer_d.step()
 
         # ========== Generator step ==========
@@ -507,49 +541,151 @@ class VQVAE3DTrainer:
         return {k: v / n_batches for k, v in total_losses.items()}
 
     def compute_validation_losses(self, epoch: int) -> Dict[str, float]:
-        """Compute validation metrics."""
+        """Compute comprehensive validation metrics.
+
+        Includes:
+        - All loss components (L1, Perceptual, VQ, Generator)
+        - Quality metrics (PSNR, LPIPS, MS-SSIM)
+        - Regional tumor metrics (tumor/background loss, size categories)
+        - Worst batch visualization (8 worst slices from worst volume)
+        """
         if self.val_loader is None:
             return {}
 
         self.model.eval()
+
+        # Loss accumulators
         total_l1 = 0.0
+        total_perc = 0.0
+        total_vq = 0.0
+        total_gen = 0.0
+
+        # Quality metric accumulators
         total_psnr = 0.0
+        total_lpips = 0.0
+        total_msssim = 0.0
         n_batches = 0
+
+        # Worst batch tracking
+        worst_loss = 0.0
+        worst_batch_data = None
+
+        # Regional tracker
+        regional_tracker = None
+        if self.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker3D(
+                volume_size=(self.volume_height, self.volume_width, self.volume_depth),
+                fov_mm=self.fov_mm,
+                loss_fn='l1',
+                device=self.device,
+            )
 
         with torch.no_grad():
             for batch in self.val_loader:
-                images, _ = self._prepare_batch(batch)
+                images, mask = self._prepare_batch(batch)
 
                 with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstruction, _ = self.model(images)
+                    reconstruction, vq_loss = self.model(images)
 
-                total_l1 += torch.nn.functional.l1_loss(reconstruction, images).item()
+                    # Compute all loss components
+                    l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
 
+                    if self.perceptual_weight > 0 and self.perceptual_loss is not None:
+                        p_loss = self._compute_2_5d_perceptual_loss(reconstruction, images)
+                    else:
+                        p_loss = torch.tensor(0.0, device=self.device)
+
+                    # Total generator loss (matching training)
+                    g_loss = l1_loss + self.perceptual_weight * p_loss + vq_loss
+
+                loss_val = g_loss.item()
+                total_l1 += l1_loss.item()
+                total_perc += p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss
+                total_vq += vq_loss.item()
+                total_gen += loss_val
+
+                # Track worst batch
+                if loss_val > worst_loss:
+                    worst_loss = loss_val
+                    worst_batch_data = {
+                        'original': images.cpu(),
+                        'generated': reconstruction.float().cpu(),
+                        'loss': loss_val,
+                        'loss_breakdown': {
+                            'L1': l1_loss.item(),
+                            'Perc': total_perc,
+                            'VQ': vq_loss.item(),
+                        },
+                    }
+
+                # Quality metrics
                 if self.log_psnr:
-                    for d in range(reconstruction.shape[2]):
-                        total_psnr += compute_psnr(
-                            reconstruction[:, :, d, :, :],
-                            images[:, :, d, :, :]
-                        )
-                    total_psnr /= reconstruction.shape[2]
+                    total_psnr += compute_psnr(reconstruction, images)
+
+                if self.log_lpips:
+                    total_lpips += compute_lpips_3d(reconstruction.float(), images.float(), device=self.device)
+
+                if self.log_msssim:
+                    total_msssim += compute_msssim(reconstruction.float(), images.float(), spatial_dims=3)
+
+                # Regional metrics
+                if regional_tracker is not None and mask is not None:
+                    regional_tracker.update(reconstruction.float(), images.float(), mask)
 
                 n_batches += 1
 
         self.model.train()
 
+        if n_batches == 0:
+            return {}
+
+        # Compute averages
         metrics = {
-            'l1': total_l1 / n_batches if n_batches > 0 else 0,
-            'gen': total_l1 / n_batches if n_batches > 0 else 0,
+            'l1': total_l1 / n_batches,
+            'perc': total_perc / n_batches,
+            'vq': total_vq / n_batches,
+            'gen': total_gen / n_batches,
         }
 
-        if self.log_psnr and n_batches > 0:
+        if self.log_psnr:
             metrics['psnr'] = total_psnr / n_batches
+        if self.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
+        if self.log_msssim:
+            metrics['msssim'] = total_msssim / n_batches
 
-        # Log to TensorBoard
+        # TensorBoard logging
         if self.writer is not None:
-            self.writer.add_scalar('Validation/L1', metrics['l1'], epoch)
+            # Validation losses
+            self.writer.add_scalar('Loss/L1_val', metrics['l1'], epoch)
+            self.writer.add_scalar('Loss/Perceptual_val', metrics['perc'], epoch)
+            self.writer.add_scalar('Loss/VQ_val', metrics['vq'], epoch)
+            self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
+
+            # Quality metrics
             if 'psnr' in metrics:
                 self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            if 'lpips' in metrics:
+                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+            if 'msssim' in metrics:
+                self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
+
+            # Worst batch figure (8 worst slices from worst volume)
+            if worst_batch_data is not None:
+                # Use first volume from batch for visualization
+                fig = create_worst_batch_figure_3d(
+                    original=worst_batch_data['original'][:1],  # [1, C, D, H, W]
+                    generated=worst_batch_data['generated'][:1],
+                    loss=worst_batch_data['loss'],
+                    loss_breakdown=worst_batch_data['loss_breakdown'],
+                    num_slices=8,
+                )
+                self.writer.add_figure('Validation/worst_batch', fig, epoch)
+                plt.close(fig)
+
+            # Regional metrics
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
         return metrics
 
@@ -594,6 +730,12 @@ class VQVAE3DTrainer:
             self.writer.add_scalar('training/grad_norm_g_max', self._grad_norm_tracker.get_max(), epoch)
         self._grad_norm_tracker.reset()
 
+        # Discriminator grad norms (only if GAN enabled)
+        if not self.disable_gan and self._grad_norm_tracker_d.count > 0:
+            self.writer.add_scalar('training/grad_norm_d_avg', self._grad_norm_tracker_d.get_avg(), epoch)
+            self.writer.add_scalar('training/grad_norm_d_max', self._grad_norm_tracker_d.get_max(), epoch)
+        self._grad_norm_tracker_d.reset()
+
     def train(
         self,
         train_loader: DataLoader,
@@ -612,6 +754,12 @@ class VQVAE3DTrainer:
 
         if start_epoch > 0 and self.is_main_process:
             logger.info(f"Resuming from epoch {start_epoch + 1}")
+
+        # Measure FLOPs once at start
+        if self.is_main_process and self.log_flops:
+            sample_batch = next(iter(train_loader))
+            sample_images, _ = self._prepare_batch(sample_batch)
+            self._measure_model_flops(sample_images, len(train_loader))
 
         last_epoch = start_epoch
         try:
@@ -646,19 +794,22 @@ class VQVAE3DTrainer:
 
                         if self.lr_scheduler_g is not None:
                             self.writer.add_scalar('LR/Generator', self.lr_scheduler_g.get_last_lr()[0], epoch)
+                        if not self.disable_gan and self.lr_scheduler_d is not None:
+                            self.writer.add_scalar('LR/Discriminator', self.lr_scheduler_d.get_last_lr()[0], epoch)
 
                         self._log_grad_norms(epoch)
 
-                    # Save checkpoints
-                    is_val_epoch = (epoch + 1) % self.val_interval == 0
-                    if is_val_epoch or (epoch + 1) == n_epochs:
-                        self._save_checkpoint(epoch, "latest")
+                        # Log FLOPs
+                        self._flops_tracker.log_epoch(self.writer, epoch)
 
-                        val_loss = val_metrics.get('gen', avg_losses['gen'])
-                        if val_loss < self.best_loss:
-                            self.best_loss = val_loss
-                            self._save_checkpoint(epoch, "best")
-                            logger.info(f"New best model (val loss: {val_loss:.6f})")
+                    # Save checkpoints every epoch
+                    self._save_checkpoint(epoch, "latest")
+
+                    val_loss = val_metrics.get('gen', avg_losses['gen'])
+                    if val_loss < self.best_loss:
+                        self.best_loss = val_loss
+                        self._save_checkpoint(epoch, "best")
+                        logger.info(f"New best model (val loss: {val_loss:.6f})")
 
         finally:
             total_time = time.time() - total_start

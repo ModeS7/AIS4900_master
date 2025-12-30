@@ -1210,16 +1210,15 @@ class VAETrainer:
 
                     is_val_epoch = (epoch + 1) % self.val_interval == 0
 
-                    if is_val_epoch or (epoch + 1) == n_epochs:
-                        # Save latest checkpoint (for resuming)
-                        self._save_vae_checkpoint(epoch, "latest")
+                    # Save checkpoints every epoch
+                    self._save_vae_checkpoint(epoch, "latest")
 
-                        # Save best checkpoint if validation loss improved
-                        val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
-                        if val_gen_loss < self.best_loss:
-                            self.best_loss = val_gen_loss
-                            self._save_vae_checkpoint(epoch, "best")
-                            logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
+                    # Save best checkpoint if validation loss improved
+                    val_gen_loss = val_metrics.get('gen', avg_losses['gen'])
+                    if val_gen_loss < self.best_loss:
+                        self.best_loss = val_gen_loss
+                        self._save_vae_checkpoint(epoch, "best")
+                        logger.info(f"New best model saved (val G loss: {val_gen_loss:.6f})")
 
                     # Check early stopping condition
                     if early_stop_fn is not None:

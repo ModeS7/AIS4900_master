@@ -46,11 +46,11 @@ training:
   gradient_checkpointing: true    # Saves ~50% memory
   logging:
     grad_norm: true
-    regional_losses: false
-    msssim: false
+    regional_losses: true           # Tumor/background loss tracking
+    msssim: true                    # 3D MS-SSIM (native via MONAI)
     psnr: true
-    lpips: false
-    flops: false
+    lpips: true                     # Slice-by-slice LPIPS
+    flops: true                     # FLOPs per epoch tracking
 
 hydra:
   run:

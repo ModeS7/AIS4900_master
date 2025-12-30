@@ -140,6 +140,84 @@ class WorstBatchTracker:
         plt.close(fig)
 
 
+def create_worst_batch_figure_3d(
+    original: Tensor,
+    generated: Tensor,
+    loss: float,
+    loss_breakdown: Optional[Dict[str, float]] = None,
+    num_slices: int = 8,
+) -> plt.Figure:
+    """Create visualization figure for worst 3D volume.
+
+    Shows the N slices with highest reconstruction error from the worst volume.
+    Layout: 3 rows × num_slices columns (Original, Generated, Difference).
+
+    Args:
+        original: Ground truth volume [1, C, D, H, W] (single worst volume).
+        generated: Generated volume [1, C, D, H, W].
+        loss: Total loss value.
+        loss_breakdown: Optional dict of individual losses.
+        num_slices: Number of worst slices to show. Default: 8.
+
+    Returns:
+        Matplotlib figure.
+    """
+    # Compute per-slice error
+    diff = torch.abs(original.float() - generated.float())
+    # Mean over batch, channel, height, width -> [D]
+    per_slice_error = diff.mean(dim=(0, 1, 3, 4))
+
+    depth = per_slice_error.shape[0]
+    num_slices = min(num_slices, depth)
+
+    # Get indices of top-K worst slices
+    worst_indices = torch.topk(per_slice_error, k=num_slices).indices
+    worst_indices = worst_indices.sort().values  # Sort for visual order
+
+    # Convert to numpy
+    orig_np = original[0, 0].cpu().float().numpy()  # [D, H, W]
+    gen_np = generated[0, 0].cpu().float().numpy()
+    diff_np = diff[0, 0].cpu().float().numpy()
+
+    # Create figure: 3 rows × num_slices columns
+    fig, axes = plt.subplots(3, num_slices, figsize=(2 * num_slices, 6))
+    if num_slices == 1:
+        axes = axes.reshape(3, 1)
+
+    diff_max = diff_np.max()
+
+    for col, slice_idx in enumerate(worst_indices):
+        idx = slice_idx.item()
+
+        # Row 0: Original
+        axes[0, col].imshow(np.clip(orig_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[0, col].set_title(f'Slice {idx}', fontsize=8)
+        axes[0, col].axis('off')
+
+        # Row 1: Generated
+        axes[1, col].imshow(np.clip(gen_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[1, col].axis('off')
+
+        # Row 2: Difference heatmap
+        axes[2, col].imshow(diff_np[idx], cmap='hot', vmin=0, vmax=diff_max)
+        axes[2, col].axis('off')
+
+    # Row labels
+    axes[0, 0].set_ylabel('Original', fontsize=10)
+    axes[1, 0].set_ylabel('Generated', fontsize=10)
+    axes[2, 0].set_ylabel('|Diff|', fontsize=10)
+
+    # Build title
+    title_parts = [f"Worst Volume - Loss: {loss:.4f}"]
+    if loss_breakdown:
+        breakdown_str = ", ".join(f"{k}: {v:.4f}" for k, v in loss_breakdown.items())
+        title_parts.append(f"({breakdown_str})")
+
+    fig.suptitle(" ".join(title_parts), fontsize=10)
+    plt.tight_layout()
+    return fig
+
+
 def create_worst_batch_figure(
     original: Tensor,
     generated: Tensor,
