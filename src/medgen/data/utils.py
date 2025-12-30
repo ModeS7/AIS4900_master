@@ -53,6 +53,10 @@ def extract_slices_single(
     for i in range(len(nifti_dataset)):
         volume, _ = nifti_dataset[i]  # Shape: [1, H, W, D]
 
+        # Convert to numpy if tensor
+        if hasattr(volume, 'numpy'):
+            volume = volume.numpy()
+
         # Extract non-empty slices along depth dimension (axis 3)
         for k in range(volume.shape[3]):
             slice_data = volume[:, :, :, k]
@@ -87,6 +91,10 @@ def extract_slices_dual(
 
     for i in range(len(merged_dataset)):
         volume = merged_dataset[i]  # Shape: [C, H, W, D]
+
+        # Convert to numpy if tensor
+        if hasattr(volume, 'numpy'):
+            volume = volume.numpy()
 
         # Extract slices along depth dimension
         for k in range(volume.shape[3]):
@@ -160,6 +168,12 @@ def extract_slices_single_with_seg(
     for i in range(len(image_dataset)):
         image_volume, image_name = image_dataset[i]  # Shape: [1, H, W, D]
         seg_volume, seg_name = seg_dataset[i]  # Shape: [1, H, W, D]
+
+        # Convert to numpy if tensor
+        if hasattr(image_volume, 'numpy'):
+            image_volume = image_volume.numpy()
+        if hasattr(seg_volume, 'numpy'):
+            seg_volume = seg_volume.numpy()
 
         # Verify same patient
         if image_name != seg_name:

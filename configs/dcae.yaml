@@ -1,0 +1,68 @@
+# DC-AE (Deep Compression Autoencoder) Training Configuration
+#
+# High-compression 2D autoencoder for MRI slice encoding.
+# Based on MIT HAN Lab's DC-AE: https://arxiv.org/abs/2410.10733
+#
+# Key features:
+# - 32× or 64× spatial compression (vs 4-8× for standard VAE)
+# - Residual autoencoding for stable high-compression training
+# - Better reconstruction than SD-VAE-f8 at higher compression
+#
+# Usage:
+#   # Train from scratch with f32 (default)
+#   python -m medgen.scripts.train_dcae
+#
+#   # Fine-tune from pretrained
+#   python -m medgen.scripts.train_dcae dcae.pretrained="mit-han-lab/dc-ae-f32c32-in-1.0-diffusers"
+#
+#   # Use f64 compression
+#   python -m medgen.scripts.train_dcae dcae=f64
+#
+#   # Cluster training
+#   python -m medgen.scripts.train_dcae paths=cluster
+
+defaults:
+  - paths: local
+  - mode: multi_modality  # Single-channel slices from all modalities
+  - dcae: f32  # Default to f32c32 (32× compression)
+  - training: default
+  - _self_
+
+# Model settings (for dataloader compatibility)
+model:
+  image_size: 256
+
+# Checkpoint for resuming training
+pretrained_checkpoint: null
+
+# ============================================================================
+# Training Overrides for DC-AE
+# ============================================================================
+training:
+  epochs: 100
+  batch_size: 16  # 2D slices, can use larger batches
+  learning_rate: 1.0e-4
+  gradient_clip_norm: 1.0
+  warmup_epochs: 5
+  val_interval: 5
+  use_ema: false
+  use_compile: true  # torch.compile works well with DC-AE
+
+  # Training phase (paper uses 3-phase approach)
+  # Phase 1: L1 + Perceptual loss (main training)
+  # Phase 3: Add GAN loss (optional refinement)
+  phase: 1
+
+  # Logging
+  logging:
+    grad_norm: true
+    psnr: true
+    lpips: true
+    msssim: true
+
+hydra:
+  run:
+    dir: ${paths.model_dir}/dcae/${mode.name}/${oc.select:training.name,""}${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/dcae/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

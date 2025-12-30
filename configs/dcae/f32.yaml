@@ -1,0 +1,7 @@
+# DC-AE f32c32: 256×256 → 8×8×32 (32× spatial compression)
+defaults:
+  - default
+
+latent_channels: 32
+compression_ratio: 32
+scaling_factor: 0.3189

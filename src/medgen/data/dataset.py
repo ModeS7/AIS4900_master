@@ -37,7 +37,7 @@ def build_standard_transform(image_size: int) -> Compose:
     """
     return Compose([
         LoadImage(image_only=True),
-        EnsureChannelFirst(),
+        EnsureChannelFirst(channel_dim="no_channel"),
         ToTensor(),
         ScaleIntensity(minv=0.0, maxv=1.0),
         Resize(spatial_size=(image_size, image_size, -1))

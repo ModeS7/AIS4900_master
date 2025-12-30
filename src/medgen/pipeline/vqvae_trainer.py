@@ -1078,3 +1078,217 @@ class VQVAETrainer:
         if self.writer is not None:
             self.writer.close()
             self.writer = None
+
+    def evaluate_test_set(
+        self,
+        test_loader: DataLoader,
+        checkpoint_name: Optional[str] = None
+    ) -> Dict[str, float]:
+        """Evaluate VQ-VAE reconstruction on test set.
+
+        Runs inference on the entire test set and computes metrics:
+        - L1 reconstruction loss
+        - MS-SSIM (Multi-Scale Structural Similarity)
+        - PSNR (Peak Signal-to-Noise Ratio)
+        - LPIPS (Learned Perceptual Image Patch Similarity)
+
+        Results are saved to test_results_{checkpoint_name}.json and logged to TensorBoard.
+
+        Args:
+            test_loader: DataLoader for test set.
+            checkpoint_name: Name of checkpoint to load ("best", "latest", or None
+                for current model state).
+
+        Returns:
+            Dict with test metrics: 'l1', 'msssim', 'psnr', 'lpips', 'n_samples'.
+        """
+        if not self.is_main_process:
+            return {}
+
+        # Load checkpoint if specified
+        if checkpoint_name is not None:
+            checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, map_location=self.device)
+                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
+            else:
+                logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
+                checkpoint_name = "current"
+
+        label = checkpoint_name or "current"
+        logger.info("=" * 60)
+        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
+        logger.info("=" * 60)
+
+        # Use EMA model if available and no checkpoint loaded, otherwise raw model
+        if checkpoint_name is None and self.ema is not None:
+            model_to_use = self.ema.ema_model
+        else:
+            model_to_use = self.model_raw
+        model_to_use.eval()
+
+        # Accumulators for metrics
+        total_l1 = 0.0
+        total_msssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
+        n_samples = 0
+
+        # Initialize regional tracker for test evaluation (if enabled)
+        regional_tracker = None
+        if self.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker(
+                loss_fn='l1',
+                device=self.device,
+            )
+
+        # Worst batch tracking
+        worst_loss = 0.0
+        worst_batch_data = None
+
+        # Store samples for visualization
+        sample_inputs = []
+        sample_outputs = []
+        max_vis_samples = 16
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
+                images, mask = self._prepare_batch(batch)
+                batch_size = images.shape[0]
+
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                    reconstructed, _ = model_to_use(images)
+
+                # Compute metrics
+                l1_loss = torch.abs(reconstructed - images).mean().item()
+                total_l1 += l1_loss
+                if self.log_msssim:
+                    total_msssim += compute_msssim(reconstructed, images)
+                total_psnr += compute_psnr(reconstructed, images)
+                total_lpips += compute_lpips(reconstructed, images, device=self.device)
+
+                # Regional tracking (tumor vs background)
+                if regional_tracker is not None and mask is not None:
+                    regional_tracker.update(reconstructed, images, mask)
+
+                # Track worst batch
+                if l1_loss > worst_loss:
+                    worst_loss = l1_loss
+                    # Convert to dict for dual mode (triggers dual-channel figure)
+                    n_channels = self.cfg.mode.get('in_channels', 1)
+                    if n_channels == 2:
+                        image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+                        orig_dict = {image_keys[0]: images[:, 0:1].cpu(), image_keys[1]: images[:, 1:2].cpu()}
+                        gen_dict = {image_keys[0]: reconstructed[:, 0:1].float().cpu(), image_keys[1]: reconstructed[:, 1:2].float().cpu()}
+                    else:
+                        orig_dict = images.cpu()
+                        gen_dict = reconstructed.float().cpu()
+                    worst_batch_data = {
+                        'original': orig_dict,
+                        'generated': gen_dict,
+                        'loss': l1_loss,
+                    }
+
+                n_batches += 1
+                n_samples += batch_size
+
+                # Collect samples for visualization
+                if len(sample_inputs) < max_vis_samples:
+                    remaining = max_vis_samples - len(sample_inputs)
+                    sample_inputs.append(images[:remaining].cpu())
+                    sample_outputs.append(reconstructed[:remaining].cpu())
+
+        # Compute averages
+        metrics = {
+            'l1': total_l1 / n_batches,
+            'psnr': total_psnr / n_batches,
+            'lpips': total_lpips / n_batches,
+            'n_samples': n_samples,
+        }
+
+        if self.log_msssim:
+            metrics['msssim'] = total_msssim / n_batches
+
+        # Log results
+        logger.info(f"Test Results - {label} ({n_samples} samples):")
+        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
+        if 'msssim' in metrics:
+            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
+        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
+
+        # Save results to JSON (with checkpoint name suffix)
+        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
+        with open(results_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Test results saved to: {results_path}")
+
+        # Log to TensorBoard (with checkpoint name prefix)
+        tb_prefix = f'test_{label}'
+        if self.writer is not None:
+            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+            if 'msssim' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
+
+            # Log regional metrics (tumor vs background)
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
+
+            # Create and save visualization
+            if sample_inputs:
+                all_inputs = torch.cat(sample_inputs, dim=0)[:max_vis_samples]
+                all_outputs = torch.cat(sample_outputs, dim=0)[:max_vis_samples]
+                fig = self._create_test_reconstruction_figure(all_inputs, all_outputs, metrics, label)
+                self.writer.add_figure(f'{tb_prefix}/reconstructions', fig, 0)
+                plt.close(fig)
+
+                # Also save as image file
+                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
+                fig = self._create_test_reconstruction_figure(all_inputs, all_outputs, metrics, label)
+                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Test reconstructions saved to: {fig_path}")
+
+            # Log worst batch figure
+            if worst_batch_data is not None:
+                fig = create_worst_batch_figure(
+                    original=worst_batch_data['original'],
+                    generated=worst_batch_data['generated'],
+                    loss=worst_batch_data['loss'],
+                )
+                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
+                plt.close(fig)
+
+        model_to_use.train()
+        return metrics
+
+    def _create_test_reconstruction_figure(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        metrics: Dict[str, float],
+        label: str = "test"
+    ) -> plt.Figure:
+        """Create test set reconstruction comparison figure.
+
+        Uses shared create_reconstruction_figure for consistent visualization.
+
+        Args:
+            original: Original images [N, C, H, W].
+            reconstructed: Reconstructed images [N, C, H, W].
+            metrics: Dict with test metrics for title.
+            label: Checkpoint label for title (e.g., "best", "latest").
+
+        Returns:
+            Matplotlib figure.
+        """
+        return create_reconstruction_figure(
+            original=original,
+            reconstructed=reconstructed,
+            title=f"VQ-VAE Test Reconstructions ({label})",
+            metrics=metrics,
+        )

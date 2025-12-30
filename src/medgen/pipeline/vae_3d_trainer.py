@@ -789,10 +789,26 @@ class VAE3DTrainer:
         val_loader: Optional[DataLoader] = None,
         start_epoch: int = 0,
         max_epochs: Optional[int] = None,
+        per_modality_val_loaders: Optional[Dict[str, DataLoader]] = None,
     ) -> int:
-        """Execute training loop."""
+        """Execute training loop.
+
+        Args:
+            train_loader: Training data loader.
+            train_dataset: Training dataset.
+            val_loader: Optional validation data loader.
+            start_epoch: Epoch to start from (for resuming training).
+            max_epochs: Maximum epochs to train (overrides self.n_epochs if provided).
+            per_modality_val_loaders: Optional dict mapping modality names to
+                separate validation loaders for per-modality metric tracking.
+                e.g., {'bravo': loader, 't1_pre': loader, 't1_gd': loader}
+
+        Returns:
+            The last completed epoch number.
+        """
         n_epochs = max_epochs if max_epochs is not None else self.n_epochs
         self.val_loader = val_loader
+        self.per_modality_val_loaders = per_modality_val_loaders
         total_start = time.time()
 
         avg_losses = {'gen': float('inf'), 'disc': float('inf'), 'recon': float('inf'),
@@ -827,6 +843,10 @@ class VAE3DTrainer:
 
                 if self.is_main_process:
                     val_metrics = self.compute_validation_losses(epoch)
+
+                    # Per-modality validation (if loaders provided)
+                    self._compute_per_modality_validation(epoch)
+
                     log_vae_3d_epoch_summary(epoch, n_epochs, avg_losses, val_metrics, epoch_time)
 
                     # TensorBoard logging
@@ -879,3 +899,321 @@ class VAE3DTrainer:
         if self.writer is not None:
             self.writer.close()
             self.writer = None
+
+    def _compute_per_modality_validation(self, epoch: int) -> None:
+        """Compute and log validation metrics for each modality separately.
+
+        For multi-modality training, this logs PSNR, LPIPS, MS-SSIM and regional
+        metrics for each modality (bravo, t1_pre, t1_gd) to compare with
+        single-modality experiments.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if not hasattr(self, 'per_modality_val_loaders') or not self.per_modality_val_loaders:
+            return
+
+        model_to_eval = self.model_raw
+        model_to_eval.eval()
+
+        for modality, loader in self.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim = 0.0
+            n_batches = 0
+
+            # Initialize regional tracker for this modality
+            regional_tracker = None
+            if self.log_regional_losses:
+                regional_tracker = RegionalMetricsTracker3D(
+                    loss_fn='l1',
+                    device=self.device,
+                )
+
+            with torch.no_grad():
+                for batch in loader:
+                    images, mask = self._prepare_batch(batch)
+
+                    with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                        reconstruction, _, _ = model_to_eval(images)
+
+                    # Compute metrics
+                    if self.log_psnr:
+                        total_psnr += compute_psnr(reconstruction, images)
+                    if self.log_lpips:
+                        total_lpips += compute_lpips_3d(reconstruction, images, device=self.device)
+                    if self.log_msssim:
+                        total_msssim += compute_msssim(reconstruction, images)
+
+                    # Regional tracking (tumor vs background)
+                    if regional_tracker is not None and mask is not None:
+                        regional_tracker.update(reconstruction.float(), images.float(), mask)
+
+                    n_batches += 1
+
+            # Compute averages and log
+            if n_batches > 0 and self.writer is not None:
+                if self.log_psnr:
+                    avg_psnr = total_psnr / n_batches
+                    self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
+                if self.log_lpips:
+                    avg_lpips = total_lpips / n_batches
+                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+                if self.log_msssim:
+                    avg_msssim = total_msssim / n_batches
+                    self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+
+                # Log regional metrics for this modality
+                if regional_tracker is not None:
+                    regional_tracker.log_to_tensorboard(
+                        self.writer, epoch, prefix=f'regional_{modality}'
+                    )
+
+        model_to_eval.train()
+
+    def evaluate_test(
+        self,
+        test_loader: DataLoader,
+        checkpoint_name: Optional[str] = None,
+    ) -> Dict[str, float]:
+        """Evaluate model on test set with comprehensive metrics.
+
+        Args:
+            test_loader: Test data loader.
+            checkpoint_name: Which checkpoint to load ('best', 'latest', or None for current).
+
+        Returns:
+            Dict with test metrics.
+        """
+        if not self.is_main_process:
+            return {}
+
+        # Load checkpoint if specified
+        if checkpoint_name is not None:
+            checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
+            if os.path.exists(checkpoint_path):
+                checkpoint = torch.load(checkpoint_path, map_location=self.device)
+                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
+            else:
+                logger.warning(f"Checkpoint {checkpoint_path} not found, using current model state")
+                checkpoint_name = "current"
+
+        label = checkpoint_name or "current"
+        logger.info("=" * 60)
+        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
+        logger.info("=" * 60)
+
+        model_to_use = self.model_raw
+        model_to_use.eval()
+
+        # Accumulators for metrics
+        total_l1 = 0.0
+        total_msssim = 0.0
+        total_psnr = 0.0
+        total_lpips = 0.0
+        n_batches = 0
+        n_samples = 0
+
+        # Initialize regional tracker for test evaluation (if enabled)
+        regional_tracker = None
+        if self.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker3D(
+                loss_fn='l1',
+                device=self.device,
+            )
+
+        # Worst batch tracking
+        worst_loss = 0.0
+        worst_batch_data = None
+
+        # Store samples for visualization
+        sample_inputs = []
+        sample_outputs = []
+        max_vis_samples = 4  # Fewer samples for 3D (memory)
+
+        with torch.no_grad():
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
+                images, mask = self._prepare_batch(batch)
+                batch_size = images.shape[0]
+
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                    reconstruction, _, _ = model_to_use(images)
+
+                # Compute metrics
+                l1_loss = torch.abs(reconstruction - images).mean().item()
+                total_l1 += l1_loss
+                if self.log_msssim:
+                    total_msssim += compute_msssim(reconstruction, images)
+                if self.log_psnr:
+                    total_psnr += compute_psnr(reconstruction, images)
+                if self.log_lpips:
+                    total_lpips += compute_lpips_3d(reconstruction, images, device=self.device)
+
+                # Regional tracking (tumor vs background)
+                if regional_tracker is not None and mask is not None:
+                    regional_tracker.update(reconstruction.float(), images.float(), mask)
+
+                # Track worst batch
+                if l1_loss > worst_loss:
+                    worst_loss = l1_loss
+                    worst_batch_data = {
+                        'original': images.cpu(),
+                        'generated': reconstruction.float().cpu(),
+                        'loss': l1_loss,
+                    }
+
+                n_batches += 1
+                n_samples += batch_size
+
+                # Collect samples for visualization
+                if len(sample_inputs) < max_vis_samples:
+                    remaining = max_vis_samples - len(sample_inputs)
+                    sample_inputs.append(images[:remaining].cpu())
+                    sample_outputs.append(reconstruction[:remaining].float().cpu())
+
+        # Compute averages
+        metrics = {
+            'l1': total_l1 / n_batches,
+            'n_samples': n_samples,
+        }
+        if self.log_psnr:
+            metrics['psnr'] = total_psnr / n_batches
+        if self.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
+        if self.log_msssim:
+            metrics['msssim'] = total_msssim / n_batches
+
+        # Log results
+        logger.info(f"Test Results - {label} ({n_samples} samples):")
+        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
+        if 'msssim' in metrics:
+            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+        if 'psnr' in metrics:
+            logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
+        if 'lpips' in metrics:
+            logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
+
+        # Save results to JSON (with checkpoint name suffix)
+        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
+        with open(results_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Test results saved to: {results_path}")
+
+        # Log to TensorBoard (with checkpoint name prefix)
+        tb_prefix = f'test_{label}'
+        if self.writer is not None:
+            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
+            if 'psnr' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
+            if 'lpips' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+            if 'msssim' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
+
+            # Log regional metrics (tumor vs background)
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
+
+            # Log worst batch figure
+            if worst_batch_data is not None:
+                fig = create_worst_batch_figure_3d(
+                    original=worst_batch_data['original'],
+                    generated=worst_batch_data['generated'],
+                    loss=worst_batch_data['loss'],
+                )
+                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
+                plt.close(fig)
+
+            # Create and save reconstruction visualization
+            if sample_inputs:
+                all_inputs = torch.cat(sample_inputs, dim=0)[:max_vis_samples]
+                all_outputs = torch.cat(sample_outputs, dim=0)[:max_vis_samples]
+                fig = self._create_test_reconstruction_figure_3d(all_inputs, all_outputs, metrics, label)
+                self.writer.add_figure(f'{tb_prefix}/reconstructions', fig, 0)
+                plt.close(fig)
+
+                # Also save as image file
+                fig_path = os.path.join(self.save_dir, f'test_reconstructions_{label}.png')
+                fig = self._create_test_reconstruction_figure_3d(all_inputs, all_outputs, metrics, label)
+                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"Test reconstructions saved to: {fig_path}")
+
+        model_to_use.train()
+        return metrics
+
+    def _create_test_reconstruction_figure_3d(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        metrics: Dict[str, float],
+        label: str = "test",
+        num_slices: int = 5,
+    ) -> plt.Figure:
+        """Create test set reconstruction comparison figure for 3D volumes.
+
+        Shows central slices from multiple samples in a grid.
+        Layout: samples × (num_slices × 2) with original/reconstructed pairs.
+
+        Args:
+            original: Original volumes [N, C, D, H, W].
+            reconstructed: Reconstructed volumes [N, C, D, H, W].
+            metrics: Dict with test metrics for title.
+            label: Checkpoint label for title (e.g., "best", "latest").
+            num_slices: Number of slices to show per sample.
+
+        Returns:
+            Matplotlib figure.
+        """
+        n_samples = min(original.shape[0], 4)  # Max 4 samples
+        depth = original.shape[2]
+
+        # Select evenly spaced slices
+        slice_indices = np.linspace(depth // 4, 3 * depth // 4, num_slices, dtype=int)
+
+        # Create figure: n_samples rows × (num_slices * 2) columns
+        fig, axes = plt.subplots(n_samples * 2, num_slices, figsize=(2 * num_slices, 4 * n_samples))
+        if n_samples == 1 and num_slices == 1:
+            axes = np.array([[axes]])
+        elif n_samples == 1:
+            axes = axes.reshape(2, num_slices)
+        elif num_slices == 1:
+            axes = axes.reshape(n_samples * 2, 1)
+
+        for sample_idx in range(n_samples):
+            orig_np = original[sample_idx, 0].cpu().float().numpy()  # [D, H, W]
+            recon_np = reconstructed[sample_idx, 0].cpu().float().numpy()
+
+            for col, slice_idx in enumerate(slice_indices):
+                # Original row
+                row_orig = sample_idx * 2
+                axes[row_orig, col].imshow(np.clip(orig_np[slice_idx], 0, 1), cmap='gray', vmin=0, vmax=1)
+                axes[row_orig, col].axis('off')
+                if col == 0:
+                    axes[row_orig, col].set_ylabel(f'Sample {sample_idx}\nOriginal', fontsize=8)
+                if sample_idx == 0:
+                    axes[row_orig, col].set_title(f'Slice {slice_idx}', fontsize=8)
+
+                # Reconstructed row
+                row_recon = sample_idx * 2 + 1
+                axes[row_recon, col].imshow(np.clip(recon_np[slice_idx], 0, 1), cmap='gray', vmin=0, vmax=1)
+                axes[row_recon, col].axis('off')
+                if col == 0:
+                    axes[row_recon, col].set_ylabel('Recon', fontsize=8)
+
+        # Build title with metrics
+        title_parts = [f"3D VAE Test Reconstructions ({label})"]
+        metric_strs = []
+        if 'psnr' in metrics:
+            metric_strs.append(f"PSNR: {metrics['psnr']:.2f}")
+        if 'lpips' in metrics:
+            metric_strs.append(f"LPIPS: {metrics['lpips']:.4f}")
+        if 'msssim' in metrics:
+            metric_strs.append(f"MS-SSIM: {metrics['msssim']:.4f}")
+        if metric_strs:
+            title_parts.append(f"({', '.join(metric_strs)})")
+
+        fig.suptitle(" ".join(title_parts), fontsize=10)
+        plt.tight_layout()
+        return fig

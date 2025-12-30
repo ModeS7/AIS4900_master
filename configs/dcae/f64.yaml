@@ -1,0 +1,7 @@
+# DC-AE f64c128: 256×256 → 4×4×128 (64× spatial compression)
+defaults:
+  - default
+
+latent_channels: 128
+compression_ratio: 64
+scaling_factor: 0.2889

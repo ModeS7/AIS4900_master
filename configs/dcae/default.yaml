@@ -1,0 +1,40 @@
+# DC-AE default architecture configuration
+# Shared by all compression variants (f32, f64)
+#
+# Based on MIT HAN Lab's Deep Compression Autoencoder
+# Paper: https://arxiv.org/abs/2410.10733
+
+# Input/output channels
+in_channels: 1  # Grayscale MRI
+image_size: 256  # Input image size
+
+# Pretrained model (null = train from scratch)
+# Options:
+#   - null: Random initialization
+#   - "mit-han-lab/dc-ae-f32c32-in-1.0-diffusers": ImageNet f32
+#   - "mit-han-lab/dc-ae-f64c128-in-1.0-diffusers": ImageNet f64
+pretrained: null
+
+# Loss weights (Phase 1: L1 + Perceptual, no GAN)
+l1_weight: 1.0
+perceptual_weight: 0.1
+adv_weight: 0.0  # Set >0 for Phase 3 GAN training
+
+# Architecture (shared across f32/f64)
+encoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]
+decoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]
+encoder_layers_per_block: [2, 2, 2, 3, 3, 3]
+decoder_layers_per_block: [3, 3, 3, 3, 3, 3]
+encoder_qkv_multiscales: [[], [], [], [5], [5], [5]]
+decoder_qkv_multiscales: [[], [], [], [5], [5], [5]]
+encoder_block_types: ResBlock
+decoder_block_types: ResBlock
+downsample_block_type: pixel_unshuffle
+upsample_block_type: pixel_shuffle
+encoder_out_shortcut: true
+decoder_in_shortcut: true
+
+# Compression-specific (override in f32.yaml / f64.yaml)
+latent_channels: 32
+compression_ratio: 32
+scaling_factor: 0.3189
