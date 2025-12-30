@@ -59,9 +59,9 @@ training:
   logging:
     grad_norm: true
     regional_losses: false        # Disable for 3D (memory)
-    msssim: false                 # 3D MS-SSIM expensive
+    msssim: true                  # 3D MS-SSIM via MONAI
     psnr: true
-    lpips: false                  # 2D only
+    lpips: true                   # Slice-by-slice LPIPS (160 slices ~6s)
     flops: false                  # 3D measurement slow
 
 hydra:

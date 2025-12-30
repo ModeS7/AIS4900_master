@@ -362,19 +362,3 @@ def apply_augmentation(
     return output
 
 
-# =============================================================================
-# Legacy API (backward compatibility)
-# =============================================================================
-
-def build_augmentation(enabled: bool = True) -> Optional[A.Compose]:
-    """Build augmentation pipeline (defaults to diffusion-style).
-
-    DEPRECATED: Use build_diffusion_augmentation or build_vae_augmentation.
-
-    Args:
-        enabled: Whether to enable augmentation.
-
-    Returns:
-        Albumentations Compose object, or None if disabled.
-    """
-    return build_diffusion_augmentation(enabled)

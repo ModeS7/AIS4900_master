@@ -2,7 +2,6 @@
 
 from .augmentation import (
     apply_augmentation,
-    build_augmentation,
     build_diffusion_augmentation,
     build_vae_augmentation,
     create_vae_collate_fn,
@@ -58,7 +57,6 @@ __all__ = [
     'validate_modality_exists',
     # Augmentation
     'apply_augmentation',
-    'build_augmentation',
     'build_diffusion_augmentation',
     'build_vae_augmentation',
     'create_vae_collate_fn',

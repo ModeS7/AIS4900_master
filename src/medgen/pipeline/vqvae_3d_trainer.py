@@ -606,7 +606,7 @@ class VQVAE3DTrainer:
 
                 loss_val = g_loss.item()
                 total_l1 += l1_loss.item()
-                total_perc += p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss
+                total_perc += p_loss.item()
                 total_vq += vq_loss.item()
                 total_gen += loss_val
 

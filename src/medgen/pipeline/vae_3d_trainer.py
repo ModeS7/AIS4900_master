@@ -36,6 +36,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from ema_pytorch import EMA
 
 # Disable MONAI MetaTensor tracking BEFORE importing MONAI modules
 # This fixes torch.compile recompilation issues (32+ recompiles -> 1)
@@ -176,6 +177,7 @@ class VAE3DTrainer:
         self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.use_ema: bool = cfg.training.get('use_ema', False)
+        self.ema_decay: float = cfg.training.ema.get('decay', 0.999) if self.use_ema else 0.999
 
         # Volume dimensions
         self.volume_depth: int = cfg.volume.get('depth', 160)
@@ -370,6 +372,18 @@ class VAE3DTrainer:
         if not self.disable_gan:
             self.adv_loss = PatchAdversarialLoss(criterion="least_squares")
 
+        # Create EMA wrapper if enabled (for generator only)
+        # WARNING: EMA doubles memory usage for 3D models
+        if self.use_ema:
+            self.ema = EMA(
+                self.model_raw,
+                beta=self.ema_decay,
+                update_after_step=self.cfg.training.ema.get('update_after_step', 100),
+                update_every=self.cfg.training.ema.get('update_every', 10),
+            )
+            if self.is_main_process:
+                logger.warning(f"EMA enabled with decay={self.ema_decay} - this doubles memory for 3D models!")
+
         # Save config
         if self.is_main_process:
             config_path = os.path.join(self.save_dir, "config.yaml")
@@ -467,7 +481,7 @@ class VAE3DTrainer:
 
         return images, mask
 
-    def train_step(self, batch, epoch: int) -> Dict[str, float]:
+    def train_step(self, batch) -> Dict[str, float]:
         """Execute single training step."""
         images, _ = self._prepare_batch(batch)
 
@@ -536,13 +550,17 @@ class VAE3DTrainer:
                     self._grad_norm_tracker_d.update(grad_norm_d.item())
             self.optimizer_d.step()
 
+        # Update EMA
+        if self.ema is not None:
+            self.ema.update()
+
         return {
             'gen': g_loss.item(),
-            'disc': d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+            'disc': d_loss.item(),
             'recon': l1_loss.item(),
-            'perc': p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
+            'perc': p_loss.item(),
             'kl': kl_loss.item(),
-            'adv': adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            'adv': adv_loss.item(),
         }
 
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict[str, float]:
@@ -558,7 +576,7 @@ class VAE3DTrainer:
         disable_pbar = not self.is_main_process or self.is_cluster
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=disable_pbar)
         for batch in pbar:
-            losses = self.train_step(batch, epoch)
+            losses = self.train_step(batch)
 
             for key in total_losses:
                 total_losses[key] += losses[key]
@@ -594,7 +612,9 @@ class VAE3DTrainer:
         if self.val_loader is None:
             return {}
 
-        self.model.eval()
+        # Use EMA model for validation if available
+        model_to_eval = self.ema.ema_model if self.ema is not None else self.model
+        model_to_eval.eval()
 
         # Loss accumulators
         total_l1 = 0.0
@@ -627,7 +647,7 @@ class VAE3DTrainer:
                 images, mask = self._prepare_batch(batch)
 
                 with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstruction, mean, logvar = self.model(images)
+                    reconstruction, mean, logvar = model_to_eval(images)
 
                     # Compute all loss components
                     l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
@@ -644,7 +664,7 @@ class VAE3DTrainer:
 
                 loss_val = g_loss.item()
                 total_l1 += l1_loss.item()
-                total_perc += p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss
+                total_perc += p_loss.item()
                 total_kl += kl_loss.item()
                 total_gen += loss_val
 
