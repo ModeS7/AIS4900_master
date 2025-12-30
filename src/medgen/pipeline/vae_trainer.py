@@ -1316,7 +1316,7 @@ class VAETrainer:
         max_vis_samples = 16
 
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 images, mask = self._prepare_batch(batch)  # mask for regional tracking
                 batch_size = images.shape[0]
 

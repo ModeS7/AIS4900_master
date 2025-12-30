@@ -1571,7 +1571,7 @@ class DiffusionTrainer:
         worst_batch_data: Optional[Dict[str, Any]] = None
 
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100):
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')

@@ -213,6 +213,9 @@ class VQVAE3DTrainer:
             self.rank: int = 0
             self.world_size: int = 1
 
+        # Cluster mode (disable progress bars)
+        self.is_cluster: bool = (cfg.paths.name == "cluster")
+
         # Initialize directories
         if self.is_main_process:
             try:
@@ -520,7 +523,9 @@ class VQVAE3DTrainer:
         total_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'vq': 0, 'adv': 0}
         n_batches = 0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not self.is_main_process)
+        # Disable progress bar on cluster (too much log output)
+        disable_pbar = not self.is_main_process or self.is_cluster
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=disable_pbar)
         for batch in pbar:
             losses = self.train_step(batch)
 
@@ -528,11 +533,12 @@ class VQVAE3DTrainer:
                 total_losses[key] += losses[key]
             n_batches += 1
 
-            pbar.set_postfix({
-                'G': f"{losses['gen']:.4f}",
-                'VQ': f"{losses['vq']:.4f}",
-                'L1': f"{losses['recon']:.4f}",
-            })
+            if not disable_pbar:
+                pbar.set_postfix({
+                    'G': f"{losses['gen']:.4f}",
+                    'VQ': f"{losses['vq']:.4f}",
+                    'L1': f"{losses['recon']:.4f}",
+                })
 
             # Log VRAM on first batch
             if epoch == 0 and n_batches == 1 and self.is_main_process:

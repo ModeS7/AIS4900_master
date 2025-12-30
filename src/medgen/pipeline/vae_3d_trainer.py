@@ -229,6 +229,9 @@ class VAE3DTrainer:
             self.rank: int = 0
             self.world_size: int = 1
 
+        # Cluster mode (disable progress bars)
+        self.is_cluster: bool = (cfg.paths.name == "cluster")
+
         # Initialize directories
         if self.is_main_process:
             try:
@@ -551,7 +554,9 @@ class VAE3DTrainer:
         total_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
         n_batches = 0
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=not self.is_main_process)
+        # Disable progress bar on cluster (too much log output)
+        disable_pbar = not self.is_main_process or self.is_cluster
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=disable_pbar)
         for batch in pbar:
             losses = self.train_step(batch, epoch)
 
@@ -560,18 +565,19 @@ class VAE3DTrainer:
             n_batches += 1
 
             # Progress bar shows disc loss only if GAN enabled
-            if not self.disable_gan:
-                pbar.set_postfix({
-                    'G': f"{losses['gen']:.4f}",
-                    'D': f"{losses['disc']:.4f}",
-                    'L1': f"{losses['recon']:.4f}",
-                })
-            else:
-                pbar.set_postfix({
-                    'G': f"{losses['gen']:.4f}",
-                    'L1': f"{losses['recon']:.4f}",
-                    'KL': f"{losses['kl']:.4f}",
-                })
+            if not disable_pbar:
+                if not self.disable_gan:
+                    pbar.set_postfix({
+                        'G': f"{losses['gen']:.4f}",
+                        'D': f"{losses['disc']:.4f}",
+                        'L1': f"{losses['recon']:.4f}",
+                    })
+                else:
+                    pbar.set_postfix({
+                        'G': f"{losses['gen']:.4f}",
+                        'L1': f"{losses['recon']:.4f}",
+                        'KL': f"{losses['kl']:.4f}",
+                    })
 
         # Average losses
         return {k: v / n_batches for k, v in total_losses.items()}
