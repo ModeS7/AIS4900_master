@@ -827,12 +827,18 @@ class DCAETrainer:
         try:
             from .tracking import measure_model_flops
 
-            # Wrap model for FLOPs measurement
-            def forward_fn(x):
-                latent = self.model_raw.encode(x, return_dict=False)[0]
-                return self.model_raw.decode(latent, return_dict=False)[0]
+            # Wrap DC-AE forward in a simple module for FLOPs measurement
+            class DCAEForward(nn.Module):
+                def __init__(self, model):
+                    super().__init__()
+                    self.model = model
 
-            gflops = measure_model_flops(forward_fn, sample_images[:1])
+                def forward(self, x):
+                    latent = self.model.encode(x, return_dict=False)[0]
+                    return self.model.decode(latent, return_dict=False)[0]
+
+            wrapper = DCAEForward(self.model_raw)
+            gflops = measure_model_flops(wrapper, sample_images[:1])
             if gflops > 0 and self.writer is not None:
                 self.writer.add_scalar('model/gflops_per_sample', gflops, 0)
                 logger.info(f"Model FLOPs: {gflops:.2f} GFLOPs/sample")
