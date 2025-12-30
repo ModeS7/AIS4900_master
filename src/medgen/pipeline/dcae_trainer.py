@@ -179,7 +179,7 @@ class DCAETrainer:
                 exp_name = cfg.training.get('name', '')
                 mode_name = cfg.mode.get('name', 'multi_modality')
                 self.save_dir = os.path.join(
-                    cfg.paths.model_dir, 'dcae', mode_name,
+                    cfg.paths.model_dir, 'compression_2d', mode_name,
                     f"{exp_name}{self.image_size}_{timestamp}"
                 )
 
