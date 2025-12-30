@@ -33,13 +33,12 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Exp9.2: DC-AE f64c128 - 64x spatial compression
 # Input: 256x256x1 -> Latent: 4x4x128
-# Model: 362M parameters, pretrained on ImageNet
+# Model: 362M parameters, train from scratch
 # Phase 1 training: L1 + Perceptual loss (no GAN)
 time python -m medgen.scripts.train_dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f64 \
-    dcae.pretrained="mit-han-lab/dc-ae-f64c128-in-1.0-diffusers" \
     training.epochs=100 \
     training.batch_size=16 \
     training.learning_rate=1e-4 \
