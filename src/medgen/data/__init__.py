@@ -44,9 +44,12 @@ from .loaders import (
     create_vae_3d_test_dataloader,
     create_vae_3d_multi_modality_dataloader,
     create_vae_3d_multi_modality_validation_dataloader,
+    create_vae_3d_multi_modality_test_dataloader,
+    create_vae_3d_single_modality_validation_loader,
     Volume3DDataset,
     DualVolume3DDataset,
     MultiModality3DDataset,
+    SingleModality3DDatasetWithSeg,
 )
 
 __all__ = [
@@ -98,9 +101,12 @@ __all__ = [
     'create_vae_3d_test_dataloader',
     'create_vae_3d_multi_modality_dataloader',
     'create_vae_3d_multi_modality_validation_dataloader',
+    'create_vae_3d_multi_modality_test_dataloader',
+    'create_vae_3d_single_modality_validation_loader',
     'Volume3DDataset',
     'DualVolume3DDataset',
     'MultiModality3DDataset',
+    'SingleModality3DDatasetWithSeg',
     # Mode embedding
     'ModeEmbedModelWrapper',
     'ModeTimeEmbed',

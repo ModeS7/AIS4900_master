@@ -619,7 +619,7 @@ class VQVAE3DTrainer:
                         'loss': loss_val,
                         'loss_breakdown': {
                             'L1': l1_loss.item(),
-                            'Perc': total_perc,
+                            'Perc': p_loss.item(),
                             'VQ': vq_loss.item(),
                         },
                     }
@@ -696,7 +696,7 @@ class VQVAE3DTrainer:
         return metrics
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
-        """Save checkpoint."""
+        """Save checkpoint with full model config for reproducibility."""
         if not self.is_main_process:
             return
 
@@ -714,7 +714,26 @@ class VQVAE3DTrainer:
             'commitment_cost': self.commitment_cost,
             'decay': self.decay,
             'epsilon': self.epsilon,
+            'spatial_dims': 3,
         }
+
+        # Build extra state for VQ-VAE specific components
+        extra_state = {
+            'disable_gan': self.disable_gan,
+        }
+
+        # Add discriminator state if GAN is enabled
+        if not self.disable_gan and self.discriminator_raw is not None:
+            extra_state['discriminator_state_dict'] = self.discriminator_raw.state_dict()
+            extra_state['disc_config'] = {
+                'in_channels': n_channels,
+                'channels': self.disc_num_channels,
+                'num_layers_d': self.disc_num_layers,
+            }
+            if self.optimizer_d is not None:
+                extra_state['optimizer_d_state_dict'] = self.optimizer_d.state_dict()
+            if self.lr_scheduler_d is not None:
+                extra_state['scheduler_d_state_dict'] = self.lr_scheduler_d.state_dict()
 
         save_full_checkpoint(
             model=self.model_raw,
@@ -724,6 +743,7 @@ class VQVAE3DTrainer:
             filename=name,
             model_config=model_config,
             scheduler=self.lr_scheduler_g,
+            extra_state=extra_state,
         )
 
     def _log_grad_norms(self, epoch: int) -> None:

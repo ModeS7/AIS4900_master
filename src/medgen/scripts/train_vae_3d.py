@@ -32,6 +32,8 @@ from medgen.data import (
     create_vae_3d_test_dataloader,
     create_vae_3d_multi_modality_dataloader,
     create_vae_3d_multi_modality_validation_dataloader,
+    create_vae_3d_multi_modality_test_dataloader,
+    create_vae_3d_single_modality_validation_loader,
 )
 from medgen.pipeline import VAE3DTrainer
 
@@ -168,6 +170,18 @@ def main(cfg: DictConfig) -> None:
     else:
         log.info("No val/ directory found - using train samples for validation")
 
+    # Create per-modality validation loaders for multi_modality mode
+    per_modality_val_loaders = {}
+    if is_multi_modality:
+        image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+        for modality_name in image_keys:
+            loader = create_vae_3d_single_modality_validation_loader(cfg, modality_name)
+            if loader is not None:
+                per_modality_val_loaders[modality_name] = loader
+                log.info(f"  Per-modality 3D validation for {modality_name}: {len(loader.dataset)} volumes")
+        if per_modality_val_loaders:
+            log.info(f"Created {len(per_modality_val_loaders)} per-modality validation loaders")
+
     # Setup model
     pretrained_checkpoint = cfg.get('pretrained_checkpoint', None)
     if pretrained_checkpoint:
@@ -179,15 +193,20 @@ def main(cfg: DictConfig) -> None:
         dataloader,
         train_dataset,
         val_loader=val_loader,
+        per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None,
     )
 
     # Test evaluation
-    test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
+    if is_multi_modality:
+        test_result = create_vae_3d_multi_modality_test_dataloader(cfg=cfg)
+    else:
+        test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
+
     if test_result is not None:
         test_loader, test_dataset = test_result
         log.info(f"Test dataset: {len(test_dataset)} volumes")
-        # Note: evaluate_test_set needs to be implemented in VAE3DTrainer
-        # trainer.evaluate_test_set(test_loader, checkpoint_name="best")
+        trainer.evaluate_test(test_loader, checkpoint_name="best")
+        trainer.evaluate_test(test_loader, checkpoint_name="latest")
     else:
         log.info("No test_new/ directory found - skipping test evaluation")
 
