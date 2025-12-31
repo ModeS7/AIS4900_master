@@ -964,6 +964,8 @@ class VAE3DTrainer:
             regional_tracker = None
             if self.log_regional_losses:
                 regional_tracker = RegionalMetricsTracker3D(
+                    volume_size=(self.volume_height, self.volume_width, self.volume_depth),
+                    fov_mm=self.fov_mm,
                     loss_fn='l1',
                     device=self.device,
                 )
@@ -1057,6 +1059,8 @@ class VAE3DTrainer:
         regional_tracker = None
         if self.log_regional_losses:
             regional_tracker = RegionalMetricsTracker3D(
+                volume_size=(self.volume_height, self.volume_width, self.volume_depth),
+                fov_mm=self.fov_mm,
                 loss_fn='l1',
                 device=self.device,
             )
