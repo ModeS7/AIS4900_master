@@ -19,14 +19,21 @@ logger = logging.getLogger(__name__)
 _msssim_cache: dict = {}
 _lpips_cache: dict = {}
 
-# Rate-limit MS-SSIM NaN warnings (avoid log spam)
+# Rate-limit NaN warnings (avoid log spam)
 _msssim_nan_warned: bool = False
+_lpips_nan_warned: bool = False
 
 
 def reset_msssim_nan_warning() -> None:
     """Reset MS-SSIM NaN warning flag. Call at start of each validation run."""
     global _msssim_nan_warned
     _msssim_nan_warned = False
+
+
+def reset_lpips_nan_warning() -> None:
+    """Reset LPIPS NaN warning flag. Call at start of each validation run."""
+    global _lpips_nan_warned
+    _lpips_nan_warned = False
 
 
 def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
@@ -289,7 +296,15 @@ def compute_lpips(
                     total_lpips += metric(gen_ch, ref_ch)
                 result = total_lpips / num_channels
 
-            return float(result.item())
+            # Handle NaN values (can occur with edge cases)
+            if isinstance(result, torch.Tensor) and torch.isnan(result).any():
+                global _lpips_nan_warned
+                if not _lpips_nan_warned:
+                    logger.warning("LPIPS returned NaN values, replacing with 0 (logging once per validation)")
+                    _lpips_nan_warned = True
+                result = torch.nan_to_num(result, nan=0.0)
+
+            return float(result.item()) if isinstance(result, torch.Tensor) else float(result)
 
     except Exception as e:
         logger.warning(f"LPIPS computation failed: {e}")

@@ -118,6 +118,9 @@ def main(cfg: DictConfig) -> None:
         start_epoch=start_epoch,
     )
 
+    # Cleanup
+    trainer.close_writer()
+
 
 if __name__ == "__main__":
     main()

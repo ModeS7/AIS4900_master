@@ -527,11 +527,13 @@ class VAE3DTrainer:
         if self.gradient_clip_norm > 0:
             grad_norm_g = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
         else:
-            grad_norm_g = 0.0
+            # Compute gradient norm without clipping for tracking
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float('inf'))
 
         # Track gradient norms
-        if self.log_grad_norm and isinstance(grad_norm_g, torch.Tensor):
-            self._grad_norm_tracker.update(grad_norm_g.item())
+        if self.log_grad_norm:
+            grad_value = grad_norm_g.item() if isinstance(grad_norm_g, torch.Tensor) else grad_norm_g
+            self._grad_norm_tracker.update(grad_value)
 
         self.optimizer_g.step()
 

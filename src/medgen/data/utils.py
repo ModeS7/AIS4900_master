@@ -217,6 +217,9 @@ def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
     Raises:
         ValueError: If datasets have different lengths or patient mismatch.
     """
+    if not datasets_dict:
+        raise ValueError("datasets_dict is empty, cannot merge sequences")
+
     sequence_keys = list(datasets_dict.keys())
     num_patients = len(datasets_dict[sequence_keys[0]])
 

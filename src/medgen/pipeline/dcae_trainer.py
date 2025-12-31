@@ -58,7 +58,6 @@ from .metrics import (
 )
 from .tracking import (
     GradientNormTracker,
-    FLOPsTracker,
     create_worst_batch_figure,
 )
 
@@ -224,7 +223,6 @@ class DCAETrainer:
         self._grad_tracker_d = GradientNormTracker()
 
         # FLOPs tracking
-        self._flops_tracker: Optional[FLOPsTracker] = None
         self._flops_logged: bool = False
 
         # Validation loader
@@ -920,8 +918,6 @@ class DCAETrainer:
         total_time = time.time() - training_start
         if self.is_main_process:
             logger.info(f"Training complete in {total_time/3600:.2f} hours")
-            if self.writer is not None:
-                self.writer.close()
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint."""
@@ -1147,3 +1143,9 @@ class DCAETrainer:
             title=f"DC-AE Test Reconstructions ({label})",
             metrics=metrics,
         )
+
+    def close_writer(self) -> None:
+        """Close TensorBoard writer. Call after all logging is complete."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None

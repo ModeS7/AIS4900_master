@@ -335,10 +335,10 @@ class VQVAE3DTrainer:
                 is_main_process=False,
             )
 
-        # Optimizers
-        self.optimizer_g = AdamW(self.model.parameters(), lr=self.learning_rate)
+        # Optimizers (use raw models to avoid DDP wrapper issues)
+        self.optimizer_g = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
         if not self.disable_gan:
-            self.optimizer_d = AdamW(self.discriminator.parameters(), lr=self.disc_lr)
+            self.optimizer_d = AdamW(self.discriminator_raw.parameters(), lr=self.disc_lr)
 
         # Schedulers
         self.lr_scheduler_g = create_warmup_cosine_scheduler(
@@ -470,8 +470,11 @@ class VQVAE3DTrainer:
             d_loss.backward()
             if self.gradient_clip_norm > 0:
                 grad_norm_d = torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), self.gradient_clip_norm)
-                if self.log_grad_norm and isinstance(grad_norm_d, torch.Tensor):
-                    self._grad_norm_tracker_d.update(grad_norm_d.item())
+            else:
+                grad_norm_d = torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), float('inf'))
+            if self.log_grad_norm:
+                grad_value = grad_norm_d.item() if isinstance(grad_norm_d, torch.Tensor) else grad_norm_d
+                self._grad_norm_tracker_d.update(grad_value)
             self.optimizer_d.step()
 
         # ========== Generator step ==========
@@ -505,8 +508,11 @@ class VQVAE3DTrainer:
         g_loss.backward()
         if self.gradient_clip_norm > 0:
             grad_norm_g = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip_norm)
-            if self.log_grad_norm and isinstance(grad_norm_g, torch.Tensor):
-                self._grad_norm_tracker.update(grad_norm_g.item())
+        else:
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float('inf'))
+        if self.log_grad_norm:
+            grad_value = grad_norm_g.item() if isinstance(grad_norm_g, torch.Tensor) else grad_norm_g
+            self._grad_norm_tracker.update(grad_value)
 
         self.optimizer_g.step()
 

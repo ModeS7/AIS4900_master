@@ -279,6 +279,11 @@ class MetricsTracker:
             if self.grad_norm_sum is None:
                 self.grad_norm_sum = torch.tensor(0.0, device=self.device)
                 self.grad_norm_max = torch.tensor(0.0, device=self.device)
+            # Ensure grad_norm is on correct device (clip_grad_norm_ returns CPU tensor)
+            if isinstance(grad_norm, torch.Tensor):
+                grad_norm = grad_norm.to(self.device)
+            else:
+                grad_norm = torch.tensor(grad_norm, device=self.device)
             self.grad_norm_sum = self.grad_norm_sum + grad_norm
             self.grad_norm_max = torch.maximum(self.grad_norm_max, grad_norm)
             self.grad_norm_count += 1
@@ -571,14 +576,14 @@ class MetricsTracker:
         with open(filepath, 'w') as f:
             json.dump(all_data, f, indent=2)
 
-        # Reset accumulators
-        self.tumor_loss_sum = torch.tensor(0.0, device=self.device)
-        self.tumor_loss_count = torch.tensor(0, device=self.device, dtype=torch.long)
-        self.bg_loss_sum = torch.tensor(0.0, device=self.device)
-        self.bg_loss_count = torch.tensor(0, device=self.device, dtype=torch.long)
+        # Reset accumulators (zero existing tensors to avoid memory allocation)
+        self.tumor_loss_sum.zero_()
+        self.tumor_loss_count.zero_()
+        self.bg_loss_sum.zero_()
+        self.bg_loss_count.zero_()
         for size in self.tumor_size_thresholds.keys():
-            self.tumor_size_loss_sum[size] = torch.tensor(0.0, device=self.device)
-            self.tumor_size_loss_count[size] = torch.tensor(0, device=self.device, dtype=torch.long)
+            self.tumor_size_loss_sum[size].zero_()
+            self.tumor_size_loss_count[size].zero_()
 
     def _log_timestep_region_losses(self, epoch: int) -> None:
         """Log 2D heatmap of loss by timestep bin and region."""
