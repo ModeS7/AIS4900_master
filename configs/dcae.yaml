@@ -44,7 +44,7 @@ training:
   learning_rate: 1.0e-4
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  val_interval: 5
+  # num_validations: 20 from default.yaml gives 5 validations for 100 epochs
   use_ema: false
   use_compile: true  # torch.compile works well with DC-AE
 

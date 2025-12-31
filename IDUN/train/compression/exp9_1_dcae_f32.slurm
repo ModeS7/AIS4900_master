@@ -35,14 +35,14 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 -> Latent: 8x8x32
 # Model: 362M parameters, train from scratch
 # Phase 1 training: L1 + Perceptual loss (no GAN)
+# num_validations=20 from default.yaml (125 epochs / 20 = val every 6 epochs)
 time python -m medgen.scripts.train_dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f32 \
-    training.epochs=100 \
+    training.epochs=125 \
     training.batch_size=16 \
     training.learning_rate=1e-4 \
-    training.val_interval=5 \
     training.use_compile=false \
     training.name=exp9_f32_
 

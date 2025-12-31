@@ -147,7 +147,12 @@ class VQVAE3DTrainer:
         self.learning_rate: float = cfg.training.get('learning_rate', 5e-5)
         self.disc_lr: float = cfg.vqvae_3d.get('disc_lr', 5e-4)
         self.warmup_epochs: int = cfg.training.warmup_epochs
-        self.val_interval: int = cfg.training.val_interval
+        # Compute val_interval: num_validations takes priority over val_interval
+        num_validations = cfg.training.get('num_validations', None)
+        if num_validations and num_validations > 0:
+            self.val_interval: int = max(1, self.n_epochs // num_validations)
+        else:
+            self.val_interval: int = cfg.training.val_interval
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
 
         # Volume dimensions
