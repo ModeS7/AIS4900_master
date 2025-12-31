@@ -318,6 +318,9 @@ def compute_lpips_3d(
         Average LPIPS score across all slices (lower is better, 0 = identical).
     """
     depth = generated.shape[2]
+    if depth == 0:
+        return 0.0
+
     total_lpips = 0.0
 
     for d in range(depth):

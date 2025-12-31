@@ -528,8 +528,12 @@ class MetricsTracker:
         if tumor_count == 0:
             return
 
+        bg_count = self.bg_loss_count.item()
+        if bg_count == 0:
+            return
+
         avg_tumor_loss = (self.tumor_loss_sum / tumor_count).item()
-        avg_bg_loss = (self.bg_loss_sum / self.bg_loss_count).item()
+        avg_bg_loss = (self.bg_loss_sum / bg_count).item()
         tumor_bg_ratio = avg_tumor_loss / (avg_bg_loss + 1e-8)
 
         size_losses = {}
