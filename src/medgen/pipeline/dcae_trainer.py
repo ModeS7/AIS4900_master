@@ -605,14 +605,10 @@ class DCAETrainer:
                 self.writer.add_scalar('LR/Discriminator', self.optimizer_d.param_groups[0]['lr'], epoch)
 
             if self.log_grad_norm:
-                avg_norm, max_norm = self._grad_tracker_g.compute()
-                self.writer.add_scalar('training/grad_norm_g_avg', avg_norm, epoch)
-                self.writer.add_scalar('training/grad_norm_g_max', max_norm, epoch)
+                self._grad_tracker_g.log(self.writer, epoch, prefix='training/grad_norm_g')
 
                 if not self.disable_gan:
-                    avg_norm_d, max_norm_d = self._grad_tracker_d.compute()
-                    self.writer.add_scalar('training/grad_norm_d_avg', avg_norm_d, epoch)
-                    self.writer.add_scalar('training/grad_norm_d_max', max_norm_d, epoch)
+                    self._grad_tracker_d.log(self.writer, epoch, prefix='training/grad_norm_d')
 
         return avg_losses
 
