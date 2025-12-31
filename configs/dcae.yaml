@@ -53,12 +53,14 @@ training:
   # Phase 3: Add GAN loss (optional refinement)
   phase: 1
 
-  # Logging
+  # Logging (all enabled for consistent tracking)
   logging:
     grad_norm: true
+    regional_losses: true     # Tumor/background tracking
     psnr: true
     lpips: true
     msssim: true
+    flops: true
 
 hydra:
   run:

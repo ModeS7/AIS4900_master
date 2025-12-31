@@ -39,7 +39,7 @@ training:
   learning_rate: 5.0e-5           # Lower LR for 3D
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  val_interval: 10
+  # num_validations: 20 from default.yaml (125 epochs / 20 = val every 6 epochs)
   use_ema: false                  # EMA doubles memory
   augment_type: vae_3d
   use_compile: false              # Disabled for 3D (memory)

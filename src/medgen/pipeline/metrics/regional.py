@@ -156,9 +156,10 @@ class RegionalMetricsTracker:
             # Get region properties including Feret diameter
             regions = regionprops(labeled)
 
-            # Track background loss for this sample
+            # Compute background loss (defer adding until we confirm valid tumor)
             bg_mask_np = ~mask_np
             bg_pixels = bg_mask_np.sum()
+            bg_loss_value = None
             if bg_pixels > 0:
                 bg_mask_tensor = torch.from_numpy(bg_mask_np).to(error_i.device).float()
                 # Average over channels then over spatial
@@ -167,8 +168,7 @@ class RegionalMetricsTracker:
                     error_mean = error_i.mean(dim=0)
                 else:
                     error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
-                bg_loss = (error_mean * bg_mask_tensor).sum() / bg_pixels
-                self.bg_loss_sum += bg_loss.item()
+                bg_loss_value = ((error_mean * bg_mask_tensor).sum() / bg_pixels).item()
 
             sample_has_valid_tumor = False
 
@@ -207,6 +207,9 @@ class RegionalMetricsTracker:
 
             if sample_has_valid_tumor:
                 self.count += 1  # Count samples with valid tumors
+                # Only add background loss for samples with valid tumors
+                if bg_loss_value is not None:
+                    self.bg_loss_sum += bg_loss_value
 
     def compute(self) -> Dict[str, float]:
         """Compute final metrics after all batches processed.

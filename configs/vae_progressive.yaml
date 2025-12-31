@@ -67,7 +67,7 @@ training:
   learning_rate: 1.0e-4
   gradient_clip_norm: 1.0
   warmup_epochs: 3           # Per phase warmup
-  val_interval: 5
+  # num_validations: 20 from default.yaml
   use_ema: false
   # VAE-specific augmentation (aggressive + batch-level)
   augment_type: vae         # Aggressive augmentation (noise, blur, scale, elastic)
@@ -80,20 +80,20 @@ training:
     update_after_step: 100
     update_every: 10
   use_multi_gpu: false
-  # Disable unused logging options for faster training
+  # Logging (all enabled for consistent tracking)
   logging:
-    grad_norm: false
-    timestep_losses: false
-    regional_losses: false
-    timestep_region_losses: false
+    grad_norm: true
+    timestep_losses: false    # N/A for VAE
+    regional_losses: true     # Tumor/background tracking
+    timestep_region_losses: false  # N/A for VAE
     msssim: true
     psnr: true
     lpips: true
-    boundary_sharpness: false
-    intermediate_steps: false
-    worst_batch: false
+    boundary_sharpness: false  # N/A for VAE
+    intermediate_steps: false  # N/A for VAE
+    worst_batch: true
     num_intermediate_steps: 5
-    flops: false
+    flops: true
 
 # Hydra configuration
 # Output structure: runs/compression_2d/progressive/{name}{timestamp}/

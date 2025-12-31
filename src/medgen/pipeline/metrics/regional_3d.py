@@ -169,12 +169,12 @@ class RegionalMetricsTracker3D:
             if num_tumors == 0:
                 continue
 
-            # Compute background loss for this volume
+            # Compute background loss (defer adding until we confirm valid tumor)
             bg_mask_3d = ~mask_3d
             bg_voxels = bg_mask_3d.sum()
+            bg_loss_value = None
             if bg_voxels > 0:
-                bg_loss = (error_mean * bg_mask_3d).sum() / bg_voxels
-                self.bg_loss_sum += bg_loss
+                bg_loss_value = (error_mean * bg_mask_3d).sum() / bg_voxels
 
             sample_has_valid_tumor = False
 
@@ -224,6 +224,9 @@ class RegionalMetricsTracker3D:
 
             if sample_has_valid_tumor:
                 self.count += 1
+                # Only add background loss for samples with valid tumors
+                if bg_loss_value is not None:
+                    self.bg_loss_sum += bg_loss_value
 
     def compute(self) -> Dict[str, float]:
         """Compute final metrics after all batches processed.

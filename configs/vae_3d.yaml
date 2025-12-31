@@ -46,7 +46,7 @@ training:
   learning_rate: 5.0e-5           # Lower LR for 3D (MONAI recommendation)
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  val_interval: 10
+  # num_validations: 20 from default.yaml (125 epochs / 20 = val every 6 epochs)
   use_ema: false                  # EMA doubles memory
   augment_type: vae_3d
   # torch.compile disabled - conflicts with gradient checkpointing
@@ -55,14 +55,14 @@ training:
   # Gradient checkpointing via CheckpointedAutoencoder wrapper (~25-40% memory reduction)
   # Allows 256x256x160 to fit on 80GB A100
   gradient_checkpointing: true
-  # Logging
+  # Logging (inherits most from default.yaml)
   logging:
     grad_norm: true
-    regional_losses: false        # Disable for 3D (memory)
+    regional_losses: true         # Tumor/background loss tracking
     msssim: true                  # 3D MS-SSIM via MONAI
     psnr: true
     lpips: true                   # Slice-by-slice LPIPS (160 slices ~6s)
-    flops: false                  # 3D measurement slow
+    flops: true                   # FLOPs per sample tracking
 
 hydra:
   run:

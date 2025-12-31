@@ -38,7 +38,7 @@ training:
   learning_rate: 1.0e-4     # Generator learning rate (MONAI default)
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  val_interval: 10
+  # num_validations: 20 from default.yaml (100 epochs / 20 = val every 5 epochs)
   use_ema: false
   # VAE-specific augmentation (aggressive + batch-level)
   augment_type: vae         # Aggressive augmentation (noise, blur, scale, elastic)

@@ -130,6 +130,7 @@ class DualVolume3DDataset(Dataset):
         pad_depth_to: Target depth after padding.
         pad_mode: Padding mode ('replicate' or 'constant').
         slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
+        load_seg: Whether to load segmentation masks for regional metrics.
     """
 
     def __init__(
@@ -140,11 +141,13 @@ class DualVolume3DDataset(Dataset):
         pad_depth_to: int = 160,
         pad_mode: str = 'replicate',
         slice_step: int = 1,
+        load_seg: bool = False,
     ) -> None:
         self.data_dir = data_dir
         self.pad_depth_to = pad_depth_to
         self.pad_mode = pad_mode
         self.slice_step = slice_step
+        self.load_seg = load_seg
 
         self.transform = build_3d_transform(height, width)
 
@@ -207,7 +210,24 @@ class DualVolume3DDataset(Dataset):
         # Stack as 2 channels: [2, D, H, W]
         volume = torch.cat([t1_pre, t1_gd], dim=0)
 
-        return {'image': volume, 'patient': patient}
+        result = {'image': volume, 'patient': patient}
+
+        # Optionally load segmentation mask for regional metrics
+        if self.load_seg:
+            seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
+            if os.path.exists(seg_path):
+                seg = self.transform(seg_path)
+                if not isinstance(seg, torch.Tensor):
+                    seg = torch.from_numpy(seg).float()
+                seg = seg.permute(0, 3, 1, 2)
+                if self.slice_step > 1:
+                    seg = seg[:, ::self.slice_step, :, :]
+                seg = self._pad_depth(seg)
+                # Binarize segmentation mask
+                seg = (seg > 0.5).float()
+                result['seg'] = seg
+
+        return result
 
 
 def create_vae_3d_dataloader(
@@ -237,6 +257,10 @@ def create_vae_3d_dataloader(
     slice_step = cfg.volume.get('slice_step', 1)
     batch_size = cfg.training.batch_size
 
+    # Check if regional losses are enabled (need seg for metrics)
+    logging_cfg = cfg.training.get('logging', {})
+    load_seg = logging_cfg.get('regional_losses', False)
+
     if modality == 'dual':
         dataset = DualVolume3DDataset(
             data_dir=data_dir,
@@ -245,6 +269,7 @@ def create_vae_3d_dataloader(
             pad_depth_to=pad_depth_to,
             pad_mode=pad_mode,
             slice_step=slice_step,
+            load_seg=load_seg,
         )
     else:
         dataset = Volume3DDataset(
@@ -302,6 +327,10 @@ def create_vae_3d_validation_dataloader(
     slice_step = cfg.volume.get('slice_step', 1)
     batch_size = cfg.training.batch_size
 
+    # Check if regional losses are enabled (need seg for metrics)
+    logging_cfg = cfg.training.get('logging', {})
+    load_seg = logging_cfg.get('regional_losses', False)
+
     if modality == 'dual':
         dataset = DualVolume3DDataset(
             data_dir=val_dir,
@@ -310,6 +339,7 @@ def create_vae_3d_validation_dataloader(
             pad_depth_to=pad_depth_to,
             pad_mode=pad_mode,
             slice_step=slice_step,
+            load_seg=load_seg,
         )
     else:
         dataset = Volume3DDataset(
@@ -357,6 +387,10 @@ def create_vae_3d_test_dataloader(
     slice_step = cfg.volume.get('slice_step', 1)
     batch_size = cfg.training.batch_size
 
+    # Check if regional losses are enabled (need seg for metrics)
+    logging_cfg = cfg.training.get('logging', {})
+    load_seg = logging_cfg.get('regional_losses', False)
+
     if modality == 'dual':
         dataset = DualVolume3DDataset(
             data_dir=test_dir,
@@ -365,6 +399,7 @@ def create_vae_3d_test_dataloader(
             pad_depth_to=pad_depth_to,
             pad_mode=pad_mode,
             slice_step=slice_step,
+            load_seg=load_seg,
         )
     else:
         dataset = Volume3DDataset(

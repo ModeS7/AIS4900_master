@@ -239,9 +239,11 @@ class VQVAETrainer:
         # Logging config
         logging_cfg = cfg.training.get('logging', {})
         self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
-        self.log_flops: bool = logging_cfg.get('flops', True)
+        self.log_psnr: bool = logging_cfg.get('psnr', True)
+        self.log_lpips: bool = logging_cfg.get('lpips', True)
         self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
+        self.log_flops: bool = logging_cfg.get('flops', True)
 
         # Gradient norm tracking
         self._grad_tracker_g = GradientNormTracker()

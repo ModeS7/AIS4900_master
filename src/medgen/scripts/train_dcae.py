@@ -28,10 +28,11 @@ from medgen.core import ModeType
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from medgen.data import create_vae_dataloader, create_vae_validation_dataloader
+from medgen.data import create_vae_dataloader, create_vae_validation_dataloader, create_vae_test_dataloader
 from medgen.data.loaders.multi_modality import (
     create_multi_modality_dataloader,
     create_multi_modality_validation_dataloader,
+    create_multi_modality_test_dataloader,
 )
 from medgen.pipeline import DCAETrainer
 
@@ -117,6 +118,26 @@ def main(cfg: DictConfig) -> None:
         val_loader=val_loader,
         start_epoch=start_epoch,
     )
+
+    # Run test evaluation if test_new/ directory exists
+    if mode_name == 'multi_modality':
+        test_result = create_multi_modality_test_dataloader(
+            cfg=cfg,
+            image_keys=image_keys,
+            image_size=cfg.dcae.image_size,
+            batch_size=cfg.training.batch_size,
+        )
+    else:
+        test_result = create_vae_test_dataloader(cfg=cfg, modality=mode_name)
+
+    if test_result is not None:
+        test_loader, test_dataset = test_result
+        logger.info(f"Test dataset: {len(test_dataset)} slices")
+        # Evaluate on both best and latest checkpoints
+        trainer.evaluate_test(test_loader, checkpoint_name="best")
+        trainer.evaluate_test(test_loader, checkpoint_name="latest")
+    else:
+        logger.info("No test_new/ directory found - skipping test evaluation")
 
     # Cleanup
     trainer.close_writer()
