@@ -638,7 +638,7 @@ class DCAETrainer:
         regional_tracker = None
         if self.log_regional_losses:
             regional_tracker = RegionalMetricsTracker(
-                image_size=self.cfg.model.image_size,
+                image_size=self.cfg.dcae.image_size,
                 fov_mm=self.cfg.paths.get('fov_mm', 240.0),
                 loss_fn='l1',  # DC-AE uses L1
                 device=self.device,
@@ -770,7 +770,7 @@ class DCAETrainer:
             regional_tracker = None
             if self.log_regional_losses:
                 regional_tracker = RegionalMetricsTracker(
-                    image_size=self.cfg.model.image_size,
+                    image_size=self.cfg.dcae.image_size,
                     fov_mm=self.cfg.paths.get('fov_mm', 240.0),
                     loss_fn='l1',
                     device=self.device,
@@ -992,7 +992,7 @@ class DCAETrainer:
         regional_tracker = None
         if self.log_regional_losses:
             regional_tracker = RegionalMetricsTracker(
-                image_size=self.cfg.model.image_size,
+                image_size=self.cfg.dcae.image_size,
                 fov_mm=self.cfg.paths.get('fov_mm', 240.0),
                 loss_fn='l1',
                 device=self.device,

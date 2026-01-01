@@ -19,6 +19,7 @@ from medgen.data import (
     create_multi_modality_dataloader,
     create_multi_modality_test_dataloader,
     create_multi_modality_validation_dataloader,
+    create_single_modality_validation_loader,
 )
 from medgen.pipeline.plateau_detection import PlateauDetector
 from medgen.pipeline.vae_trainer import VAETrainer
@@ -161,6 +162,19 @@ class ProgressiveVAETrainer:
             val_loader, val_dataset = val_result
             log.info(f"Validation dataset: {len(val_dataset)} slices")
 
+        # Create per-modality validation loaders for individual metrics
+        per_modality_val_loaders = {}
+        for modality in self.image_keys:
+            loader = create_single_modality_validation_loader(
+                cfg=self.cfg,
+                modality=modality,
+                image_size=resolution,
+                batch_size=batch_size
+            )
+            if loader is not None:
+                per_modality_val_loaders[modality] = loader
+                log.info(f"  Per-modality validation for {modality}: {len(loader.dataset)} slices")
+
         # Create modified config for this phase
         phase_cfg = self._create_phase_config(resolution, batch_size, phase_dir)
 
@@ -206,6 +220,7 @@ class ProgressiveVAETrainer:
             val_loader=val_loader,
             max_epochs=max_epochs,
             early_stop_fn=early_stop_fn,
+            per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None,
         )
 
         # Save progressive state checkpoint

@@ -33,6 +33,7 @@ from medgen.data.loaders.multi_modality import (
     create_multi_modality_dataloader,
     create_multi_modality_validation_dataloader,
     create_multi_modality_test_dataloader,
+    create_single_modality_validation_loader,
 )
 from medgen.pipeline import DCAETrainer
 
@@ -106,6 +107,20 @@ def main(cfg: DictConfig) -> None:
     else:
         logger.warning("No validation data found")
 
+    # Create per-modality validation loaders for multi_modality mode
+    per_modality_val_loaders = {}
+    if mode_name == 'multi_modality':
+        for modality_name in image_keys:
+            loader = create_single_modality_validation_loader(
+                cfg=cfg,
+                modality=modality_name,
+                image_size=cfg.dcae.image_size,
+                batch_size=cfg.training.batch_size,
+            )
+            if loader is not None:
+                per_modality_val_loaders[modality_name] = loader
+                logger.info(f"  Per-modality validation for {modality_name}: {len(loader.dataset)} slices")
+
     # Load checkpoint if resuming
     start_epoch = 0
     if cfg.pretrained_checkpoint:
@@ -117,6 +132,7 @@ def main(cfg: DictConfig) -> None:
         train_dataset=train_dataset,
         val_loader=val_loader,
         start_epoch=start_epoch,
+        per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None,
     )
 
     # Run test evaluation if test_new/ directory exists
