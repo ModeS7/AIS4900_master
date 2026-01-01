@@ -1,5 +1,10 @@
 """
-Progressive resolution VAE training.
+Progressive resolution VAE training (DEPRECATED).
+
+.. deprecated::
+    Progressive VAE training is deprecated. Consider using train_vae.py
+    directly at target resolution, or train_vae_3d.py for volumetric training.
+    This module is kept for potential 3D progressive training experiments.
 
 Trains VAE at increasing resolutions (64 -> 128 -> 256) with automatic
 plateau detection for phase transitions. Trains on multiple modalities
@@ -18,6 +23,16 @@ Usage:
         progressive.plateau.min_improvement=1.0
 """
 import logging
+import warnings
+
+warnings.warn(
+    "Progressive VAE training is deprecated. "
+    "Consider using train_vae.py directly at target resolution, "
+    "or train_vae_3d.py for volumetric training. "
+    "This module is kept for potential 3D progressive training experiments.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
