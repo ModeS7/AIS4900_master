@@ -32,6 +32,9 @@ from .tracking import (
     create_worst_batch_figure,
 )
 
+# Optimizers (from optimizers/ subdirectory)
+from .optimizers import SAM
+
 __all__ = [
     # Trainers
     'DiffusionTrainer',
@@ -70,4 +73,6 @@ __all__ = [
     'measure_model_flops',
     'WorstBatchTracker',
     'create_worst_batch_figure',
+    # Optimizers
+    'SAM',
 ]

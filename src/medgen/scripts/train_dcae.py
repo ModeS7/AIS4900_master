@@ -17,16 +17,9 @@ Usage:
     python -m medgen.scripts.train_dcae paths=cluster
 """
 import logging
-import os
-import sys
 
 import hydra
-from omegaconf import DictConfig, OmegaConf, open_dict
-
-from medgen.core import ModeType
-
-# Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from omegaconf import DictConfig, OmegaConf
 
 from medgen.data import create_vae_dataloader, create_vae_validation_dataloader, create_vae_test_dataloader
 from medgen.data.loaders.multi_modality import (
@@ -36,6 +29,7 @@ from medgen.data.loaders.multi_modality import (
     create_single_modality_validation_loader,
 )
 from medgen.pipeline import DCAETrainer
+from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +40,7 @@ def main(cfg: DictConfig) -> None:
     mode = cfg.mode.name
 
     # Override in_channels for DC-AE training (mode configs are shared with diffusion)
-    # DC-AE: single modality = 1 channel, dual = 2 channels (t1_pre + t1_gd, NO seg)
-    if mode == ModeType.DUAL:
-        dcae_in_channels = 2  # t1_pre + t1_gd
-    else:
-        dcae_in_channels = 1  # bravo, seg, t1_pre, t1_gd, multi_modality individually
-
-    # Override mode.in_channels for DC-AE
-    with open_dict(cfg):
-        cfg.mode.in_channels = dcae_in_channels
-        cfg.mode.out_channels = dcae_in_channels
+    dcae_in_channels = override_vae_channels(cfg, mode)
 
     # Log config
     logger.info("DC-AE Training Configuration:")
@@ -110,16 +95,14 @@ def main(cfg: DictConfig) -> None:
     # Create per-modality validation loaders for multi_modality mode
     per_modality_val_loaders = {}
     if mode_name == 'multi_modality':
-        for modality_name in image_keys:
-            loader = create_single_modality_validation_loader(
-                cfg=cfg,
-                modality=modality_name,
-                image_size=cfg.dcae.image_size,
-                batch_size=cfg.training.batch_size,
-            )
-            if loader is not None:
-                per_modality_val_loaders[modality_name] = loader
-                logger.info(f"  Per-modality validation for {modality_name}: {len(loader.dataset)} slices")
+        per_modality_val_loaders = create_per_modality_val_loaders(
+            cfg=cfg,
+            image_keys=image_keys,
+            create_loader_fn=create_single_modality_validation_loader,
+            image_size=cfg.dcae.image_size,
+            batch_size=cfg.training.batch_size,
+            log=logger
+        )
 
     # Load checkpoint if resuming
     start_epoch = 0
@@ -146,14 +129,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_test_dataloader(cfg=cfg, modality=mode_name)
 
-    if test_result is not None:
-        test_loader, test_dataset = test_result
-        logger.info(f"Test dataset: {len(test_dataset)} slices")
-        # Evaluate on both best and latest checkpoints
-        trainer.evaluate_test(test_loader, checkpoint_name="best")
-        trainer.evaluate_test(test_loader, checkpoint_name="latest")
-    else:
-        logger.info("No test_new/ directory found - skipping test evaluation")
+    run_test_evaluation(trainer, test_result, logger, eval_method="evaluate_test")
 
     # Cleanup
     trainer.close_writer()

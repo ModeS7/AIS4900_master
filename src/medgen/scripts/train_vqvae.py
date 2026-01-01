@@ -23,7 +23,6 @@ import hydra
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from medgen.core import (
-    ModeType,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
@@ -40,6 +39,7 @@ from medgen.data import (
     create_single_modality_validation_loader,
 )
 from medgen.pipeline import VQVAETrainer
+from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -80,16 +80,7 @@ def main(cfg: DictConfig) -> None:
     is_multi_modality = mode == 'multi_modality'
 
     # Override in_channels for VQ-VAE training (mode configs are shared with diffusion)
-    # VQ-VAE: single modality = 1 channel, dual = 2 channels (t1_pre + t1_gd, NO seg)
-    if mode == ModeType.DUAL:
-        vqvae_in_channels = 2  # t1_pre + t1_gd
-    else:
-        vqvae_in_channels = 1  # bravo, seg, t1_pre, t1_gd, multi_modality individually
-
-    # Override mode.in_channels for VQ-VAE
-    with open_dict(cfg):
-        cfg.mode.in_channels = vqvae_in_channels
-        cfg.mode.out_channels = vqvae_in_channels
+    vqvae_in_channels = override_vae_channels(cfg, mode)
 
     # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
@@ -146,16 +137,14 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Validation dataset: {len(val_dataset)} slices (combined)")
 
         # Create per-modality validation loaders for individual metrics
-        for modality in image_keys:
-            loader = create_single_modality_validation_loader(
-                cfg=cfg,
-                modality=modality,
-                image_size=cfg.model.image_size,
-                batch_size=cfg.training.batch_size
-            )
-            if loader is not None:
-                per_modality_val_loaders[modality] = loader
-                log.info(f"  Per-modality validation for {modality}: {len(loader.dataset)} slices")
+        per_modality_val_loaders = create_per_modality_val_loaders(
+            cfg=cfg,
+            image_keys=image_keys,
+            create_loader_fn=create_single_modality_validation_loader,
+            image_size=cfg.model.image_size,
+            batch_size=cfg.training.batch_size,
+            log=log
+        )
 
     else:
         # Standard single/dual modality mode
@@ -206,14 +195,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
 
-    if test_result is not None:
-        test_loader, test_dataset = test_result
-        log.info(f"Test dataset: {len(test_dataset)} slices")
-        # Evaluate on both best and latest checkpoints
-        trainer.evaluate_test_set(test_loader, checkpoint_name="best")
-        trainer.evaluate_test_set(test_loader, checkpoint_name="latest")
-    else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+    run_test_evaluation(trainer, test_result, log)
 
     # Close TensorBoard writer after all logging
     trainer.close_writer()

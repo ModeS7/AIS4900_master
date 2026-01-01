@@ -20,7 +20,6 @@ import hydra
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from medgen.core import (
-    ModeType,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
@@ -36,6 +35,7 @@ from medgen.data import (
     create_vae_3d_single_modality_validation_loader,
 )
 from medgen.pipeline import VAE3DTrainer
+from .common import override_vae_channels, run_test_evaluation
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -109,15 +109,7 @@ def main(cfg: DictConfig) -> None:
     is_multi_modality = (mode == 'multi_modality')
 
     # Set channels based on mode
-    if mode == ModeType.DUAL:
-        vae_in_channels = 2  # t1_pre + t1_gd
-    else:
-        vae_in_channels = 1  # Single modality or multi_modality (each volume is 1 channel)
-
-    # Override mode.in_channels
-    with open_dict(cfg):
-        cfg.mode.in_channels = vae_in_channels
-        cfg.mode.out_channels = vae_in_channels
+    vae_in_channels = override_vae_channels(cfg, mode)
 
     # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
@@ -202,13 +194,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
 
-    if test_result is not None:
-        test_loader, test_dataset = test_result
-        log.info(f"Test dataset: {len(test_dataset)} volumes")
-        trainer.evaluate_test(test_loader, checkpoint_name="best")
-        trainer.evaluate_test(test_loader, checkpoint_name="latest")
-    else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+    run_test_evaluation(trainer, test_result, log, eval_method="evaluate_test")
 
     # Close TensorBoard writer
     trainer.close_writer()

@@ -29,7 +29,8 @@ from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training, SAM
+from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
+from .optimizers import SAM
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode

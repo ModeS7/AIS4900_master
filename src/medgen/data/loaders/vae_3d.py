@@ -8,6 +8,7 @@ Key differences from 2D:
 """
 import logging
 import os
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
@@ -18,6 +19,127 @@ from torch.utils.data import DataLoader, Dataset
 from ..dataset import NiFTIDataset
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class VolumeConfig:
+    """Configuration extracted from Hydra config for 3D volume loading."""
+    height: int
+    width: int
+    pad_depth_to: int
+    pad_mode: str
+    slice_step: int
+    batch_size: int
+    load_seg: bool
+    image_keys: list
+
+    @classmethod
+    def from_cfg(cls, cfg) -> 'VolumeConfig':
+        """Extract volume configuration from Hydra config object."""
+        logging_cfg = cfg.training.get('logging', {})
+        return cls(
+            height=cfg.volume.height,
+            width=cfg.volume.width,
+            pad_depth_to=cfg.volume.pad_depth_to,
+            pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+            slice_step=cfg.volume.get('slice_step', 1),
+            batch_size=cfg.training.batch_size,
+            load_seg=logging_cfg.get('regional_losses', False),
+            image_keys=cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd']),
+        )
+
+
+class Base3DVolumeDataset(Dataset):
+    """Base class for 3D volume datasets with shared utilities.
+
+    Provides common functionality:
+    - Transform setup for 3D volumes
+    - Depth padding (replicate or constant mode)
+    - Volume loading and processing
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        height: int = 256,
+        width: int = 256,
+        pad_depth_to: int = 160,
+        pad_mode: str = 'replicate',
+        slice_step: int = 1,
+        load_seg: bool = False,
+    ) -> None:
+        self.data_dir = data_dir
+        self.height = height
+        self.width = width
+        self.pad_depth_to = pad_depth_to
+        self.pad_mode = pad_mode
+        self.slice_step = slice_step
+        self.load_seg = load_seg
+
+        self.transform = build_3d_transform(height, width)
+
+    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
+        """Pad volume depth to target size.
+
+        Args:
+            volume: Tensor of shape [C, D, H, W].
+
+        Returns:
+            Padded tensor with depth >= pad_depth_to.
+        """
+        current_depth = volume.shape[1]
+        if current_depth < self.pad_depth_to:
+            pad_total = self.pad_depth_to - current_depth
+            if self.pad_mode == 'replicate':
+                last_slice = volume[:, -1:, :, :]
+                padding = last_slice.repeat(1, pad_total, 1, 1)
+                volume = torch.cat([volume, padding], dim=1)
+            else:
+                volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
+        return volume
+
+    def _load_volume(self, nifti_path: str) -> torch.Tensor:
+        """Load and preprocess a 3D volume from NIfTI file.
+
+        Args:
+            nifti_path: Path to NIfTI file.
+
+        Returns:
+            Tensor of shape [C, D, H, W] with depth padding applied.
+        """
+        volume = self.transform(nifti_path)
+
+        if not isinstance(volume, torch.Tensor):
+            volume = torch.from_numpy(volume).float()
+
+        # MONAI loads as [C, H, W, D], we need [C, D, H, W] for 3D conv
+        volume = volume.permute(0, 3, 1, 2)
+
+        # Subsample slices if slice_step > 1
+        if self.slice_step > 1:
+            volume = volume[:, ::self.slice_step, :, :]
+
+        # Pad depth
+        volume = self._pad_depth(volume)
+
+        return volume
+
+    def _load_seg(self, patient_dir: str) -> Optional[torch.Tensor]:
+        """Load and preprocess segmentation mask if it exists.
+
+        Args:
+            patient_dir: Patient directory path.
+
+        Returns:
+            Binarized seg tensor of shape [C, D, H, W] or None.
+        """
+        seg_path = os.path.join(patient_dir, "seg.nii.gz")
+        if not os.path.exists(seg_path):
+            return None
+
+        seg = self._load_volume(seg_path)
+        seg = (seg > 0.5).float()  # Binarize
+        return seg
 
 
 def build_3d_transform(height: int, width: int) -> Compose:
@@ -40,8 +162,8 @@ def build_3d_transform(height: int, width: int) -> Compose:
     ])
 
 
-class Volume3DDataset(Dataset):
-    """Dataset that loads 3D volumes with depth padding.
+class Volume3DDataset(Base3DVolumeDataset):
+    """Dataset that loads single-modality 3D volumes with depth padding.
 
     Args:
         data_dir: Directory containing patient subdirectories.
@@ -65,14 +187,8 @@ class Volume3DDataset(Dataset):
         slice_step: int = 1,
         load_seg: bool = False,
     ) -> None:
-        self.data_dir = data_dir
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
         self.modality = modality
-        self.pad_depth_to = pad_depth_to
-        self.pad_mode = pad_mode
-        self.slice_step = slice_step
-        self.load_seg = load_seg
-
-        self.transform = build_3d_transform(height, width)
 
         # List patient directories
         self.patients = sorted([
@@ -88,60 +204,23 @@ class Volume3DDataset(Dataset):
     def __len__(self) -> int:
         return len(self.patients)
 
-    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
-        """Pad volume depth to target size."""
-        current_depth = volume.shape[1]
-        if current_depth < self.pad_depth_to:
-            pad_total = self.pad_depth_to - current_depth
-            if self.pad_mode == 'replicate':
-                last_slice = volume[:, -1:, :, :]
-                padding = last_slice.repeat(1, pad_total, 1, 1)
-                volume = torch.cat([volume, padding], dim=1)
-            else:
-                volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
-        return volume
-
     def __getitem__(self, idx: int) -> dict:
         patient = self.patients[idx]
-        nifti_path = os.path.join(self.data_dir, patient, f"{self.modality}.nii.gz")
+        patient_dir = os.path.join(self.data_dir, patient)
+        nifti_path = os.path.join(patient_dir, f"{self.modality}.nii.gz")
 
-        # Load and transform volume: [C, H, W, D]
-        volume = self.transform(nifti_path)
-
-        # Convert to tensor if not already
-        if not isinstance(volume, torch.Tensor):
-            volume = torch.from_numpy(volume).float()
-
-        # MONAI loads as [C, H, W, D], we need [C, D, H, W] for 3D conv
-        volume = volume.permute(0, 3, 1, 2)  # [C, D, H, W]
-
-        # Subsample slices if slice_step > 1 (for quick testing)
-        if self.slice_step > 1:
-            volume = volume[:, ::self.slice_step, :, :]
-
-        # Pad depth if needed
-        volume = self._pad_depth(volume)
-
+        volume = self._load_volume(nifti_path)
         result = {'image': volume, 'patient': patient}
 
-        # Optionally load segmentation mask for regional metrics
         if self.load_seg:
-            seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
-            if os.path.exists(seg_path):
-                seg = self.transform(seg_path)
-                if not isinstance(seg, torch.Tensor):
-                    seg = torch.from_numpy(seg).float()
-                seg = seg.permute(0, 3, 1, 2)
-                if self.slice_step > 1:
-                    seg = seg[:, ::self.slice_step, :, :]
-                seg = self._pad_depth(seg)
-                seg = (seg > 0.5).float()  # Binarize
+            seg = self._load_seg(patient_dir)
+            if seg is not None:
                 result['seg'] = seg
 
         return result
 
 
-class DualVolume3DDataset(Dataset):
+class DualVolume3DDataset(Base3DVolumeDataset):
     """Dataset that loads dual-modality 3D volumes (t1_pre + t1_gd).
 
     Args:
@@ -164,13 +243,7 @@ class DualVolume3DDataset(Dataset):
         slice_step: int = 1,
         load_seg: bool = False,
     ) -> None:
-        self.data_dir = data_dir
-        self.pad_depth_to = pad_depth_to
-        self.pad_mode = pad_mode
-        self.slice_step = slice_step
-        self.load_seg = load_seg
-
-        self.transform = build_3d_transform(height, width)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
 
         # List patient directories
         self.patients = sorted([
@@ -186,69 +259,104 @@ class DualVolume3DDataset(Dataset):
     def __len__(self) -> int:
         return len(self.patients)
 
-    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
-        """Pad volume depth to target size."""
-        current_depth = volume.shape[1]
-        if current_depth < self.pad_depth_to:
-            pad_total = self.pad_depth_to - current_depth
-            if self.pad_mode == 'replicate':
-                last_slice = volume[:, -1:, :, :]
-                padding = last_slice.repeat(1, pad_total, 1, 1)
-                volume = torch.cat([volume, padding], dim=1)
-            else:
-                volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
-        return volume
-
     def __getitem__(self, idx: int) -> dict:
         patient = self.patients[idx]
+        patient_dir = os.path.join(self.data_dir, patient)
 
-        # Load both modalities
-        t1_pre_path = os.path.join(self.data_dir, patient, "t1_pre.nii.gz")
-        t1_gd_path = os.path.join(self.data_dir, patient, "t1_gd.nii.gz")
-
-        t1_pre = self.transform(t1_pre_path)
-        t1_gd = self.transform(t1_gd_path)
-
-        # Convert to tensors
-        if not isinstance(t1_pre, torch.Tensor):
-            t1_pre = torch.from_numpy(t1_pre).float()
-        if not isinstance(t1_gd, torch.Tensor):
-            t1_gd = torch.from_numpy(t1_gd).float()
-
-        # Permute to [C, D, H, W]
-        t1_pre = t1_pre.permute(0, 3, 1, 2)
-        t1_gd = t1_gd.permute(0, 3, 1, 2)
-
-        # Subsample slices if slice_step > 1 (for quick testing)
-        if self.slice_step > 1:
-            t1_pre = t1_pre[:, ::self.slice_step, :, :]
-            t1_gd = t1_gd[:, ::self.slice_step, :, :]
-
-        # Pad depth
-        t1_pre = self._pad_depth(t1_pre)
-        t1_gd = self._pad_depth(t1_gd)
+        # Load both modalities using base class helper
+        t1_pre = self._load_volume(os.path.join(patient_dir, "t1_pre.nii.gz"))
+        t1_gd = self._load_volume(os.path.join(patient_dir, "t1_gd.nii.gz"))
 
         # Stack as 2 channels: [2, D, H, W]
         volume = torch.cat([t1_pre, t1_gd], dim=0)
 
         result = {'image': volume, 'patient': patient}
 
-        # Optionally load segmentation mask for regional metrics
         if self.load_seg:
-            seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
-            if os.path.exists(seg_path):
-                seg = self.transform(seg_path)
-                if not isinstance(seg, torch.Tensor):
-                    seg = torch.from_numpy(seg).float()
-                seg = seg.permute(0, 3, 1, 2)
-                if self.slice_step > 1:
-                    seg = seg[:, ::self.slice_step, :, :]
-                seg = self._pad_depth(seg)
-                # Binarize segmentation mask
-                seg = (seg > 0.5).float()
+            seg = self._load_seg(patient_dir)
+            if seg is not None:
                 result['seg'] = seg
 
         return result
+
+
+def _create_single_dual_dataset(
+    data_dir: str,
+    modality: str,
+    vcfg: VolumeConfig,
+) -> Dataset:
+    """Create Volume3DDataset or DualVolume3DDataset based on modality.
+
+    Args:
+        data_dir: Path to data directory (train/val/test_new).
+        modality: 'dual' for DualVolume3DDataset, else Volume3DDataset.
+        vcfg: Volume configuration.
+
+    Returns:
+        Appropriate dataset instance.
+    """
+    if modality == 'dual':
+        return DualVolume3DDataset(
+            data_dir=data_dir,
+            height=vcfg.height,
+            width=vcfg.width,
+            pad_depth_to=vcfg.pad_depth_to,
+            pad_mode=vcfg.pad_mode,
+            slice_step=vcfg.slice_step,
+            load_seg=vcfg.load_seg,
+        )
+    return Volume3DDataset(
+        data_dir=data_dir,
+        modality=modality,
+        height=vcfg.height,
+        width=vcfg.width,
+        pad_depth_to=vcfg.pad_depth_to,
+        pad_mode=vcfg.pad_mode,
+        slice_step=vcfg.slice_step,
+        load_seg=vcfg.load_seg,
+    )
+
+
+def _create_loader(
+    dataset: Dataset,
+    batch_size: int,
+    shuffle: bool = True,
+    drop_last: bool = False,
+    use_distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+) -> DataLoader:
+    """Create DataLoader with standard settings.
+
+    Args:
+        dataset: Dataset to wrap.
+        batch_size: Batch size.
+        shuffle: Whether to shuffle (ignored if distributed).
+        drop_last: Whether to drop last incomplete batch.
+        use_distributed: Use DistributedSampler.
+        rank: Process rank for distributed.
+        world_size: Total processes for distributed.
+
+    Returns:
+        Configured DataLoader.
+    """
+    if use_distributed:
+        from torch.utils.data.distributed import DistributedSampler
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
+        actual_shuffle = False
+    else:
+        sampler = None
+        actual_shuffle = shuffle
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=actual_shuffle,
+        sampler=sampler,
+        num_workers=4,
+        pin_memory=True,
+        drop_last=drop_last,
+    )
 
 
 def create_vae_3d_dataloader(
@@ -270,58 +378,13 @@ def create_vae_3d_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
+    vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    if modality == 'dual':
-        dataset = DualVolume3DDataset(
-            data_dir=data_dir,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-    else:
-        dataset = Volume3DDataset(
-            data_dir=data_dir,
-            modality=modality,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-
-    if use_distributed:
-        from torch.utils.data.distributed import DistributedSampler
-        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        shuffle = False
-    else:
-        sampler = None
-        shuffle = True
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        num_workers=4,
-        pin_memory=True,
-        drop_last=True,
+    dataset = _create_single_dual_dataset(data_dir, modality, vcfg)
+    loader = _create_loader(
+        dataset, vcfg.batch_size, shuffle=True, drop_last=True,
+        use_distributed=use_distributed, rank=rank, world_size=world_size
     )
-
     return loader, dataset
 
 
@@ -342,47 +405,9 @@ def create_vae_3d_validation_dataloader(
     if not os.path.exists(val_dir):
         return None
 
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    if modality == 'dual':
-        dataset = DualVolume3DDataset(
-            data_dir=val_dir,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-    else:
-        dataset = Volume3DDataset(
-            data_dir=val_dir,
-            modality=modality,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
-
+    vcfg = VolumeConfig.from_cfg(cfg)
+    dataset = _create_single_dual_dataset(val_dir, modality, vcfg)
+    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
     return loader, dataset
 
 
@@ -403,51 +428,14 @@ def create_vae_3d_test_dataloader(
     if not os.path.exists(test_dir):
         return None
 
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    if modality == 'dual':
-        dataset = DualVolume3DDataset(
-            data_dir=test_dir,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-    else:
-        dataset = Volume3DDataset(
-            data_dir=test_dir,
-            modality=modality,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
-            load_seg=load_seg,
-        )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
+    vcfg = VolumeConfig.from_cfg(cfg)
+    dataset = _create_single_dual_dataset(test_dir, modality, vcfg)
+    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
 
     return loader, dataset
 
 
-class MultiModality3DDataset(Dataset):
+class MultiModality3DDataset(Base3DVolumeDataset):
     """Dataset that loads 3D volumes from multiple modalities.
 
     Pools all modalities (bravo, flair, t1_pre, t1_gd) as separate samples.
@@ -475,14 +463,8 @@ class MultiModality3DDataset(Dataset):
         slice_step: int = 1,
         load_seg: bool = False,
     ) -> None:
-        self.data_dir = data_dir
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
         self.image_keys = image_keys
-        self.pad_depth_to = pad_depth_to
-        self.pad_mode = pad_mode
-        self.slice_step = slice_step
-        self.load_seg = load_seg
-
-        self.transform = build_3d_transform(height, width)
 
         # List patient directories
         self.patients = sorted([
@@ -508,58 +490,35 @@ class MultiModality3DDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
-        """Pad volume depth to target size."""
-        current_depth = volume.shape[1]
-        if current_depth < self.pad_depth_to:
-            pad_total = self.pad_depth_to - current_depth
-            if self.pad_mode == 'replicate':
-                last_slice = volume[:, -1:, :, :]
-                padding = last_slice.repeat(1, pad_total, 1, 1)
-                volume = torch.cat([volume, padding], dim=1)
-            else:
-                volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
-        return volume
-
     def __getitem__(self, idx: int) -> dict:
         p_idx, modality = self.samples[idx]
         patient = self.patients[p_idx]
-        nifti_path = os.path.join(self.data_dir, patient, f"{modality}.nii.gz")
+        patient_dir = os.path.join(self.data_dir, patient)
+        nifti_path = os.path.join(patient_dir, f"{modality}.nii.gz")
 
-        # Load and transform volume: [C, H, W, D]
-        volume = self.transform(nifti_path)
-
-        # Convert to tensor if not already
-        if not isinstance(volume, torch.Tensor):
-            volume = torch.from_numpy(volume).float()
-
-        # MONAI loads as [C, H, W, D], we need [C, D, H, W] for 3D conv
-        volume = volume.permute(0, 3, 1, 2)  # [C, D, H, W]
-
-        # Subsample slices if slice_step > 1
-        if self.slice_step > 1:
-            volume = volume[:, ::self.slice_step, :, :]
-
-        # Pad depth
-        volume = self._pad_depth(volume)
-
+        volume = self._load_volume(nifti_path)
         result = {'image': volume, 'patient': patient, 'modality': modality}
 
-        # Optionally load segmentation mask for regional metrics
         if self.load_seg:
-            seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
-            if os.path.exists(seg_path):
-                seg = self.transform(seg_path)
-                if not isinstance(seg, torch.Tensor):
-                    seg = torch.from_numpy(seg).float()
-                seg = seg.permute(0, 3, 1, 2)
-                if self.slice_step > 1:
-                    seg = seg[:, ::self.slice_step, :, :]
-                seg = self._pad_depth(seg)
-                seg = (seg > 0.5).float()  # Binarize
+            seg = self._load_seg(patient_dir)
+            if seg is not None:
                 result['seg'] = seg
 
         return result
+
+
+def _create_multi_modality_dataset(data_dir: str, vcfg: VolumeConfig) -> MultiModality3DDataset:
+    """Create MultiModality3DDataset with config."""
+    return MultiModality3DDataset(
+        data_dir=data_dir,
+        image_keys=vcfg.image_keys,
+        height=vcfg.height,
+        width=vcfg.width,
+        pad_depth_to=vcfg.pad_depth_to,
+        pad_mode=vcfg.pad_mode,
+        slice_step=vcfg.slice_step,
+        load_seg=vcfg.load_seg,
+    )
 
 
 def create_vae_3d_multi_modality_dataloader(
@@ -579,48 +538,13 @@ def create_vae_3d_multi_modality_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
+    vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-    image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    dataset = MultiModality3DDataset(
-        data_dir=data_dir,
-        image_keys=image_keys,
-        height=height,
-        width=width,
-        pad_depth_to=pad_depth_to,
-        pad_mode=pad_mode,
-        slice_step=slice_step,
-        load_seg=load_seg,
+    dataset = _create_multi_modality_dataset(data_dir, vcfg)
+    loader = _create_loader(
+        dataset, vcfg.batch_size, shuffle=True, drop_last=True,
+        use_distributed=use_distributed, rank=rank, world_size=world_size
     )
-
-    if use_distributed:
-        from torch.utils.data.distributed import DistributedSampler
-        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        shuffle = False
-    else:
-        sampler = None
-        shuffle = True
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        num_workers=4,
-        pin_memory=True,
-        drop_last=True,
-    )
-
     return loader, dataset
 
 
@@ -639,37 +563,9 @@ def create_vae_3d_multi_modality_validation_dataloader(
     if not os.path.exists(val_dir):
         return None
 
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-    image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    dataset = MultiModality3DDataset(
-        data_dir=val_dir,
-        image_keys=image_keys,
-        height=height,
-        width=width,
-        pad_depth_to=pad_depth_to,
-        pad_mode=pad_mode,
-        slice_step=slice_step,
-        load_seg=load_seg,
-    )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
-
+    vcfg = VolumeConfig.from_cfg(cfg)
+    dataset = _create_multi_modality_dataset(val_dir, vcfg)
+    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
     return loader, dataset
 
 
@@ -688,41 +584,13 @@ def create_vae_3d_multi_modality_test_dataloader(
     if not os.path.exists(test_dir):
         return None
 
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
-    image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
-
-    # Check if regional losses are enabled (need seg for metrics)
-    logging_cfg = cfg.training.get('logging', {})
-    load_seg = logging_cfg.get('regional_losses', False)
-
-    dataset = MultiModality3DDataset(
-        data_dir=test_dir,
-        image_keys=image_keys,
-        height=height,
-        width=width,
-        pad_depth_to=pad_depth_to,
-        pad_mode=pad_mode,
-        slice_step=slice_step,
-        load_seg=load_seg,
-    )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
-
+    vcfg = VolumeConfig.from_cfg(cfg)
+    dataset = _create_multi_modality_dataset(test_dir, vcfg)
+    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
     return loader, dataset
 
 
-class SingleModality3DDatasetWithSeg(Dataset):
+class SingleModality3DDatasetWithSeg(Base3DVolumeDataset):
     """3D Dataset that loads single modality with segmentation masks.
 
     Used for per-modality validation with regional metrics (tumor tracking).
@@ -748,15 +616,10 @@ class SingleModality3DDatasetWithSeg(Dataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
     ) -> None:
-        self.data_dir = data_dir
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True)
         self.modality = modality
-        self.pad_depth_to = pad_depth_to
-        self.pad_mode = pad_mode
-        self.slice_step = slice_step
 
-        self.transform = build_3d_transform(height, width)
-
-        # Build index of patients that have both modality and seg
+        # Build index of patients that have modality (track which have seg)
         self.samples = []
         patients = sorted([
             p for p in os.listdir(data_dir)
@@ -782,55 +645,18 @@ class SingleModality3DDatasetWithSeg(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
-        """Pad volume depth to target size."""
-        current_depth = volume.shape[1]
-        if current_depth < self.pad_depth_to:
-            pad_total = self.pad_depth_to - current_depth
-            if self.pad_mode == 'replicate':
-                last_slice = volume[:, -1:, :, :]
-                padding = last_slice.repeat(1, pad_total, 1, 1)
-                volume = torch.cat([volume, padding], dim=1)
-            else:
-                volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
-        return volume
-
     def __getitem__(self, idx: int) -> dict:
         patient, has_seg = self.samples[idx]
-        modality_path = os.path.join(self.data_dir, patient, f"{self.modality}.nii.gz")
+        patient_dir = os.path.join(self.data_dir, patient)
+        modality_path = os.path.join(patient_dir, f"{self.modality}.nii.gz")
 
-        # Load and transform volume: [C, H, W, D]
-        volume = self.transform(modality_path)
-
-        # Convert to tensor if not already
-        if not isinstance(volume, torch.Tensor):
-            volume = torch.from_numpy(volume).float()
-
-        # Permute to [C, D, H, W]
-        volume = volume.permute(0, 3, 1, 2)
-
-        # Subsample slices if slice_step > 1
-        if self.slice_step > 1:
-            volume = volume[:, ::self.slice_step, :, :]
-
-        # Pad depth
-        volume = self._pad_depth(volume)
-
+        volume = self._load_volume(modality_path)
         result = {'image': volume, 'patient': patient, 'modality': self.modality}
 
-        # Load segmentation if available
         if has_seg:
-            seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
-            seg = self.transform(seg_path)
-            if not isinstance(seg, torch.Tensor):
-                seg = torch.from_numpy(seg).float()
-            seg = seg.permute(0, 3, 1, 2)
-            if self.slice_step > 1:
-                seg = seg[:, ::self.slice_step, :, :]
-            seg = self._pad_depth(seg)
-            # Binarize segmentation (any non-zero is tumor)
-            seg = (seg > 0.5).float()
-            result['seg'] = seg
+            seg = self._load_seg(patient_dir)
+            if seg is not None:
+                result['seg'] = seg
 
         return result
 
