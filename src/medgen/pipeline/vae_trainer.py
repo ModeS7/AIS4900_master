@@ -403,7 +403,6 @@ class VAETrainer(BaseCompressionTrainer):
         log_compression_epoch_summary(
             epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
             regularization_key=None,  # VAE's KL is already included in 'gen'
-            quality_metric='msssim',
         )
 
     def _test_forward(

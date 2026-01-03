@@ -53,20 +53,19 @@ def log_compression_epoch_summary(
     val_metrics: Optional[Dict[str, float]],
     elapsed_time: float,
     regularization_key: Optional[str] = None,
-    quality_metric: str = 'msssim',
 ) -> None:
     """Log compression trainer epoch summary.
 
     Unified logging for VAE, VQ-VAE, DC-AE, and 3D variants.
+    Shows both MS-SSIM and PSNR when available.
 
     Args:
         epoch: Current epoch number (0-indexed).
         total_epochs: Total number of epochs.
         avg_losses: Dict with 'gen', 'recon', 'disc' keys (and optionally 'kl' or 'vq').
-        val_metrics: Dict with validation metrics ('gen', 'l1', 'msssim' or 'psnr').
+        val_metrics: Dict with validation metrics ('gen', 'l1', 'msssim', 'psnr').
         elapsed_time: Time taken for the epoch in seconds.
         regularization_key: Loss key for regularization ('kl', 'vq', or None for DC-AE).
-        quality_metric: Which quality metric to show ('msssim' or 'psnr').
     """
     timestamp = time.strftime("%H:%M:%S")
     epoch_pct = ((epoch + 1) / total_epochs) * 100
@@ -79,13 +78,16 @@ def log_compression_epoch_summary(
     if regularization_key and regularization_key in avg_losses:
         reg_str = f"{regularization_key.upper()}: {avg_losses[regularization_key]:.4f} | "
 
-    # Build quality metric string
-    metric_str = ""
+    # Build quality metrics string - show MS-SSIM, MS-SSIM-3D, and PSNR
+    metrics_parts = []
     if val_metrics:
-        if quality_metric == 'msssim' and val_metrics.get('msssim'):
-            metric_str = f"MS-SSIM: {val_metrics['msssim']:.3f}"
-        elif quality_metric == 'psnr' and val_metrics.get('psnr'):
-            metric_str = f"PSNR: {val_metrics['psnr']:.2f}"
+        if val_metrics.get('msssim'):
+            metrics_parts.append(f"MS-SSIM: {val_metrics['msssim']:.3f}")
+        if val_metrics.get('msssim_3d'):
+            metrics_parts.append(f"MS-SSIM-3D: {val_metrics['msssim_3d']:.3f}")
+        if val_metrics.get('psnr'):
+            metrics_parts.append(f"PSNR: {val_metrics['psnr']:.2f}")
+    metric_str = " | ".join(metrics_parts) if metrics_parts else ""
 
     logger.info(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "

@@ -47,6 +47,7 @@ from .metrics import (
     compute_lpips,
     compute_lpips_3d,
     compute_msssim,
+    compute_msssim_2d_slicewise,
     compute_psnr,
     reset_msssim_nan_warning,
 )
@@ -330,6 +331,8 @@ class BaseCompressionTrainer(BaseTrainer):
         - Dict with image keys
         - Single tensor
 
+        Uses non_blocking=True for async GPU transfers to overlap with computation.
+
         Args:
             batch: Input batch.
 
@@ -343,7 +346,10 @@ class BaseCompressionTrainer(BaseTrainer):
                 images = images.as_tensor()
             if hasattr(mask, 'as_tensor'):
                 mask = mask.as_tensor()
-            return images.to(self.device), mask.to(self.device)
+            return (
+                images.to(self.device, non_blocking=True),
+                mask.to(self.device, non_blocking=True)
+            )
 
         # Handle dict batches
         if isinstance(batch, dict):
@@ -351,16 +357,16 @@ class BaseCompressionTrainer(BaseTrainer):
             tensors = []
             for key in image_keys:
                 if key in batch:
-                    tensors.append(batch[key].to(self.device))
+                    tensors.append(batch[key].to(self.device, non_blocking=True))
             images = torch.cat(tensors, dim=1)
-            mask = batch['seg'].to(self.device) if 'seg' in batch else None
+            mask = batch['seg'].to(self.device, non_blocking=True) if 'seg' in batch else None
             return images, mask
 
         # Handle tensor input
         if hasattr(batch, 'as_tensor'):
-            tensor = batch.as_tensor().to(self.device)
+            tensor = batch.as_tensor().to(self.device, non_blocking=True)
         else:
-            tensor = batch.to(self.device)
+            tensor = batch.to(self.device, non_blocking=True)
 
         # Check if seg is stacked as last channel
         n_image_channels = self.cfg.mode.get('in_channels', 2)
@@ -601,7 +607,7 @@ class BaseCompressionTrainer(BaseTrainer):
         # Reset MS-SSIM NaN warning
         reset_msssim_nan_warning()
 
-        with torch.no_grad():
+        with torch.inference_mode():  # Faster than no_grad for inference
             for batch in self.val_loader:
                 images, mask = self._prepare_batch(batch)
 
@@ -659,6 +665,11 @@ class BaseCompressionTrainer(BaseTrainer):
 
         # Log to TensorBoard
         self._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
+
+        # Compute 3D MS-SSIM on full volumes (2D trainers only)
+        msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
+        if msssim_3d is not None:
+            metrics['msssim_3d'] = msssim_3d
 
         return metrics
 
@@ -743,6 +754,8 @@ class BaseCompressionTrainer(BaseTrainer):
             self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
         if 'msssim' in metrics:
             self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
+        if 'msssim_3d' in metrics:
+            self.writer.add_scalar('Validation/MS-SSIM-3D', metrics['msssim_3d'], epoch)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:
@@ -777,7 +790,7 @@ class BaseCompressionTrainer(BaseTrainer):
             if self.log_regional_losses:
                 regional_tracker = self._create_regional_tracker()
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 for batch in loader:
                     images, mask = self._prepare_batch(batch)
 
@@ -813,6 +826,105 @@ class BaseCompressionTrainer(BaseTrainer):
                     )
 
         model_to_use.train()
+
+    def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
+        """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
+
+        For 2D trainers, this loads full 3D volumes, processes each slice through
+        the model, stacks reconstructed slices back into a volume, and computes
+        3D MS-SSIM. This shows how well 2D models maintain cross-slice consistency.
+
+        Optimizations applied:
+        - inference_mode instead of no_grad (faster)
+        - Tensor slicing instead of loop for batch extraction
+        - Non-blocking GPU transfers
+        - Pre-allocated output tensor
+
+        Args:
+            epoch: Current epoch number.
+            data_split: Which data split to use ('val' or 'test_new').
+
+        Returns:
+            Average 3D MS-SSIM across all volumes, or None if unavailable.
+        """
+        if not self.log_msssim:
+            return None
+
+        # Import here to avoid circular imports
+        from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
+
+        # Determine modality from config
+        mode_name = self.cfg.mode.get('name', 'bravo')
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        modality = 'dual' if n_channels > 1 else mode_name
+
+        # Create volume dataloader
+        result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
+        if result is None:
+            return None
+
+        volume_loader, _ = result
+
+        model_to_use = self._get_model_for_eval()
+        model_to_use.eval()
+
+        total_msssim_3d = 0.0
+        n_volumes = 0
+        slice_batch_size = self.cfg.training.batch_size  # Reuse training batch size
+
+        with torch.inference_mode():  # Faster than no_grad
+            for batch in volume_loader:
+                # batch['image'] is [1, C, H, W, D] (batch_size=1 for volumes)
+                # Non-blocking transfer to GPU
+                volume = batch['image'].to(self.device, non_blocking=True)  # [1, C, H, W, D]
+                volume = volume.squeeze(0)  # [C, H, W, D]
+
+                n_channels_vol, height, width, depth = volume.shape
+
+                # Pre-allocate output tensor on GPU
+                all_recon = torch.empty(
+                    (depth, n_channels_vol, height, width),
+                    dtype=self.weight_dtype,
+                    device=self.device
+                )
+
+                # Process slices in batches using tensor slicing (no Python loop for extraction)
+                for start_idx in range(0, depth, slice_batch_size):
+                    end_idx = min(start_idx + slice_batch_size, depth)
+
+                    # Direct tensor slicing: [C, H, W, D] -> [B, C, H, W]
+                    # Transpose to get slices along last dim, then slice
+                    slice_tensor = volume[:, :, :, start_idx:end_idx].permute(3, 0, 1, 2)
+
+                    with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                        # Forward through model
+                        recon, _ = self._forward_for_validation(model_to_use, slice_tensor)
+
+                    # Write directly to pre-allocated tensor
+                    all_recon[start_idx:end_idx] = recon
+
+                # Reshape: [D, C, H, W] -> [1, C, D, H, W]
+                recon_3d = all_recon.permute(1, 0, 2, 3).unsqueeze(0)  # [1, C, D, H, W]
+                volume_3d = volume.permute(0, 3, 1, 2).unsqueeze(0)  # [1, C, D, H, W]
+
+                # Compute 3D MS-SSIM
+                msssim_3d = compute_msssim(recon_3d.float(), volume_3d.float(), spatial_dims=3)
+                total_msssim_3d += msssim_3d
+                n_volumes += 1
+
+        model_to_use.train()
+
+        if n_volumes == 0:
+            return None
+
+        avg_msssim_3d = total_msssim_3d / n_volumes
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            prefix = 'Validation' if data_split == 'val' else f'test_{data_split.replace("_new", "")}'
+            self.writer.add_scalar(f'{prefix}/MS-SSIM-3D', avg_msssim_3d, epoch)
+
+        return avg_msssim_3d
 
     # ─────────────────────────────────────────────────────────────────────────
     # Checkpointing
@@ -1067,7 +1179,7 @@ class BaseCompressionTrainer(BaseTrainer):
         worst_loss = 0.0
         worst_batch_data = None
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 images, mask = self._prepare_batch(batch)
                 batch_size = images.shape[0]
@@ -1108,11 +1220,18 @@ class BaseCompressionTrainer(BaseTrainer):
         if self.log_msssim:
             metrics['msssim'] = total_msssim / n_batches
 
+        # Compute 3D MS-SSIM on full volumes (2D trainers only)
+        msssim_3d = self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
+        if msssim_3d is not None:
+            metrics['msssim_3d'] = msssim_3d
+
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
         logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
         if 'msssim' in metrics:
             logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+        if 'msssim_3d' in metrics:
+            logger.info(f"  MS-SSIM-3D: {metrics['msssim_3d']:.4f}")
         logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
         logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
 
@@ -1129,6 +1248,8 @@ class BaseCompressionTrainer(BaseTrainer):
             self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
             if 'msssim' in metrics:
                 self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
+            if 'msssim_3d' in metrics:
+                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', metrics['msssim_3d'], 0)
 
             if regional_tracker is not None:
                 regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
@@ -1206,6 +1327,8 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch for 3D compression training.
 
+        Uses non_blocking=True for async GPU transfers to overlap with computation.
+
         Args:
             batch: Input batch.
 
@@ -1222,9 +1345,9 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             images = batch
             mask = None
 
-        images = images.to(self.device)
+        images = images.to(self.device, non_blocking=True)
         if mask is not None:
-            mask = mask.to(self.device)
+            mask = mask.to(self.device, non_blocking=True)
 
         return images, mask
 
@@ -1359,7 +1482,8 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         total_perc = 0.0
         total_reg = 0.0
         total_gen = 0.0
-        total_msssim = 0.0
+        total_msssim_3d = 0.0  # Volumetric 3D MS-SSIM
+        total_msssim_2d = 0.0  # Slice-by-slice 2D MS-SSIM
         total_psnr = 0.0
         total_lpips = 0.0
         n_batches = 0
@@ -1380,7 +1504,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         # Reset MS-SSIM NaN warning
         reset_msssim_nan_warning()
 
-        with torch.no_grad():
+        with torch.inference_mode():  # Faster than no_grad for inference
             for batch in self.val_loader:
                 images, mask = self._prepare_batch(batch)
 
@@ -1406,8 +1530,13 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
 
                 # Quality metrics - 3D versions
                 if self.log_msssim:
-                    total_msssim += compute_msssim(
+                    # Volumetric 3D MS-SSIM (captures cross-slice structure)
+                    total_msssim_3d += compute_msssim(
                         reconstruction.float(), images.float(), spatial_dims=3
+                    )
+                    # Slice-by-slice 2D MS-SSIM (comparable to 2D trainers)
+                    total_msssim_2d += compute_msssim_2d_slicewise(
+                        reconstruction.float(), images.float()
                     )
                 if self.log_psnr:
                     total_psnr += compute_psnr(reconstruction, images)
@@ -1436,12 +1565,91 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         if self.log_lpips:
             metrics['lpips'] = total_lpips / n_batches if n_batches > 0 else 0.0
         if self.log_msssim:
-            metrics['msssim'] = total_msssim / n_batches if n_batches > 0 else 0.0
+            # 2D MS-SSIM for comparison with 2D trainers
+            metrics['msssim'] = total_msssim_2d / n_batches if n_batches > 0 else 0.0
+            # 3D MS-SSIM for volumetric quality
+            metrics['msssim_3d'] = total_msssim_3d / n_batches if n_batches > 0 else 0.0
 
         # Log to TensorBoard
         self._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
 
         return metrics
+
+    def _compute_per_modality_validation(self, epoch: int) -> None:
+        """Compute per-modality validation metrics for 3D volumes.
+
+        Overrides base class to use 3D-appropriate metrics:
+        - MS-SSIM-3D with spatial_dims=3 (volumetric)
+        - MS-SSIM with slice-by-slice computation (comparable to 2D)
+        - LPIPS computed slice-by-slice via compute_lpips_3d
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if not self.per_modality_val_loaders:
+            return
+
+        model_to_use = self._get_model_for_eval()
+        model_to_use.eval()
+
+        for modality, loader in self.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim_3d = 0.0  # Volumetric 3D MS-SSIM
+            total_msssim_2d = 0.0  # Slice-by-slice 2D MS-SSIM
+            n_batches = 0
+
+            # Regional tracker for this modality
+            regional_tracker = None
+            if self.log_regional_losses:
+                regional_tracker = self._create_regional_tracker()
+
+            with torch.inference_mode():
+                for batch in loader:
+                    images, mask = self._prepare_batch(batch)
+
+                    with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                        reconstruction, _ = self._forward_for_validation(model_to_use, images)
+
+                    # Compute metrics - 3D versions
+                    if self.log_psnr:
+                        total_psnr += compute_psnr(reconstruction, images)
+                    if self.log_lpips:
+                        total_lpips += compute_lpips_3d(
+                            reconstruction.float(), images.float(), device=self.device
+                        )
+                    if self.log_msssim:
+                        # Volumetric 3D MS-SSIM
+                        total_msssim_3d += compute_msssim(
+                            reconstruction.float(), images.float(), spatial_dims=3
+                        )
+                        # Slice-by-slice 2D MS-SSIM (comparable to 2D trainers)
+                        total_msssim_2d += compute_msssim_2d_slicewise(
+                            reconstruction.float(), images.float()
+                        )
+
+                    # Regional tracking
+                    if regional_tracker is not None and mask is not None:
+                        regional_tracker.update(reconstruction.float(), images.float(), mask)
+
+                    n_batches += 1
+
+            # Log metrics
+            if n_batches > 0 and self.writer is not None:
+                if self.log_psnr:
+                    self.writer.add_scalar(f'Validation/PSNR_{modality}', total_psnr / n_batches, epoch)
+                if self.log_lpips:
+                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', total_lpips / n_batches, epoch)
+                if self.log_msssim:
+                    self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', total_msssim_2d / n_batches, epoch)
+                    self.writer.add_scalar(f'Validation/MS-SSIM-3D_{modality}', total_msssim_3d / n_batches, epoch)
+
+                if regional_tracker is not None:
+                    regional_tracker.log_to_tensorboard(
+                        self.writer, epoch, prefix=f'regional_{modality}'
+                    )
+
+        model_to_use.train()
 
     def evaluate_test_set(
         self,
@@ -1484,7 +1692,8 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
 
         # Accumulators
         total_l1 = 0.0
-        total_msssim = 0.0
+        total_msssim_3d = 0.0
+        total_msssim_2d = 0.0
         total_psnr = 0.0
         total_lpips = 0.0
         n_batches = 0
@@ -1493,9 +1702,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         # Regional tracker
         regional_tracker = None
         if self.log_regional_losses:
-            regional_tracker = RegionalMetricsTracker3D(
-                tumor_size_bins=self._get_tumor_size_bins(),
-            )
+            regional_tracker = self._create_regional_tracker()
 
         # Worst batch tracking
         worst_loss = 0.0
@@ -1506,7 +1713,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         sample_outputs = []
         max_vis_samples = 4
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 images, mask = self._prepare_batch(batch)
                 batch_size = images.shape[0]
@@ -1518,7 +1725,10 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
                 l1_loss = torch.abs(reconstructed - images).mean().item()
                 total_l1 += l1_loss
                 if self.log_msssim:
-                    total_msssim += compute_msssim(reconstructed.float(), images.float(), spatial_dims=3)
+                    # 3D volumetric MS-SSIM
+                    total_msssim_3d += compute_msssim(reconstructed.float(), images.float(), spatial_dims=3)
+                    # 2D slice-by-slice MS-SSIM (for comparison with 2D trainers)
+                    total_msssim_2d += compute_msssim_2d_slicewise(reconstructed.float(), images.float())
                 total_psnr += compute_psnr(reconstructed, images)
                 total_lpips += compute_lpips_3d(reconstructed.float(), images.float(), device=self.device)
 
@@ -1552,15 +1762,17 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             'n_samples': n_samples,
         }
         if self.log_msssim:
-            metrics['msssim'] = total_msssim / n_batches
+            metrics['msssim'] = total_msssim_2d / n_batches  # 2D slice-by-slice (comparable to 2D trainers)
+            metrics['msssim_3d'] = total_msssim_3d / n_batches  # 3D volumetric
 
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
-        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
+        logger.info(f"  L1 Loss:    {metrics['l1']:.6f}")
         if 'msssim' in metrics:
-            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
-        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
+            logger.info(f"  MS-SSIM:    {metrics['msssim']:.4f} (2D)")
+            logger.info(f"  MS-SSIM-3D: {metrics['msssim_3d']:.4f}")
+        logger.info(f"  PSNR:       {metrics['psnr']:.2f} dB")
+        logger.info(f"  LPIPS:      {metrics['lpips']:.4f}")
 
         # Save results
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -1575,6 +1787,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
             if 'msssim' in metrics:
                 self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
+                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', metrics['msssim_3d'], 0)
 
             if regional_tracker is not None:
                 regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')

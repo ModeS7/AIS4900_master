@@ -482,7 +482,6 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         log_compression_epoch_summary(
             epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
             regularization_key='vq',
-            quality_metric='psnr',
         )
 
     def _test_forward(

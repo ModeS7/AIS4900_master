@@ -472,7 +472,6 @@ class DCAETrainer(BaseCompressionTrainer):
         log_compression_epoch_summary(
             epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
             regularization_key=None,  # DC-AE has no regularization
-            quality_metric='psnr',
         )
 
     def _measure_model_flops(

@@ -350,3 +350,174 @@ def create_vae_test_dataloader(
     )
 
     return dataloader, test_dataset
+
+
+class VolumeDataset(Dataset):
+    """Dataset wrapper for returning full 3D volumes.
+
+    Used for volume-level metrics like 3D MS-SSIM. Returns volumes
+    without slice extraction, optionally with segmentation masks.
+    """
+
+    def __init__(
+        self,
+        image_dataset: NiFTIDataset,
+        seg_dataset: Optional[NiFTIDataset] = None,
+    ) -> None:
+        """Initialize volume dataset.
+
+        Args:
+            image_dataset: Dataset of image volumes.
+            seg_dataset: Optional dataset of segmentation masks.
+        """
+        self.image_dataset = image_dataset
+        self.seg_dataset = seg_dataset
+
+    def __len__(self) -> int:
+        return len(self.image_dataset)
+
+    def __getitem__(self, idx: int) -> dict:
+        """Get volume and optional segmentation.
+
+        Returns:
+            Dict with 'image' key and optional 'seg' key.
+            image: [C, H, W, D] tensor
+            seg: [1, H, W, D] tensor (if available)
+        """
+        image, patient = self.image_dataset[idx]
+        result = {'image': image, 'patient': patient}
+
+        if self.seg_dataset is not None:
+            seg, _ = self.seg_dataset[idx]
+            result['seg'] = seg
+
+        return result
+
+
+class DualVolumeDataset(Dataset):
+    """Dataset wrapper for dual-modality 3D volumes.
+
+    Stacks t1_pre and t1_gd into 2-channel volumes.
+    Used for volume-level metrics like 3D MS-SSIM.
+    """
+
+    def __init__(
+        self,
+        t1_pre_dataset: NiFTIDataset,
+        t1_gd_dataset: NiFTIDataset,
+        seg_dataset: Optional[NiFTIDataset] = None,
+    ) -> None:
+        """Initialize dual volume dataset.
+
+        Args:
+            t1_pre_dataset: Dataset of t1_pre volumes.
+            t1_gd_dataset: Dataset of t1_gd volumes.
+            seg_dataset: Optional dataset of segmentation masks.
+        """
+        import torch
+        self.t1_pre_dataset = t1_pre_dataset
+        self.t1_gd_dataset = t1_gd_dataset
+        self.seg_dataset = seg_dataset
+
+    def __len__(self) -> int:
+        return len(self.t1_pre_dataset)
+
+    def __getitem__(self, idx: int) -> dict:
+        """Get stacked dual-modality volume.
+
+        Returns:
+            Dict with 'image' key (2 channels) and optional 'seg' key.
+            image: [2, H, W, D] tensor (t1_pre, t1_gd stacked)
+            seg: [1, H, W, D] tensor (if available)
+        """
+        import torch
+        t1_pre, patient = self.t1_pre_dataset[idx]
+        t1_gd, _ = self.t1_gd_dataset[idx]
+
+        # Stack: [1, H, W, D] + [1, H, W, D] -> [2, H, W, D]
+        image = torch.cat([t1_pre, t1_gd], dim=0)
+        result = {'image': image, 'patient': patient}
+
+        if self.seg_dataset is not None:
+            seg, _ = self.seg_dataset[idx]
+            result['seg'] = seg
+
+        return result
+
+
+def create_vae_volume_validation_dataloader(
+    cfg: DictConfig,
+    modality: str,
+    data_split: str = 'val',
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create dataloader that returns full 3D volumes for volume-level metrics.
+
+    Unlike slice-based loaders, this returns [C, H, W, D] volumes without
+    slice extraction. Used for computing 3D MS-SSIM on 2D model reconstructions.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        modality: Modality ('bravo', 'seg', 't1_pre', 't1_gd', 'dual').
+        data_split: Which split to load ('val' or 'test_new').
+
+    Returns:
+        Tuple of (DataLoader, volume_dataset) or None if directory doesn't exist.
+    """
+    data_dir = os.path.join(cfg.paths.data_dir, data_split)
+
+    if not os.path.exists(data_dir):
+        return None
+
+    image_size = cfg.model.image_size
+
+    # Validate modalities exist
+    try:
+        if modality == 'dual':
+            for key in ['t1_pre', 't1_gd']:
+                validate_modality_exists(data_dir, key)
+        else:
+            validate_modality_exists(data_dir, modality)
+    except ValueError as e:
+        logger.warning(f"Volume validation directory misconfigured: {e}")
+        return None
+
+    transform = build_standard_transform(image_size)
+
+    if modality == 'dual':
+        # Dual mode: stack t1_pre + t1_gd as 2 channels
+        t1_pre_dataset = NiFTIDataset(data_dir, 't1_pre', transform)
+        t1_gd_dataset = NiFTIDataset(data_dir, 't1_gd', transform)
+
+        # Try to load seg for regional metrics
+        seg_dataset = None
+        try:
+            validate_modality_exists(data_dir, 'seg')
+            seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
+        except ValueError:
+            pass
+
+        volume_dataset = DualVolumeDataset(t1_pre_dataset, t1_gd_dataset, seg_dataset)
+    else:
+        # Single modality
+        image_dataset = NiFTIDataset(data_dir, modality, transform)
+
+        # Try to load seg for regional metrics
+        seg_dataset = None
+        try:
+            validate_modality_exists(data_dir, 'seg')
+            seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
+        except ValueError:
+            pass
+
+        volume_dataset = VolumeDataset(image_dataset, seg_dataset)
+
+    # Volume-level loader: batch_size=1, no shuffle (process each volume once)
+    dataloader = DataLoader(
+        volume_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,  # Simple loader, no need for multi-processing
+        pin_memory=True,
+    )
+
+    return dataloader, volume_dataset

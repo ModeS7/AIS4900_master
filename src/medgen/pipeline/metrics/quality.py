@@ -195,10 +195,12 @@ def _get_lpips_metric(
     device: torch.device,
     network_type: str = "radimagenet_resnet50",
     cache_dir: Optional[str] = None,
+    use_compile: bool = True,
 ) -> torch.nn.Module:
     """Get or create cached LPIPS metric instance.
 
     Uses MONAI's PerceptualLoss with pretrained networks.
+    Optionally uses torch.compile for faster inference.
 
     Args:
         device: Device to place the metric on.
@@ -208,13 +210,14 @@ def _get_lpips_metric(
             - "vgg" (VGG-based, classic LPIPS)
             - "alex" (AlexNet-based)
         cache_dir: Optional cache directory for model weights.
+        use_compile: Whether to apply torch.compile for speedup (default: True).
 
     Returns:
         MONAI PerceptualLoss module configured as metric.
     """
     from monai.losses import PerceptualLoss
 
-    cache_key = (str(device), network_type)
+    cache_key = (str(device), network_type, use_compile)
 
     if cache_key not in _lpips_cache:
         metric = PerceptualLoss(
@@ -224,6 +227,16 @@ def _get_lpips_metric(
             pretrained=True,
         ).to(device)
         metric.eval()
+
+        # Apply torch.compile for faster inference
+        # reduce-overhead is best for repeated small batch inference
+        if use_compile:
+            try:
+                metric = torch.compile(metric, mode="reduce-overhead")
+                logger.debug(f"LPIPS metric compiled with torch.compile")
+            except Exception as e:
+                logger.warning(f"torch.compile failed for LPIPS, using uncompiled: {e}")
+
         _lpips_cache[cache_key] = metric
 
     return _lpips_cache[cache_key]
@@ -345,3 +358,36 @@ def compute_lpips_3d(
         total_lpips += compute_lpips(gen_slice, ref_slice, device=device, network_type=network_type)
 
     return total_lpips / depth
+
+
+def compute_msssim_2d_slicewise(
+    generated: torch.Tensor,
+    reference: torch.Tensor,
+    data_range: float = 1.0,
+) -> float:
+    """Compute MS-SSIM slice-by-slice for 3D volumes.
+
+    Computes 2D MS-SSIM for each corresponding depth slice pair and averages.
+    Useful for comparing 3D models against 2D baselines using the same metric.
+
+    Args:
+        generated: Generated volumes [B, C, D, H, W] in [0, 1] range.
+        reference: Reference volumes [B, C, D, H, W] in [0, 1] range.
+        data_range: Value range of input images (default: 1.0).
+
+    Returns:
+        Average MS-SSIM across all slices (higher is better, 1.0 = identical).
+    """
+    depth = generated.shape[2]
+    if depth == 0:
+        return 0.0
+
+    total_msssim = 0.0
+
+    for d in range(depth):
+        # Extract 2D slice: [B, C, H, W]
+        gen_slice = generated[:, :, d, :, :]
+        ref_slice = reference[:, :, d, :, :]
+        total_msssim += compute_msssim(gen_slice, ref_slice, data_range, spatial_dims=2)
+
+    return total_msssim / depth
