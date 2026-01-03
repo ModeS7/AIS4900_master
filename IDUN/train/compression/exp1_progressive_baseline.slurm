@@ -25,6 +25,10 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
+# DEPRECATED: Progressive VAE training is deprecated.
+# Consider using train_vae.py directly or train_vae_3d.py for volumetric training.
+# Kept for potential 3D progressive training experiments.
+#
 # Progressive VAE: 64 -> 128 -> 256, all modalities (bravo, flair, t1_pre, t1_gd, seg)
 # Features: VAE augmentation (aggressive), batch augmentation (mixup/cutmix), no GAN
 time python -m medgen.scripts.train_vae_progressive \

@@ -105,7 +105,6 @@ AIS4900_master/
 │
 ├── docs/                        # Additional documentation
 ├── CLAUDE.md                    # Claude Code context file
-├── DETAILES.md                  # Detailed technical documentation
 ├── FUTURE_WORK.md               # Planned improvements
 └── RESEARCH_NOTES.md            # Research notes and references
 ```
@@ -429,6 +428,5 @@ Key TensorBoard metrics:
 
 - `docs/architecture.md` - Architecture reference and TensorBoard metrics
 - `docs/common-pitfalls.md` - Common issues and solutions
-- `DETAILES.md` - Detailed technical documentation
 - `FUTURE_WORK.md` - Planned improvements and experiments
 - `docs/pure_bf16_attempts.md` - Notes on pure bf16 training experiments

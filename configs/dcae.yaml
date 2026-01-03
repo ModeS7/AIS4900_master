@@ -44,9 +44,9 @@ training:
   learning_rate: 1.0e-4
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  # num_validations: 20 from default.yaml gives 5 validations for 100 epochs
+  # Validates every epoch, figures logged at figure_interval=10
   use_ema: false
-  use_compile: true  # torch.compile works well with DC-AE
+  use_compile: false  # torch.compile causes OOM with DC-AE's 362M params
 
   # Training phase (paper uses 3-phase approach)
   # Phase 1: L1 + Perceptual loss (main training)

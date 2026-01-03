@@ -7,6 +7,7 @@ DiffusionTrainer and VAETrainer.
 
 Note: GradientNormTracker and FLOPsTracker have been moved to tracking/.
 """
+import itertools
 import logging
 import os
 import time
@@ -58,6 +59,51 @@ def get_vram_usage(device: torch.device) -> str:
     reserved = torch.cuda.memory_reserved(device) / 1024 ** 3
     max_allocated = torch.cuda.max_memory_allocated(device) / 1024 ** 3
     return f"VRAM: {allocated:.1f}GB allocated, {reserved:.1f}GB reserved, max: {max_allocated:.1f}GB"
+
+
+def get_vram_stats(device: torch.device) -> Dict[str, float]:
+    """Get VRAM usage statistics as numeric values for TensorBoard logging.
+
+    Args:
+        device: CUDA device to query.
+
+    Returns:
+        Dict with VRAM stats in GB:
+        - allocated: Currently allocated memory
+        - reserved: Total reserved memory (includes cached)
+        - max_allocated: Peak allocated memory since last reset
+    """
+    if not torch.cuda.is_available():
+        return {'allocated': 0.0, 'reserved': 0.0, 'max_allocated': 0.0}
+
+    return {
+        'allocated': torch.cuda.memory_allocated(device) / 1024 ** 3,
+        'reserved': torch.cuda.memory_reserved(device) / 1024 ** 3,
+        'max_allocated': torch.cuda.max_memory_allocated(device) / 1024 ** 3,
+    }
+
+
+def log_vram_to_tensorboard(
+    writer,
+    device: torch.device,
+    epoch: int,
+    prefix: str = 'VRAM',
+) -> None:
+    """Log VRAM usage statistics to TensorBoard.
+
+    Args:
+        writer: TensorBoard SummaryWriter.
+        device: CUDA device to query.
+        epoch: Current epoch number.
+        prefix: TensorBoard tag prefix (default: 'VRAM').
+    """
+    if writer is None:
+        return
+
+    stats = get_vram_stats(device)
+    writer.add_scalar(f'{prefix}/allocated_GB', stats['allocated'], epoch)
+    writer.add_scalar(f'{prefix}/reserved_GB', stats['reserved'], epoch)
+    writer.add_scalar(f'{prefix}/max_allocated_GB', stats['max_allocated'], epoch)
 
 
 def save_full_checkpoint(
@@ -167,6 +213,7 @@ def create_epoch_iterator(
     is_cluster: bool,
     is_main_process: bool,
     ncols: int = 100,
+    limit_batches: Optional[int] = None,
 ) -> Union[Iterator, tqdm]:
     """Create progress bar or plain iterator for epoch training.
 
@@ -176,10 +223,14 @@ def create_epoch_iterator(
         is_cluster: Whether running on cluster (disable progress bar).
         is_main_process: Whether this is main process (only main shows progress).
         ncols: Width of tqdm progress bar.
+        limit_batches: Optional limit on number of batches per epoch (for quick testing).
 
     Returns:
         tqdm progress bar or plain iterator.
     """
+    total = limit_batches if limit_batches else len(data_loader)
+    iterator = itertools.islice(data_loader, limit_batches) if limit_batches else data_loader
+
     if is_main_process and not is_cluster:
-        return tqdm(data_loader, desc=f"Epoch {epoch}", ncols=ncols)
-    return iter(data_loader)
+        return tqdm(iterator, desc=f"Epoch {epoch}", ncols=ncols, total=total)
+    return iter(iterator)

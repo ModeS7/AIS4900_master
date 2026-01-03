@@ -3,16 +3,60 @@
 When using both ScoreAug and multi-modality training, we need to combine
 both omega and mode embeddings into the time_embed.
 
-This module provides a unified wrapper that handles both conditioning signals.
+This module provides a unified wrapper that handles both conditioning signals,
+plus a factory function to create the appropriate wrapper based on config.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
 
-from .mode_embed import MODE_ENCODING_DIM, encode_mode_id
-from .score_aug import OMEGA_ENCODING_DIM, encode_omega
+from .mode_embed import MODE_ENCODING_DIM, encode_mode_id, ModeEmbedModelWrapper
+from .score_aug import OMEGA_ENCODING_DIM, encode_omega, ScoreAugModelWrapper
+
+
+def create_conditioning_wrapper(
+    model: nn.Module,
+    use_omega: bool = False,
+    use_mode: bool = False,
+    embed_dim: int = 256,
+) -> Tuple[nn.Module, Optional[str]]:
+    """Factory function to create appropriate conditioning wrapper.
+
+    Simplifies the if-elif chain in trainer.py by selecting the right
+    wrapper based on conditioning flags.
+
+    Args:
+        model: MONAI DiffusionModelUNet to wrap.
+        use_omega: Whether to use omega (ScoreAug) conditioning.
+        use_mode: Whether to use mode (modality) conditioning.
+        embed_dim: Embedding dimension for time_embed.
+
+    Returns:
+        Tuple of (wrapped_model, wrapper_name):
+        - wrapped_model: The model with conditioning wrapper applied (or original if no conditioning)
+        - wrapper_name: String describing the wrapper type, or None if no wrapper applied.
+            Values: "combined", "omega", "mode", or None
+
+    Example:
+        >>> wrapper, wrapper_name = create_conditioning_wrapper(
+        ...     model=raw_model,
+        ...     use_omega=cfg.training.score_aug.use_omega_conditioning,
+        ...     use_mode=cfg.mode.use_mode_embedding,
+        ...     embed_dim=4 * channels[0],
+        ... )
+        >>> if wrapper_name:
+        ...     logger.info(f"Applied {wrapper_name} conditioning wrapper")
+    """
+    if use_omega and use_mode:
+        return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
+    elif use_omega:
+        return ScoreAugModelWrapper(model, embed_dim=embed_dim), "omega"
+    elif use_mode:
+        return ModeEmbedModelWrapper(model, embed_dim=embed_dim), "mode"
+    else:
+        return model, None
 
 
 class CombinedTimeEmbed(nn.Module):

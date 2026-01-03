@@ -89,12 +89,12 @@ Input: [noise, mask]     ← Channel Concat (WHAT goes in)
 
 ## Quality Improvements
 
-- [ ] **Track loss by diffusion step** - Analyze which timesteps are hardest to learn
+- [x] **Track loss by diffusion step** - Analyze which timesteps are hardest to learn (IMPLEMENTED: timestep_losses in MetricsTracker)
 - [ ] **Curriculum learning** - Train sequentially from easier to harder denoising tasks
 - [ ] **Network scaling** - More channels/layers (current: 128, 256, 256)
 - [ ] **Add network layers** - Increase model capacity
 - [ ] **Alternative noise schedules** - Laplace, Cauchy schedules (concentrate noise at mid-range timesteps)
-- [ ] **Progressive resolution training** - Train 64→128→256, may reduce distortion rate
+- [ ] **Progressive resolution training** - Train 64→128→256 (VAE progressive is DEPRECATED, but diffusion progressive could work)
 - [ ] **Frequency loss (FFT)** - Preserve high-frequency details that MSE blurs
 
 ---

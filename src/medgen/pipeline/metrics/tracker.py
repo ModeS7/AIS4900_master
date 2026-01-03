@@ -460,7 +460,7 @@ class MetricsTracker:
         if self.log_grad_norm:
             self._log_grad_norms(epoch)
 
-        # Other metrics only at val_interval
+        # Other metrics when log_all=True (every epoch by default)
         if log_all:
             if self.log_timestep_losses:
                 self._log_timestep_losses(epoch)
@@ -485,7 +485,7 @@ class MetricsTracker:
         self.grad_norm_count = 0
 
     def _log_timestep_losses(self, epoch: int) -> None:
-        """Save timestep loss distribution to JSON file."""
+        """Save timestep loss distribution to JSON file and TensorBoard."""
         if not self._timestep_accum_initialized or self.timestep_loss_sum is None:
             return
 
@@ -504,7 +504,11 @@ class MetricsTracker:
             bin_label = f"{bin_start:04d}-{bin_end:04d}"
             count = counts[bin_idx].item()
             if count > 0:
-                epoch_data[bin_label] = (sums[bin_idx] / count).item()
+                avg_loss = (sums[bin_idx] / count).item()
+                epoch_data[bin_label] = avg_loss
+                # Log to TensorBoard under Timestep/ branch
+                if self.writer is not None:
+                    self.writer.add_scalar(f'Timestep/{bin_start}-{bin_end}', avg_loss, epoch)
             else:
                 epoch_data[bin_label] = 0.0
 

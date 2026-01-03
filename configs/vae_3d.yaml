@@ -46,7 +46,7 @@ training:
   learning_rate: 5.0e-5           # Lower LR for 3D (MONAI recommendation)
   gradient_clip_norm: 1.0
   warmup_epochs: 5
-  # num_validations: 20 from default.yaml (125 epochs / 20 = val every 6 epochs)
+  # Validates every epoch, figures logged at figure_interval=10
   use_ema: false                  # EMA doubles memory
   augment_type: vae_3d
   # torch.compile disabled - conflicts with gradient checkpointing

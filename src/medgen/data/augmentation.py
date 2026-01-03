@@ -7,7 +7,7 @@ Separate augmentation pipelines for diffusion and VAE training:
 Batch-level augmentations (mixup, cutmix) are applied via collate function.
 """
 import random
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import albumentations as A
 from albumentations.core.transforms_interface import ImageOnlyTransform
@@ -240,8 +240,10 @@ def cutmix(
 def create_vae_collate_fn(
     mixup_prob: float = 0.2,
     cutmix_prob: float = 0.2,
-) -> Callable[[List[torch.Tensor]], torch.Tensor]:
+) -> Callable[[List], Any]:
     """Create collate function with mixup/cutmix for VAE training.
+
+    Handles both tensor batches and tuple batches (image, mask) for regional metrics.
 
     Args:
         mixup_prob: Probability of applying mixup (default 0.2).
@@ -250,16 +252,36 @@ def create_vae_collate_fn(
     Returns:
         Collate function for DataLoader.
     """
-    def collate_fn(batch: List[torch.Tensor]) -> torch.Tensor:
-        # Convert numpy arrays to tensors if needed
-        tensors = []
-        for item in batch:
-            if isinstance(item, np.ndarray):
-                tensors.append(torch.from_numpy(item).float())
-            else:
-                tensors.append(item)
-        images = torch.stack(tensors)
+    def collate_fn(batch: List) -> Any:
+        # Check if batch contains tuples (image, mask) for regional metrics
+        has_masks = isinstance(batch[0], tuple) and len(batch[0]) == 2
 
+        if has_masks:
+            # Separate images and masks
+            image_tensors = []
+            mask_tensors = []
+            for item in batch:
+                img, mask = item
+                if isinstance(img, np.ndarray):
+                    img = torch.from_numpy(img).float()
+                if isinstance(mask, np.ndarray):
+                    mask = torch.from_numpy(mask).float()
+                image_tensors.append(img)
+                mask_tensors.append(mask)
+            images = torch.stack(image_tensors)
+            masks = torch.stack(mask_tensors)
+        else:
+            # Single tensor batch
+            tensors = []
+            for item in batch:
+                if isinstance(item, np.ndarray):
+                    tensors.append(torch.from_numpy(item).float())
+                else:
+                    tensors.append(item)
+            images = torch.stack(tensors)
+            masks = None
+
+        # Apply batch augmentation to images only (not masks)
         r = random.random()
         if r < mixup_prob:
             mixed, _, _ = mixup(images.numpy(), alpha=0.4)
@@ -268,6 +290,8 @@ def create_vae_collate_fn(
             mixed, _, _ = cutmix(images.numpy(), alpha=1.0)
             images = torch.from_numpy(mixed).float()
 
+        if has_masks:
+            return (images, masks)
         return images
 
     return collate_fn

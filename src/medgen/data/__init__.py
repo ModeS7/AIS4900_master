@@ -11,7 +11,7 @@ from .augmentation import (
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .score_aug import ScoreAugTransform
 from .mode_embed import ModeEmbedModelWrapper, ModeTimeEmbed, MODE_ID_MAP, encode_mode_id
-from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed
+from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed, create_conditioning_wrapper
 from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
 
 # Import all loaders from loaders subpackage
@@ -116,4 +116,5 @@ __all__ = [
     'encode_mode_id',
     'CombinedModelWrapper',
     'CombinedTimeEmbed',
+    'create_conditioning_wrapper',
 ]

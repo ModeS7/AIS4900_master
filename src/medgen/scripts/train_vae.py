@@ -94,7 +94,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create trainer
     trainer = VAETrainer(cfg)
-    log.info(f"Validation interval: every {trainer.val_interval} epochs ({cfg.training.epochs // trainer.val_interval} validations)")
+    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create dataloader using correct VAE data loading (no seg concatenation)
     augment = cfg.training.get('augment', True)

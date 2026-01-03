@@ -1,9 +1,13 @@
 """
 Diffusion model trainer module.
 
-This module provides the DiffusionTrainer class for training diffusion models
-with various strategies (DDPM, Rectified Flow) and modes (segmentation,
-conditional single, conditional dual).
+This module provides the DiffusionTrainer class which inherits from BaseTrainer
+and implements diffusion-specific functionality:
+- Strategy pattern (DDPM, Rectified Flow)
+- Mode pattern (seg, bravo, dual, multi)
+- Timestep-based noise training
+- SAM optimizer support
+- ScoreAug transforms
 """
 import json
 import logging
@@ -30,6 +34,7 @@ from tqdm import tqdm
 from monai.networks.nets import DiffusionModelUNet
 
 from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
+from .base_trainer import BaseTrainer
 from .optimizers import SAM
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from .losses import PerceptualLoss
@@ -39,6 +44,7 @@ from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
 from .utils import (
     get_vram_usage,
+    log_vram_to_tensorboard,
     log_epoch_summary,
     save_full_checkpoint,
     create_epoch_iterator,
@@ -56,12 +62,15 @@ from .tracking import FLOPsTracker
 logger = logging.getLogger(__name__)
 
 
-class DiffusionTrainer:
+class DiffusionTrainer(BaseTrainer):
     """Unified diffusion model trainer composing strategy and mode.
 
-    This trainer supports multiple diffusion strategies (DDPM, Rectified Flow)
-    and training modes (segmentation, conditional single, conditional dual).
-    It handles distributed training, mixed precision, and checkpoint management.
+    Inherits from BaseTrainer and adds:
+    - Strategy pattern for noise prediction (DDPM, RFlow)
+    - Mode pattern for input/output formats (seg, bravo, dual, multi)
+    - SAM optimizer support
+    - ScoreAug transforms for data augmentation
+    - Compiled forward paths for performance
 
     Args:
         cfg: Hydra configuration object containing all settings.
@@ -75,30 +84,24 @@ class DiffusionTrainer:
     """
 
     def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
-        self.cfg = cfg
+        # Initialize base trainer (distributed setup, TensorBoard, trackers)
+        super().__init__(cfg)
+
         self.space = space if space is not None else PixelSpace()
 
-        # Extract config values
+        # ─────────────────────────────────────────────────────────────────────
+        # Diffusion-specific config
+        # ─────────────────────────────────────────────────────────────────────
         self.strategy_name: str = cfg.strategy.name
         self.mode_name: str = cfg.mode.name
-        self.n_epochs: int = cfg.training.epochs
-        self.batch_size: int = cfg.training.batch_size
         self.image_size: int = cfg.model.image_size
-        self.learning_rate: float = cfg.training.learning_rate
-        # Disable perceptual loss for seg mode (pretrained features don't apply to binary masks)
-        self.perceptual_weight: float = 0.0 if self.mode_name == 'seg' else cfg.training.perceptual_weight
         self.num_timesteps: int = cfg.strategy.num_train_timesteps
-        self.warmup_epochs: int = cfg.training.warmup_epochs
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
-        # Compute val_interval: num_validations takes priority over val_interval
-        num_validations = cfg.training.get('num_validations', None)
-        if num_validations and num_validations > 0:
-            self.val_interval: int = max(1, self.n_epochs // num_validations)
-        else:
-            self.val_interval: int = cfg.training.val_interval
-        self.use_multi_gpu: bool = cfg.training.use_multi_gpu
-        self.use_ema: bool = cfg.training.use_ema
-        self.ema_decay: float = cfg.training.ema.decay
+
+        # Perceptual weight (disabled for seg mode - binary masks)
+        self.perceptual_weight: float = 0.0 if self.mode_name == 'seg' else cfg.training.perceptual_weight
+
+        # Min-SNR weighting
         self.use_min_snr: bool = cfg.training.use_min_snr
         self.min_snr_gamma: float = cfg.training.min_snr_gamma
 
@@ -108,55 +111,15 @@ class DiffusionTrainer:
         self.sam_rho: float = sam_cfg.get('rho', 0.05)
         self.sam_adaptive: bool = sam_cfg.get('adaptive', False)
 
-        # Logging options
-        logging_cfg = cfg.training.get('logging', {})
-        self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
-        self.log_psnr: bool = logging_cfg.get('psnr', True)
-        self.log_lpips: bool = logging_cfg.get('lpips', True)
-        self.log_msssim: bool = logging_cfg.get('msssim', True)
-        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
-        self.log_flops: bool = logging_cfg.get('flops', True)
-
-        # Determine if running on cluster
-        self.is_cluster: bool = (cfg.paths.name == "cluster")
-
-        # Setup device and distributed training
-        if self.use_multi_gpu:
-            self.rank, self.local_rank, self.world_size, self.device = self._setup_distributed()
-            self.is_main_process: bool = (self.rank == 0)
-        else:
-            self.device: torch.device = torch.device("cuda")
-            self.is_main_process = True
-            self.rank: int = 0
-            self.world_size: int = 1
+        # EMA (from config, not in base trainer)
+        self.use_ema: bool = cfg.training.use_ema
+        self.ema_decay: float = cfg.training.ema.decay
+        self.ema: Optional[EMA] = None
 
         # Initialize strategy and mode
         self.strategy = self._create_strategy(self.strategy_name)
         self.mode = self._create_mode(self.mode_name)
         self.scheduler = self.strategy.setup_scheduler(self.num_timesteps, self.image_size)
-
-        # Initialize logging and save directories
-        if self.is_main_process:
-            try:
-                from hydra.core.hydra_config import HydraConfig
-                self.save_dir = HydraConfig.get().runtime.output_dir
-            except (ImportError, ValueError, AttributeError):
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                # Optional experiment name prefix from config (include underscore in value: "exp1_")
-                exp_name = cfg.training.get('name', '')
-                self.run_name = f"{exp_name}{self.strategy_name}_{self.image_size}_{timestamp}"
-                # Structure: runs/diffusion_2d/{mode}/{run_name}
-                self.save_dir = os.path.join(cfg.paths.model_dir, 'diffusion_2d', self.mode_name, self.run_name)
-
-            tensorboard_dir = os.path.join(self.save_dir, "tensorboard")
-            os.makedirs(tensorboard_dir, exist_ok=True)
-            self.writer: Optional[SummaryWriter] = SummaryWriter(tensorboard_dir)
-            self.best_loss: float = float('inf')
-        else:
-            self.writer = None
-            self.run_name = ""
-            self.save_dir = ""
-            self.best_loss = float('inf')
 
         # Initialize metrics tracker
         self.metrics = MetricsTracker(
@@ -170,24 +133,15 @@ class DiffusionTrainer:
         self.metrics.set_scheduler(self.scheduler)
 
         # Initialize model components (set during setup_model)
-        self.model: Optional[nn.Module] = None
-        self.model_raw: Optional[nn.Module] = None
-        self.ema: Optional[EMA] = None
-        self.optimizer: Optional[AdamW] = None
-        self.lr_scheduler: Optional[LRScheduler] = None
         self.perceptual_loss_fn: Optional[nn.Module] = None
 
         # Validation loader (set in train())
         self.val_loader: Optional[DataLoader] = None
 
-        # FLOPs tracking using shared utility
-        self._flops_tracker = FLOPsTracker()
-
         # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
 
         # ScoreAug initialization (applies transforms to noisy data)
-        # Reference: https://arxiv.org/abs/2508.07926
         self.score_aug = None
         self.use_omega_conditioning = False
         score_aug_cfg = cfg.training.get('score_aug', {})
@@ -216,8 +170,7 @@ class DiffusionTrainer:
                     transforms.append('cutout')
                 if score_aug_cfg.get('brightness', False):
                     transforms.append(f"brightness({score_aug_cfg.get('brightness_range', 1.2)})")
-                # Per paper: uniform sampling across enabled transforms + identity
-                n_options = len(transforms) + 1  # +1 for identity
+                n_options = len(transforms) + 1
                 logger.info(
                     f"ScoreAug enabled: transforms=[{', '.join(transforms)}], "
                     f"each with 1/{n_options} prob (uniform), "
@@ -228,6 +181,17 @@ class DiffusionTrainer:
         self.use_mode_embedding = cfg.mode.get('use_mode_embedding', False)
         if self.use_mode_embedding and self.is_main_process:
             logger.info("Mode embedding enabled for multi-modality training")
+
+    def _create_fallback_save_dir(self) -> str:
+        """Create fallback save directory for diffusion trainer."""
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        exp_name = self.cfg.training.get('name', '')
+        # Use cfg directly since instance attributes may not be set yet
+        strategy_name = self.cfg.strategy.name
+        mode_name = self.cfg.mode.name
+        image_size = self.cfg.model.image_size
+        run_name = f"{exp_name}{strategy_name}_{image_size}_{timestamp}"
+        return os.path.join(self.cfg.paths.model_dir, 'diffusion_2d', mode_name, run_name)
 
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
@@ -250,27 +214,25 @@ class DiffusionTrainer:
         if mode not in modes:
             raise ValueError(f"Unknown mode: {mode}. Choose from {list(modes.keys())}")
 
-        # Pass image_keys to ConditionalDualMode if configured
         if mode == ModeType.DUAL or mode == 'dual':
             image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
             return ConditionalDualMode(image_keys)
 
-        # Pass image_keys to MultiModalityMode if configured
         if mode == 'multi':
             image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
             return MultiModalityMode(image_keys)
 
         return modes[mode]()
 
-    def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
-        """Setup distributed training with dynamic port allocation."""
-        return setup_distributed()
-
     def setup_model(self, train_dataset: Dataset) -> None:
-        """Initialize model, optimizer, and loss functions."""
+        """Initialize model, optimizer, and loss functions.
+
+        Args:
+            train_dataset: Training dataset for model config extraction.
+        """
         model_cfg = self.mode.get_model_config()
 
-        # Adjust channels for latent space (PixelSpace returns unchanged)
+        # Adjust channels for latent space
         in_channels = self.space.get_latent_channels(model_cfg['in_channels'])
         out_channels = self.space.get_latent_channels(model_cfg['out_channels'])
 
@@ -284,10 +246,8 @@ class DiffusionTrainer:
 
         # Create raw model via factory
         if self.is_transformer:
-            # SiT / transformer models use factory
             raw_model = create_diffusion_model(self.cfg, self.device, in_channels, out_channels)
 
-            # Warn if embedding wrappers requested (not supported for transformers yet)
             if self.use_omega_conditioning or self.use_mode_embedding:
                 if self.is_main_process:
                     logger.warning(
@@ -297,7 +257,6 @@ class DiffusionTrainer:
                 self.use_omega_conditioning = False
                 self.use_mode_embedding = False
         else:
-            # UNet via MONAI
             channels = tuple(self.cfg.model.channels)
             attention_levels = tuple(self.cfg.model.attention_levels)
             num_res_blocks = self.cfg.model.num_res_blocks
@@ -322,62 +281,34 @@ class DiffusionTrainer:
 
         # Handle embedding wrappers (UNet only)
         if not self.is_transformer:
-            # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
             channels = tuple(self.cfg.model.channels)
             time_embed_dim = 4 * channels[0]
         else:
-            time_embed_dim = None  # Not used for transformers
+            time_embed_dim = None
 
         # Handle embedding wrappers: omega, mode, or both
-        # Wrap FIRST (modifies time_embed), then compile INNER model
-        # This keeps encoding logic (with data-dependent branches) outside compiled graph
-        if not self.is_transformer and self.use_omega_conditioning and self.use_mode_embedding:
-            # Both omega + mode embedding
-            from medgen.data.combined_embed import CombinedModelWrapper
-            wrapper = CombinedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
+        if not self.is_transformer and (self.use_omega_conditioning or self.use_mode_embedding):
+            from medgen.data import create_conditioning_wrapper
+            wrapper, wrapper_name = create_conditioning_wrapper(
+                model=raw_model,
+                use_omega=self.use_omega_conditioning,
+                use_mode=self.use_mode_embedding,
+                embed_dim=time_embed_dim,
+            )
+            wrapper = wrapper.to(self.device)
+
             if self.is_main_process:
-                logger.info(f"Combined: wrapped model with omega + mode conditioning (embed_dim={time_embed_dim})")
+                logger.info(f"Conditioning: {wrapper_name} wrapper applied (embed_dim={time_embed_dim})")
 
             if use_compile:
                 wrapper.model = torch.compile(wrapper.model, mode="default")
                 if self.is_main_process:
-                    logger.info("Single-GPU: Compiled inner UNet (combined wrapper uncompiled)")
-
-            self.model = wrapper
-            self.model_raw = wrapper
-
-        elif not self.is_transformer and self.use_omega_conditioning:
-            # Omega conditioning only (UNet)
-            from medgen.data.score_aug import ScoreAugModelWrapper
-            wrapper = ScoreAugModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
-            if self.is_main_process:
-                logger.info(f"ScoreAug: wrapped model with omega conditioning (embed_dim={time_embed_dim})")
-
-            if use_compile:
-                wrapper.model = torch.compile(wrapper.model, mode="default")
-                if self.is_main_process:
-                    logger.info("Single-GPU: Compiled inner UNet (omega wrapper uncompiled)")
-
-            self.model = wrapper
-            self.model_raw = wrapper
-
-        elif not self.is_transformer and self.use_mode_embedding:
-            # Mode embedding only (UNet)
-            from medgen.data.mode_embed import ModeEmbedModelWrapper
-            wrapper = ModeEmbedModelWrapper(raw_model, embed_dim=time_embed_dim).to(self.device)
-            if self.is_main_process:
-                logger.info(f"Mode embedding: wrapped model with mode conditioning (embed_dim={time_embed_dim})")
-
-            if use_compile:
-                wrapper.model = torch.compile(wrapper.model, mode="default")
-                if self.is_main_process:
-                    logger.info("Single-GPU: Compiled inner UNet (mode wrapper uncompiled)")
+                    logger.info(f"Single-GPU: Compiled inner UNet ({wrapper_name} wrapper uncompiled)")
 
             self.model = wrapper
             self.model_raw = wrapper
 
         else:
-            # No special conditioning - use standard wrap_model_for_training
             self.model, self.model_raw = wrap_model_for_training(
                 raw_model,
                 use_multi_gpu=self.use_multi_gpu,
@@ -393,11 +324,10 @@ class DiffusionTrainer:
             if self.is_main_process:
                 logger.warning(
                     "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
-                    "Embeddings will NOT be synchronized across GPUs. "
-                    "For multi-GPU training with embeddings, consider using FSDP or single-GPU."
+                    "Embeddings will NOT be synchronized across GPUs."
                 )
 
-        # Setup perceptual loss (shared wrapper handles multi-channel inputs)
+        # Setup perceptual loss
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
         self.perceptual_loss_fn = PerceptualLoss(
             spatial_dims=2,
@@ -408,33 +338,19 @@ class DiffusionTrainer:
             use_compile=use_compile,
         )
 
-        # Compile fused forward pass (disabled for latent space, Min-SNR, and DDP)
-        # - Latent space: perceptual loss needs pixel space decoding
-        # - Min-SNR: requires per-sample loss weighting (compiled version incorrectly weights total loss)
-        # - DDP: torch.compile can't trace DDP's internal logging (set_runtime_stats_and_log)
+        # Compile fused forward pass setup
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
         if self.use_multi_gpu:
             compile_fused = False
-            if self.is_main_process:
-                logger.info("Disabled compiled fused forward for DDP (multi-GPU)")
         elif self.space.scale_factor > 1:
             compile_fused = False
-            if self.is_main_process:
-                logger.info("Disabled compiled fused forward for latent space")
         elif self.use_min_snr:
             compile_fused = False
-            if self.is_main_process:
-                logger.info("Disabled compiled fused forward for Min-SNR weighting")
         elif self.score_aug is not None:
             compile_fused = False
-            if self.is_main_process:
-                logger.info("Disabled compiled fused forward for ScoreAug")
         elif self.use_sam:
             compile_fused = False
-            if self.is_main_process:
-                logger.info("Disabled compiled fused forward for SAM (incompatible with CUDA graphs)")
-        elif compile_fused and self.is_main_process:
-            logger.info("Compiling fused forward pass")
+
         self._setup_compiled_forward(compile_fused)
 
         # Setup optimizer (with optional SAM wrapper)
@@ -451,8 +367,7 @@ class DiffusionTrainer:
         else:
             self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
 
-        # Warmup + Cosine scheduler (using shared utility)
-        # Note: SAM wraps the base optimizer, scheduler works with base_optimizer's param_groups
+        # Warmup + Cosine scheduler
         self.lr_scheduler = create_warmup_cosine_scheduler(
             self.optimizer,
             warmup_epochs=self.warmup_epochs,
@@ -461,15 +376,7 @@ class DiffusionTrainer:
         )
 
         # Create EMA wrapper if enabled
-        if self.use_ema:
-            self.ema = EMA(
-                self.model_raw,
-                beta=self.ema_decay,
-                update_after_step=self.cfg.training.ema.update_after_step,
-                update_every=self.cfg.training.ema.update_every,
-            )
-            if self.is_main_process:
-                logger.info(f"EMA enabled with decay={self.ema_decay}")
+        self._setup_ema()
 
         # Initialize visualization helper
         self.visualizer = ValidationVisualizer(
@@ -488,181 +395,20 @@ class DiffusionTrainer:
         if self.is_main_process:
             self._save_metadata()
 
-        # Initialize metrics accumulators (explicit, not lazy)
+        # Initialize metrics accumulators
         self.metrics.init_accumulators()
 
-    def _setup_compiled_forward(self, enabled: bool) -> None:
-        """Setup compiled forward functions for fused model + loss computation."""
-        self._use_compiled_forward = enabled
-
-        if not enabled:
-            self._compiled_forward_single = None
-            self._compiled_forward_dual = None
-            return
-
-        def _forward_single(
-            model: nn.Module,
-            perceptual_fn: nn.Module,
-            model_input: torch.Tensor,
-            timesteps: torch.Tensor,
-            images: torch.Tensor,
-            noise: torch.Tensor,
-            noisy_images: torch.Tensor,
-            perceptual_weight: float,
-            strategy_name: str,
-            num_train_timesteps: int,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Fused forward: model prediction + MSE loss + perceptual loss."""
-            prediction = model(model_input, timesteps)
-
-            if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
-                predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
-            else:
-                predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
-
-            if strategy_name == 'rflow':
-                target = images - noise
-            else:
-                target = noise
-            mse_loss = ((prediction - target) ** 2).mean()
-
-            p_loss = perceptual_fn(predicted_clean.float(), images.float())
-            total_loss = mse_loss + perceptual_weight * p_loss
-
-            return total_loss, mse_loss, p_loss, predicted_clean
-
-        def _forward_dual(
-            model: nn.Module,
-            perceptual_fn: nn.Module,
-            model_input: torch.Tensor,
-            timesteps: torch.Tensor,
-            images_0: torch.Tensor,
-            images_1: torch.Tensor,
-            noise_0: torch.Tensor,
-            noise_1: torch.Tensor,
-            noisy_0: torch.Tensor,
-            noisy_1: torch.Tensor,
-            perceptual_weight: float,
-            strategy_name: str,
-            num_train_timesteps: int,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Fused forward for dual mode with separate tensor inputs."""
-            prediction = model(model_input, timesteps)
-            pred_0 = prediction[:, 0:1, :, :]
-            pred_1 = prediction[:, 1:2, :, :]
-
-            if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
-                clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
-            else:
-                clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
-
-            if strategy_name == 'rflow':
-                target_0 = images_0 - noise_0
-                target_1 = images_1 - noise_1
-            else:
-                target_0 = noise_0
-                target_1 = noise_1
-
-            mse_0 = ((pred_0 - target_0) ** 2).mean()
-            mse_1 = ((pred_1 - target_1) ** 2).mean()
-            mse_loss = (mse_0 + mse_1) / 2.0
-
-            p_0 = perceptual_fn(clean_0.float(), images_0.float())
-            p_1 = perceptual_fn(clean_1.float(), images_1.float())
-            p_loss = (p_0 + p_1) / 2.0
-
-            total_loss = mse_loss + perceptual_weight * p_loss
-
-            return total_loss, mse_loss, p_loss, clean_0, clean_1
-
-        self._compiled_forward_single = torch.compile(
-            _forward_single, mode="reduce-overhead", fullgraph=True
-        )
-        self._compiled_forward_dual = torch.compile(
-            _forward_dual, mode="reduce-overhead", fullgraph=True
-        )
-
-        if self.is_main_process:
-            logger.info(f"Compiled fused forward functions for mode: {self.mode_name}")
-
-    def _save_metadata(self) -> None:
-        """Save training configuration to metadata.json."""
-        os.makedirs(self.save_dir, exist_ok=True)
-
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        with open(config_path, 'w') as f:
-            f.write(OmegaConf.to_yaml(self.cfg))
-
-        metadata = {
-            'strategy': self.strategy_name,
-            'mode': self.mode_name,
-            'epochs': self.n_epochs,
-            'batch_size': self.batch_size,
-            'image_size': self.image_size,
-            'learning_rate': self.learning_rate,
-            'perceptual_weight': self.perceptual_weight,
-            'num_timesteps': self.num_timesteps,
-            'warmup_epochs': self.warmup_epochs,
-            'val_interval': self.val_interval,
-            'multi_gpu': self.use_multi_gpu,
-            'use_ema': self.use_ema,
-            'ema_decay': self.ema_decay if self.use_ema else None,
-            'use_min_snr': self.use_min_snr,
-            'min_snr_gamma': self.min_snr_gamma if self.use_min_snr else None,
-            'model': {
-                'channels': list(self.cfg.model.channels),
-                'attention_levels': list(self.cfg.model.attention_levels),
-                'num_res_blocks': self.cfg.model.num_res_blocks,
-                'num_head_channels': self.cfg.model.num_head_channels,
-            },
-            'created_at': datetime.now().isoformat(),
-        }
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
-        logger.info(f"Config saved to: {config_path}")
-
-    def _get_model_config(self) -> Dict[str, Any]:
-        """Get model architecture config for checkpoint saving."""
-        model_cfg = self.mode.get_model_config()
-        return {
-            'channels': list(self.cfg.model.channels),
-            'attention_levels': list(self.cfg.model.attention_levels),
-            'num_res_blocks': self.cfg.model.num_res_blocks,
-            'num_head_channels': self.cfg.model.num_head_channels,
-            'in_channels': model_cfg['in_channels'],
-            'out_channels': model_cfg['out_channels'],
-        }
-
-    def _update_metadata_final(self, final_loss: float, final_mse: float, total_time: float) -> None:
-        """Update metadata.json with final training results."""
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-
-        if os.path.exists(metadata_path):
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-        else:
-            metadata = {}
-
-        metadata['results'] = {
-            'final_loss': float(final_loss),
-            'final_mse': float(final_mse),
-            'best_loss': float(self.best_loss),
-            'total_time_seconds': float(total_time),
-            'total_time_hours': float(total_time / 3600),
-            'completed_at': datetime.now().isoformat(),
-        }
-
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
+    def _setup_ema(self) -> None:
+        """Setup EMA wrapper if enabled."""
+        if self.use_ema:
+            self.ema = EMA(
+                self.model_raw,
+                beta=self.ema_decay,
+                update_after_step=self.cfg.training.ema.update_after_step,
+                update_every=self.cfg.training.ema.update_every,
+            )
+            if self.is_main_process:
+                logger.info(f"EMA enabled with decay={self.ema_decay}")
 
     def _update_ema(self) -> None:
         """Update EMA model weights."""
@@ -709,8 +455,138 @@ class DiffusionTrainer:
 
         return (mse_per_sample * snr_weights).mean()
 
-    def train_step(self, batch: torch.Tensor) -> Tuple[float, float, float]:
-        """Execute a single training step."""
+    def _setup_compiled_forward(self, enabled: bool) -> None:
+        """Setup compiled forward functions for fused model + loss computation."""
+        self._use_compiled_forward = enabled
+
+        if not enabled:
+            self._compiled_forward_single = None
+            self._compiled_forward_dual = None
+            return
+
+        # Define and compile forward functions (same as original)
+        def _forward_single(
+            model: nn.Module,
+            perceptual_fn: nn.Module,
+            model_input: torch.Tensor,
+            timesteps: torch.Tensor,
+            images: torch.Tensor,
+            noise: torch.Tensor,
+            noisy_images: torch.Tensor,
+            perceptual_weight: float,
+            strategy_name: str,
+            num_train_timesteps: int,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            prediction = model(model_input, timesteps)
+
+            if strategy_name == 'rflow':
+                t_normalized = timesteps.float() / float(num_train_timesteps)
+                t_expanded = t_normalized.view(-1, 1, 1, 1)
+                predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
+            else:
+                predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
+
+            if strategy_name == 'rflow':
+                target = images - noise
+                mse_loss = ((prediction - target) ** 2).mean()
+            else:
+                mse_loss = ((prediction - noise) ** 2).mean()
+
+            p_loss = perceptual_fn(predicted_clean, images) if perceptual_weight > 0 else torch.tensor(0.0, device=images.device)
+            total_loss = mse_loss + perceptual_weight * p_loss
+            return total_loss, mse_loss, p_loss, predicted_clean
+
+        def _forward_dual(
+            model: nn.Module,
+            perceptual_fn: nn.Module,
+            model_input: torch.Tensor,
+            timesteps: torch.Tensor,
+            images_0: torch.Tensor,
+            images_1: torch.Tensor,
+            noise_0: torch.Tensor,
+            noise_1: torch.Tensor,
+            noisy_0: torch.Tensor,
+            noisy_1: torch.Tensor,
+            perceptual_weight: float,
+            strategy_name: str,
+            num_train_timesteps: int,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            prediction = model(model_input, timesteps)
+            pred_0 = prediction[:, 0:1, :, :]
+            pred_1 = prediction[:, 1:2, :, :]
+
+            if strategy_name == 'rflow':
+                t_normalized = timesteps.float() / float(num_train_timesteps)
+                t_expanded = t_normalized.view(-1, 1, 1, 1)
+                clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
+                clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
+                target_0 = images_0 - noise_0
+                target_1 = images_1 - noise_1
+                mse_loss = (((pred_0 - target_0) ** 2).mean() + ((pred_1 - target_1) ** 2).mean()) / 2
+            else:
+                clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
+                clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
+                mse_loss = (((pred_0 - noise_0) ** 2).mean() + ((pred_1 - noise_1) ** 2).mean()) / 2
+
+            if perceptual_weight > 0:
+                p_loss = (perceptual_fn(clean_0, images_0) + perceptual_fn(clean_1, images_1)) / 2
+            else:
+                p_loss = torch.tensor(0.0, device=images_0.device)
+
+            total_loss = mse_loss + perceptual_weight * p_loss
+            return total_loss, mse_loss, p_loss, clean_0, clean_1
+
+        self._compiled_forward_single = torch.compile(_forward_single, mode="default")
+        self._compiled_forward_dual = torch.compile(_forward_dual, mode="default")
+
+        if self.is_main_process:
+            logger.info("Compiled fused forward passes")
+
+    def _save_metadata(self) -> None:
+        """Save training configuration and metadata."""
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        config_path = os.path.join(self.save_dir, 'config.yaml')
+        OmegaConf.save(self.cfg, config_path)
+
+        metadata = {
+            'model_type': 'diffusion',
+            'strategy': self.strategy_name,
+            'mode': self.mode_name,
+            'image_size': self.image_size,
+            'num_timesteps': self.num_timesteps,
+            'n_epochs': self.n_epochs,
+            'batch_size': self.batch_size,
+            'learning_rate': self.learning_rate,
+            'use_sam': self.use_sam,
+            'use_ema': self.use_ema,
+            'created_at': datetime.now().isoformat(),
+        }
+
+        metadata_path = os.path.join(self.save_dir, 'metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+    def _get_model_config(self) -> Dict[str, Any]:
+        """Get model configuration for checkpoint."""
+        model_cfg = self.mode.get_model_config()
+        return {
+            'model_type': self.model_type,
+            'in_channels': model_cfg['in_channels'],
+            'out_channels': model_cfg['out_channels'],
+            'strategy': self.strategy_name,
+            'mode': self.mode_name,
+        }
+
+    def train_step(self, batch: Any) -> Tuple[float, float, float]:
+        """Execute single training step.
+
+        Args:
+            batch: Input batch from dataloader.
+
+        Returns:
+            Tuple of (total_loss, mse_loss, perceptual_loss).
+        """
         self.optimizer.zero_grad(set_to_none=True)
 
         with autocast('cuda', enabled=True, dtype=torch.bfloat16):
@@ -842,7 +718,6 @@ class DiffusionTrainer:
                             inv_clean = {k: self.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
                             if any(v is None for v in inv_clean.values()):
                                 # Non-invertible transform (rotation/flip), skip perceptual loss
-                                # This is expected when omega contains rotation/flip codes
                                 if self.perceptual_weight > 0:
                                     logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
                                 p_loss = torch.tensor(0.0, device=self.device)
@@ -1023,49 +898,25 @@ class DiffusionTrainer:
 
             return total_loss.item(), mse_loss.item(), p_loss.item()
 
-    def _measure_model_flops(self, train_loader: DataLoader) -> None:
-        """Measure model FLOPs using the first batch (one-time profiling)."""
-        if not self.metrics.log_flops:
-            return
-
-        try:
-            # Get first batch
-            batch = next(iter(train_loader))
-            prepared = self.mode.prepare_batch(batch, self.device)
-            images = prepared['images']
-            labels_dict = {'labels': prepared.get('labels')}
-
-            # Create sample input like in train_step
-            if isinstance(images, dict):
-                noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
-            else:
-                noise = torch.randn_like(images).to(self.device)
-
-            timesteps = self.strategy.sample_timesteps(images)
-            noisy_images = self.strategy.add_noise(images, noise, timesteps)
-            model_input = self.mode.format_model_input(noisy_images, labels_dict)
-
-            # Measure FLOPs using shared utility
-            self._flops_tracker.measure(
-                self.model_raw,
-                model_input,
-                steps_per_epoch=len(train_loader),
-                timesteps=timesteps,
-                is_main_process=self.is_main_process,
-            )
-        except Exception as e:
-            if self.is_main_process:
-                logger.warning(f"Could not measure FLOPs: {e}")
-
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
-        """Train the model for one epoch."""
+        """Train the model for one epoch.
+
+        Args:
+            data_loader: Training data loader.
+            epoch: Current epoch number.
+
+        Returns:
+            Tuple of (avg_loss, avg_mse_loss, avg_perceptual_loss).
+        """
         self.model.train()
         epoch_loss = 0
         epoch_mse_loss = 0
         epoch_perceptual_loss = 0
 
-        # Create progress bar iterator (tqdm for main process on non-cluster, plain iterator otherwise)
-        epoch_iter = create_epoch_iterator(data_loader, epoch, self.is_cluster, self.is_main_process)
+        epoch_iter = create_epoch_iterator(
+            data_loader, epoch, self.is_cluster, self.is_main_process,
+            limit_batches=self.limit_train_batches
+        )
 
         for step, batch in enumerate(epoch_iter):
             loss, mse_loss, p_loss = self.train_step(batch)
@@ -1074,14 +925,24 @@ class DiffusionTrainer:
             epoch_mse_loss += mse_loss
             epoch_perceptual_loss += p_loss
 
-            # Update progress bar if available (tqdm instance has set_postfix)
             if hasattr(epoch_iter, 'set_postfix'):
                 epoch_iter.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
 
             if epoch == 1 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
 
-        return epoch_loss / len(data_loader), epoch_mse_loss / len(data_loader), epoch_perceptual_loss / len(data_loader)
+        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
+        avg_loss = epoch_loss / n_batches
+        avg_mse = epoch_mse_loss / n_batches
+        avg_perceptual = epoch_perceptual_loss / n_batches
+
+        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
+            self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
+            self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
+            self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
+            self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+
+        return avg_loss, avg_mse, avg_perceptual
 
     def compute_validation_losses(self, epoch: int) -> Tuple[Dict[str, float], Optional[Dict[str, Any]]]:
         """Compute losses and metrics on validation set.
@@ -1127,7 +988,6 @@ class DiffusionTrainer:
             )
 
         # Mark CUDA graph step boundary to prevent tensor caching issues
-        # when perceptual loss (compiled with torch.compile) is called during validation
         torch.compiler.cudagraph_mark_step_begin()
 
         with torch.no_grad():
@@ -1187,10 +1047,9 @@ class DiffusionTrainer:
                 total_perc += p_loss.item()
                 total_loss += loss_val
 
-                # Track worst batch (only from full-sized batches to ensure consistent visualization)
+                # Track worst batch (only from full-sized batches)
                 if loss_val > worst_loss and current_batch_size >= min_batch_size:
                     worst_loss = loss_val
-                    # Convert to dict format for dual mode (consistent with VAE and create_reconstruction_figure)
                     if isinstance(images, dict):
                         worst_batch_data = {
                             'original': {k: v.cpu() for k, v in images.items()},
@@ -1208,8 +1067,7 @@ class DiffusionTrainer:
                             'loss': loss_val,
                         }
 
-                # Quality metrics (MS-SSIM, PSNR, optionally LPIPS) on predicted vs ground truth
-                # Decode to pixel space for latent diffusion (metrics must be in pixel space)
+                # Quality metrics (decode to pixel space for latent diffusion)
                 if self.space.scale_factor > 1:
                     metrics_pred = self.space.decode_batch(predicted_clean)
                     metrics_gt = self.space.decode_batch(images)
@@ -1302,127 +1160,41 @@ class DiffusionTrainer:
 
         return metrics, worst_batch_data
 
-    def _compute_per_modality_validation(self, epoch: int) -> None:
-        """Compute and log validation metrics for each modality separately.
-
-        For multi-modality training, this logs PSNR, LPIPS, MS-SSIM and regional
-        metrics for each modality (bravo, t1_pre, t1_gd) to compare with
-        single-modality experiments.
-
-        Args:
-            epoch: Current epoch number.
-        """
-        if not hasattr(self, 'per_modality_val_loaders') or not self.per_modality_val_loaders:
-            return
-
-        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
-        model_to_use.eval()
-
-        for modality, loader in self.per_modality_val_loaders.items():
-            total_psnr = 0.0
-            total_lpips = 0.0
-            total_msssim = 0.0
-            n_batches = 0
-
-            # Initialize regional tracker for this modality
-            regional_tracker = None
-            if self.metrics.log_regional_losses:
-                regional_tracker = RegionalMetricsTracker(
-                    image_size=self.image_size,
-                    fov_mm=self.cfg.paths.get('fov_mm', 240.0),
-                    loss_fn='mse',
-                    device=self.device,
-                )
-
-            with torch.no_grad():
-                for batch in loader:
-                    prepared = self.mode.prepare_batch(batch, self.device)
-                    images = prepared['images']
-                    labels = prepared.get('labels')
-                    mode_id = prepared.get('mode_id')  # For multi-modality mode
-
-                    # Encode to diffusion space (identity for PixelSpace)
-                    images = self.space.encode_batch(images)
-                    if labels is not None:
-                        labels = self.space.encode(labels)
-
-                    labels_dict = {'labels': labels}
-
-                    # Sample timesteps and noise
-                    noise = torch.randn_like(images).to(self.device)
-                    timesteps = self.strategy.sample_timesteps(images)
-                    noisy_images = self.strategy.add_noise(images, noise, timesteps)
-                    model_input = self.mode.format_model_input(noisy_images, labels_dict)
-
-                    # Predict
-                    if self.use_mode_embedding and mode_id is not None:
-                        prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
-                    else:
-                        prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
-                    _, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
-
-                    # Decode to pixel space for latent diffusion (metrics must be in pixel space)
-                    if self.space.scale_factor > 1:
-                        metrics_pred = self.space.decode(predicted_clean)
-                        metrics_gt = self.space.decode(images)
-                    else:
-                        metrics_pred = predicted_clean
-                        metrics_gt = images
-
-                    # Compute metrics
-                    total_psnr += compute_psnr(metrics_pred, metrics_gt)
-                    if self.metrics.log_lpips:
-                        total_lpips += compute_lpips(metrics_pred, metrics_gt, device=self.device)
-                    total_msssim += compute_msssim(metrics_pred, metrics_gt)
-
-                    # Regional tracking (tumor vs background)
-                    if regional_tracker is not None and labels is not None:
-                        regional_tracker.update(predicted_clean, images, labels)
-
-                    n_batches += 1
-
-            # Compute averages and log
-            if n_batches > 0 and self.writer is not None:
-                avg_psnr = total_psnr / n_batches
-                avg_msssim = total_msssim / n_batches
-                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
-                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
-                if self.metrics.log_lpips:
-                    avg_lpips = total_lpips / n_batches
-                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
-
-                # Log regional metrics for this modality
-                if regional_tracker is not None:
-                    regional_tracker.log_to_tensorboard(
-                        self.writer, epoch, prefix=f'regional_{modality}'
-                    )
-
-        model_to_use.train()
+    def _save_checkpoint(self, epoch: int, name: str) -> None:
+        """Save checkpoint using standardized format."""
+        model_config = self._get_model_config()
+        save_full_checkpoint(
+            model=self.model_raw,
+            optimizer=self.optimizer,
+            epoch=epoch,
+            save_dir=self.save_dir,
+            filename=f"checkpoint_{name}",
+            model_config=model_config,
+            scheduler=self.lr_scheduler,
+            ema=self.ema,
+        )
 
     def train(
         self,
         train_loader: DataLoader,
         train_dataset: Dataset,
-        val_loader: Optional[DataLoader] = None
+        val_loader: Optional[DataLoader] = None,
     ) -> None:
-        """Execute the main training loop.
+        """Main training loop.
 
         Args:
-            train_loader: Training dataloader.
-            train_dataset: Training dataset (for visualization samples).
-            val_loader: Optional validation dataloader for computing validation losses.
+            train_loader: Training data loader.
+            train_dataset: Training dataset (for sample generation).
+            val_loader: Optional validation dataloader.
         """
         total_start = time.time()
-
-        # Store validation loader
         self.val_loader = val_loader
 
-        # Measure FLOPs using first batch (one-time profiling)
+        # Measure FLOPs
         self._measure_model_flops(train_loader)
 
-        # Log training config
         if self.is_main_process and self.mode_name == 'seg':
-            logger.info("Seg mode: perceptual loss disabled (pretrained features don't apply to binary masks)")
+            logger.info("Seg mode: perceptual loss disabled")
 
         avg_loss = float('inf')
         avg_mse = float('inf')
@@ -1447,51 +1219,34 @@ class DiffusionTrainer:
                 if self.is_main_process:
                     log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time)
 
-                    if self.writer is not None:
+                    if self.writer is not None and self.use_multi_gpu:
                         self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
                         self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
                         self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
                         self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
 
-                    # Compute validation losses every epoch
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
+                    log_figures = (epoch + 1) % self.figure_interval == 0
 
-                    # Log metrics (grad norms every epoch, others at val_interval)
-                    is_val_epoch = (epoch + 1) % self.val_interval == 0
-                    self.metrics.log_epoch(epoch, log_all=is_val_epoch)
-
-                    # Log FLOPs
+                    self.metrics.log_epoch(epoch, log_all=True)
                     self._flops_tracker.log_epoch(self.writer, epoch)
+                    log_vram_to_tensorboard(self.writer, self.device, epoch)
 
-                    # Log worst validation batch at val_interval
-                    if is_val_epoch and worst_val_data is not None:
+                    if log_figures and worst_val_data is not None:
                         self.visualizer.log_worst_batch(epoch, worst_val_data)
 
-                    # Per-modality validation metrics (for multi-modality training)
-                    if is_val_epoch:
-                        self._compute_per_modality_validation(epoch)
+                    self._compute_per_modality_validation(epoch)
 
-                    # Generate samples at val_interval
-                    if is_val_epoch or (epoch + 1) == self.n_epochs:
+                    if log_figures or (epoch + 1) == self.n_epochs:
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self.visualizer.generate_samples(model_to_use, train_dataset, epoch)
 
-                    model_config = self._get_model_config()
+                    self._save_checkpoint(epoch, "latest")
 
-                    # Save checkpoints every epoch
-                    save_full_checkpoint(
-                        self.model_raw, self.optimizer, epoch, self.save_dir, "latest",
-                        model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
-                    )
-
-                    # Use validation loss for best model selection (fallback to train if no val_loader)
                     loss_for_selection = val_metrics.get('total', avg_loss)
                     if loss_for_selection < self.best_loss:
                         self.best_loss = loss_for_selection
-                        save_full_checkpoint(
-                            self.model_raw, self.optimizer, epoch, self.save_dir, "best",
-                            model_config=model_config, scheduler=self.lr_scheduler, ema=self.ema
-                        )
+                        self._save_checkpoint(epoch, "best")
                         loss_type = "val" if val_metrics else "train"
                         logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
 
@@ -1508,11 +1263,52 @@ class DiffusionTrainer:
                 except Exception as e:
                     logger.warning(f"Error destroying process group: {e}")
 
-    def close_writer(self) -> None:
-        """Close TensorBoard writer. Call after all logging is complete."""
-        if self.writer is not None:
-            self.writer.close()
-            self.writer = None
+    def _measure_model_flops(self, train_loader: DataLoader) -> None:
+        """Measure model FLOPs using the first batch."""
+        if not self.metrics.log_flops:
+            return
+
+        try:
+            batch = next(iter(train_loader))
+            prepared = self.mode.prepare_batch(batch, self.device)
+            images = prepared['images']
+            labels_dict = {'labels': prepared.get('labels')}
+
+            if isinstance(images, dict):
+                noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
+            else:
+                noise = torch.randn_like(images).to(self.device)
+
+            timesteps = self.strategy.sample_timesteps(images)
+            noisy_images = self.strategy.add_noise(images, noise, timesteps)
+            model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+            self._flops_tracker.measure(
+                self.model_raw,
+                model_input,
+                steps_per_epoch=len(train_loader),
+                timesteps=timesteps,
+                is_main_process=self.is_main_process,
+            )
+        except Exception as e:
+            if self.is_main_process:
+                logger.warning(f"Could not measure FLOPs: {e}")
+
+    def _compute_per_modality_validation(self, epoch: int) -> None:
+        """Compute per-modality validation metrics (placeholder)."""
+        pass
+
+    def _update_metadata_final(self, final_loss: float, final_mse: float, total_time: float) -> None:
+        """Update metadata with final training stats."""
+        metadata_path = os.path.join(self.save_dir, 'metadata.json')
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            metadata['final_loss'] = final_loss
+            metadata['final_mse'] = final_mse
+            metadata['total_time_seconds'] = total_time
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
 
     def evaluate_test_set(
         self,
@@ -1541,7 +1337,7 @@ class DiffusionTrainer:
 
         # Load checkpoint if specified
         if checkpoint_name is not None:
-            checkpoint_path = os.path.join(self.save_dir, f"{checkpoint_name}.pt")
+            checkpoint_path = os.path.join(self.save_dir, f"checkpoint_{checkpoint_name}.pt")
             if os.path.exists(checkpoint_path):
                 checkpoint = torch.load(checkpoint_path, map_location=self.device)
                 self.model_raw.load_state_dict(checkpoint['model_state_dict'])
@@ -1560,7 +1356,7 @@ class DiffusionTrainer:
         logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
         logger.info("=" * 60)
 
-        # Use EMA model if available (whether from current state or loaded from checkpoint)
+        # Use EMA model if available
         if self.ema is not None:
             model_to_use = self.ema.ema_model
             logger.info("Using EMA model for evaluation")
@@ -1580,15 +1376,20 @@ class DiffusionTrainer:
         worst_batch_loss = 0.0
         worst_batch_data: Optional[Dict[str, Any]] = None
 
+        # Timestep bin accumulators (10 bins: 0-99, 100-199, ..., 900-999)
+        num_timestep_bins = 10
+        timestep_loss_sum = torch.zeros(num_timestep_bins, device=self.device)
+        timestep_loss_count = torch.zeros(num_timestep_bins, device=self.device, dtype=torch.long)
+
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')
-                mode_id = prepared.get('mode_id')  # For multi-modality mode
+                mode_id = prepared.get('mode_id')
                 batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
 
-                # Encode to diffusion space (identity for PixelSpace)
+                # Encode to diffusion space
                 images = self.space.encode_batch(images)
                 if labels is not None:
                     labels = self.space.encode(labels)
@@ -1616,7 +1417,22 @@ class DiffusionTrainer:
                 loss_val = mse_loss.item()
                 total_mse += loss_val
 
-                # Decode to pixel space for latent diffusion (metrics must be in pixel space)
+                # Track per-timestep-bin losses
+                with torch.no_grad():
+                    if isinstance(predicted_clean, dict):
+                        keys = list(predicted_clean.keys())
+                        mse_per_sample = (
+                            (predicted_clean[keys[0]] - images[keys[0]]).pow(2).mean(dim=(1, 2, 3)) +
+                            (predicted_clean[keys[1]] - images[keys[1]]).pow(2).mean(dim=(1, 2, 3))
+                        ) / 2
+                    else:
+                        mse_per_sample = (predicted_clean - images).pow(2).mean(dim=(1, 2, 3))
+                    bin_size = self.num_timesteps // num_timestep_bins
+                    bin_indices = (timesteps // bin_size).clamp(max=num_timestep_bins - 1).long()
+                    timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
+                    timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
+
+                # Decode to pixel space for metrics
                 if self.space.scale_factor > 1:
                     metrics_pred = self.space.decode_batch(predicted_clean)
                     metrics_gt = self.space.decode_batch(images)
@@ -1643,7 +1459,7 @@ class DiffusionTrainer:
                     else:
                         lpips_val = 0.0
 
-                # Track worst batch (only from full-sized batches)
+                # Track worst batch
                 if loss_val > worst_batch_loss and batch_size >= self.batch_size:
                     worst_batch_loss = loss_val
                     if isinstance(images, dict):
@@ -1706,6 +1522,18 @@ class DiffusionTrainer:
             self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
             if 'lpips' in metrics:
                 self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+
+            # Log timestep bin losses
+            bin_size = self.num_timesteps // num_timestep_bins
+            counts = timestep_loss_count.cpu()
+            sums = timestep_loss_sum.cpu()
+            for bin_idx in range(num_timestep_bins):
+                bin_start = bin_idx * bin_size
+                bin_end = (bin_idx + 1) * bin_size - 1
+                count = counts[bin_idx].item()
+                if count > 0:
+                    avg_loss = (sums[bin_idx] / count).item()
+                    self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_start}-{bin_end}', avg_loss, 0)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:
@@ -1771,3 +1599,9 @@ class DiffusionTrainer:
             metrics=display_metrics,
             timesteps=timesteps,
         )
+
+    def close_writer(self) -> None:
+        """Close TensorBoard writer. Call after all logging is complete."""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None

@@ -48,11 +48,18 @@ def measure_model_flops(
             for event in prof.key_averages()
             if event.flops is not None and event.flops > 0
         )
+
+        if total_flops == 0:
+            logger.warning(
+                "FLOPs measurement returned 0 - torch.profiler may not support "
+                "this model type (e.g., compiled models, custom CUDA kernels)"
+            )
+
         model.train()
         return total_flops
 
     except Exception as e:
-        logger.debug(f"FLOPs measurement failed: {e}")
+        logger.warning(f"FLOPs measurement failed: {e}")
         model.train()
         return 0
 

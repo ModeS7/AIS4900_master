@@ -129,7 +129,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_test_dataloader(cfg=cfg, modality=mode_name)
 
-    run_test_evaluation(trainer, test_result, logger, eval_method="evaluate_test")
+    run_test_evaluation(trainer, test_result, logger, eval_method="evaluate_test_set")
 
     # Cleanup
     trainer.close_writer()

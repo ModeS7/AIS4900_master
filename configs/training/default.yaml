@@ -10,11 +10,11 @@ name: ""
 # Core training parameters
 epochs: 500                # Total training epochs
 batch_size: 16             # Batch size per GPU
+limit_train_batches: null  # Limit batches per epoch (null = use all, int = limit)
 learning_rate: 1.0e-4      # Base learning rate
 gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
 warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
-val_interval: 30           # Validation frequency (epochs) - used if num_validations is null
-num_validations: 20        # Number of validations per training (overrides val_interval)
+figure_count: 20           # Target number of figure logs per training run (adaptive interval)
 augment: true              # Data augmentation (horizontal flip, small rotation)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
 
@@ -107,7 +107,7 @@ precision:
   dtype: bf16                # bf16, fp16, fp32 - model weight dtype when pure_weights=true
   pure_weights: false        # If true, model weights stored in low precision (saves ~50% memory)
 
-# Logging and metrics (all logged at val_interval)
+# Logging and metrics (all logged every epoch, figures at figure_interval)
 # Mode compatibility:
 #   [seg] = segmentation only
 #   [cond] = bravo/dual only

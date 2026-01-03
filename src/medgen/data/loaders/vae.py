@@ -22,7 +22,12 @@ from medgen.data.dataset import (
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.utils import extract_slices_dual, extract_slices_single, merge_sequences
+from medgen.data.utils import (
+    extract_slices_dual,
+    extract_slices_single,
+    extract_slices_single_with_seg,
+    merge_sequences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +92,22 @@ def create_vae_dataloader(
         merged = merge_sequences(datasets_dict)
         train_dataset = extract_slices_dual(merged, has_seg=has_seg, augmentation=aug)
     else:
-        # Single modality: 1 channel
+        # Single modality: 1 channel, optionally load seg for regional metrics
         nifti_dataset = NiFTIDataset(
             data_dir=data_dir, mr_sequence=modality, transform=transform
         )
-        train_dataset = extract_slices_single(nifti_dataset, augmentation=aug)
+        # Try to load seg for regional metrics
+        try:
+            validate_modality_exists(data_dir, 'seg')
+            seg_dataset = NiFTIDataset(
+                data_dir=data_dir, mr_sequence='seg', transform=transform
+            )
+            train_dataset = extract_slices_single_with_seg(
+                nifti_dataset, seg_dataset, augmentation=aug
+            )
+        except ValueError:
+            # No seg available, proceed without regional metrics
+            train_dataset = extract_slices_single(nifti_dataset, augmentation=aug)
 
     # Setup sampler
     sampler: Optional[DistributedSampler] = None
@@ -204,11 +220,19 @@ def create_vae_validation_dataloader(
         merged = merge_sequences(datasets_dict)
         val_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
-        # Single modality: 1 channel
+        # Single modality: 1 channel, optionally load seg for regional metrics
         nifti_dataset = NiFTIDataset(
             data_dir=val_dir, mr_sequence=modality, transform=transform
         )
-        val_dataset = extract_slices_single(nifti_dataset)
+        # Try to load seg for regional metrics
+        try:
+            validate_modality_exists(val_dir, 'seg')
+            seg_dataset = NiFTIDataset(
+                data_dir=val_dir, mr_sequence='seg', transform=transform
+            )
+            val_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
+        except ValueError:
+            val_dataset = extract_slices_single(nifti_dataset)
 
     # Get DataLoader settings from config
     dl_cfg = cfg.training.get('dataloader', {})
@@ -293,11 +317,19 @@ def create_vae_test_dataloader(
         merged = merge_sequences(datasets_dict)
         test_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
-        # Single modality: 1 channel
+        # Single modality: 1 channel, optionally load seg for regional metrics
         nifti_dataset = NiFTIDataset(
             data_dir=test_dir, mr_sequence=modality, transform=transform
         )
-        test_dataset = extract_slices_single(nifti_dataset)
+        # Try to load seg for regional metrics
+        try:
+            validate_modality_exists(test_dir, 'seg')
+            seg_dataset = NiFTIDataset(
+                data_dir=test_dir, mr_sequence='seg', transform=transform
+            )
+            test_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
+        except ValueError:
+            test_dataset = extract_slices_single(nifti_dataset)
 
     # Get DataLoader settings from config
     dl_cfg = cfg.training.get('dataloader', {})

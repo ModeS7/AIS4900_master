@@ -40,6 +40,7 @@ from medgen.data import (
     create_vae_3d_single_modality_validation_loader,
 )
 from medgen.pipeline import VQVAE3DTrainer
+from medgen.scripts.common import run_test_evaluation
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -151,7 +152,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create trainer
     trainer = VQVAE3DTrainer(cfg)
-    log.info(f"Validation interval: every {trainer.val_interval} epochs")
+    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create 3D dataloader
     if is_multi_modality:
@@ -215,13 +216,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
 
-    if test_result is not None:
-        test_loader, test_dataset = test_result
-        log.info(f"Test dataset: {len(test_dataset)} volumes")
-        trainer.evaluate_test(test_loader, checkpoint_name="best")
-        trainer.evaluate_test(test_loader, checkpoint_name="latest")
-    else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+    run_test_evaluation(trainer, test_result, log, eval_method="evaluate_test_set")
 
     # Close TensorBoard writer
     trainer.close_writer()

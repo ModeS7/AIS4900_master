@@ -35,9 +35,7 @@ from medgen.core import (
 from medgen.pipeline.strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from medgen.pipeline.utils import get_vram_usage
 from medgen.data import make_binary
-from medgen.data.score_aug import ScoreAugModelWrapper
-from medgen.data.mode_embed import ModeEmbedModelWrapper
-from medgen.data.combined_embed import CombinedModelWrapper
+from medgen.data import create_conditioning_wrapper
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -188,15 +186,19 @@ def load_model(
     )
 
     # Wrap model if needed
+    # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
+    embed_dim = 4 * DEFAULT_CHANNELS[0]
+
     if wrapper_type == 'raw':
         model = base_model
-    elif wrapper_type == 'score_aug':
-        model = ScoreAugModelWrapper(base_model)
-    elif wrapper_type == 'mode_embed':
-        # Default to 4 modes (bravo, flair, t1_pre, t1_gd)
-        model = ModeEmbedModelWrapper(base_model, num_modes=4)
-    elif wrapper_type == 'combined':
-        model = CombinedModelWrapper(base_model, num_modes=4)
+    elif wrapper_type in ('score_aug', 'mode_embed', 'combined'):
+        # Use factory function to create appropriate wrapper
+        model, _ = create_conditioning_wrapper(
+            model=base_model,
+            use_omega=(wrapper_type in ('score_aug', 'combined')),
+            use_mode=(wrapper_type in ('mode_embed', 'combined')),
+            embed_dim=embed_dim,
+        )
     else:
         raise ValueError(f"Unknown wrapper type: {wrapper_type}")
 

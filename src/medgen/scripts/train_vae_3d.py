@@ -130,7 +130,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create trainer
     trainer = VAE3DTrainer(cfg)
-    log.info(f"Validation interval: every {trainer.val_interval} epochs")
+    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create 3D dataloader
     if is_multi_modality:
@@ -194,7 +194,7 @@ def main(cfg: DictConfig) -> None:
     else:
         test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
 
-    run_test_evaluation(trainer, test_result, log, eval_method="evaluate_test")
+    run_test_evaluation(trainer, test_result, log, eval_method="evaluate_test_set")
 
     # Close TensorBoard writer
     trainer.close_writer()
