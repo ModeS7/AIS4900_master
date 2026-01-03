@@ -46,6 +46,58 @@ def log_epoch_summary(
     )
 
 
+def log_compression_epoch_summary(
+    epoch: int,
+    total_epochs: int,
+    avg_losses: Dict[str, float],
+    val_metrics: Optional[Dict[str, float]],
+    elapsed_time: float,
+    regularization_key: Optional[str] = None,
+    quality_metric: str = 'msssim',
+) -> None:
+    """Log compression trainer epoch summary.
+
+    Unified logging for VAE, VQ-VAE, DC-AE, and 3D variants.
+
+    Args:
+        epoch: Current epoch number (0-indexed).
+        total_epochs: Total number of epochs.
+        avg_losses: Dict with 'gen', 'recon', 'disc' keys (and optionally 'kl' or 'vq').
+        val_metrics: Dict with validation metrics ('gen', 'l1', 'msssim' or 'psnr').
+        elapsed_time: Time taken for the epoch in seconds.
+        regularization_key: Loss key for regularization ('kl', 'vq', or None for DC-AE).
+        quality_metric: Which quality metric to show ('msssim' or 'psnr').
+    """
+    timestamp = time.strftime("%H:%M:%S")
+    epoch_pct = ((epoch + 1) / total_epochs) * 100
+
+    val_gen = f"(v:{val_metrics.get('gen', 0):.4f})" if val_metrics else ""
+    val_l1 = f"(v:{val_metrics.get('l1', 0):.4f})" if val_metrics else ""
+
+    # Build regularization string
+    reg_str = ""
+    if regularization_key and regularization_key in avg_losses:
+        reg_str = f"{regularization_key.upper()}: {avg_losses[regularization_key]:.4f} | "
+
+    # Build quality metric string
+    metric_str = ""
+    if val_metrics:
+        if quality_metric == 'msssim' and val_metrics.get('msssim'):
+            metric_str = f"MS-SSIM: {val_metrics['msssim']:.3f}"
+        elif quality_metric == 'psnr' and val_metrics.get('psnr'):
+            metric_str = f"PSNR: {val_metrics['psnr']:.2f}"
+
+    logger.info(
+        f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
+        f"G: {avg_losses['gen']:.4f}{val_gen} | "
+        f"L1: {avg_losses['recon']:.4f}{val_l1} | "
+        f"{reg_str}"
+        f"D: {avg_losses['disc']:.4f} | "
+        f"{metric_str} | "
+        f"Time: {elapsed_time:.1f}s"
+    )
+
+
 def get_vram_usage(device: torch.device) -> str:
     """Get current VRAM usage statistics.
 

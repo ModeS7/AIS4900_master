@@ -34,35 +34,9 @@ from .metrics import (
     RegionalMetricsTracker,
 )
 from .tracking import create_worst_batch_figure
-from .utils import create_epoch_iterator, get_vram_usage
+from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 
 logger = logging.getLogger(__name__)
-
-
-def log_vqvae_epoch_summary(
-    epoch: int,
-    total_epochs: int,
-    avg_losses: Dict[str, float],
-    val_metrics: Dict[str, float],
-    elapsed_time: float,
-) -> None:
-    """Log VQ-VAE epoch completion summary."""
-    timestamp = time.strftime("%H:%M:%S")
-    epoch_pct = ((epoch + 1) / total_epochs) * 100
-
-    val_gen = f"(v:{val_metrics.get('gen', 0):.4f})" if val_metrics else ""
-    val_l1 = f"(v:{val_metrics.get('l1', 0):.4f})" if val_metrics else ""
-    msssim_str = f"MS-SSIM: {val_metrics.get('msssim', 0):.3f}" if val_metrics.get('msssim') else ""
-
-    logger.info(
-        f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
-        f"G: {avg_losses['gen']:.4f}{val_gen} | "
-        f"L1: {avg_losses['recon']:.4f}{val_l1} | "
-        f"VQ: {avg_losses['vq']:.4f} | "
-        f"D: {avg_losses['disc']:.4f} | "
-        f"{msssim_str} | "
-        f"Time: {elapsed_time:.1f}s"
-    )
 
 
 class VQVAETrainer(BaseCompressionTrainer):
@@ -239,55 +213,6 @@ class VQVAETrainer(BaseCompressionTrainer):
                 'image_size': self.image_size,
                 'n_epochs': self.n_epochs,
             }, f, indent=2)
-
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Prepare batch for VQ-VAE training.
-
-        Handles multiple batch formats:
-        - Tuple of (images, mask)
-        - Dict with image keys
-        - Single tensor
-
-        Args:
-            batch: Input batch.
-
-        Returns:
-            Tuple of (images, mask).
-        """
-        # Handle tuple of (image, seg)
-        if isinstance(batch, (tuple, list)) and len(batch) == 2:
-            images, mask = batch
-            if hasattr(images, 'as_tensor'):
-                images = images.as_tensor()
-            if hasattr(mask, 'as_tensor'):
-                mask = mask.as_tensor()
-            return images.to(self.device), mask.to(self.device)
-
-        # Handle dict batches
-        if isinstance(batch, dict):
-            image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
-            tensors = []
-            for key in image_keys:
-                if key in batch:
-                    tensors.append(batch[key].to(self.device))
-            images = torch.cat(tensors, dim=1)
-            mask = batch['seg'].to(self.device) if 'seg' in batch else None
-            return images, mask
-
-        # Handle tensor input
-        if hasattr(batch, 'as_tensor'):
-            tensor = batch.as_tensor().to(self.device)
-        else:
-            tensor = batch.to(self.device)
-
-        # Check if seg is stacked as last channel
-        n_image_channels = self.cfg.mode.get('in_channels', 2)
-        if tensor.shape[1] > n_image_channels:
-            images = tensor[:, :n_image_channels, :, :]
-            mask = tensor[:, n_image_channels:n_image_channels + 1, :, :]
-            return images, mask
-
-        return tensor, None
 
     def train_step(self, batch: Any) -> Dict[str, float]:
         """Execute VQ-VAE training step.
@@ -479,139 +404,25 @@ class VQVAETrainer(BaseCompressionTrainer):
         elapsed_time: float,
     ) -> None:
         """Log VQ-VAE epoch summary."""
-        log_vqvae_epoch_summary(epoch, total_epochs, avg_losses, val_metrics, elapsed_time)
+        log_compression_epoch_summary(
+            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
+            regularization_key='vq',
+            quality_metric='msssim',
+        )
 
-    def evaluate_test_set(
+    def _test_forward(
         self,
-        test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-    ) -> Dict[str, float]:
-        """Evaluate VQ-VAE on test set.
+        model: nn.Module,
+        images: torch.Tensor,
+    ) -> torch.Tensor:
+        """Perform VQ-VAE forward pass for test evaluation.
 
         Args:
-            test_loader: Test data loader.
-            checkpoint_name: Checkpoint to load ("best", "latest", or None).
+            model: Model to use for inference.
+            images: Input images.
 
         Returns:
-            Dict with test metrics.
+            Reconstructed images tensor.
         """
-        if not self.is_main_process:
-            return {}
-
-        # Load checkpoint if specified
-        if checkpoint_name is not None:
-            checkpoint_path = os.path.join(self.save_dir, f"checkpoint_{checkpoint_name}.pt")
-            if os.path.exists(checkpoint_path):
-                checkpoint = torch.load(checkpoint_path, map_location=self.device)
-                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
-                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
-            else:
-                logger.warning(f"Checkpoint {checkpoint_path} not found")
-                checkpoint_name = "current"
-
-        label = checkpoint_name or "current"
-        logger.info("=" * 60)
-        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
-        logger.info("=" * 60)
-
-        model_to_use = self._get_model_for_eval() if checkpoint_name is None else self.model_raw
-        model_to_use.eval()
-
-        # Accumulators
-        total_l1 = 0.0
-        total_msssim = 0.0
-        total_psnr = 0.0
-        total_lpips = 0.0
-        n_batches = 0
-        n_samples = 0
-
-        # Regional tracker
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = self._create_regional_tracker()
-
-        # Worst batch tracking
-        worst_loss = 0.0
-        worst_batch_data = None
-
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
-                images, mask = self._prepare_batch(batch)
-                batch_size = images.shape[0]
-
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstructed, _ = model_to_use(images)
-
-                # Compute metrics
-                l1_loss = torch.abs(reconstructed - images).mean().item()
-                total_l1 += l1_loss
-                if self.log_msssim:
-                    total_msssim += compute_msssim(reconstructed, images)
-                total_psnr += compute_psnr(reconstructed, images)
-                total_lpips += compute_lpips(reconstructed, images, device=self.device)
-
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
-                    regional_tracker.update(reconstructed, images, mask)
-
-                # Track worst batch
-                if l1_loss > worst_loss:
-                    worst_loss = l1_loss
-                    worst_batch_data = self._capture_worst_batch(
-                        images, reconstructed, l1_loss,
-                        torch.tensor(l1_loss), torch.tensor(0.0), torch.tensor(0.0)
-                    )
-
-                n_batches += 1
-                n_samples += batch_size
-
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches,
-            'psnr': total_psnr / n_batches,
-            'lpips': total_lpips / n_batches,
-            'n_samples': n_samples,
-        }
-        if self.log_msssim:
-            metrics['msssim'] = total_msssim / n_batches
-
-        # Log results
-        logger.info(f"Test Results - {label} ({n_samples} samples):")
-        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
-        if 'msssim' in metrics:
-            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
-        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
-
-        # Save results
-        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
-        with open(results_path, 'w') as f:
-            json.dump(metrics, f, indent=2)
-
-        # Log to TensorBoard
-        tb_prefix = f'test_{label}'
-        if self.writer is not None:
-            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
-            if 'msssim' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
-
-            if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
-
-            # Worst batch
-            if worst_batch_data is not None:
-                fig = self._create_worst_batch_figure(worst_batch_data)
-                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
-                plt.close(fig)
-
-                # Also save as PNG file
-                fig = self._create_worst_batch_figure(worst_batch_data)
-                fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Test worst batch saved to: {fig_path}")
-
-        model_to_use.train()
-        return metrics
+        reconstructed, _ = model(images)
+        return reconstructed
