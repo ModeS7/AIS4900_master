@@ -9,6 +9,7 @@ name: ""
 # Core training parameters (reduced for fast testing)
 epochs: 6
 batch_size: 4
+limit_train_batches: 100  # Limit batches per epoch for quick tests
 learning_rate: 1.0e-4
 gradient_clip_norm: 1.0
 warmup_epochs: 1

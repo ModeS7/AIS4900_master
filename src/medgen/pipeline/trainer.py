@@ -536,11 +536,15 @@ class DiffusionTrainer(BaseTrainer):
             total_loss = mse_loss + perceptual_weight * p_loss
             return total_loss, mse_loss, p_loss, clean_0, clean_1
 
-        self._compiled_forward_single = torch.compile(_forward_single, mode="default")
-        self._compiled_forward_dual = torch.compile(_forward_dual, mode="default")
+        self._compiled_forward_single = torch.compile(
+            _forward_single, mode="reduce-overhead", fullgraph=True
+        )
+        self._compiled_forward_dual = torch.compile(
+            _forward_dual, mode="reduce-overhead", fullgraph=True
+        )
 
         if self.is_main_process:
-            logger.info("Compiled fused forward passes")
+            logger.info("Compiled fused forward passes (CUDA graphs enabled)")
 
     def _save_metadata(self) -> None:
         """Save training configuration and metadata."""

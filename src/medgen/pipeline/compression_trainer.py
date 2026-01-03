@@ -100,6 +100,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
         # torch.compile option
         self.use_compile: bool = cfg.training.get('use_compile', True)
+        self.compile_mode: str = "default"  # Subclasses can override
 
         # Precision config
         precision_cfg = cfg.training.get('precision', {})
@@ -298,7 +299,7 @@ class BaseCompressionTrainer(BaseTrainer):
             use_multi_gpu=self.use_multi_gpu,
             local_rank=self.local_rank if self.use_multi_gpu else 0,
             use_compile=self.use_compile,
-            compile_mode="default",
+            compile_mode=self.compile_mode,
             is_main_process=self.is_main_process,
         )
 
@@ -309,7 +310,7 @@ class BaseCompressionTrainer(BaseTrainer):
                 use_multi_gpu=self.use_multi_gpu,
                 local_rank=self.local_rank if self.use_multi_gpu else 0,
                 use_compile=self.use_compile,
-                compile_mode="default",
+                compile_mode=self.compile_mode,
                 is_main_process=False,  # Suppress duplicate logging
             )
 
