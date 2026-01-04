@@ -26,6 +26,7 @@ from tqdm import tqdm
 from monai.networks.nets import AutoencoderKL
 
 from .compression_trainer import BaseCompressionTrainer
+from .results import TrainingStepResult
 from .metrics import (
     compute_lpips,
     compute_msssim,
@@ -146,26 +147,16 @@ class VAETrainer(BaseCompressionTrainer):
             logger.info(f"Latent shape: [{self.latent_channels}, {self.image_size // 8}, {self.image_size // 8}]")
             logger.info(f"Loss weights - Perceptual: {self.perceptual_weight}, KL: {self.kl_weight}, Adv: {self.adv_weight}")
 
-    def _save_metadata(self) -> None:
-        """Save training configuration and VAE config."""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _get_trainer_type(self) -> str:
+        """Return trainer type for metadata."""
+        return 'vae'
 
-        # Save full config
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        with open(config_path, 'w') as f:
-            f.write(OmegaConf.to_yaml(self.cfg))
-
-        # Save VAE config separately (use _get_model_config for consistency)
-        vae_config = self._get_model_config()
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump({
-                'type': 'vae',
-                'vae_config': vae_config,
-                'image_size': self.image_size,
-                'n_epochs': self.n_epochs,
-            }, f, indent=2)
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return VAE-specific metadata."""
+        return {
+            'vae_config': self._get_model_config(),
+            'image_size': self.image_size,
+        }
 
     def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Compute KL divergence loss.
@@ -181,14 +172,14 @@ class VAETrainer(BaseCompressionTrainer):
         kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[1, 2, 3])
         return kl.mean()
 
-    def train_step(self, batch: Any) -> Dict[str, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute VAE training step with KL loss.
 
         Args:
             batch: Input batch.
 
         Returns:
-            Dict with losses: 'gen', 'disc', 'recon', 'perc', 'kl', 'adv'.
+            TrainingStepResult with all loss components.
         """
         images, mask = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
@@ -249,14 +240,14 @@ class VAETrainer(BaseCompressionTrainer):
         # Update EMA
         self._update_ema()
 
-        return {
-            'gen': g_loss.item(),
-            'disc': d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-            'recon': l1_loss.item(),
-            'perc': p_loss.item(),
-            'kl': kl_loss.item(),
-            'adv': adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-        }
+        return TrainingStepResult(
+            total_loss=g_loss.item(),
+            reconstruction_loss=l1_loss.item(),
+            perceptual_loss=p_loss.item(),
+            regularization_loss=kl_loss.item(),
+            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+        )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train VAE for one epoch.
@@ -280,7 +271,8 @@ class VAETrainer(BaseCompressionTrainer):
         )
 
         for step, batch in enumerate(epoch_iter):
-            losses = self.train_step(batch)
+            result = self.train_step(batch)
+            losses = result.to_legacy_dict('kl')
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

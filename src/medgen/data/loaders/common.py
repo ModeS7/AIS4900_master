@@ -4,15 +4,25 @@ Provides shared functions to reduce duplication across loader modules:
 - DataLoader configuration extraction
 - Distributed sampler setup
 - Data directory validation
+- Modality validation helpers
 """
+import logging
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from omegaconf import DictConfig
 from torch.utils.data import Dataset, DistributedSampler
 
 from medgen.core.constants import DEFAULT_NUM_WORKERS
+
+logger = logging.getLogger(__name__)
+
+# Modality key mappings - centralized definition
+MODALITY_KEYS = {
+    'dual': ['t1_pre', 't1_gd'],
+    'multi_modality': ['t1_pre', 't1_gd', 'bravo', 't2_flair'],
+}
 
 
 @dataclass
@@ -122,3 +132,158 @@ def validate_data_dir(cfg: DictConfig, split: str, required: bool = True) -> Opt
     if data_dir is None and required:
         raise ValueError(f"Required data directory '{split}' not found at {cfg.paths.data_dir}")
     return data_dir
+
+
+@dataclass
+class DistributedArgs:
+    """Arguments for distributed training setup."""
+    use_distributed: bool = False
+    rank: int = 0
+    world_size: int = 1
+
+
+def create_dataloader(
+    dataset: Dataset,
+    cfg: DictConfig,
+    batch_size: Optional[int] = None,
+    shuffle: bool = True,
+    drop_last: bool = False,
+    collate_fn: Optional[callable] = None,
+    distributed_args: Optional[DistributedArgs] = None,
+) -> 'DataLoader':
+    """Create DataLoader with standard configuration.
+
+    This is the unified DataLoader creation function that extracts ~20 lines
+    of duplicated code from each loader function. Use this instead of
+    manually creating DataLoaders.
+
+    Args:
+        dataset: Dataset to wrap.
+        cfg: Hydra configuration (for training.batch_size and training.dataloader).
+        batch_size: Override batch size (default: cfg.training.batch_size).
+        shuffle: Whether to shuffle (ignored if distributed, handled by sampler).
+        drop_last: Whether to drop last incomplete batch.
+        collate_fn: Optional custom collate function.
+        distributed_args: Optional distributed training configuration.
+
+    Returns:
+        Configured DataLoader.
+
+    Example:
+        >>> dataset = MyDataset(...)
+        >>> loader = create_dataloader(dataset, cfg, shuffle=True)
+        >>> for batch in loader:
+        ...     train_step(batch)
+    """
+    from torch.utils.data import DataLoader
+
+    # Get batch size from config if not provided
+    if batch_size is None:
+        batch_size = cfg.training.batch_size
+
+    # Setup distributed sampler if needed
+    distributed = distributed_args or DistributedArgs()
+    sampler, batch_size_per_gpu, actual_shuffle = setup_distributed_sampler(
+        dataset,
+        distributed.use_distributed,
+        distributed.rank,
+        distributed.world_size,
+        batch_size,
+        shuffle=shuffle,
+    )
+
+    # Get DataLoader settings from config
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size_per_gpu,
+        sampler=sampler,
+        shuffle=actual_shuffle,
+        drop_last=drop_last,
+        collate_fn=collate_fn,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
+    )
+
+
+# =============================================================================
+# Modality validation helpers
+# =============================================================================
+
+def get_modality_keys(modality: str) -> List[str]:
+    """Get image keys for a modality.
+
+    Expands composite modalities like 'dual' into their constituent keys.
+
+    Args:
+        modality: Modality name ('dual', 'multi_modality', 't1_pre', 'bravo', etc.)
+
+    Returns:
+        List of image keys to load.
+
+    Example:
+        >>> get_modality_keys('dual')
+        ['t1_pre', 't1_gd']
+        >>> get_modality_keys('bravo')
+        ['bravo']
+    """
+    return MODALITY_KEYS.get(modality, [modality])
+
+
+def validate_modality_keys(
+    data_dir: str,
+    modality: str,
+    validate_fn: callable,
+) -> List[str]:
+    """Validate modality files exist and return keys to load.
+
+    Combines get_modality_keys() with validation in a single call.
+
+    Args:
+        data_dir: Path to data directory.
+        modality: Modality name ('dual', 'multi_modality', 't1_pre', etc.)
+        validate_fn: Function to validate existence (e.g., validate_modality_exists).
+
+    Returns:
+        List of validated modality keys.
+
+    Raises:
+        ValueError: If any required modality file doesn't exist.
+
+    Example:
+        >>> from medgen.data import validate_modality_exists
+        >>> keys = validate_modality_keys('/data/train', 'dual', validate_modality_exists)
+        >>> # keys = ['t1_pre', 't1_gd'], both validated to exist
+    """
+    keys = get_modality_keys(modality)
+    for key in keys:
+        validate_fn(data_dir, key)
+    return keys
+
+
+def check_seg_available(data_dir: str, validate_fn: callable) -> bool:
+    """Check if seg modality is available without raising exception.
+
+    Use this instead of try/except around validate_modality_exists.
+
+    Args:
+        data_dir: Path to data directory.
+        validate_fn: Function to validate existence (e.g., validate_modality_exists).
+
+    Returns:
+        True if seg exists, False otherwise.
+
+    Example:
+        >>> from medgen.data import validate_modality_exists
+        >>> has_seg = check_seg_available('/data/train', validate_modality_exists)
+        >>> if has_seg:
+        ...     seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
+    """
+    try:
+        validate_fn(data_dir, 'seg')
+        return True
+    except ValueError:
+        return False

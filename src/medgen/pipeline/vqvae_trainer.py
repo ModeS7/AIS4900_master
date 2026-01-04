@@ -26,6 +26,7 @@ from tqdm import tqdm
 from monai.networks.nets import VQVAE
 
 from .compression_trainer import BaseCompressionTrainer
+from .results import TrainingStepResult
 from .metrics import (
     compute_lpips,
     compute_msssim,
@@ -171,36 +172,25 @@ class VQVAETrainer(BaseCompressionTrainer):
             logger.info(f"Loss weights - Perceptual: {self.perceptual_weight}, Adv: {self.adv_weight}")
             logger.info(f"VQ params - Commitment: {self.commitment_cost}, Decay: {self.decay}")
 
-    def _save_metadata(self) -> None:
-        """Save training configuration and VQ-VAE config."""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _get_trainer_type(self) -> str:
+        """Return trainer type for metadata."""
+        return 'vqvae'
 
-        # Save full config
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        with open(config_path, 'w') as f:
-            f.write(OmegaConf.to_yaml(self.cfg))
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return VQ-VAE-specific metadata."""
+        return {
+            'vqvae_config': self._get_model_config(),
+            'image_size': self.image_size,
+        }
 
-        # Save VQ-VAE config separately
-        n_channels = self.cfg.mode.get('in_channels', 1)
-        vqvae_config = self._get_model_config()
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump({
-                'type': 'vqvae',
-                'vqvae_config': vqvae_config,
-                'image_size': self.image_size,
-                'n_epochs': self.n_epochs,
-            }, f, indent=2)
-
-    def train_step(self, batch: Any) -> Dict[str, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute VQ-VAE training step.
 
         Args:
             batch: Input batch.
 
         Returns:
-            Dict with losses: 'gen', 'disc', 'recon', 'perc', 'vq', 'adv'.
+            TrainingStepResult with all loss components.
         """
         images, mask = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
@@ -260,14 +250,14 @@ class VQVAETrainer(BaseCompressionTrainer):
         # Update EMA
         self._update_ema()
 
-        return {
-            'gen': g_loss.item(),
-            'disc': d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-            'recon': l1_loss.item(),
-            'perc': p_loss.item(),
-            'vq': vq_loss.item(),
-            'adv': adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-        }
+        return TrainingStepResult(
+            total_loss=g_loss.item(),
+            reconstruction_loss=l1_loss.item(),
+            perceptual_loss=p_loss.item(),
+            regularization_loss=vq_loss.item(),
+            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+        )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train VQ-VAE for one epoch.
@@ -291,7 +281,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         )
 
         for step, batch in enumerate(epoch_iter):
-            losses = self.train_step(batch)
+            result = self.train_step(batch)
+            losses = result.to_legacy_dict('vq')
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

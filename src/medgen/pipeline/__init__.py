@@ -33,6 +33,22 @@ from .tracking import (
 # Optimizers (from optimizers/ subdirectory)
 from .optimizers import SAM
 
+# Training step result
+from .results import TrainingStepResult
+
+# Test evaluation utilities
+from .evaluation import (
+    BaseTestEvaluator,
+    CompressionTestEvaluator,
+    Compression3DTestEvaluator,
+    MetricsConfig,
+    load_checkpoint_if_needed,
+    save_test_results,
+)
+
+# Validation utilities
+from .validation import ValidationRunner, ValidationConfig, ValidationResult
+
 __all__ = [
     # Trainers
     'DiffusionTrainer',
@@ -71,4 +87,17 @@ __all__ = [
     'create_worst_batch_figure',
     # Optimizers
     'SAM',
+    # Training step result
+    'TrainingStepResult',
+    # Test evaluation
+    'BaseTestEvaluator',
+    'CompressionTestEvaluator',
+    'Compression3DTestEvaluator',
+    'MetricsConfig',
+    'load_checkpoint_if_needed',
+    'save_test_results',
+    # Validation utilities
+    'ValidationRunner',
+    'ValidationConfig',
+    'ValidationResult',
 ]

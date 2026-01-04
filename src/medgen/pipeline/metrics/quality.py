@@ -7,18 +7,19 @@ Metrics:
 - PSNR: Peak Signal-to-Noise Ratio (works with any dimensions)
 - MS-SSIM: Multi-Scale Structural Similarity (2D and 3D via MONAI)
 - LPIPS: Learned Perceptual Image Patch Similarity (2D only, uses pretrained networks)
+
+Caching:
+- Metric instances are cached using functools.lru_cache with size limits
+- Use clear_metric_caches() to clear all caches when needed
 """
 import logging
 import traceback
+from functools import lru_cache
 from typing import Optional, Tuple
 
 import torch
 
 logger = logging.getLogger(__name__)
-
-# Cached metric instances
-_msssim_cache: dict = {}
-_lpips_cache: dict = {}
 
 # Rate-limit NaN warnings (avoid log spam)
 _msssim_nan_warned: bool = False
@@ -45,12 +46,12 @@ def clear_metric_caches() -> None:
     - Switching between GPU devices
     - Memory cleanup is needed
 
-    This clears both MS-SSIM and LPIPS cached instances,
+    This clears both MS-SSIM and LPIPS cached instances (via lru_cache),
     and resets NaN warning flags.
     """
-    global _msssim_cache, _lpips_cache, _msssim_nan_warned, _lpips_nan_warned
-    _msssim_cache.clear()
-    _lpips_cache.clear()
+    global _msssim_nan_warned, _lpips_nan_warned
+    _get_msssim_metric.cache_clear()
+    _get_lpips_metric.cache_clear()
     _msssim_nan_warned = False
     _lpips_nan_warned = False
     logger.debug("Cleared metric caches (MS-SSIM, LPIPS)")
@@ -86,35 +87,33 @@ def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
         return (0.5, 0.5)
 
 
+@lru_cache(maxsize=8)
 def _get_msssim_metric(
     spatial_dims: int,
-    min_size: int,
-    device: torch.device,
+    weights: Tuple[float, ...],
+    device_str: str,
 ) -> 'MultiScaleSSIMMetric':
     """Get or create cached MS-SSIM metric instance.
 
+    Uses lru_cache with maxsize=8 for automatic eviction of old entries.
+    Cache key is (spatial_dims, weights, device_str).
+
     Args:
         spatial_dims: Number of spatial dimensions (2 or 3).
-        min_size: Minimum spatial dimension for weight selection.
-        device: Device to place the metric on.
+        weights: Tuple of MS-SSIM scale weights (determines number of scales).
+        device_str: String representation of device (for hashability).
 
     Returns:
         MONAI MultiScaleSSIMMetric instance.
     """
     from monai.metrics import MultiScaleSSIMMetric
 
-    weights = _get_weights_for_size(min_size)
-    cache_key = (spatial_dims, len(weights), str(device))
-
-    if cache_key not in _msssim_cache:
-        metric = MultiScaleSSIMMetric(
-            spatial_dims=spatial_dims,
-            data_range=1.0,
-            weights=weights,
-        )
-        _msssim_cache[cache_key] = metric
-
-    return _msssim_cache[cache_key]
+    metric = MultiScaleSSIMMetric(
+        spatial_dims=spatial_dims,
+        data_range=1.0,
+        weights=weights,
+    )
+    return metric
 
 
 def compute_psnr(
@@ -189,8 +188,9 @@ def compute_msssim(
             else:  # 3D
                 min_size = min(gen.shape[2], gen.shape[3], gen.shape[4])
 
-            # Get cached metric
-            metric = _get_msssim_metric(spatial_dims, min_size, gen.device)
+            # Get weights and cached metric
+            weights = _get_weights_for_size(min_size)
+            metric = _get_msssim_metric(spatial_dims, weights, str(gen.device))
 
             # Compute MS-SSIM
             # MONAI returns [B, C] tensor, we want scalar mean
@@ -213,19 +213,21 @@ def compute_msssim(
         return 0.0
 
 
+@lru_cache(maxsize=4)
 def _get_lpips_metric(
-    device: torch.device,
+    device_str: str,
     network_type: str = "radimagenet_resnet50",
     cache_dir: Optional[str] = None,
     use_compile: bool = True,
 ) -> torch.nn.Module:
     """Get or create cached LPIPS metric instance.
 
+    Uses lru_cache with maxsize=4 for automatic eviction of old entries.
     Uses MONAI's PerceptualLoss with pretrained networks.
     Optionally uses torch.compile for faster inference.
 
     Args:
-        device: Device to place the metric on.
+        device_str: String representation of device (for hashability).
         network_type: Pretrained network type. Options:
             - "radimagenet_resnet50" (default, medical imaging)
             - "resnet50" (ImageNet)
@@ -239,29 +241,25 @@ def _get_lpips_metric(
     """
     from monai.losses import PerceptualLoss
 
-    cache_key = (str(device), network_type, use_compile)
+    device = torch.device(device_str)
+    metric = PerceptualLoss(
+        spatial_dims=2,
+        network_type=network_type,
+        cache_dir=cache_dir,
+        pretrained=True,
+    ).to(device)
+    metric.eval()
 
-    if cache_key not in _lpips_cache:
-        metric = PerceptualLoss(
-            spatial_dims=2,
-            network_type=network_type,
-            cache_dir=cache_dir,
-            pretrained=True,
-        ).to(device)
-        metric.eval()
+    # Apply torch.compile for faster inference
+    # reduce-overhead is best for repeated small batch inference
+    if use_compile:
+        try:
+            metric = torch.compile(metric, mode="reduce-overhead")
+            logger.debug("LPIPS metric compiled with torch.compile")
+        except Exception as e:
+            logger.warning(f"torch.compile failed for LPIPS, using uncompiled: {e}")
 
-        # Apply torch.compile for faster inference
-        # reduce-overhead is best for repeated small batch inference
-        if use_compile:
-            try:
-                metric = torch.compile(metric, mode="reduce-overhead")
-                logger.debug(f"LPIPS metric compiled with torch.compile")
-            except Exception as e:
-                logger.warning(f"torch.compile failed for LPIPS, using uncompiled: {e}")
-
-        _lpips_cache[cache_key] = metric
-
-    return _lpips_cache[cache_key]
+    return metric
 
 
 def compute_lpips(
@@ -301,8 +299,8 @@ def compute_lpips(
             gen = torch.clamp(generated.float(), 0, 1).to(device)
             ref = torch.clamp(reference.float(), 0, 1).to(device)
 
-            # Get cached metric
-            metric = _get_lpips_metric(device, network_type, cache_dir)
+            # Get cached metric (pass device as string for lru_cache hashability)
+            metric = _get_lpips_metric(str(device), network_type, cache_dir)
 
             # Handle channel count (pretrained networks expect 3 channels)
             num_channels = gen.shape[1]

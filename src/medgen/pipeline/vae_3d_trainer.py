@@ -40,6 +40,7 @@ from .metrics import (
     RegionalMetricsTracker3D,
 )
 from .tracking import create_worst_batch_figure_3d
+from .results import TrainingStepResult
 from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 
 logger = logging.getLogger(__name__)
@@ -265,29 +266,20 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             if self.is_main_process:
                 logger.warning(f"Checkpoint not found: {checkpoint_path}")
 
-    def _save_metadata(self) -> None:
-        """Save training configuration and 3D VAE config."""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _get_trainer_type(self) -> str:
+        """Return trainer type for metadata."""
+        return 'vae_3d'
 
-        # Save full config
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        OmegaConf.save(self.cfg, config_path)
-
-        n_channels = self.cfg.mode.get('in_channels', 1)
-        metadata = {
-            'type': 'vae_3d',
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return 3D VAE-specific metadata."""
+        return {
             'vae_config': self._get_model_config(),
             'volume': {
                 'height': self.volume_height,
                 'width': self.volume_width,
                 'depth': self.volume_depth,
             },
-            'n_epochs': self.n_epochs,
         }
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
 
     def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Compute KL divergence loss.
@@ -308,14 +300,14 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[1, 2, 3, 4])
         return kl.mean()
 
-    def train_step(self, batch: Any) -> Dict[str, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute 3D VAE training step with KL loss.
 
         Args:
             batch: Input batch.
 
         Returns:
-            Dict with losses: 'gen', 'disc', 'recon', 'perc', 'kl', 'adv'.
+            TrainingStepResult with all loss components.
         """
         images, _ = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
@@ -375,14 +367,14 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         if not self.disable_gan:
             d_loss = self._train_discriminator_step(images, reconstruction.detach())
 
-        return {
-            'gen': g_loss.item(),
-            'disc': d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-            'recon': l1_loss.item(),
-            'perc': p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
-            'kl': kl_loss.item(),
-            'adv': adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-        }
+        return TrainingStepResult(
+            total_loss=g_loss.item(),
+            reconstruction_loss=l1_loss.item(),
+            perceptual_loss=p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
+            regularization_loss=kl_loss.item(),
+            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+        )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train 3D VAE for one epoch.
@@ -406,7 +398,8 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         pbar = tqdm(iterator, desc=f"Epoch {epoch}", disable=disable_pbar, total=total)
 
         for step, batch in enumerate(pbar):
-            losses = self.train_step(batch)
+            result = self.train_step(batch)
+            losses = result.to_legacy_dict('kl')
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

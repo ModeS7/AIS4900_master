@@ -15,7 +15,12 @@ from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.data.augmentation import build_vae_augmentation, create_vae_collate_fn
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import (
+    DataLoaderConfig,
+    DistributedArgs,
+    create_dataloader,
+    setup_distributed_sampler,
+)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -86,8 +91,8 @@ def create_vae_dataloader(
                 data_dir=data_dir, mr_sequence='seg', transform=transform
             )
             has_seg = True
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"Seg not available for dual VAE training (regional metrics disabled): {e}")
         merged = merge_sequences(datasets_dict)
         train_dataset = extract_slices_dual(merged, has_seg=has_seg, augmentation=aug)
     else:
@@ -104,17 +109,10 @@ def create_vae_dataloader(
             train_dataset = extract_slices_single_with_seg(
                 nifti_dataset, seg_dataset, augmentation=aug
             )
-        except ValueError:
+        except ValueError as e:
             # No seg available, proceed without regional metrics
+            logger.debug(f"Seg not available for single VAE training (regional metrics disabled): {e}")
             train_dataset = extract_slices_single(nifti_dataset, augmentation=aug)
-
-    # Setup distributed sampler and batch size
-    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
-        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
-    )
-
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     # Get batch augmentation settings
     batch_aug_cfg = cfg.training.get('batch_augment', {})
@@ -127,16 +125,17 @@ def create_vae_dataloader(
         cutmix_prob = batch_aug_cfg.get('cutmix_prob', 0.2)
         collate_fn = create_vae_collate_fn(mixup_prob=mixup_prob, cutmix_prob=cutmix_prob)
 
-    dataloader = DataLoader(
+    # Use unified dataloader creation
+    dataloader = create_dataloader(
         train_dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=shuffle,
+        cfg,
+        shuffle=True,
         collate_fn=collate_fn,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        distributed_args=DistributedArgs(
+            use_distributed=use_distributed,
+            rank=rank,
+            world_size=world_size,
+        ),
     )
 
     return dataloader, train_dataset
@@ -199,8 +198,8 @@ def create_vae_validation_dataloader(
                 data_dir=val_dir, mr_sequence='seg', transform=transform
             )
             has_seg = True
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"Seg not available for dual VAE validation (regional metrics disabled): {e}")
         merged = merge_sequences(datasets_dict)
         val_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
@@ -215,22 +214,17 @@ def create_vae_validation_dataloader(
                 data_dir=val_dir, mr_sequence='seg', transform=transform
             )
             val_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
-        except ValueError:
+        except ValueError as e:
+            logger.debug(f"Seg not available for single VAE validation (regional metrics disabled): {e}")
             val_dataset = extract_slices_single(nifti_dataset)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    # Validation loader: shuffle enabled for diverse batch sampling
-    dataloader = DataLoader(
+    # Validation loader: shuffle for diverse sampling, drop_last for consistent batch sizes
+    dataloader = create_dataloader(
         val_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -292,8 +286,8 @@ def create_vae_test_dataloader(
                 data_dir=test_dir, mr_sequence='seg', transform=transform
             )
             has_seg = True
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"Seg not available for dual VAE test (regional metrics disabled): {e}")
         merged = merge_sequences(datasets_dict)
         test_dataset = extract_slices_dual(merged, has_seg=has_seg)
     else:
@@ -308,21 +302,16 @@ def create_vae_test_dataloader(
                 data_dir=test_dir, mr_sequence='seg', transform=transform
             )
             test_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
-        except ValueError:
+        except ValueError as e:
+            logger.debug(f"Seg not available for single VAE test (regional metrics disabled): {e}")
             test_dataset = extract_slices_single(nifti_dataset)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
     # Test loader: shuffle for diverse visualization samples
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         test_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset
@@ -469,8 +458,8 @@ def create_vae_volume_validation_dataloader(
         try:
             validate_modality_exists(data_dir, 'seg')
             seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"Seg not available for dual volume validation (regional metrics disabled): {e}")
 
         volume_dataset = DualVolumeDataset(t1_pre_dataset, t1_gd_dataset, seg_dataset)
     else:
@@ -482,8 +471,8 @@ def create_vae_volume_validation_dataloader(
         try:
             validate_modality_exists(data_dir, 'seg')
             seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"Seg not available for single volume validation (regional metrics disabled): {e}")
 
         volume_dataset = VolumeDataset(image_dataset, seg_dataset)
 

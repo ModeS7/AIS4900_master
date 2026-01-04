@@ -547,13 +547,9 @@ class MetricsTracker:
             else:
                 size_losses[size_name] = 0.0
 
-        if self.writer is not None:
-            self.writer.add_scalar('loss/tumor_region', avg_tumor_loss, epoch)
-            self.writer.add_scalar('loss/background_region', avg_bg_loss, epoch)
-            self.writer.add_scalar('loss/tumor_bg_ratio', tumor_bg_ratio, epoch)
-
-            for size_name, loss_val in size_losses.items():
-                self.writer.add_scalar(f'loss/tumor_size_{size_name}', loss_val, epoch)
+        # Note: Training regional losses not logged to TensorBoard - they're meaningless
+        # for diffusion (each batch has different noise levels). Only validation/test
+        # regional metrics matter. JSON file still saved for offline analysis.
 
         epoch_data = {
             'tumor': avg_tumor_loss,

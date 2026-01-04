@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .compression_trainer import BaseCompressionTrainer
+from .results import TrainingStepResult
 from .metrics import (
     compute_lpips,
     compute_msssim,
@@ -256,28 +257,19 @@ class DCAETrainer(BaseCompressionTrainer):
             if self.is_main_process:
                 logger.info(f"Loaded discriminator weights from {checkpoint_path}")
 
-    def _save_metadata(self) -> None:
-        """Save training configuration and DC-AE config."""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _get_trainer_type(self) -> str:
+        """Return trainer type for metadata."""
+        return 'dcae'
 
-        # Save full config
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        with open(config_path, 'w') as f:
-            f.write(OmegaConf.to_yaml(self.cfg))
-
-        metadata = {
-            'type': 'dcae',
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return DC-AE-specific metadata."""
+        return {
             'compression_ratio': self.compression_ratio,
             'latent_channels': self.latent_channels,
             'scaling_factor': self.scaling_factor,
             'pretrained': self.pretrained,
             'image_size': self.image_size,
-            'n_epochs': self.n_epochs,
         }
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
 
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch for DC-AE training.
@@ -311,14 +303,14 @@ class DCAETrainer(BaseCompressionTrainer):
 
         return images, mask
 
-    def train_step(self, batch: Any) -> Dict[str, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute DC-AE training step.
 
         Args:
             batch: Input batch.
 
         Returns:
-            Dict with losses: 'gen', 'disc', 'recon', 'perc', 'adv'.
+            TrainingStepResult with all loss components (no regularization).
         """
         images, _ = self._prepare_batch(batch)
         grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
@@ -376,13 +368,13 @@ class DCAETrainer(BaseCompressionTrainer):
         if not self.disable_gan:
             d_loss = self._train_discriminator_step(images, reconstruction.detach())
 
-        return {
-            'gen': g_loss.item(),
-            'disc': d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-            'recon': l1_loss.item(),
-            'perc': p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
-            'adv': adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-        }
+        return TrainingStepResult(
+            total_loss=g_loss.item(),
+            reconstruction_loss=l1_loss.item(),
+            perceptual_loss=p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
+            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+        )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
         """Train DC-AE for one epoch.
@@ -406,7 +398,8 @@ class DCAETrainer(BaseCompressionTrainer):
         )
 
         for step, batch in enumerate(epoch_iter):
-            losses = self.train_step(batch)
+            result = self.train_step(batch)
+            losses = result.to_legacy_dict(None)  # DCAE has no regularization
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

@@ -368,15 +368,17 @@ class ScoreAugTransform:
     def _brightness(self, x: torch.Tensor, scale: float) -> torch.Tensor:
         """Scale tensor by brightness factor.
 
-        Note: With normalized [0,1] data, scaling up may push values > 1.
-        The paper uses this on unnormalized data. Use with caution.
+        WARNING: Output is NOT clamped to [0,1] to preserve invertibility
+        for score matching. If scale > 1.0, output values may exceed 1.0.
+        This is intentional per the ScoreAug paper - clamping would break
+        the inverse transform needed for proper score matching.
 
         Args:
-            x: Input tensor [B, C, H, W]
-            scale: Brightness scale factor
+            x: Input tensor [B, C, H, W] in [0, 1] range.
+            scale: Brightness scale factor (typically 0.8-1.2).
 
         Returns:
-            Scaled tensor (NOT clamped to preserve invertibility)
+            Scaled tensor (may have values outside [0,1] if scale != 1.0).
         """
         return x * scale
 

@@ -49,10 +49,9 @@ from .metrics import (
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
-    reset_msssim_nan_warning,
 )
 from .tracking import GradientNormTracker, create_worst_batch_figure
-from .utils import create_epoch_iterator, get_vram_usage, save_full_checkpoint
+from .utils import save_full_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +486,9 @@ class BaseCompressionTrainer(BaseTrainer):
         """Log gradient norm statistics to TensorBoard."""
         if not self.log_grad_norm or self.writer is None:
             return
-        self._grad_norm_tracker.log(self.writer, epoch, prefix='training/grad_norm_g')
+        # Use _g suffix only when discriminator exists for clarity
+        gen_prefix = 'training/grad_norm_g' if not self.disable_gan else 'training/grad_norm'
+        self._grad_norm_tracker.log(self.writer, epoch, prefix=gen_prefix)
         if not self.disable_gan and self.discriminator is not None:
             self._grad_norm_tracker_d.log(self.writer, epoch, prefix='training/grad_norm_d')
 
@@ -521,9 +522,12 @@ class BaseCompressionTrainer(BaseTrainer):
         self._log_vram(epoch)
         self._log_flops(epoch)
 
-        # Per-modality validation
+        # Per-modality validation (multi_modality mode)
         if self.per_modality_val_loaders:
             self._compute_per_modality_validation(epoch)
+
+        # Per-channel validation (dual mode)
+        self._compute_per_channel_validation(epoch)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Validation
@@ -561,12 +565,45 @@ class BaseCompressionTrainer(BaseTrainer):
             loss_breakdown=worst_batch_data.get('loss_breakdown'),
         )
 
+    def _create_validation_runner(self) -> 'ValidationRunner':
+        """Create ValidationRunner for this trainer.
+
+        Factory method that creates a ValidationRunner with trainer-specific
+        configuration and callbacks.
+
+        Returns:
+            Configured ValidationRunner instance.
+        """
+        from .validation import ValidationRunner, ValidationConfig
+
+        config = ValidationConfig(
+            log_msssim=self.log_msssim,
+            log_psnr=self.log_psnr,
+            log_lpips=self.log_lpips,
+            log_regional_losses=self.log_regional_losses,
+            weight_dtype=self.weight_dtype,
+            use_compile=self.use_compile,
+        )
+
+        regional_factory = None
+        if self.log_regional_losses:
+            regional_factory = self._create_regional_tracker
+
+        return ValidationRunner(
+            config=config,
+            device=self.device,
+            forward_fn=self._forward_for_validation,
+            perceptual_loss_fn=self._compute_perceptual_loss,
+            regional_tracker_factory=regional_factory,
+            prepare_batch_fn=self._prepare_batch,
+        )
+
     def compute_validation_losses(
         self,
         epoch: int,
         log_figures: bool = True,
     ) -> Dict[str, float]:
-        """Compute validation losses and metrics.
+        """Compute validation losses using ValidationRunner.
 
         Args:
             epoch: Current epoch number.
@@ -578,100 +615,33 @@ class BaseCompressionTrainer(BaseTrainer):
         if self.val_loader is None:
             return {}
 
+        # Get model for evaluation
         model_to_use = self._get_model_for_eval()
         model_to_use.eval()
 
-        # Accumulators
-        total_l1 = 0.0
-        total_perc = 0.0
-        total_reg = 0.0  # Regularization (KL/VQ/none)
-        total_gen = 0.0
-        total_msssim = 0.0
-        total_psnr = 0.0
-        total_lpips = 0.0
-        n_batches = 0
-
-        # Worst batch tracking
-        worst_loss = 0.0
-        worst_batch_data = None
-
-        # Regional tracker
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = self._create_regional_tracker()
-
-        # Mark CUDA graph step boundary
-        if self.use_compile:
-            torch.compiler.cudagraph_mark_step_begin()
-
-        # Reset MS-SSIM NaN warning
-        reset_msssim_nan_warning()
-
-        with torch.inference_mode():  # Faster than no_grad for inference
-            for batch in self.val_loader:
-                images, mask = self._prepare_batch(batch)
-
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    # Subclass-specific forward pass
-                    reconstruction, reg_loss = self._forward_for_validation(model_to_use, images)
-
-                    # Common loss computation
-                    l1_loss = torch.abs(reconstruction - images).mean()
-                    p_loss = self._compute_perceptual_loss(reconstruction, images)
-                    g_loss = l1_loss + self.perceptual_weight * p_loss + reg_loss
-
-                loss_val = g_loss.item()
-                total_l1 += l1_loss.item()
-                total_perc += p_loss.item()
-                total_reg += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
-                total_gen += loss_val
-
-                # Track worst batch
-                if loss_val > worst_loss:
-                    worst_loss = loss_val
-                    worst_batch_data = self._capture_worst_batch(
-                        images, reconstruction, loss_val, l1_loss, p_loss, reg_loss
-                    )
-
-                # Quality metrics
-                if self.log_msssim:
-                    total_msssim += compute_msssim(reconstruction, images)
-                if self.log_psnr:
-                    total_psnr += compute_psnr(reconstruction, images)
-                if self.log_lpips:
-                    total_lpips += compute_lpips(reconstruction, images, device=self.device)
-
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
-                    regional_tracker.update(reconstruction, images, mask)
-
-                n_batches += 1
+        # Run validation using extracted runner
+        runner = self._create_validation_runner()
+        result = runner.run(
+            val_loader=self.val_loader,
+            model=model_to_use,
+            perceptual_weight=self.perceptual_weight,
+            log_figures=log_figures,
+        )
 
         model_to_use.train()
 
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches if n_batches > 0 else 0.0,
-            'perc': total_perc / n_batches if n_batches > 0 else 0.0,
-            'reg': total_reg / n_batches if n_batches > 0 else 0.0,
-            'gen': total_gen / n_batches if n_batches > 0 else 0.0,
-        }
-        if self.log_psnr:
-            metrics['psnr'] = total_psnr / n_batches if n_batches > 0 else 0.0
-        if self.log_lpips:
-            metrics['lpips'] = total_lpips / n_batches if n_batches > 0 else 0.0
-        if self.log_msssim:
-            metrics['msssim'] = total_msssim / n_batches if n_batches > 0 else 0.0
-
         # Log to TensorBoard
-        self._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
+        self._log_validation_metrics(
+            epoch, result.metrics, result.worst_batch_data,
+            result.regional_tracker, log_figures
+        )
 
         # Compute 3D MS-SSIM on full volumes (2D trainers only)
         msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
         if msssim_3d is not None:
-            metrics['msssim_3d'] = msssim_3d
+            result.metrics['msssim_3d'] = msssim_3d
 
-        return metrics
+        return result.metrics
 
     def _capture_worst_batch(
         self,
@@ -827,6 +797,60 @@ class BaseCompressionTrainer(BaseTrainer):
 
         model_to_use.train()
 
+    def _compute_per_channel_validation(self, epoch: int) -> None:
+        """Compute per-channel validation metrics for dual mode.
+
+        For dual mode (2 channels), computes metrics separately for each channel
+        (e.g., t1_pre, t1_gd) and logs them to TensorBoard.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        if n_channels != 2 or self.val_loader is None:
+            return
+
+        image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+        model_to_use = self._get_model_for_eval()
+        model_to_use.eval()
+
+        # Per-channel accumulators
+        channel_metrics = {key: {'psnr': 0.0, 'lpips': 0.0, 'msssim': 0.0} for key in image_keys}
+        n_batches = 0
+
+        with torch.inference_mode():
+            for batch in self.val_loader:
+                images, _ = self._prepare_batch(batch)
+
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                    reconstruction, _ = self._forward_for_validation(model_to_use, images)
+
+                # Compute per-channel metrics
+                for i, key in enumerate(image_keys):
+                    img_ch = images[:, i:i+1]
+                    rec_ch = reconstruction[:, i:i+1]
+
+                    if self.log_psnr:
+                        channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
+                    if self.log_lpips:
+                        channel_metrics[key]['lpips'] += compute_lpips(rec_ch, img_ch, device=self.device)
+                    if self.log_msssim:
+                        channel_metrics[key]['msssim'] += compute_msssim(rec_ch, img_ch)
+
+                n_batches += 1
+
+        model_to_use.train()
+
+        # Log per-channel metrics
+        if n_batches > 0 and self.writer is not None:
+            for key in image_keys:
+                if self.log_psnr:
+                    self.writer.add_scalar(f'Validation/PSNR_{key}', channel_metrics[key]['psnr'] / n_batches, epoch)
+                if self.log_lpips:
+                    self.writer.add_scalar(f'Validation/LPIPS_{key}', channel_metrics[key]['lpips'] / n_batches, epoch)
+                if self.log_msssim:
+                    self.writer.add_scalar(f'Validation/MS-SSIM_{key}', channel_metrics[key]['msssim'] / n_batches, epoch)
+
     def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
 
@@ -919,10 +943,9 @@ class BaseCompressionTrainer(BaseTrainer):
 
         avg_msssim_3d = total_msssim_3d / n_volumes
 
-        # Log to TensorBoard
-        if self.writer is not None:
-            prefix = 'Validation' if data_split == 'val' else f'test_{data_split.replace("_new", "")}'
-            self.writer.add_scalar(f'{prefix}/MS-SSIM-3D', avg_msssim_3d, epoch)
+        # Log to TensorBoard (only for validation - test is logged by evaluator)
+        if self.writer is not None and data_split == 'val':
+            self.writer.add_scalar('Validation/MS-SSIM-3D', avg_msssim_3d, epoch)
 
         return avg_msssim_3d
 
@@ -1163,12 +1186,61 @@ class BaseCompressionTrainer(BaseTrainer):
     # Test evaluation
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _create_test_evaluator(self) -> 'CompressionTestEvaluator':
+        """Create test evaluator for this trainer.
+
+        Factory method that creates a CompressionTestEvaluator with trainer-specific
+        callbacks. This enables using the new unified evaluation infrastructure.
+
+        Returns:
+            Configured CompressionTestEvaluator instance.
+        """
+        from .evaluation import CompressionTestEvaluator, MetricsConfig
+
+        # Create metrics config based on trainer settings
+        metrics_config = MetricsConfig(
+            compute_l1=True,
+            compute_psnr=True,
+            compute_lpips=True,
+            compute_msssim=self.log_msssim,
+            compute_msssim_3d=False,  # Volume 3D MS-SSIM added via callback
+            compute_regional=self.log_regional_losses,
+        )
+
+        # Regional tracker factory (if configured)
+        regional_factory = None
+        if self.log_regional_losses:
+            regional_factory = self._create_regional_tracker
+
+        # Volume 3D MS-SSIM callback (for 2D trainers reconstructing full volumes)
+        def volume_3d_msssim() -> Optional[float]:
+            return self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
+
+        # Worst batch figure callback
+        worst_batch_fig_fn = self._create_worst_batch_figure
+
+        return CompressionTestEvaluator(
+            model=self.model_raw,
+            device=self.device,
+            save_dir=self.save_dir,
+            forward_fn=self._test_forward,
+            weight_dtype=self.weight_dtype,
+            writer=self.writer,
+            metrics_config=metrics_config,
+            is_cluster=self.is_cluster,
+            regional_tracker_factory=regional_factory,
+            volume_3d_msssim_fn=volume_3d_msssim,
+            worst_batch_figure_fn=worst_batch_fig_fn,
+        )
+
     def evaluate_test_set(
         self,
         test_loader: DataLoader,
         checkpoint_name: Optional[str] = None,
     ) -> Dict[str, float]:
         """Evaluate compression model on test set.
+
+        Uses CompressionTestEvaluator for unified test evaluation.
 
         Args:
             test_loader: Test data loader.
@@ -1180,132 +1252,12 @@ class BaseCompressionTrainer(BaseTrainer):
         if not self.is_main_process:
             return {}
 
-        # Load checkpoint if specified
-        if checkpoint_name is not None:
-            checkpoint_path = os.path.join(self.save_dir, f"checkpoint_{checkpoint_name}.pt")
-            if os.path.exists(checkpoint_path):
-                checkpoint = torch.load(checkpoint_path, map_location=self.device)
-                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
-                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
-            else:
-                logger.warning(f"Checkpoint {checkpoint_path} not found")
-                checkpoint_name = "current"
-
-        label = checkpoint_name or "current"
-        logger.info("=" * 60)
-        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
-        logger.info("=" * 60)
-
-        model_to_use = self._get_model_for_eval() if checkpoint_name is None else self.model_raw
-        model_to_use.eval()
-
-        # Accumulators
-        total_l1 = 0.0
-        total_msssim = 0.0
-        total_psnr = 0.0
-        total_lpips = 0.0
-        n_batches = 0
-        n_samples = 0
-
-        # Regional tracker
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = self._create_regional_tracker()
-
-        # Worst batch tracking
-        worst_loss = 0.0
-        worst_batch_data = None
-
-        with torch.inference_mode():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
-                images, mask = self._prepare_batch(batch)
-                batch_size = images.shape[0]
-
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstructed = self._test_forward(model_to_use, images)
-
-                # Compute metrics
-                l1_loss = torch.abs(reconstructed - images).mean().item()
-                total_l1 += l1_loss
-                if self.log_msssim:
-                    total_msssim += compute_msssim(reconstructed.float(), images.float())
-                total_psnr += compute_psnr(reconstructed, images)
-                total_lpips += compute_lpips(reconstructed.float(), images.float(), device=self.device)
-
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
-                    regional_tracker.update(reconstructed, images, mask)
-
-                # Track worst batch
-                if l1_loss > worst_loss:
-                    worst_loss = l1_loss
-                    worst_batch_data = self._capture_worst_batch(
-                        images, reconstructed, l1_loss,
-                        torch.tensor(l1_loss), torch.tensor(0.0), torch.tensor(0.0)
-                    )
-
-                n_batches += 1
-                n_samples += batch_size
-
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches,
-            'psnr': total_psnr / n_batches,
-            'lpips': total_lpips / n_batches,
-            'n_samples': n_samples,
-        }
-        if self.log_msssim:
-            metrics['msssim'] = total_msssim / n_batches
-
-        # Compute 3D MS-SSIM on full volumes (2D trainers only)
-        msssim_3d = self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
-        if msssim_3d is not None:
-            metrics['msssim_3d'] = msssim_3d
-
-        # Log results
-        logger.info(f"Test Results - {label} ({n_samples} samples):")
-        logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
-        if 'msssim' in metrics:
-            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
-        if 'msssim_3d' in metrics:
-            logger.info(f"  MS-SSIM-3D: {metrics['msssim_3d']:.4f}")
-        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
-
-        # Save results
-        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
-        with open(results_path, 'w') as f:
-            json.dump(metrics, f, indent=2)
-
-        # Log to TensorBoard
-        tb_prefix = f'test_{label}'
-        if self.writer is not None:
-            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
-            if 'msssim' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
-            if 'msssim_3d' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', metrics['msssim_3d'], 0)
-
-            if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
-
-            # Worst batch
-            if worst_batch_data is not None:
-                fig = self._create_worst_batch_figure(worst_batch_data)
-                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
-                plt.close(fig)
-
-                # Also save as PNG file
-                fig = self._create_worst_batch_figure(worst_batch_data)
-                fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Test worst batch saved to: {fig_path}")
-
-        model_to_use.train()
-        return metrics
+        evaluator = self._create_test_evaluator()
+        return evaluator.evaluate(
+            test_loader,
+            checkpoint_name=checkpoint_name,
+            get_eval_model=self._get_model_for_eval,
+        )
 
 
 class BaseCompression3DTrainer(BaseCompressionTrainer):
@@ -1411,6 +1363,80 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             loss_breakdown=worst_batch_data.get('loss_breakdown'),
         )
 
+    def _create_validation_runner(self) -> 'ValidationRunner':
+        """Create ValidationRunner for 3D trainer.
+
+        Factory method that creates a ValidationRunner with 3D-specific
+        configuration and callbacks.
+
+        Returns:
+            Configured ValidationRunner instance for 3D volumes.
+        """
+        from .validation import ValidationRunner, ValidationConfig
+
+        config = ValidationConfig(
+            log_msssim=self.log_msssim,
+            log_psnr=self.log_psnr,
+            log_lpips=self.log_lpips,
+            log_regional_losses=self.log_regional_losses,
+            weight_dtype=self.weight_dtype,
+            use_compile=self.use_compile,
+            spatial_dims=3,  # 3D volumes
+        )
+
+        regional_factory = None
+        if self.log_regional_losses:
+            regional_factory = self._create_regional_tracker
+
+        return ValidationRunner(
+            config=config,
+            device=self.device,
+            forward_fn=self._forward_for_validation,
+            perceptual_loss_fn=self._compute_perceptual_loss,
+            regional_tracker_factory=regional_factory,
+            prepare_batch_fn=self._prepare_batch,
+        )
+
+    def compute_validation_losses(
+        self,
+        epoch: int,
+        log_figures: bool = True,
+    ) -> Dict[str, float]:
+        """Compute validation losses for 3D volumes using ValidationRunner.
+
+        Args:
+            epoch: Current epoch number.
+            log_figures: Whether to log figures (worst_batch).
+
+        Returns:
+            Dictionary of validation metrics.
+        """
+        if self.val_loader is None:
+            return {}
+
+        # Get model for evaluation
+        model_to_use = self._get_model_for_eval()
+        model_to_use.eval()
+
+        # Run validation using extracted runner
+        runner = self._create_validation_runner()
+        result = runner.run(
+            val_loader=self.val_loader,
+            model=model_to_use,
+            perceptual_weight=self.perceptual_weight,
+            log_figures=log_figures,
+        )
+
+        model_to_use.train()
+
+        # Log to TensorBoard
+        self._log_validation_metrics(
+            epoch, result.metrics, result.worst_batch_data,
+            result.regional_tracker, log_figures
+        )
+
+        return result.metrics
+
     def _compute_2_5d_perceptual_loss(
         self,
         reconstruction: torch.Tensor,
@@ -1490,128 +1516,6 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         run_name = f"{exp_name}{self.volume_height}_{timestamp}"
         return os.path.join(self.cfg.paths.model_dir, 'vae_3d', mode_name, run_name)
 
-    def compute_validation_losses(
-        self,
-        epoch: int,
-        log_figures: bool = True,
-    ) -> Dict[str, float]:
-        """Compute validation losses and metrics for 3D volumes.
-
-        Overrides base class to use 3D-appropriate metrics:
-        - MS-SSIM with spatial_dims=3
-        - LPIPS computed slice-by-slice via compute_lpips_3d
-
-        Args:
-            epoch: Current epoch number.
-            log_figures: Whether to log figures (worst_batch).
-
-        Returns:
-            Dictionary of validation metrics.
-        """
-        if self.val_loader is None:
-            return {}
-
-        model_to_use = self._get_model_for_eval()
-        model_to_use.eval()
-
-        # Accumulators
-        total_l1 = 0.0
-        total_perc = 0.0
-        total_reg = 0.0
-        total_gen = 0.0
-        total_msssim_3d = 0.0  # Volumetric 3D MS-SSIM
-        total_msssim_2d = 0.0  # Slice-by-slice 2D MS-SSIM
-        total_psnr = 0.0
-        total_lpips = 0.0
-        n_batches = 0
-
-        # Worst batch tracking
-        worst_loss = 0.0
-        worst_batch_data = None
-
-        # Regional tracker
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = self._create_regional_tracker()
-
-        # Mark CUDA graph step boundary
-        if self.use_compile:
-            torch.compiler.cudagraph_mark_step_begin()
-
-        # Reset MS-SSIM NaN warning
-        reset_msssim_nan_warning()
-
-        with torch.inference_mode():  # Faster than no_grad for inference
-            for batch in self.val_loader:
-                images, mask = self._prepare_batch(batch)
-
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstruction, reg_loss = self._forward_for_validation(model_to_use, images)
-
-                    l1_loss = torch.abs(reconstruction - images).mean()
-                    p_loss = self._compute_perceptual_loss(reconstruction, images)
-                    g_loss = l1_loss + self.perceptual_weight * p_loss + reg_loss
-
-                loss_val = g_loss.item()
-                total_l1 += l1_loss.item()
-                total_perc += p_loss.item()
-                total_reg += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
-                total_gen += loss_val
-
-                # Track worst batch
-                if loss_val > worst_loss:
-                    worst_loss = loss_val
-                    worst_batch_data = self._capture_worst_batch(
-                        images, reconstruction, loss_val, l1_loss, p_loss, reg_loss
-                    )
-
-                # Quality metrics - 3D versions
-                if self.log_msssim:
-                    # Volumetric 3D MS-SSIM (captures cross-slice structure)
-                    total_msssim_3d += compute_msssim(
-                        reconstruction.float(), images.float(), spatial_dims=3
-                    )
-                    # Slice-by-slice 2D MS-SSIM (comparable to 2D trainers)
-                    total_msssim_2d += compute_msssim_2d_slicewise(
-                        reconstruction.float(), images.float()
-                    )
-                if self.log_psnr:
-                    total_psnr += compute_psnr(reconstruction, images)
-                if self.log_lpips:
-                    total_lpips += compute_lpips_3d(
-                        reconstruction.float(), images.float(), device=self.device
-                    )
-
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
-                    regional_tracker.update(reconstruction, images, mask)
-
-                n_batches += 1
-
-        model_to_use.train()
-
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches if n_batches > 0 else 0.0,
-            'perc': total_perc / n_batches if n_batches > 0 else 0.0,
-            'reg': total_reg / n_batches if n_batches > 0 else 0.0,
-            'gen': total_gen / n_batches if n_batches > 0 else 0.0,
-        }
-        if self.log_psnr:
-            metrics['psnr'] = total_psnr / n_batches if n_batches > 0 else 0.0
-        if self.log_lpips:
-            metrics['lpips'] = total_lpips / n_batches if n_batches > 0 else 0.0
-        if self.log_msssim:
-            # 2D MS-SSIM for comparison with 2D trainers
-            metrics['msssim'] = total_msssim_2d / n_batches if n_batches > 0 else 0.0
-            # 3D MS-SSIM for volumetric quality
-            metrics['msssim_3d'] = total_msssim_3d / n_batches if n_batches > 0 else 0.0
-
-        # Log to TensorBoard
-        self._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
-
-        return metrics
-
     def _compute_per_modality_validation(self, epoch: int) -> None:
         """Compute per-modality validation metrics for 3D volumes.
 
@@ -1688,12 +1592,62 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
 
         model_to_use.train()
 
+    def _create_test_evaluator(self) -> 'Compression3DTestEvaluator':
+        """Create 3D test evaluator for this trainer.
+
+        Factory method that creates a Compression3DTestEvaluator with trainer-specific
+        callbacks. This enables using the new unified evaluation infrastructure.
+
+        Returns:
+            Configured Compression3DTestEvaluator instance.
+        """
+        from .evaluation import Compression3DTestEvaluator, MetricsConfig
+        from .tracking import create_worst_batch_figure_3d
+
+        # Create metrics config for 3D evaluation
+        metrics_config = MetricsConfig(
+            compute_l1=True,
+            compute_psnr=True,
+            compute_lpips=True,
+            compute_msssim=self.log_msssim,  # 2D slicewise
+            compute_msssim_3d=self.log_msssim,  # Volumetric
+            compute_regional=self.log_regional_losses,
+        )
+
+        # Regional tracker factory
+        regional_factory = None
+        if self.log_regional_losses:
+            regional_factory = self._create_regional_tracker
+
+        # Worst batch figure callback (3D version)
+        def worst_batch_fig_fn(data: Dict[str, Any]) -> Any:
+            return create_worst_batch_figure_3d(
+                original=data['original'],
+                generated=data['generated'],
+                loss=data['loss'],
+            )
+
+        return Compression3DTestEvaluator(
+            model=self.model_raw,
+            device=self.device,
+            save_dir=self.save_dir,
+            forward_fn=self._test_forward,
+            weight_dtype=self.weight_dtype,
+            writer=self.writer,
+            metrics_config=metrics_config,
+            is_cluster=self.is_cluster,
+            regional_tracker_factory=regional_factory,
+            worst_batch_figure_fn=worst_batch_fig_fn,
+        )
+
     def evaluate_test_set(
         self,
         test_loader: DataLoader,
         checkpoint_name: Optional[str] = None,
     ) -> Dict[str, float]:
         """Evaluate 3D compression model on test set.
+
+        Uses Compression3DTestEvaluator for unified test evaluation.
 
         Args:
             test_loader: Test data loader.
@@ -1702,153 +1656,12 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         Returns:
             Dict with test metrics.
         """
-        from .metrics import RegionalMetricsTracker3D
-        from .tracking import create_worst_batch_figure_3d
-
         if not self.is_main_process:
             return {}
 
-        # Load checkpoint if specified
-        if checkpoint_name is not None:
-            checkpoint_path = os.path.join(self.save_dir, f"checkpoint_{checkpoint_name}.pt")
-            if os.path.exists(checkpoint_path):
-                checkpoint = torch.load(checkpoint_path, map_location=self.device)
-                self.model_raw.load_state_dict(checkpoint['model_state_dict'])
-                logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
-            else:
-                logger.warning(f"Checkpoint {checkpoint_path} not found")
-                checkpoint_name = "current"
-
-        label = checkpoint_name or "current"
-        logger.info("=" * 60)
-        logger.info(f"EVALUATING ON TEST SET ({label.upper()} MODEL)")
-        logger.info("=" * 60)
-
-        model_to_use = self._get_model_for_eval() if checkpoint_name is None else self.model_raw
-        model_to_use.eval()
-
-        # Accumulators
-        total_l1 = 0.0
-        total_msssim_3d = 0.0
-        total_msssim_2d = 0.0
-        total_psnr = 0.0
-        total_lpips = 0.0
-        n_batches = 0
-        n_samples = 0
-
-        # Regional tracker
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = self._create_regional_tracker()
-
-        # Worst batch tracking
-        worst_loss = 0.0
-        worst_batch_data = None
-
-        # Sample collection
-        sample_inputs = []
-        sample_outputs = []
-        max_vis_samples = 4
-
-        with torch.inference_mode():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
-                images, mask = self._prepare_batch(batch)
-                batch_size = images.shape[0]
-
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstructed = self._test_forward(model_to_use, images)
-
-                # Compute metrics
-                l1_loss = torch.abs(reconstructed - images).mean().item()
-                total_l1 += l1_loss
-                if self.log_msssim:
-                    # 3D volumetric MS-SSIM
-                    total_msssim_3d += compute_msssim(reconstructed.float(), images.float(), spatial_dims=3)
-                    # 2D slice-by-slice MS-SSIM (for comparison with 2D trainers)
-                    total_msssim_2d += compute_msssim_2d_slicewise(reconstructed.float(), images.float())
-                total_psnr += compute_psnr(reconstructed, images)
-                total_lpips += compute_lpips_3d(reconstructed.float(), images.float(), device=self.device)
-
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
-                    regional_tracker.update(reconstructed.float(), images.float(), mask)
-
-                # Track worst batch
-                if l1_loss > worst_loss:
-                    worst_loss = l1_loss
-                    worst_batch_data = {
-                        'original': images.cpu(),
-                        'generated': reconstructed.float().cpu(),
-                        'loss': l1_loss,
-                    }
-
-                n_batches += 1
-                n_samples += batch_size
-
-                # Collect samples
-                if len(sample_inputs) < max_vis_samples:
-                    remaining = max_vis_samples - len(sample_inputs)
-                    sample_inputs.append(images[:remaining].cpu())
-                    sample_outputs.append(reconstructed[:remaining].float().cpu())
-
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches,
-            'psnr': total_psnr / n_batches,
-            'lpips': total_lpips / n_batches,
-            'n_samples': n_samples,
-        }
-        if self.log_msssim:
-            metrics['msssim'] = total_msssim_2d / n_batches  # 2D slice-by-slice (comparable to 2D trainers)
-            metrics['msssim_3d'] = total_msssim_3d / n_batches  # 3D volumetric
-
-        # Log results
-        logger.info(f"Test Results - {label} ({n_samples} samples):")
-        logger.info(f"  L1 Loss:    {metrics['l1']:.6f}")
-        if 'msssim' in metrics:
-            logger.info(f"  MS-SSIM:    {metrics['msssim']:.4f} (2D)")
-            logger.info(f"  MS-SSIM-3D: {metrics['msssim_3d']:.4f}")
-        logger.info(f"  PSNR:       {metrics['psnr']:.2f} dB")
-        logger.info(f"  LPIPS:      {metrics['lpips']:.4f}")
-
-        # Save results
-        results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
-        with open(results_path, 'w') as f:
-            json.dump(metrics, f, indent=2)
-
-        # Log to TensorBoard
-        tb_prefix = f'test_{label}'
-        if self.writer is not None:
-            self.writer.add_scalar(f'{tb_prefix}/L1', metrics['l1'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
-            if 'msssim' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
-                self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', metrics['msssim_3d'], 0)
-
-            if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
-
-            # Worst batch figure
-            if worst_batch_data is not None:
-                fig = create_worst_batch_figure_3d(
-                    original=worst_batch_data['original'],
-                    generated=worst_batch_data['generated'],
-                    loss=worst_batch_data['loss'],
-                )
-                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
-                plt.close(fig)
-
-                # Also save as PNG file
-                fig = create_worst_batch_figure_3d(
-                    original=worst_batch_data['original'],
-                    generated=worst_batch_data['generated'],
-                    loss=worst_batch_data['loss'],
-                )
-                fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Test worst batch saved to: {fig_path}")
-
-        model_to_use.train()
-        return metrics
+        evaluator = self._create_test_evaluator()
+        return evaluator.evaluate(
+            test_loader,
+            checkpoint_name=checkpoint_name,
+            get_eval_model=self._get_model_for_eval,
+        )

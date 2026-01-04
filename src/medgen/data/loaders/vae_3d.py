@@ -123,7 +123,14 @@ class Base3DVolumeDataset(Dataset):
 
         Returns:
             Padded tensor with depth >= pad_depth_to.
+
+        Raises:
+            ValueError: If volume is not 4D.
         """
+        if volume.ndim != 4:
+            raise ValueError(
+                f"Expected 4D volume [C, D, H, W], got {volume.ndim}D with shape {volume.shape}"
+            )
         current_depth = volume.shape[1]
         if current_depth < self.pad_depth_to:
             pad_total = self.pad_depth_to - current_depth

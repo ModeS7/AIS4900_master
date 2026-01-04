@@ -22,19 +22,34 @@ import torch
 class DiscreteTranslate(ImageOnlyTransform):
     """Discrete pixel translation - truly lossless.
 
-    Shifts image by integer pixels using np.roll, then zeros out
-    the wrapped edges. No interpolation, no quality loss.
+    Shifts image by integer pixels using np.roll, then fills the wrapped
+    edges based on pad_mode. No interpolation, no quality loss.
 
     Args:
         max_percent_x: Maximum translation as fraction of width (e.g., 0.2 = 20%).
         max_percent_y: Maximum translation as fraction of height (e.g., 0.1 = 10%).
+        pad_mode: How to fill wrapped edges after translation:
+            - 'zero': Fill with zeros (default, original behavior).
+            - 'reflect': Mirror edge pixels (preserves tissue continuity for medical images).
         p: Probability of applying the transform.
+
+    Raises:
+        ValueError: If pad_mode is not 'zero' or 'reflect'.
     """
 
-    def __init__(self, max_percent_x: float = 0.2, max_percent_y: float = 0.1, p: float = 0.5):
+    def __init__(
+        self,
+        max_percent_x: float = 0.2,
+        max_percent_y: float = 0.1,
+        pad_mode: str = 'zero',
+        p: float = 0.5,
+    ):
         super().__init__(p=p)
         self.max_percent_x = max_percent_x
         self.max_percent_y = max_percent_y
+        if pad_mode not in ('zero', 'reflect'):
+            raise ValueError(f"pad_mode must be 'zero' or 'reflect', got '{pad_mode}'")
+        self.pad_mode = pad_mode
 
     def apply(self, img: np.ndarray, dx: int = 0, dy: int = 0, **params) -> np.ndarray:
         if dx == 0 and dy == 0:
@@ -43,16 +58,29 @@ class DiscreteTranslate(ImageOnlyTransform):
         # Roll pixels
         result = np.roll(img, shift=(dy, dx), axis=(0, 1))
 
-        # Zero out wrapped edges
-        if dy > 0:
-            result[:dy, :] = 0
-        elif dy < 0:
-            result[dy:, :] = 0
+        if self.pad_mode == 'zero':
+            # Zero out wrapped edges (original behavior)
+            if dy > 0:
+                result[:dy, :] = 0
+            elif dy < 0:
+                result[dy:, :] = 0
 
-        if dx > 0:
-            result[:, :dx] = 0
-        elif dx < 0:
-            result[:, dx:] = 0
+            if dx > 0:
+                result[:, :dx] = 0
+            elif dx < 0:
+                result[:, dx:] = 0
+        else:
+            # Reflect mode: mirror edge pixels for continuity
+            # After roll, fill edges with flipped content from original image
+            if dy > 0:
+                result[:dy, :] = np.flip(img[:dy, :], axis=0)
+            elif dy < 0:
+                result[dy:, :] = np.flip(img[dy:, :], axis=0)
+
+            if dx > 0:
+                result[:, :dx] = np.flip(img[:, :dx], axis=1)
+            elif dx < 0:
+                result[:, dx:] = np.flip(img[:, dx:], axis=1)
 
         return result
 
@@ -66,7 +94,7 @@ class DiscreteTranslate(ImageOnlyTransform):
         }
 
     def get_transform_init_args_names(self) -> Tuple[str, ...]:
-        return ("max_percent_x", "max_percent_y")
+        return ("max_percent_x", "max_percent_y", "pad_mode")
 
 
 # =============================================================================

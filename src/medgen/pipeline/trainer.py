@@ -36,6 +36,7 @@ from monai.networks.nets import DiffusionModelUNet
 from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
 from .base_trainer import BaseTrainer
 from .optimizers import SAM
+from .results import TrainingStepResult
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from .losses import PerceptualLoss
 from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode
@@ -158,6 +159,20 @@ class DiffusionTrainer(BaseTrainer):
                 compose_prob=score_aug_cfg.get('compose_prob', 0.5),
             )
             self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
+
+            # Validate: rotation/flip require omega conditioning per ScoreAug paper
+            # Gaussian noise is rotation-invariant, allowing model to "cheat" without conditioning
+            has_spatial_transforms = (
+                score_aug_cfg.get('rotation', True) or score_aug_cfg.get('flip', True)
+            )
+            if has_spatial_transforms and not self.use_omega_conditioning:
+                raise ValueError(
+                    "ScoreAug rotation/flip require omega conditioning (per ScoreAug paper). "
+                    "Gaussian noise is rotation-invariant, allowing the model to detect "
+                    "rotation from noise patterns and 'cheat' by inverting before denoising. "
+                    "Fix: Set training.score_aug.use_omega_conditioning=true"
+                )
+
             if self.is_main_process:
                 transforms = []
                 if score_aug_cfg.get('rotation', True):
@@ -546,30 +561,23 @@ class DiffusionTrainer(BaseTrainer):
         if self.is_main_process:
             logger.info("Compiled fused forward passes (CUDA graphs enabled)")
 
-    def _save_metadata(self) -> None:
-        """Save training configuration and metadata."""
-        os.makedirs(self.save_dir, exist_ok=True)
+    def _get_trainer_type(self) -> str:
+        """Return trainer type for metadata."""
+        return 'diffusion'
 
-        config_path = os.path.join(self.save_dir, 'config.yaml')
-        OmegaConf.save(self.cfg, config_path)
-
-        metadata = {
-            'model_type': 'diffusion',
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return diffusion-specific metadata."""
+        return {
             'strategy': self.strategy_name,
             'mode': self.mode_name,
             'image_size': self.image_size,
             'num_timesteps': self.num_timesteps,
-            'n_epochs': self.n_epochs,
             'batch_size': self.batch_size,
             'learning_rate': self.learning_rate,
             'use_sam': self.use_sam,
             'use_ema': self.use_ema,
             'created_at': datetime.now().isoformat(),
         }
-
-        metadata_path = os.path.join(self.save_dir, 'metadata.json')
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
 
     def _get_model_config(self) -> Dict[str, Any]:
         """Get model configuration for checkpoint."""
@@ -582,14 +590,14 @@ class DiffusionTrainer(BaseTrainer):
             'mode': self.mode_name,
         }
 
-    def train_step(self, batch: Any) -> Tuple[float, float, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute single training step.
 
         Args:
             batch: Input batch from dataloader.
 
         Returns:
-            Tuple of (total_loss, mse_loss, perceptual_loss).
+            TrainingStepResult with total, MSE, and perceptual losses.
         """
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -877,7 +885,12 @@ class DiffusionTrainer(BaseTrainer):
                     grad_norm=grad_norm,
                 )
 
-            return total_loss_val, mse_loss_val, p_loss_val
+            return TrainingStepResult(
+                total_loss=total_loss_val,
+                reconstruction_loss=0.0,  # Not applicable for diffusion
+                perceptual_loss=p_loss_val,
+                mse_loss=mse_loss_val,
+            )
         else:
             # Standard optimizer step
             total_loss.backward()
@@ -900,7 +913,12 @@ class DiffusionTrainer(BaseTrainer):
                     grad_norm=grad_norm,
                 )
 
-            return total_loss.item(), mse_loss.item(), p_loss.item()
+            return TrainingStepResult(
+                total_loss=total_loss.item(),
+                reconstruction_loss=0.0,  # Not applicable for diffusion
+                perceptual_loss=p_loss.item(),
+                mse_loss=mse_loss.item(),
+            )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
         """Train the model for one epoch.
@@ -923,11 +941,11 @@ class DiffusionTrainer(BaseTrainer):
         )
 
         for step, batch in enumerate(epoch_iter):
-            loss, mse_loss, p_loss = self.train_step(batch)
+            result = self.train_step(batch)
 
-            epoch_loss += loss
-            epoch_mse_loss += mse_loss
-            epoch_perceptual_loss += p_loss
+            epoch_loss += result.total_loss
+            epoch_mse_loss += result.mse_loss
+            epoch_perceptual_loss += result.perceptual_loss
 
             if hasattr(epoch_iter, 'set_postfix'):
                 epoch_iter.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
@@ -944,7 +962,7 @@ class DiffusionTrainer(BaseTrainer):
             self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
             self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
             self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-            self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+            self.writer.add_scalar('LR/Model', self.lr_scheduler.get_last_lr()[0], epoch)
 
         return avg_loss, avg_mse, avg_perceptual
 
@@ -1162,6 +1180,13 @@ class DiffusionTrainer(BaseTrainer):
             if regional_tracker is not None:
                 regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
+            # Compute and log volume 3D MS-SSIM
+            if self.log_msssim:
+                msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
+                if msssim_3d is not None:
+                    metrics['msssim_3d'] = msssim_3d
+                    self.writer.add_scalar('Validation/MS-SSIM-3D', msssim_3d, epoch)
+
         return metrics, worst_batch_data
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
@@ -1227,7 +1252,7 @@ class DiffusionTrainer(BaseTrainer):
                         self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
                         self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
                         self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-                        self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+                        self.writer.add_scalar('LR/Model', self.lr_scheduler.get_last_lr()[0], epoch)
 
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
@@ -1301,6 +1326,130 @@ class DiffusionTrainer(BaseTrainer):
     def _compute_per_modality_validation(self, epoch: int) -> None:
         """Compute per-modality validation metrics (placeholder)."""
         pass
+
+    def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
+        """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
+
+        For diffusion models, this:
+        1. Loads full 3D volumes
+        2. Processes each slice: add noise at mid-range timestep → denoise → get predicted clean
+        3. Stacks slices back into a volume
+        4. Computes 3D MS-SSIM between reconstructed and original volumes
+
+        This measures cross-slice consistency of the diffusion model's denoising quality.
+
+        Args:
+            epoch: Current epoch number.
+            data_split: Which data split to use ('val' or 'test_new').
+
+        Returns:
+            Average 3D MS-SSIM across all volumes, or None if unavailable.
+        """
+        if not self.log_msssim:
+            return None
+
+        # Import here to avoid circular imports
+        from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
+
+        # Determine modality from mode
+        # Use out_channels to determine volume channels (excludes conditioning)
+        mode_name = self.cfg.mode.get('name', 'bravo')
+        out_channels = self.cfg.mode.get('out_channels', 1)
+        modality = 'dual' if out_channels > 1 else mode_name
+
+        # Create volume dataloader
+        result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
+        if result is None:
+            return None
+
+        volume_loader, _ = result
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        total_msssim_3d = 0.0
+        n_volumes = 0
+        slice_batch_size = self.batch_size
+
+        # Use mid-range timestep for reconstruction quality measurement
+        mid_timestep = self.num_timesteps // 2
+
+        with torch.inference_mode():
+            for batch in volume_loader:
+                # batch['image'] is [1, C, H, W, D] (batch_size=1 for volumes)
+                volume = batch['image'].to(self.device, non_blocking=True)
+                volume = volume.squeeze(0)  # [C, H, W, D]
+
+                n_channels_vol, height, width, depth = volume.shape
+
+                # Pre-allocate output tensor
+                all_recon = torch.empty(
+                    (depth, n_channels_vol, height, width),
+                    dtype=torch.bfloat16,
+                    device=self.device
+                )
+
+                # Process slices in batches
+                for start_idx in range(0, depth, slice_batch_size):
+                    end_idx = min(start_idx + slice_batch_size, depth)
+                    current_batch_size = end_idx - start_idx
+
+                    # [C, H, W, D] -> [B, C, H, W]
+                    slice_tensor = volume[:, :, :, start_idx:end_idx].permute(3, 0, 1, 2)
+
+                    # Encode to diffusion space (identity for PixelSpace)
+                    slice_encoded = self.space.encode_batch(slice_tensor)
+
+                    # Add noise at mid-range timestep
+                    noise = torch.randn_like(slice_encoded)
+                    timesteps = torch.full(
+                        (current_batch_size,),
+                        mid_timestep,
+                        device=self.device,
+                        dtype=torch.long
+                    )
+                    noisy_slices = self.strategy.add_noise(slice_encoded, noise, timesteps)
+
+                    with autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                        # For conditional modes, use zeros as conditioning (no tumor)
+                        # This measures pure denoising ability without semantic guidance
+                        if self.mode.is_conditional:
+                            dummy_labels = torch.zeros_like(slice_encoded[:, :1])  # Single channel
+                            model_input = self.mode.format_model_input(noisy_slices, {'labels': dummy_labels})
+                        else:
+                            model_input = self.mode.format_model_input(noisy_slices, {'labels': None})
+
+                        # Predict noise/velocity
+                        prediction = self.strategy.predict_noise_or_velocity(
+                            model_to_use, model_input, timesteps
+                        )
+
+                        # Get predicted clean images
+                        _, predicted_clean = self.strategy.compute_loss(
+                            prediction, slice_encoded, noise, noisy_slices, timesteps
+                        )
+
+                    # Decode from diffusion space if needed
+                    if self.space.scale_factor > 1:
+                        predicted_clean = self.space.decode_batch(predicted_clean)
+
+                    all_recon[start_idx:end_idx] = predicted_clean
+
+                # Reshape for 3D MS-SSIM: [D, C, H, W] -> [1, C, D, H, W]
+                recon_3d = all_recon.permute(1, 0, 2, 3).unsqueeze(0)
+                volume_3d = volume.permute(0, 3, 1, 2).unsqueeze(0)
+
+                # Compute 3D MS-SSIM
+                msssim_3d = compute_msssim(recon_3d.float(), volume_3d.float(), spatial_dims=3)
+                total_msssim_3d += msssim_3d
+                n_volumes += 1
+
+        model_to_use.train()
+
+        if n_volumes == 0:
+            return None
+
+        return total_msssim_3d / n_volumes
 
     def _update_metadata_final(self, final_loss: float, final_mse: float, total_time: float) -> None:
         """Update metadata with final training stats."""
@@ -1385,6 +1534,16 @@ class DiffusionTrainer(BaseTrainer):
         timestep_loss_sum = torch.zeros(num_timestep_bins, device=self.device)
         timestep_loss_count = torch.zeros(num_timestep_bins, device=self.device, dtype=torch.long)
 
+        # Initialize regional tracker for test (if enabled)
+        regional_tracker = None
+        if self.metrics.log_regional_losses:
+            regional_tracker = RegionalMetricsTracker(
+                image_size=self.image_size,
+                fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                loss_fn='mse',
+                device=self.device,
+            )
+
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
                 prepared = self.mode.prepare_batch(batch, self.device)
@@ -1463,6 +1622,12 @@ class DiffusionTrainer(BaseTrainer):
                     else:
                         lpips_val = 0.0
 
+                # Regional metrics tracking (tumor vs background)
+                if regional_tracker is not None and labels is not None:
+                    # Decode labels to pixel space if needed
+                    labels_pixel = self.space.decode(labels) if self.space.scale_factor > 1 else labels
+                    regional_tracker.update(metrics_pred, metrics_gt, labels_pixel)
+
                 # Track worst batch
                 if loss_val > worst_batch_loss and batch_size >= self.batch_size:
                     worst_batch_loss = loss_val
@@ -1538,6 +1703,17 @@ class DiffusionTrainer(BaseTrainer):
                 if count > 0:
                     avg_loss = (sums[bin_idx] / count).item()
                     self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_start}-{bin_end}', avg_loss, 0)
+
+            # Log regional metrics
+            if regional_tracker is not None:
+                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
+
+            # Compute and log volume 3D MS-SSIM
+            if self.log_msssim:
+                msssim_3d = self._compute_volume_3d_msssim(0, data_split='test_new')
+                if msssim_3d is not None:
+                    metrics['msssim_3d'] = msssim_3d
+                    self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', msssim_3d, 0)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:

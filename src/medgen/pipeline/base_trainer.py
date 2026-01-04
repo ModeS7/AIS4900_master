@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import setup_distributed
+from medgen.pipeline.results import TrainingStepResult
 from .tracking import FLOPsTracker, GradientNormTracker
 from .utils import log_vram_to_tensorboard
 
@@ -381,14 +382,14 @@ class BaseTrainer(ABC):
         ...
 
     @abstractmethod
-    def train_step(self, batch: Any) -> Dict[str, float]:
+    def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute single training step.
 
         Args:
             batch: Input batch from dataloader.
 
         Returns:
-            Dictionary of loss values for this step.
+            TrainingStepResult with loss values for this step.
         """
         ...
 
@@ -435,6 +436,55 @@ class BaseTrainer(ABC):
             name: Checkpoint name (e.g., "latest", "best").
         """
         ...
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Metadata saving (template method pattern)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @abstractmethod
+    def _get_trainer_type(self) -> str:
+        """Return trainer type string for metadata (e.g., 'vae', 'vae_3d', 'diffusion').
+
+        Returns:
+            String identifier for this trainer type.
+        """
+        ...
+
+    def _get_metadata_extra(self) -> Dict[str, Any]:
+        """Return trainer-specific metadata fields.
+
+        Override in subclasses to add custom fields to metadata.json.
+        Default returns empty dict.
+
+        Returns:
+            Dictionary of extra metadata fields.
+        """
+        return {}
+
+    def _save_metadata(self) -> None:
+        """Save training configuration and metadata to output directory.
+
+        Template method: saves config.yaml and metadata.json.
+        Subclasses customize via _get_trainer_type() and _get_metadata_extra().
+        """
+        import json
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Save full Hydra config
+        config_path = os.path.join(self.save_dir, 'config.yaml')
+        OmegaConf.save(self.cfg, config_path)
+
+        # Build metadata
+        metadata = {
+            'type': self._get_trainer_type(),
+            'n_epochs': self.n_epochs,
+        }
+        metadata.update(self._get_metadata_extra())
+
+        # Save metadata.json
+        metadata_path = os.path.join(self.save_dir, 'metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Template method for training loop

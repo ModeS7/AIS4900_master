@@ -239,8 +239,8 @@ def create_single_modality_validation_loader(
     try:
         validate_modality_exists(val_dir, 'seg')
         has_seg = True
-    except ValueError:
-        pass  # No seg, will just load images
+    except ValueError as e:
+        logger.debug(f"Seg not available for single modality validation (regional metrics disabled): {e}")
 
     transform = build_standard_transform(image_size)
 
