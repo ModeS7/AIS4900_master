@@ -391,6 +391,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         regional_tracker_factory: Optional[Callable[[], Any]] = None,
         volume_3d_msssim_fn: Optional[Callable[[], Optional[float]]] = None,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        image_keys: Optional[List[str]] = None,
     ):
         """Initialize 2D compression evaluator.
 
@@ -407,6 +408,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             regional_tracker_factory: Optional factory to create regional tracker.
             volume_3d_msssim_fn: Optional callable to compute volume-level 3D MS-SSIM.
             worst_batch_figure_fn: Optional callable to create worst batch figure.
+            image_keys: Optional list of channel names for per-channel metrics (e.g., ['t1_pre', 't1_gd']).
         """
         super().__init__(model, device, save_dir, writer, metrics_config, is_cluster)
         self.forward_fn = forward_fn
@@ -414,7 +416,11 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         self.regional_tracker_factory = regional_tracker_factory
         self.volume_3d_msssim_fn = volume_3d_msssim_fn
         self.worst_batch_figure_fn = worst_batch_figure_fn
+        self.image_keys = image_keys
         self._regional_tracker: Optional[Any] = None
+        # Per-channel metric accumulators
+        self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
+        self._per_channel_count: int = 0
 
     def evaluate(
         self,
@@ -427,14 +433,29 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         if self.regional_tracker_factory is not None:
             self._regional_tracker = self.regional_tracker_factory()
 
+        # Reset per-channel accumulators
+        self._per_channel_metrics = {}
+        self._per_channel_count = 0
+
         result = super().evaluate(test_loader, checkpoint_name, get_eval_model)
+
+        label = checkpoint_name or "current"
 
         # Log regional metrics to TensorBoard
         if self._regional_tracker is not None and self.writer is not None:
-            label = checkpoint_name or "current"
             self._regional_tracker.log_to_tensorboard(
                 self.writer, 0, prefix=f'test_{label}_regional'
             )
+
+        # Log per-channel metrics to TensorBoard
+        if self._per_channel_count > 0 and self.writer is not None:
+            for key, metrics in self._per_channel_metrics.items():
+                if self.metrics_config.compute_msssim:
+                    self.writer.add_scalar(f'test_{label}/MS-SSIM_{key}', metrics['msssim'] / self._per_channel_count, 0)
+                if self.metrics_config.compute_psnr:
+                    self.writer.add_scalar(f'test_{label}/PSNR_{key}', metrics['psnr'] / self._per_channel_count, 0)
+                if self.metrics_config.compute_lpips:
+                    self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
 
         return result
 
@@ -498,6 +519,26 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         # Regional tracking
         if self._regional_tracker is not None and mask is not None:
             self._regional_tracker.update(reconstructed, images, mask)
+
+        # Per-channel metrics for dual/multi-modality mode
+        if self.image_keys is not None and len(self.image_keys) > 1:
+            n_channels = images.shape[1]
+            if n_channels == len(self.image_keys):
+                for i, key in enumerate(self.image_keys):
+                    img_ch = images[:, i:i+1]
+                    rec_ch = reconstructed[:, i:i+1]
+
+                    if key not in self._per_channel_metrics:
+                        self._per_channel_metrics[key] = {'msssim': 0.0, 'psnr': 0.0, 'lpips': 0.0}
+
+                    if self.metrics_config.compute_msssim:
+                        self._per_channel_metrics[key]['msssim'] += compute_msssim(rec_ch.float(), img_ch.float())
+                    if self.metrics_config.compute_psnr:
+                        self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
+                    if self.metrics_config.compute_lpips:
+                        self._per_channel_metrics[key]['lpips'] += compute_lpips(rec_ch.float(), img_ch.float(), device=self.device)
+
+                self._per_channel_count += 1
 
         # Store for worst batch capture
         self._current_batch = {
@@ -574,6 +615,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         is_cluster: bool = False,
         regional_tracker_factory: Optional[Callable[[], Any]] = None,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        image_keys: Optional[List[str]] = None,
     ):
         """Initialize 3D compression evaluator.
 
@@ -588,13 +630,17 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             is_cluster: If True, disable tqdm progress bar.
             regional_tracker_factory: Optional factory to create 3D regional tracker.
             worst_batch_figure_fn: Optional callable to create 3D worst batch figure.
+            image_keys: Optional list of channel names for per-channel metrics.
         """
         super().__init__(model, device, save_dir, writer, metrics_config, is_cluster)
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
         self.regional_tracker_factory = regional_tracker_factory
         self.worst_batch_figure_fn = worst_batch_figure_fn
+        self.image_keys = image_keys
         self._regional_tracker: Optional[Any] = None
+        self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
+        self._per_channel_count: int = 0
 
     def _init_accumulators(self) -> Dict[str, float]:
         """Initialize accumulators including 3D MS-SSIM."""
@@ -613,13 +659,30 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         if self.regional_tracker_factory is not None:
             self._regional_tracker = self.regional_tracker_factory()
 
+        # Reset per-channel accumulators
+        self._per_channel_metrics = {}
+        self._per_channel_count = 0
+
         result = super().evaluate(test_loader, checkpoint_name, get_eval_model)
 
+        label = checkpoint_name or "current"
+
         if self._regional_tracker is not None and self.writer is not None:
-            label = checkpoint_name or "current"
             self._regional_tracker.log_to_tensorboard(
                 self.writer, 0, prefix=f'test_{label}_regional'
             )
+
+        # Log per-channel metrics to TensorBoard
+        if self._per_channel_count > 0 and self.writer is not None:
+            for key, metrics in self._per_channel_metrics.items():
+                if self.metrics_config.compute_msssim:
+                    self.writer.add_scalar(f'test_{label}/MS-SSIM_{key}', metrics['msssim'] / self._per_channel_count, 0)
+                if self.metrics_config.compute_msssim_3d:
+                    self.writer.add_scalar(f'test_{label}/MS-SSIM-3D_{key}', metrics['msssim_3d'] / self._per_channel_count, 0)
+                if self.metrics_config.compute_psnr:
+                    self.writer.add_scalar(f'test_{label}/PSNR_{key}', metrics['psnr'] / self._per_channel_count, 0)
+                if self.metrics_config.compute_lpips:
+                    self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
 
         return result
 
@@ -696,6 +759,28 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         # Regional tracking
         if self._regional_tracker is not None and mask is not None:
             self._regional_tracker.update(reconstructed.float(), images.float(), mask)
+
+        # Per-channel metrics for multi-modality mode
+        if self.image_keys is not None and len(self.image_keys) > 1:
+            n_channels = images.shape[1]
+            if n_channels == len(self.image_keys):
+                for i, key in enumerate(self.image_keys):
+                    img_ch = images[:, i:i+1]
+                    rec_ch = reconstructed[:, i:i+1]
+
+                    if key not in self._per_channel_metrics:
+                        self._per_channel_metrics[key] = {'msssim': 0.0, 'msssim_3d': 0.0, 'psnr': 0.0, 'lpips': 0.0}
+
+                    if self.metrics_config.compute_msssim:
+                        self._per_channel_metrics[key]['msssim'] += compute_msssim_2d_slicewise(rec_ch.float(), img_ch.float())
+                    if self.metrics_config.compute_msssim_3d:
+                        self._per_channel_metrics[key]['msssim_3d'] += compute_msssim(rec_ch.float(), img_ch.float(), spatial_dims=3)
+                    if self.metrics_config.compute_psnr:
+                        self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
+                    if self.metrics_config.compute_lpips:
+                        self._per_channel_metrics[key]['lpips'] += compute_lpips_3d(rec_ch.float(), img_ch.float(), device=self.device)
+
+                self._per_channel_count += 1
 
         # Store for worst batch capture
         self._current_batch = {

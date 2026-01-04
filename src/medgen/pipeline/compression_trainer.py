@@ -1219,6 +1219,12 @@ class BaseCompressionTrainer(BaseTrainer):
         # Worst batch figure callback
         worst_batch_fig_fn = self._create_worst_batch_figure
 
+        # Get image keys for per-channel metrics (dual mode)
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        image_keys = None
+        if n_channels > 1:
+            image_keys = self.cfg.mode.get('image_keys', None)
+
         return CompressionTestEvaluator(
             model=self.model_raw,
             device=self.device,
@@ -1231,6 +1237,7 @@ class BaseCompressionTrainer(BaseTrainer):
             regional_tracker_factory=regional_factory,
             volume_3d_msssim_fn=volume_3d_msssim,
             worst_batch_figure_fn=worst_batch_fig_fn,
+            image_keys=image_keys,
         )
 
     def evaluate_test_set(
@@ -1627,6 +1634,12 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
                 loss=data['loss'],
             )
 
+        # Get image keys for per-channel metrics (multi-modality mode)
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        image_keys = None
+        if n_channels > 1:
+            image_keys = self.cfg.mode.get('image_keys', None)
+
         return Compression3DTestEvaluator(
             model=self.model_raw,
             device=self.device,
@@ -1638,6 +1651,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             is_cluster=self.is_cluster,
             regional_tracker_factory=regional_factory,
             worst_batch_figure_fn=worst_batch_fig_fn,
+            image_keys=image_keys,
         )
 
     def evaluate_test_set(
