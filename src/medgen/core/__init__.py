@@ -21,7 +21,6 @@ from .validation import (
     validate_diffusion_config,
     validate_vae_config,
     validate_vqvae_config,
-    validate_progressive_config,
     run_validation,
 )
 from .model_utils import wrap_model_for_training
@@ -51,7 +50,6 @@ __all__ = [
     'validate_diffusion_config',
     'validate_vae_config',
     'validate_vqvae_config',
-    'validate_progressive_config',
     'run_validation',
     # Model utilities
     'wrap_model_for_training',

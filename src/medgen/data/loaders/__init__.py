@@ -1,5 +1,8 @@
 """Dataloader factory functions for diffusion and VAE training."""
 
+# Common utilities for dataloader configuration
+from .common import DataLoaderConfig, setup_distributed_sampler, get_data_dir, validate_data_dir
+
 # Single-image dataloaders (seg, bravo modes)
 from .single import (
     create_dataloader,
@@ -54,6 +57,11 @@ from .vae_3d import (
 )
 
 __all__ = [
+    # Common utilities
+    'DataLoaderConfig',
+    'setup_distributed_sampler',
+    'get_data_dir',
+    'validate_data_dir',
     # Single-image
     'create_dataloader',
     'create_validation_dataloader',

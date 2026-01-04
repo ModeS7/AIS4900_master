@@ -9,6 +9,7 @@ Metrics:
 - LPIPS: Learned Perceptual Image Patch Similarity (2D only, uses pretrained networks)
 """
 import logging
+import traceback
 from typing import Optional, Tuple
 
 import torch
@@ -34,6 +35,25 @@ def reset_lpips_nan_warning() -> None:
     """Reset LPIPS NaN warning flag. Call at start of each validation run."""
     global _lpips_nan_warned
     _lpips_nan_warned = False
+
+
+def clear_metric_caches() -> None:
+    """Clear all cached metric instances.
+
+    Call this when:
+    - Running multiple training runs in the same process
+    - Switching between GPU devices
+    - Memory cleanup is needed
+
+    This clears both MS-SSIM and LPIPS cached instances,
+    and resets NaN warning flags.
+    """
+    global _msssim_cache, _lpips_cache, _msssim_nan_warned, _lpips_nan_warned
+    _msssim_cache.clear()
+    _lpips_cache.clear()
+    _msssim_nan_warned = False
+    _lpips_nan_warned = False
+    logger.debug("Cleared metric caches (MS-SSIM, LPIPS)")
 
 
 def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
@@ -187,7 +207,9 @@ def compute_msssim(
             return float(result.mean().item())
 
     except Exception as e:
+        # Log full traceback at debug level for debugging, summary at warning level
         logger.warning(f"MS-SSIM computation failed: {e}")
+        logger.debug(f"MS-SSIM traceback:\n{traceback.format_exc()}")
         return 0.0
 
 
@@ -320,7 +342,9 @@ def compute_lpips(
             return float(result.item()) if isinstance(result, torch.Tensor) else float(result)
 
     except Exception as e:
+        # Log full traceback at debug level for debugging, summary at warning level
         logger.warning(f"LPIPS computation failed: {e}")
+        logger.debug(f"LPIPS traceback:\n{traceback.format_exc()}")
         return 0.0
 
 
@@ -329,35 +353,52 @@ def compute_lpips_3d(
     reference: torch.Tensor,
     device: Optional[torch.device] = None,
     network_type: str = "radimagenet_resnet50",
+    chunk_size: int = 32,
 ) -> float:
-    """Compute LPIPS slice-by-slice for 3D volumes.
+    """Compute LPIPS slice-by-slice for 3D volumes (batched for efficiency).
 
-    Since LPIPS uses 2D pretrained networks, this computes LPIPS for each
-    corresponding slice pair (slice 0 vs slice 0, slice 1 vs slice 1, etc.)
-    and averages across all slices.
+    Since LPIPS uses 2D pretrained networks, this reshapes all depth slices
+    into a batch and computes LPIPS in chunked batches for memory efficiency.
+    Previous version ran the network D times per volume; this runs ~D/chunk_size times.
 
     Args:
         generated: Generated volumes [B, C, D, H, W] in [0, 1] range.
         reference: Reference volumes [B, C, D, H, W] in [0, 1] range.
         device: Device for computation (defaults to input tensor device).
         network_type: Pretrained network type (default: radimagenet_resnet50).
+        chunk_size: Number of slices to process per forward pass (default: 32).
+            Higher values are faster but use more GPU memory.
 
     Returns:
         Average LPIPS score across all slices (lower is better, 0 = identical).
     """
-    depth = generated.shape[2]
-    if depth == 0:
+    B, C, D, H, W = generated.shape
+    if D == 0:
         return 0.0
 
+    if device is None:
+        device = generated.device
+
+    # Reshape: [B, C, D, H, W] -> [B*D, C, H, W]
+    # permute to [B, D, C, H, W] then reshape
+    gen_flat = generated.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+    ref_flat = reference.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+
+    total_slices = B * D
     total_lpips = 0.0
 
-    for d in range(depth):
-        # Extract 2D slice: [B, C, H, W]
-        gen_slice = generated[:, :, d, :, :]
-        ref_slice = reference[:, :, d, :, :]
-        total_lpips += compute_lpips(gen_slice, ref_slice, device=device, network_type=network_type)
+    # Process in chunks to avoid OOM
+    for start in range(0, total_slices, chunk_size):
+        end = min(start + chunk_size, total_slices)
+        gen_chunk = gen_flat[start:end]
+        ref_chunk = ref_flat[start:end]
 
-    return total_lpips / depth
+        # compute_lpips returns a scalar (mean over batch)
+        # We need the sum, so multiply by chunk size
+        chunk_lpips = compute_lpips(gen_chunk, ref_chunk, device=device, network_type=network_type)
+        total_lpips += chunk_lpips * (end - start)
+
+    return total_lpips / total_slices
 
 
 def compute_msssim_2d_slicewise(

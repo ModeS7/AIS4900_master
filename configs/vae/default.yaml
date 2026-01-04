@@ -1,6 +1,6 @@
 # VAE Architecture Configuration (AutoencoderKL)
 #
-# Shared VAE architecture settings used by vae.yaml and vae_progressive.yaml.
+# Shared VAE architecture settings.
 # Based on MONAI 2D implementation.
 #
 # Reference: https://github.com/Project-MONAI/GenerativeModels/issues/378

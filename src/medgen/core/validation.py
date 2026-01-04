@@ -160,44 +160,6 @@ def validate_vqvae_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_progressive_config(cfg: DictConfig) -> List[str]:
-    """Validate progressive training configuration.
-
-    Checks:
-    - progressive section exists
-    - progressive.resolutions not empty
-    - batch_sizes defined for each resolution
-    - modalities section exists
-    - modalities.image_keys not empty
-
-    Args:
-        cfg: Hydra configuration object.
-
-    Returns:
-        List of error strings (empty if validation passes).
-    """
-    errors = []
-
-    # Check progressive config
-    if not hasattr(cfg, 'progressive'):
-        errors.append("Missing 'progressive' configuration section")
-    else:
-        if not cfg.progressive.resolutions:
-            errors.append("progressive.resolutions must not be empty")
-
-        for res in cfg.progressive.resolutions:
-            if res not in cfg.progressive.batch_sizes:
-                errors.append(f"Missing batch_size for resolution {res}")
-
-    # Check modalities
-    if not hasattr(cfg, 'modalities'):
-        errors.append("Missing 'modalities' configuration section")
-    elif not cfg.modalities.image_keys:
-        errors.append("modalities.image_keys must not be empty")
-
-    return errors
-
-
 def run_validation(
     cfg: DictConfig,
     validators: List[Callable[[DictConfig], List[str]]],

@@ -24,7 +24,7 @@ defaults:
   - paths: local
   - model: default
   - mode: dual        # Can be seg, bravo, dual, t1_pre, or t1_gd
-  - vae: default      # VAE architecture (shared with vae_progressive)
+  - vae: default      # VAE architecture
   - training: default
   - _self_
 

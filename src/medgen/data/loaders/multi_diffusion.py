@@ -12,16 +12,16 @@ import numpy as np
 import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
-from torch.utils.data.distributed import DistributedSampler
 
-from medgen.core.constants import DEFAULT_NUM_WORKERS
 from medgen.data.augmentation import build_diffusion_augmentation
+from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
 from medgen.data.mode_embed import MODE_ID_MAP
+from medgen.core.constants import BINARY_THRESHOLD_GT
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,8 @@ def _extract_slices_with_mode_id(
                     image_slice = np.transpose(img_aug, (2, 0, 1))
                     seg_slice = np.transpose(seg_aug, (2, 0, 1))
 
-                # Binarize seg mask
-                seg_slice = (seg_slice > 0.5).astype(np.float32)
+                # Binarize seg mask (using consistent threshold with utils.py)
+                seg_slice = (seg_slice > BINARY_THRESHOLD_GT).astype(np.float32)
 
                 all_slices.append((image_slice, seg_slice, mode_id))
 
@@ -180,38 +180,23 @@ def create_multi_diffusion_dataloader(
     train_dataset = MultiDiffusionDataset(all_slices)
     logger.info(f"Total training slices: {len(train_dataset)}")
 
-    # Setup sampler
-    sampler: Optional[DistributedSampler] = None
-    shuffle: Optional[bool] = True
-
-    if use_distributed:
-        sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True
-        )
-        shuffle = None
-        batch_size_per_gpu = batch_size // world_size
-    else:
-        batch_size_per_gpu = batch_size
+    # Setup distributed sampler and batch size
+    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
+        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
+    )
 
     # Get DataLoader settings from config
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_per_gpu,
         sampler=sampler,
         shuffle=shuffle,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, train_dataset
@@ -278,20 +263,16 @@ def create_multi_diffusion_validation_dataloader(
     val_dataset = MultiDiffusionDataset(all_slices)
 
     # Get DataLoader settings
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -358,20 +339,16 @@ def create_multi_diffusion_test_dataloader(
     test_dataset = MultiDiffusionDataset(all_slices)
 
     # Get DataLoader settings
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset
@@ -425,21 +402,17 @@ def create_single_modality_diffusion_val_loader(
     val_dataset = MultiDiffusionDataset(slices)
 
     # Get DataLoader settings
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader

@@ -29,7 +29,7 @@ from medgen.data.loaders.multi_modality import (
     create_single_modality_validation_loader,
 )
 from medgen.pipeline import DCAETrainer
-from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders
+from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders, get_image_keys
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def main(cfg: DictConfig) -> None:
     # Create data loaders
     mode_name = cfg.mode.get('name', 'multi_modality')
 
-    image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+    image_keys = get_image_keys(cfg, is_3d=True)  # DC-AE uses all 4 modalities by default
 
     if mode_name == 'multi_modality':
         # Multi-modality: mixed slices from all modalities

@@ -78,7 +78,7 @@ class BaseTrainer(ABC):
         self.batch_size: int = cfg.training.batch_size
         self.learning_rate: float = cfg.training.get('learning_rate', 1e-4)
         self.warmup_epochs: int = cfg.training.warmup_epochs
-        figure_count: int = cfg.training.get('figure_count', 20)
+        figure_count: int = max(1, cfg.training.get('figure_count', 20))
         self.figure_interval: int = max(1, self.n_epochs // figure_count)
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.gradient_clip_norm: float = cfg.training.get('gradient_clip_norm', 1.0)
@@ -516,9 +516,9 @@ class BaseTrainer(ABC):
                     # Save checkpoints
                     self._save_checkpoint(epoch, "latest")
 
-                    # Save best checkpoint
+                    # Save best checkpoint (guard against empty validation returning 0.0)
                     val_loss = val_metrics.get('gen', avg_losses.get('gen', float('inf')))
-                    if val_loss < self.best_loss:
+                    if val_loss > 0 and val_loss < self.best_loss:
                         self.best_loss = val_loss
                         self._save_checkpoint(epoch, "best")
                         logger.info(f"New best model saved (loss: {val_loss:.4f})")

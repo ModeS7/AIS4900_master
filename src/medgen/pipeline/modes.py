@@ -13,6 +13,24 @@ import torch
 from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
 
 
+def _to_device(batch: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Convert batch tensor to device, handling MONAI MetaTensors.
+
+    MetaTensors from MONAI need to be converted to regular tensors
+    before being moved to device to avoid metadata issues.
+
+    Args:
+        batch: Input tensor (may be MetaTensor).
+        device: Target device.
+
+    Returns:
+        Tensor on target device.
+    """
+    if hasattr(batch, 'as_tensor'):
+        return batch.as_tensor().to(device)
+    return batch.to(device)
+
+
 class TrainingMode(ABC):
     """Abstract base class for different training modes.
 
@@ -100,11 +118,7 @@ class SegmentationMode(TrainingMode):
         Returns:
             Dictionary with images and None labels.
         """
-        if hasattr(batch, 'as_tensor'):
-            batch = batch.as_tensor().to(device)
-        else:
-            batch = batch.to(device)
-
+        batch = _to_device(batch, device)
         return {
             'images': batch,
             'labels': None
@@ -171,11 +185,7 @@ class ConditionalSingleMode(TrainingMode):
         Returns:
             Dictionary with separated images and labels.
         """
-        if hasattr(batch, 'as_tensor'):
-            batch = batch.as_tensor().to(device)
-        else:
-            batch = batch.to(device)
-
+        batch = _to_device(batch, device)
         bravo_images = batch[:, 0:1, :, :]
         seg_masks = batch[:, 1:2, :, :]
 
@@ -260,11 +270,7 @@ class ConditionalDualMode(TrainingMode):
         Returns:
             Dictionary with image dict and labels.
         """
-        if hasattr(batch, 'as_tensor'):
-            batch = batch.as_tensor().to(device)
-        else:
-            batch = batch.to(device)
-
+        batch = _to_device(batch, device)
         images: Dict[str, torch.Tensor] = {
             self.image_keys[0]: batch[:, 0:1, :, :],
             self.image_keys[1]: batch[:, 1:2, :, :],
@@ -356,15 +362,12 @@ class MultiModalityMode(TrainingMode):
         """
         if isinstance(batch, (tuple, list)):
             image, seg, mode_id = batch
-            image = image.to(device)
-            seg = seg.to(device)
+            image = _to_device(image, device)
+            seg = _to_device(seg, device)
             mode_id = mode_id.to(device)
         else:
             # Fallback for tensor format (shouldn't happen with multi dataloader)
-            if hasattr(batch, 'as_tensor'):
-                batch = batch.as_tensor().to(device)
-            else:
-                batch = batch.to(device)
+            batch = _to_device(batch, device)
             image = batch[:, 0:1, :, :]
             seg = batch[:, 1:2, :, :]
             mode_id = None

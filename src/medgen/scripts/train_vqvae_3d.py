@@ -21,10 +21,9 @@ Usage:
 import logging
 
 import hydra
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import (
-    ModeType,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
@@ -40,7 +39,7 @@ from medgen.data import (
     create_vae_3d_single_modality_validation_loader,
 )
 from medgen.pipeline import VQVAE3DTrainer
-from medgen.scripts.common import run_test_evaluation
+from medgen.scripts.common import override_vae_channels, run_test_evaluation, get_image_keys
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -115,16 +114,8 @@ def main(cfg: DictConfig) -> None:
     use_multi_gpu = cfg.training.get('use_multi_gpu', False)
     is_multi_modality = (mode == 'multi_modality')
 
-    # Set channels based on mode
-    if mode == ModeType.DUAL:
-        vae_in_channels = 2  # t1_pre + t1_gd
-    else:
-        vae_in_channels = 1  # Single modality or multi_modality (each volume is 1 channel)
-
-    # Override mode.in_channels
-    with open_dict(cfg):
-        cfg.mode.in_channels = vae_in_channels
-        cfg.mode.out_channels = vae_in_channels
+    # Override mode channels for VQ-VAE (uses shared helper)
+    vae_in_channels = override_vae_channels(cfg, mode)
 
     # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
@@ -145,7 +136,7 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Batch size: {cfg.training.batch_size}")
     log.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
     if is_multi_modality:
-        image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+        image_keys = get_image_keys(cfg, is_3d=True)
         log.info(f"Modalities: {image_keys}")
     log.info("=" * 60)
     log.info("")
@@ -187,7 +178,7 @@ def main(cfg: DictConfig) -> None:
     # Create per-modality validation loaders for multi_modality mode
     per_modality_val_loaders = {}
     if is_multi_modality:
-        image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+        image_keys = get_image_keys(cfg, is_3d=True)
         for modality_name in image_keys:
             loader = create_vae_3d_single_modality_validation_loader(cfg, modality_name)
             if loader is not None:

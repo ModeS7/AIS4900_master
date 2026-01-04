@@ -246,8 +246,18 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             if 'model_state_dict' in checkpoint:
                 state_dict = checkpoint['model_state_dict']
                 # Remove 'model.' prefix if present (from CheckpointedAutoencoder)
-                if any(k.startswith('model.') for k in state_dict.keys()):
-                    state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+                # Check for consistent prefixing - warn if mixed (indicates corruption)
+                keys_with_prefix = [k for k in state_dict.keys() if k.startswith('model.')]
+                if keys_with_prefix:
+                    if len(keys_with_prefix) != len(state_dict):
+                        logger.warning(
+                            f"Mixed prefix state: {len(keys_with_prefix)}/{len(state_dict)} keys "
+                            "have 'model.' prefix. Stripping prefix from matching keys."
+                        )
+                    state_dict = {
+                        k.replace('model.', '', 1) if k.startswith('model.') else k: v
+                        for k, v in state_dict.items()
+                    }
                 base_model.load_state_dict(state_dict)
                 if self.is_main_process:
                     logger.info(f"Loaded 3D VAE weights from {checkpoint_path}")
@@ -282,15 +292,21 @@ class VAE3DTrainer(BaseCompression3DTrainer):
     def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Compute KL divergence loss.
 
+        Uses the same aggregation as 2D VAE: sum over spatial dimensions [C, D, H, W],
+        then average over batch. This ensures KL regularization strength is consistent
+        with 2D training (previous version used .mean() over all dims, making KL ~80,000x weaker).
+
         Args:
-            mean: Mean of latent distribution.
-            logvar: Log variance of latent distribution.
+            mean: Mean of latent distribution [B, C, D, H, W].
+            logvar: Log variance of latent distribution [B, C, D, H, W].
 
         Returns:
             KL divergence loss (scalar).
         """
-        kl = 0.5 * (mean.pow(2) + logvar.exp() - logvar - 1).mean()
-        return kl
+        # KL divergence: -0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
+        # Sum over spatial dims [C, D, H, W], then average over batch
+        kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[1, 2, 3, 4])
+        return kl.mean()
 
     def train_step(self, batch: Any) -> Dict[str, float]:
         """Execute 3D VAE training step with KL loss.

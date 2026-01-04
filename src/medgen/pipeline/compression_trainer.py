@@ -1071,6 +1071,43 @@ class BaseCompressionTrainer(BaseTrainer):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Pretrained weights loading
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_pretrained_weights(
+        self,
+        raw_model: nn.Module,
+        raw_disc: Optional[nn.Module],
+        checkpoint_path: str,
+        model_name: str = "model",
+    ) -> None:
+        """Load pretrained weights from checkpoint.
+
+        This is the shared implementation for 2D trainers (VAE, VQ-VAE).
+        3D trainers use _load_pretrained_weights_base() which handles
+        prefix stripping for CheckpointedAutoencoder wrapper.
+
+        Args:
+            raw_model: The raw model to load weights into.
+            raw_disc: The raw discriminator (can be None if GAN disabled).
+            checkpoint_path: Path to the checkpoint file.
+            model_name: Name for logging (e.g., "VAE", "VQ-VAE").
+        """
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            if 'model_state_dict' in checkpoint:
+                raw_model.load_state_dict(checkpoint['model_state_dict'])
+                if self.is_main_process:
+                    logger.info(f"Loaded {model_name} weights from {checkpoint_path}")
+            if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
+                raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
+                if self.is_main_process:
+                    logger.info(f"Loaded discriminator weights from {checkpoint_path}")
+        except FileNotFoundError:
+            if self.is_main_process:
+                logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Abstract methods
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1307,8 +1344,8 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         # Gradient checkpointing
         self.gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
 
-        # torch.compile often causes issues with 3D models
-        self.use_compile: bool = cfg.training.get('use_compile', False)
+        # torch.compile for 3D models
+        self.use_compile: bool = cfg.training.get('use_compile', True)
 
     def _get_2_5d_perceptual(self, cfg: DictConfig) -> bool:
         """Get 2.5D perceptual loss flag."""

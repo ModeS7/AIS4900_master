@@ -35,7 +35,7 @@ from medgen.data import (
     create_vae_3d_single_modality_validation_loader,
 )
 from medgen.pipeline import VAE3DTrainer
-from .common import override_vae_channels, run_test_evaluation
+from .common import override_vae_channels, run_test_evaluation, get_image_keys, create_per_modality_val_loaders
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -123,7 +123,7 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Latent channels: {cfg.vae_3d.latent_channels}")
     log.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
     if is_multi_modality:
-        image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+        image_keys = get_image_keys(cfg, is_3d=True)
         log.info(f"Modalities: {image_keys}")
     log.info("=" * 60)
     log.info("")
@@ -165,7 +165,7 @@ def main(cfg: DictConfig) -> None:
     # Create per-modality validation loaders for multi_modality mode
     per_modality_val_loaders = {}
     if is_multi_modality:
-        image_keys = cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
+        image_keys = get_image_keys(cfg, is_3d=True)
         for modality_name in image_keys:
             loader = create_vae_3d_single_modality_validation_loader(cfg, modality_name)
             if loader is not None:

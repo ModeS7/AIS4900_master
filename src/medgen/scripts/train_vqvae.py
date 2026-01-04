@@ -39,7 +39,7 @@ from medgen.data import (
     create_single_modality_validation_loader,
 )
 from medgen.pipeline import VQVAETrainer
-from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders
+from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders, get_image_keys
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -110,7 +110,7 @@ def main(cfg: DictConfig) -> None:
 
     if is_multi_modality:
         # Multi-modality mode: pool all modalities
-        image_keys = cfg.mode.get('image_keys', ['bravo', 't1_pre', 't1_gd'])
+        image_keys = get_image_keys(cfg)
         dataloader, train_dataset = create_multi_modality_dataloader(
             cfg=cfg,
             image_keys=image_keys,
@@ -185,7 +185,6 @@ def main(cfg: DictConfig) -> None:
 
     # Run test evaluation if test_new/ directory exists
     if is_multi_modality:
-        image_keys = cfg.mode.get('image_keys', ['bravo', 't1_pre', 't1_gd'])
         test_result = create_multi_modality_test_dataloader(
             cfg=cfg,
             image_keys=image_keys,

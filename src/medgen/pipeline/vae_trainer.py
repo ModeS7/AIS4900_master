@@ -113,7 +113,7 @@ class VAETrainer(BaseCompressionTrainer):
 
         # Load pretrained weights if provided
         if pretrained_checkpoint:
-            self._load_pretrained_weights(raw_model, raw_disc, pretrained_checkpoint)
+            self._load_pretrained_weights(raw_model, raw_disc, pretrained_checkpoint, model_name="VAE")
 
         # Wrap models with DDP/compile
         self._wrap_models(raw_model, raw_disc)
@@ -146,27 +146,6 @@ class VAETrainer(BaseCompressionTrainer):
             logger.info(f"Latent shape: [{self.latent_channels}, {self.image_size // 8}, {self.image_size // 8}]")
             logger.info(f"Loss weights - Perceptual: {self.perceptual_weight}, KL: {self.kl_weight}, Adv: {self.adv_weight}")
 
-    def _load_pretrained_weights(
-        self,
-        raw_model: nn.Module,
-        raw_disc: Optional[nn.Module],
-        checkpoint_path: str,
-    ) -> None:
-        """Load pretrained weights from checkpoint."""
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            if 'model_state_dict' in checkpoint:
-                raw_model.load_state_dict(checkpoint['model_state_dict'])
-                if self.is_main_process:
-                    logger.info(f"Loaded VAE weights from {checkpoint_path}")
-            if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
-                raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
-                if self.is_main_process:
-                    logger.info(f"Loaded discriminator weights from {checkpoint_path}")
-        except FileNotFoundError:
-            if self.is_main_process:
-                logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
-
     def _save_metadata(self) -> None:
         """Save training configuration and VAE config."""
         os.makedirs(self.save_dir, exist_ok=True)
@@ -176,23 +155,13 @@ class VAETrainer(BaseCompressionTrainer):
         with open(config_path, 'w') as f:
             f.write(OmegaConf.to_yaml(self.cfg))
 
-        # Save VAE config separately
-        n_channels = self.cfg.mode.get('in_channels', 1)
-        vae_config = {
-            'in_channels': n_channels,
-            'out_channels': n_channels,
-            'latent_channels': self.latent_channels,
-            'channels': list(self.vae_channels),
-            'attention_levels': list(self.attention_levels),
-            'num_res_blocks': self.num_res_blocks,
-            'norm_num_groups': 32,
-            'with_encoder_nonlocal_attn': True,
-            'with_decoder_nonlocal_attn': True,
-        }
+        # Save VAE config separately (use _get_model_config for consistency)
+        vae_config = self._get_model_config()
 
         metadata_path = os.path.join(self.save_dir, 'metadata.json')
         with open(metadata_path, 'w') as f:
             json.dump({
+                'type': 'vae',
                 'vae_config': vae_config,
                 'image_size': self.image_size,
                 'n_epochs': self.n_epochs,

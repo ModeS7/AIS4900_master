@@ -18,6 +18,24 @@ ImageDict = Dict[str, torch.Tensor]
 ImageOrDict = Union[ImageTensor, ImageDict]
 
 
+class ParsedModelInput:
+    """Container for parsed model input components."""
+
+    def __init__(
+        self,
+        noisy_images: Optional[torch.Tensor],
+        noisy_pre: Optional[torch.Tensor],
+        noisy_gd: Optional[torch.Tensor],
+        conditioning: Optional[torch.Tensor],
+        is_dual: bool,
+    ):
+        self.noisy_images = noisy_images
+        self.noisy_pre = noisy_pre
+        self.noisy_gd = noisy_gd
+        self.conditioning = conditioning
+        self.is_dual = is_dual
+
+
 class DiffusionStrategy(ABC):
     """Abstract base class for diffusion algorithms.
 
@@ -29,6 +47,76 @@ class DiffusionStrategy(ABC):
     """
 
     scheduler: Any
+
+    def _parse_model_input(self, model_input: torch.Tensor) -> ParsedModelInput:
+        """Parse model input into components based on channel count.
+
+        Args:
+            model_input: Input tensor with noise and optional conditioning.
+
+        Returns:
+            ParsedModelInput with extracted components.
+
+        Raises:
+            ValueError: If channel count is unexpected.
+        """
+        num_channels = model_input.shape[1]
+
+        if num_channels == 1:
+            # Unconditional: just noise
+            return ParsedModelInput(
+                noisy_images=model_input,
+                noisy_pre=None,
+                noisy_gd=None,
+                conditioning=None,
+                is_dual=False,
+            )
+        elif num_channels == 2:
+            # Conditional single: [noise, conditioning]
+            return ParsedModelInput(
+                noisy_images=model_input[:, 0:1, :, :],
+                noisy_pre=None,
+                noisy_gd=None,
+                conditioning=model_input[:, 1:2, :, :],
+                is_dual=False,
+            )
+        elif num_channels == 3:
+            # Conditional dual: [noise_pre, noise_gd, conditioning]
+            return ParsedModelInput(
+                noisy_images=None,
+                noisy_pre=model_input[:, 0:1, :, :],
+                noisy_gd=model_input[:, 1:2, :, :],
+                conditioning=model_input[:, 2:3, :, :],
+                is_dual=True,
+            )
+        else:
+            raise ValueError(f"Unexpected number of channels: {num_channels}")
+
+    def _call_model(
+        self,
+        model: nn.Module,
+        model_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        omega: Optional[torch.Tensor],
+        mode_id: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Call model with appropriate arguments based on conditioning.
+
+        Args:
+            model: Diffusion model (may be wrapped with conditioning).
+            model_input: Formatted input tensor.
+            timesteps: Current timesteps.
+            omega: Optional ScoreAug omega conditioning.
+            mode_id: Optional mode ID for multi-modality.
+
+        Returns:
+            Model prediction (noise or velocity).
+        """
+        with torch.no_grad():
+            if omega is not None or mode_id is not None:
+                return model(model_input, timesteps=timesteps, omega=omega, mode_id=mode_id)
+            else:
+                return model(x=model_input, timesteps=timesteps)
 
     @abstractmethod
     def setup_scheduler(self, num_timesteps: int, image_size: int) -> Any:
@@ -292,30 +380,17 @@ class DDPMStrategy(DiffusionStrategy):
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
         """
         batch_size = model_input.shape[0]
-        num_channels = model_input.shape[1]
 
         # Set timesteps for inference
         self.scheduler.set_timesteps(num_inference_steps=num_steps)
 
-        # Determine mode and extract components
-        if num_channels == 1:
-            # Unconditional: just noise
-            noisy_images = model_input
-            conditioning = None
-            is_dual = False
-        elif num_channels == 2:
-            # Conditional single: [noise, conditioning]
-            noisy_images = model_input[:, 0:1, :, :]
-            conditioning = model_input[:, 1:2, :, :]
-            is_dual = False
-        elif num_channels == 3:
-            # Conditional dual: [noise_pre, noise_gd, conditioning]
-            noisy_pre = model_input[:, 0:1, :, :]
-            noisy_gd = model_input[:, 1:2, :, :]
-            conditioning = model_input[:, 2:3, :, :]
-            is_dual = True
-        else:
-            raise ValueError(f"Unexpected number of channels: {num_channels}")
+        # Parse model input into components
+        parsed = self._parse_model_input(model_input)
+        noisy_images = parsed.noisy_images
+        noisy_pre = parsed.noisy_pre
+        noisy_gd = parsed.noisy_gd
+        conditioning = parsed.conditioning
+        is_dual = parsed.is_dual
 
         # Sampling loop
         timesteps = self.scheduler.timesteps
@@ -330,13 +405,7 @@ class DDPMStrategy(DiffusionStrategy):
             if is_dual:
                 # Dual-image: process each channel through model together
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
-
-                with torch.no_grad():
-                    # Pass omega/mode_id if model supports them (wrappers)
-                    if omega is not None or mode_id is not None:
-                        noise_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
-                    else:
-                        noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
+                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
 
                 # Split predictions for each channel
                 noise_pred_pre = noise_pred[:, 0:1, :, :]
@@ -353,12 +422,7 @@ class DDPMStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                with torch.no_grad():
-                    # Pass omega/mode_id if model supports them (wrappers)
-                    if omega is not None or mode_id is not None:
-                        noise_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
-                    else:
-                        noise_pred = model(x=current_model_input, timesteps=timesteps_batch)
+                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
 
                 noisy_images, _ = self.scheduler.step(noise_pred, t, noisy_images)
 
@@ -483,28 +547,15 @@ class RFlowStrategy(DiffusionStrategy):
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
         """
         batch_size = model_input.shape[0]
-        num_channels = model_input.shape[1]
         image_size = model_input.shape[-1]
 
-        # Determine mode and extract components
-        if num_channels == 1:
-            # Unconditional: just noise
-            noisy_images = model_input
-            conditioning = None
-            is_dual = False
-        elif num_channels == 2:
-            # Conditional single: [noise, conditioning]
-            noisy_images = model_input[:, 0:1, :, :]
-            conditioning = model_input[:, 1:2, :, :]
-            is_dual = False
-        elif num_channels == 3:
-            # Conditional dual: [noise_pre, noise_gd, conditioning]
-            noisy_pre = model_input[:, 0:1, :, :]
-            noisy_gd = model_input[:, 1:2, :, :]
-            conditioning = model_input[:, 2:3, :, :]
-            is_dual = True
-        else:
-            raise ValueError(f"Unexpected number of channels: {num_channels}")
+        # Parse model input into components
+        parsed = self._parse_model_input(model_input)
+        noisy_images = parsed.noisy_images
+        noisy_pre = parsed.noisy_pre
+        noisy_gd = parsed.noisy_gd
+        conditioning = parsed.conditioning
+        is_dual = parsed.is_dual
 
         # Setup scheduler
         input_img_size_numel = image_size * image_size
@@ -532,13 +583,7 @@ class RFlowStrategy(DiffusionStrategy):
             if is_dual:
                 # Dual-image: process each channel through model together
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
-
-                with torch.no_grad():
-                    # Pass omega/mode_id if model supports them (wrappers)
-                    if omega is not None or mode_id is not None:
-                        velocity_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
-                    else:
-                        velocity_pred = model(current_model_input, timesteps=timesteps_batch)
+                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
 
                 # Split predictions for each channel
                 velocity_pred_pre = velocity_pred[:, 0:1, :, :]
@@ -555,13 +600,7 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                with torch.no_grad():
-                    # Pass omega/mode_id if model supports them (wrappers)
-                    if omega is not None or mode_id is not None:
-                        velocity_pred = model(current_model_input, timesteps=timesteps_batch, omega=omega, mode_id=mode_id)
-                    else:
-                        velocity_pred = model(current_model_input, timesteps=timesteps_batch)
-
+                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
                 noisy_images, _ = self.scheduler.step(velocity_pred, t, noisy_images, next_timestep)
 
         # Return final denoised images

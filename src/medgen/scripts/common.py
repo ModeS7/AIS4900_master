@@ -123,6 +123,30 @@ def create_per_modality_val_loaders(
     return per_modality_val_loaders
 
 
+DEFAULT_MULTI_MODALITY_KEYS_2D = ['bravo', 't1_pre', 't1_gd']
+DEFAULT_MULTI_MODALITY_KEYS_3D = ['bravo', 'flair', 't1_pre', 't1_gd']
+
+
+def get_image_keys(cfg: DictConfig, is_3d: bool = False) -> list:
+    """Get image keys from config with consistent default.
+
+    Args:
+        cfg: Hydra configuration object.
+        is_3d: If True, use 3D defaults (includes flair). Default: False.
+
+    Returns:
+        List of modality names for multi-modality training.
+
+    Example:
+        >>> image_keys = get_image_keys(cfg)
+        >>> # Returns cfg.mode.image_keys or default ['bravo', 't1_pre', 't1_gd']
+        >>> image_keys_3d = get_image_keys(cfg, is_3d=True)
+        >>> # Returns cfg.mode.image_keys or default ['bravo', 'flair', 't1_pre', 't1_gd']
+    """
+    default = DEFAULT_MULTI_MODALITY_KEYS_3D if is_3d else DEFAULT_MULTI_MODALITY_KEYS_2D
+    return cfg.mode.get('image_keys', default.copy())
+
+
 def log_training_header(
     trainer_type: str,
     mode: str,

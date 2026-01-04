@@ -11,7 +11,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Literal
+from typing import Optional, Literal
 
 from .embeddings import (
     PatchEmbed2D,

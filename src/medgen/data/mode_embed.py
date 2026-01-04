@@ -35,6 +35,7 @@ def encode_mode_id(
 
     Args:
         mode_id: Optional integer tensor [B] with mode IDs (0-3), or None for identity.
+            All values in the batch MUST be identical (same modality per batch).
         device: Device to create tensor on.
 
     Returns:
@@ -43,15 +44,25 @@ def encode_mode_id(
 
     Raises:
         ValueError: If mode_id contains invalid values outside [0, MODE_ENCODING_DIM).
+        ValueError: If batch contains mixed mode_ids (different modalities).
     """
     if mode_id is None:
         return torch.zeros(1, MODE_ENCODING_DIM, device=device)
 
-    # Take first mode_id (all should be same in a batch for multi-modality)
-    # This is fine because each batch contains one modality
+    # Extract the mode index
     if mode_id.dim() == 0:
         idx = mode_id.item()
     else:
+        # Validate all mode_ids in batch are identical
+        # Mixed modalities in a batch would apply wrong conditioning to most samples
+        if not torch.all(mode_id == mode_id[0]):
+            unique_modes = torch.unique(mode_id).tolist()
+            mode_names = [ID_TO_MODE.get(int(m), f"unknown({m})") for m in unique_modes]
+            raise ValueError(
+                f"Mixed mode_ids in batch: {unique_modes} ({mode_names}). "
+                f"All samples in a batch must have the same modality when using mode embedding. "
+                f"Consider using a GroupedSampler or disabling shuffle for multi-modality training."
+            )
         idx = mode_id[0].item()
 
     # Validate mode_id range

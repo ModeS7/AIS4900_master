@@ -10,10 +10,9 @@ from typing import Literal, Optional, Tuple
 
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
-from torch.utils.data.distributed import DistributedSampler
 
-from medgen.core.constants import DEFAULT_NUM_WORKERS
 from medgen.data.augmentation import build_diffusion_augmentation, build_vae_augmentation
+from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -90,38 +89,23 @@ def create_dataloader(
     else:
         raise ValueError(f"Unknown image_type: {image_type}")
 
-    # Setup sampler
-    sampler: Optional[DistributedSampler] = None
-    shuffle: Optional[bool] = True
-
-    if use_distributed:
-        sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True
-        )
-        shuffle = None
-        batch_size_per_gpu = batch_size // world_size
-    else:
-        batch_size_per_gpu = batch_size
+    # Setup distributed sampler and batch size
+    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
+        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
+    )
 
     # Get DataLoader settings from config
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_per_gpu,
         sampler=sampler,
         shuffle=shuffle,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, train_dataset
@@ -190,20 +174,16 @@ def create_validation_dataloader(
         val_dataset = extract_slices_dual(merged, has_seg=True)
 
     # Get DataLoader settings from config
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -265,20 +245,16 @@ def create_test_dataloader(
         test_dataset = extract_slices_dual(merged, has_seg=True)
 
     # Get DataLoader settings from config
-    dl_cfg = cfg.training.get('dataloader', {})
-    num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-    prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-    pin_memory = dl_cfg.get('pin_memory', True)
-    persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=pin_memory,
-        num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor,
+        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset

@@ -131,7 +131,7 @@ class VQVAETrainer(BaseCompressionTrainer):
 
         # Load pretrained weights if provided
         if pretrained_checkpoint:
-            self._load_pretrained_weights(raw_model, raw_disc, pretrained_checkpoint)
+            self._load_pretrained_weights(raw_model, raw_disc, pretrained_checkpoint, model_name="VQ-VAE")
 
         # Wrap models with DDP/compile
         self._wrap_models(raw_model, raw_disc)
@@ -170,27 +170,6 @@ class VQVAETrainer(BaseCompressionTrainer):
             logger.info(f"Latent shape: [{self.embedding_dim}, {latent_size}, {latent_size}]")
             logger.info(f"Loss weights - Perceptual: {self.perceptual_weight}, Adv: {self.adv_weight}")
             logger.info(f"VQ params - Commitment: {self.commitment_cost}, Decay: {self.decay}")
-
-    def _load_pretrained_weights(
-        self,
-        raw_model: nn.Module,
-        raw_disc: Optional[nn.Module],
-        checkpoint_path: str,
-    ) -> None:
-        """Load pretrained weights from checkpoint."""
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            if 'model_state_dict' in checkpoint:
-                raw_model.load_state_dict(checkpoint['model_state_dict'])
-                if self.is_main_process:
-                    logger.info(f"Loaded VQ-VAE weights from {checkpoint_path}")
-            if 'discriminator_state_dict' in checkpoint and raw_disc is not None:
-                raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
-                if self.is_main_process:
-                    logger.info(f"Loaded discriminator weights from {checkpoint_path}")
-        except FileNotFoundError:
-            if self.is_main_process:
-                logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
 
     def _save_metadata(self) -> None:
         """Save training configuration and VQ-VAE config."""

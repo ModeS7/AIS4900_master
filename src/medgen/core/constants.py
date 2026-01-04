@@ -36,5 +36,10 @@ DEFAULT_NUM_HEAD_CHANNELS = 256
 # Data loading
 DEFAULT_NUM_WORKERS = 4  # Parallel data loading workers
 
+# Medical imaging defaults
+# Default field of view in millimeters for brain MRI
+# Used for converting pixel distances to mm for RANO-BM tumor size classification
+DEFAULT_FOV_MM = 240.0
+
 # Dual mode default image keys
 DEFAULT_DUAL_IMAGE_KEYS = ['t1_pre', 't1_gd']

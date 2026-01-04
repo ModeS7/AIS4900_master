@@ -24,6 +24,7 @@ from .quality import (
     compute_psnr as _compute_psnr,
     compute_lpips as _compute_lpips,
 )
+from .constants import TUMOR_SIZE_THRESHOLDS_MM
 
 logger = logging.getLogger(__name__)
 
@@ -165,15 +166,8 @@ class MetricsTracker:
         mm_per_pixel = fov_mm / self.image_size
         total_pixels = self.image_size ** 2
 
-        diameter_thresholds = {
-            'tiny': (0, 10),
-            'small': (10, 20),
-            'medium': (20, 30),
-            'large': (30, 150),
-        }
-
         thresholds = {}
-        for size_name, (d_low, d_high) in diameter_thresholds.items():
+        for size_name, (d_low, d_high) in TUMOR_SIZE_THRESHOLDS_MM.items():
             d_low_px = d_low / mm_per_pixel
             d_high_px = d_high / mm_per_pixel
             area_low = math.pi * (d_low_px / 2) ** 2

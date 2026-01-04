@@ -163,7 +163,14 @@ class LatentSpace(DiffusionSpace):
 
         Returns:
             Latent representation [B, latent_channels, H/8, W/8].
+
+        Raises:
+            ValueError: If input tensor doesn't have 4 dimensions.
         """
+        if x.dim() != 4:
+            raise ValueError(
+                f"LatentSpace.encode expects 4D input [B, C, H, W], got {x.dim()}D tensor with shape {x.shape}"
+            )
         z_mu, z_logvar = self.vae.encode(x)
 
         if self.deterministic:

@@ -5,6 +5,22 @@ Key differences from 2D:
 - Returns full volumes instead of 2D slices
 - Applies depth padding for clean compression
 - Memory-efficient batch sizes (typically 1-2)
+
+Note: Data Augmentation Limitation
+    Unlike 2D loaders which support albumentations-based augmentation via the
+    `augment` parameter, 3D loaders do NOT currently support data augmentation.
+
+    This is because:
+    1. Albumentations is designed for 2D images only
+    2. 3D augmentation requires MONAI 3D transforms or custom implementations
+    3. Memory constraints - augmented 3D volumes would require significant VRAM
+
+    For 3D training, consider:
+    - Relying on test-time augmentation (TTA) during inference
+    - Using multiple training runs with different random seeds
+    - Implementing MONAI 3D transforms if augmentation is critical:
+      - RandRotate90d, RandFlipd for geometric transforms
+      - RandGaussianNoised, RandScaleIntensityd for intensity transforms
 """
 import logging
 import os
@@ -17,6 +33,7 @@ from monai.transforms import Compose, LoadImage, EnsureChannelFirst, ScaleIntens
 from torch.utils.data import DataLoader, Dataset
 
 from ..dataset import NiFTIDataset
+from medgen.core.constants import DEFAULT_NUM_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +49,24 @@ class VolumeConfig:
     batch_size: int
     load_seg: bool
     image_keys: list
+    # DataLoader config
+    num_workers: int
+    prefetch_factor: Optional[int]
+    pin_memory: bool
+    persistent_workers: bool
 
     @classmethod
     def from_cfg(cls, cfg) -> 'VolumeConfig':
         """Extract volume configuration from Hydra config object."""
         logging_cfg = cfg.training.get('logging', {})
+
+        # Extract DataLoader settings (consistent with 2D loaders)
+        dl_cfg = cfg.training.get('dataloader', {})
+        num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
+        prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
+        pin_memory = dl_cfg.get('pin_memory', True)
+        persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+
         return cls(
             height=cfg.volume.height,
             width=cfg.volume.width,
@@ -46,6 +76,10 @@ class VolumeConfig:
             batch_size=cfg.training.batch_size,
             load_seg=logging_cfg.get('regional_losses', False),
             image_keys=cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd']),
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
         )
 
 
@@ -76,6 +110,9 @@ class Base3DVolumeDataset(Dataset):
         self.slice_step = slice_step
         self.load_seg = load_seg
 
+        # Track padding statistics for logging
+        self._padding_stats = {'volumes_padded': 0, 'total_slices_padded': 0}
+
         self.transform = build_3d_transform(height, width)
 
     def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
@@ -90,6 +127,13 @@ class Base3DVolumeDataset(Dataset):
         current_depth = volume.shape[1]
         if current_depth < self.pad_depth_to:
             pad_total = self.pad_depth_to - current_depth
+            # Track padding statistics
+            self._padding_stats['volumes_padded'] += 1
+            self._padding_stats['total_slices_padded'] += pad_total
+            logger.debug(
+                f"Padding volume from {current_depth} to {self.pad_depth_to} slices "
+                f"(+{pad_total} slices, mode={self.pad_mode})"
+            )
             if self.pad_mode == 'replicate':
                 last_slice = volume[:, -1:, :, :]
                 padding = last_slice.repeat(1, pad_total, 1, 1)
@@ -97,6 +141,19 @@ class Base3DVolumeDataset(Dataset):
             else:
                 volume = F.pad(volume, (0, 0, 0, 0, 0, pad_total), mode='constant', value=0)
         return volume
+
+    def get_padding_summary(self) -> str:
+        """Get summary of depth padding applied to loaded volumes.
+
+        Returns:
+            Human-readable summary string.
+        """
+        n_padded = self._padding_stats['volumes_padded']
+        total_slices = self._padding_stats['total_slices_padded']
+        if n_padded == 0:
+            return "No volumes required depth padding"
+        avg_padding = total_slices / n_padded
+        return f"{n_padded} volumes padded (avg +{avg_padding:.1f} slices each)"
 
     def _load_volume(self, nifti_path: str) -> torch.Tensor:
         """Load and preprocess a 3D volume from NIfTI file.
@@ -319,7 +376,7 @@ def _create_single_dual_dataset(
 
 def _create_loader(
     dataset: Dataset,
-    batch_size: int,
+    vcfg: VolumeConfig,
     shuffle: bool = True,
     drop_last: bool = False,
     use_distributed: bool = False,
@@ -330,7 +387,7 @@ def _create_loader(
 
     Args:
         dataset: Dataset to wrap.
-        batch_size: Batch size.
+        vcfg: Volume configuration containing batch_size and DataLoader settings.
         shuffle: Whether to shuffle (ignored if distributed).
         drop_last: Whether to drop last incomplete batch.
         use_distributed: Use DistributedSampler.
@@ -350,11 +407,13 @@ def _create_loader(
 
     return DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=vcfg.batch_size,
         shuffle=actual_shuffle,
         sampler=sampler,
-        num_workers=4,
-        pin_memory=True,
+        num_workers=vcfg.num_workers,
+        prefetch_factor=vcfg.prefetch_factor,
+        pin_memory=vcfg.pin_memory,
+        persistent_workers=vcfg.persistent_workers,
         drop_last=drop_last,
     )
 
@@ -382,7 +441,7 @@ def create_vae_3d_dataloader(
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
     dataset = _create_single_dual_dataset(data_dir, modality, vcfg)
     loader = _create_loader(
-        dataset, vcfg.batch_size, shuffle=True, drop_last=True,
+        dataset, vcfg, shuffle=True, drop_last=True,
         use_distributed=use_distributed, rank=rank, world_size=world_size
     )
     return loader, dataset
@@ -407,7 +466,7 @@ def create_vae_3d_validation_dataloader(
 
     vcfg = VolumeConfig.from_cfg(cfg)
     dataset = _create_single_dual_dataset(val_dir, modality, vcfg)
-    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
+    loader = _create_loader(dataset, vcfg, shuffle=False)
     return loader, dataset
 
 
@@ -430,7 +489,7 @@ def create_vae_3d_test_dataloader(
 
     vcfg = VolumeConfig.from_cfg(cfg)
     dataset = _create_single_dual_dataset(test_dir, modality, vcfg)
-    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
+    loader = _create_loader(dataset, vcfg, shuffle=False)
 
     return loader, dataset
 
@@ -542,7 +601,7 @@ def create_vae_3d_multi_modality_dataloader(
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
     dataset = _create_multi_modality_dataset(data_dir, vcfg)
     loader = _create_loader(
-        dataset, vcfg.batch_size, shuffle=True, drop_last=True,
+        dataset, vcfg, shuffle=True, drop_last=True,
         use_distributed=use_distributed, rank=rank, world_size=world_size
     )
     return loader, dataset
@@ -565,7 +624,7 @@ def create_vae_3d_multi_modality_validation_dataloader(
 
     vcfg = VolumeConfig.from_cfg(cfg)
     dataset = _create_multi_modality_dataset(val_dir, vcfg)
-    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
+    loader = _create_loader(dataset, vcfg, shuffle=False)
     return loader, dataset
 
 
@@ -586,7 +645,7 @@ def create_vae_3d_multi_modality_test_dataloader(
 
     vcfg = VolumeConfig.from_cfg(cfg)
     dataset = _create_multi_modality_dataset(test_dir, vcfg)
-    loader = _create_loader(dataset, vcfg.batch_size, shuffle=False)
+    loader = _create_loader(dataset, vcfg, shuffle=False)
     return loader, dataset
 
 
@@ -694,33 +753,22 @@ def create_vae_3d_single_modality_validation_loader(
         logger.warning(f"Modality {modality} not found in {val_dir}")
         return None
 
-    height = cfg.volume.height
-    width = cfg.volume.width
-    pad_depth_to = cfg.volume.pad_depth_to
-    pad_mode = cfg.volume.get('pad_mode', 'replicate')
-    slice_step = cfg.volume.get('slice_step', 1)
-    batch_size = cfg.training.batch_size
+    vcfg = VolumeConfig.from_cfg(cfg)
 
     try:
         dataset = SingleModality3DDatasetWithSeg(
             data_dir=val_dir,
             modality=modality,
-            height=height,
-            width=width,
-            pad_depth_to=pad_depth_to,
-            pad_mode=pad_mode,
-            slice_step=slice_step,
+            height=vcfg.height,
+            width=vcfg.width,
+            pad_depth_to=vcfg.pad_depth_to,
+            pad_mode=vcfg.pad_mode,
+            slice_step=vcfg.slice_step,
         )
     except ValueError as e:
         logger.warning(f"Could not create dataset for {modality}: {e}")
         return None
 
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-    )
+    loader = _create_loader(dataset, vcfg, shuffle=False)
 
     return loader

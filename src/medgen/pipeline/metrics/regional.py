@@ -9,24 +9,30 @@ loss per tumor, categorized by size using RANO-BM clinical thresholds with
 Feret diameter (longest edge-to-edge distance).
 """
 import logging
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
+
+from .regional_base import BaseRegionalMetricsTracker
 
 logger = logging.getLogger(__name__)
 
 
-class RegionalMetricsTracker:
-    """Unified regional loss tracking for validation data.
+class RegionalMetricsTracker(BaseRegionalMetricsTracker):
+    """Unified regional loss tracking for 2D validation data.
 
     Tracks reconstruction error separately for tumor and background regions,
     with breakdown by tumor size. Used by both DiffusionTrainer and VAETrainer
     during validation.
+
+    Inherits shared methods from BaseRegionalMetricsTracker:
+    - _classify_tumor_size(): RANO-BM tumor size classification
+    - compute(): Pixel-weighted metric computation
+    - log_to_tensorboard(): TensorBoard logging
 
     Args:
         image_size: Image size in pixels (e.g., 128, 256).
@@ -51,58 +57,16 @@ class RegionalMetricsTracker:
         loss_fn: str = 'mse',
         device: Optional[torch.device] = None,
     ):
+        super().__init__(fov_mm=fov_mm, loss_fn=loss_fn, device=device)
         self.image_size = image_size
-        self.fov_mm = fov_mm
-        self.loss_fn = loss_fn
-        self.device = device or torch.device('cuda')
-
-        # Compute tumor size thresholds based on clinical definitions
-        self.tumor_size_thresholds = self._compute_thresholds()
-
-        # Initialize accumulators
         self.reset()
-
-    def _compute_thresholds(self) -> Dict[str, Tuple[float, float]]:
-        """RANO-BM clinical diameter thresholds in mm.
-
-        Uses Feret diameter (longest edge-to-edge distance) for measurement,
-        matching clinical RANO-BM/RECIST standards.
-
-        Clinical definitions (diameter):
-            - tiny:   <10mm  (often non-measurable per RANO-BM)
-            - small:  10-20mm (small metastases, SRS alone)
-            - medium: 20-30mm (SRS candidates)
-            - large:  >30mm  (often surgical)
-
-        Returns:
-            Dictionary mapping size names to (low, high) diameter in mm.
-        """
-        return {
-            'tiny': (0, 10),
-            'small': (10, 20),
-            'medium': (20, 30),
-            'large': (30, 200),
-        }
-
-    def _classify_tumor_size(self, diameter_mm: float) -> str:
-        """Classify tumor by Feret diameter using RANO-BM thresholds.
-
-        Args:
-            diameter_mm: Feret diameter (longest axis) in millimeters.
-
-        Returns:
-            Size category: 'tiny', 'small', 'medium', or 'large'.
-        """
-        for size_name, (low, high) in self.tumor_size_thresholds.items():
-            if low <= diameter_mm < high:
-                return size_name
-        return 'large'  # Fallback for very large tumors
 
     def reset(self) -> None:
         """Reset accumulators for new validation run."""
         self.tumor_error_sum = 0.0  # Total error across all tumor pixels
         self.tumor_pixels_total = 0  # Total tumor pixels (for pixel-weighted avg)
-        self.bg_loss_sum = 0.0
+        self.bg_error_sum = 0.0  # Total error across all background pixels
+        self.bg_pixels_total = 0  # Total background pixels (for pixel-weighted avg)
         self.count = 0  # Number of samples with tumors
 
         # Per-size accumulators (pixel-weighted)
@@ -156,19 +120,20 @@ class RegionalMetricsTracker:
             # Get region properties including Feret diameter
             regions = regionprops(labeled)
 
-            # Compute background loss (defer adding until we confirm valid tumor)
+            # Compute background error (defer adding until we confirm valid tumor)
             bg_mask_np = ~mask_np
-            bg_pixels = bg_mask_np.sum()
-            bg_loss_value = None
-            if bg_pixels > 0:
+            bg_pixels_count = int(bg_mask_np.sum())
+            bg_error_value = None
+            if bg_pixels_count > 0:
                 bg_mask_tensor = torch.from_numpy(bg_mask_np).to(error_i.device).float()
-                # Average over channels then over spatial
+                # Average over channels then sum over spatial (pixel-weighted)
                 if error_i.dim() == 3 and error_i.shape[0] > 1:
                     # Multi-channel: mean over channels first
                     error_mean = error_i.mean(dim=0)
                 else:
                     error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
-                bg_loss_value = ((error_mean * bg_mask_tensor).sum() / bg_pixels).item()
+                # Accumulate raw error sum (not per-sample average) for pixel-weighted avg
+                bg_error_value = (error_mean * bg_mask_tensor).sum().item()
 
             sample_has_valid_tumor = False
 
@@ -207,64 +172,7 @@ class RegionalMetricsTracker:
 
             if sample_has_valid_tumor:
                 self.count += 1  # Count samples with valid tumors
-                # Only add background loss for samples with valid tumors
-                if bg_loss_value is not None:
-                    self.bg_loss_sum += bg_loss_value
-
-    def compute(self) -> Dict[str, float]:
-        """Compute final metrics after all batches processed.
-
-        Returns:
-            Dict with 'tumor', 'background', 'ratio', and per-size loss metrics.
-            All tumor metrics are pixel-weighted averages.
-            Empty dict if no samples were tracked.
-        """
-        if self.count == 0:
-            return {}
-
-        # Pixel-weighted average: total error / total pixels
-        tumor_avg = self.tumor_error_sum / max(self.tumor_pixels_total, 1)
-        bg_avg = self.bg_loss_sum / self.count
-
-        metrics = {
-            'tumor': tumor_avg,
-            'background': bg_avg,
-            'ratio': tumor_avg / (bg_avg + 1e-8),
-        }
-
-        # Per-size metrics: pixel-weighted average within each category
-        for size_name in self.tumor_size_thresholds:
-            pixels = self.size_pixels[size_name]
-            if pixels > 0:
-                metrics[f'tumor_size_{size_name}'] = self.size_error_sum[size_name] / pixels
-            else:
-                metrics[f'tumor_size_{size_name}'] = 0.0
-
-        return metrics
-
-    def log_to_tensorboard(
-        self,
-        writer: Optional[SummaryWriter],
-        epoch: int,
-        prefix: str = 'regional',
-    ) -> None:
-        """Log all metrics to TensorBoard.
-
-        Args:
-            writer: TensorBoard SummaryWriter.
-            epoch: Current epoch number.
-            prefix: TensorBoard tag prefix. Default: 'regional'.
-        """
-        if writer is None:
-            return
-
-        metrics = self.compute()
-        if not metrics:
-            return
-
-        writer.add_scalar(f'{prefix}/tumor_loss', metrics['tumor'], epoch)
-        writer.add_scalar(f'{prefix}/background_loss', metrics['background'], epoch)
-        writer.add_scalar(f'{prefix}/tumor_bg_ratio', metrics['ratio'], epoch)
-
-        for size in ['tiny', 'small', 'medium', 'large']:
-            writer.add_scalar(f'{prefix}/{size}', metrics[f'tumor_size_{size}'], epoch)
+                # Only add background error for samples with valid tumors (pixel-weighted)
+                if bg_error_value is not None:
+                    self.bg_error_sum += bg_error_value
+                    self.bg_pixels_total += bg_pixels_count
