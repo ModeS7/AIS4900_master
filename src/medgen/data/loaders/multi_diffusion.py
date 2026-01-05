@@ -6,7 +6,7 @@ and mode_id for training a single model on all modalities.
 """
 import logging
 import os
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -30,7 +30,7 @@ def _extract_slices_with_mode_id(
     image_dataset: Dataset,
     seg_dataset: Dataset,
     mode_id: int,
-    augmentation=None,
+    augmentation: Optional[Callable] = None,
 ) -> List[Tuple[np.ndarray, np.ndarray, int]]:
     """Extract 2D slices with paired seg mask and mode_id.
 

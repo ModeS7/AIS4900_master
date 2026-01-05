@@ -60,9 +60,15 @@ def wrap_model_for_training(
 
         if use_compile:
             # Use default mode for DDP (reduce-overhead uses CUDA graphs which conflict with DDP)
-            wrapped_model = torch.compile(ddp_model, mode="default")
+            actual_mode = "default"
+            wrapped_model = torch.compile(ddp_model, mode=actual_mode)
             if is_main_process:
-                logger.info("Multi-GPU: Compiled DDP wrapper with mode='default'")
+                if compile_mode != actual_mode:
+                    logger.warning(
+                        f"compile_mode='{compile_mode}' overridden to '{actual_mode}' for DDP "
+                        "(reduce-overhead mode uses CUDA graphs which conflict with DDP)"
+                    )
+                logger.info(f"Multi-GPU: Compiled DDP wrapper with mode='{actual_mode}'")
         else:
             wrapped_model = ddp_model
             if is_main_process:

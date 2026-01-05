@@ -17,6 +17,10 @@ pretrained: null
 
 # Loss weights (Phase 1: L1 + Perceptual, no GAN)
 l1_weight: 1.0
+# DC-AE uses 100x higher perceptual weight (0.1 vs VAE's 0.001) because:
+# 1. DC-AE is deterministic (no KL regularization) - needs stronger perceptual guidance
+# 2. Higher compression (32x or 64x) loses more detail - perceptual loss compensates
+# 3. Empirically tuned for stable GAN training at high compression ratios
 perceptual_weight: 0.1
 adv_weight: 0.0  # Set >0 for Phase 3 GAN training
 

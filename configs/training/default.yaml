@@ -132,3 +132,17 @@ logging:
 
   # Performance
   flops: true                  # [all] Measure model FLOPs (once at start)
+
+# PyTorch Profiler - exports Chrome traces for performance analysis
+# View traces: Perfetto UI (https://ui.perfetto.dev) or chrome://tracing
+# Reference: https://pytorch.org/tutorials/intermediate/tensorboard_profiler_tutorial.html
+profiling:
+  enabled: false              # Master switch
+  wait: 5                     # Steps to skip (torch.compile warmup)
+  warmup: 2                   # Steps to warm up profiler (discarded)
+  active: 10                  # Steps to actively profile
+  repeat: 1                   # Number of profiling cycles (0 = continuous)
+  record_shapes: true         # Record tensor shapes
+  profile_memory: true        # Track memory allocations
+  with_stack: false           # Include Python call stacks (slower)
+  with_flops: true            # Estimate FLOPs per operation

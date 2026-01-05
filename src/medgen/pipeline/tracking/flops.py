@@ -121,6 +121,10 @@ class FLOPsTracker:
             else:
                 logger.warning("FLOPs measurement returned 0 - TensorBoard FLOPs logging disabled")
 
+    def mark_measured(self) -> None:
+        """Mark FLOPs as measured (for manual/estimated FLOPs)."""
+        self._measured = True
+
     def get_tflops_epoch(self) -> float:
         """Get TFLOPs per epoch (forward + backward + optimizer)."""
         if self.forward_flops == 0:

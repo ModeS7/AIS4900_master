@@ -228,7 +228,7 @@ def create_validation_dataloader(
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,  # Validation must be deterministic for reproducible metrics
         pin_memory=dl_cfg.pin_memory,
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
@@ -300,7 +300,7 @@ def create_test_dataloader(
     dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,  # Test must be deterministic for reproducible metrics
         pin_memory=dl_cfg.pin_memory,
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,

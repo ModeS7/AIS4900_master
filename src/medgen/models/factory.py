@@ -52,6 +52,13 @@ def _create_unet(
 
     spatial_dims = cfg.model.get('spatial_dims', 2)
 
+    # Validate spatial_dims
+    if spatial_dims not in (2, 3):
+        raise ValueError(
+            f"spatial_dims must be 2 or 3, got {spatial_dims}. "
+            f"Use 2 for 2D images, 3 for 3D volumes."
+        )
+
     model = DiffusionModelUNet(
         spatial_dims=spatial_dims,
         in_channels=in_channels,
@@ -81,11 +88,32 @@ def _create_sit(
     from .sit import create_sit, SIT_VARIANTS
 
     spatial_dims = cfg.model.get('spatial_dims', 2)
+
+    # Validate spatial_dims
+    if spatial_dims not in (2, 3):
+        raise ValueError(
+            f"spatial_dims must be 2 or 3, got {spatial_dims}. "
+            f"Use 2 for 2D images, 3 for 3D volumes."
+        )
+
     variant = cfg.model.get('variant', 'B')
     patch_size = cfg.model.get('patch_size', 2)
     conditioning = cfg.model.get('conditioning', 'concat')
     mlp_ratio = cfg.model.get('mlp_ratio', 4.0)
     drop_rate = cfg.model.get('drop_rate', 0.0)
+
+    # Validate SiT-specific fields
+    valid_variants = ('S', 'B', 'L', 'XL')
+    if variant not in valid_variants:
+        raise ValueError(
+            f"SiT variant must be one of {valid_variants}, got '{variant}'"
+        )
+
+    valid_patch_sizes = (2, 4, 8)
+    if patch_size not in valid_patch_sizes:
+        raise ValueError(
+            f"SiT patch_size must be one of {valid_patch_sizes}, got {patch_size}"
+        )
 
     # For concat conditioning, in_channels already includes cond_channels from mode config
     # For cross_attn, we need to separate them
@@ -98,22 +126,18 @@ def _create_sit(
         cond_channels = in_channels - out_channels
         model_in_channels = in_channels
 
+    # Get VAE scale factor (used for both 2D and 3D latent space)
+    is_latent_space = cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
+    vae_scale = cfg.get('vae', {}).get('spatial_scale', 8) if is_latent_space else 1
+
     # Get input size (depends on pixel vs latent space)
-    if cfg.get('diffusion', {}).get('space', 'pixel') == 'latent':
-        # Latent space: image_size / VAE downscale factor (typically 8)
-        vae_scale = cfg.get('vae', {}).get('spatial_scale', 8)
-        input_size = cfg.model.image_size // vae_scale
-    else:
-        input_size = cfg.model.image_size
+    input_size = cfg.model.image_size // vae_scale
 
     # 3D specific settings
     depth_size = None
     if spatial_dims == 3:
-        if cfg.get('diffusion', {}).get('space', 'pixel') == 'latent':
-            vae_scale = cfg.get('vae', {}).get('spatial_scale', 8)
-            depth_size = cfg.model.get('depth_size', cfg.model.image_size) // vae_scale
-        else:
-            depth_size = cfg.model.get('depth_size', cfg.model.image_size)
+        base_depth = cfg.model.get('depth_size', cfg.model.image_size)
+        depth_size = base_depth // vae_scale
 
     model = create_sit(
         variant=variant,

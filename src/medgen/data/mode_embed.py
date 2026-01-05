@@ -12,6 +12,8 @@ from typing import Optional
 import torch
 from torch import nn
 
+from .base_embed import create_zero_init_mlp
+
 # Mode ID mapping
 MODE_ID_MAP = {
     'bravo': 0,
@@ -98,16 +100,8 @@ class ModeTimeEmbed(nn.Module):
         self.original = original_time_embed
         self.embed_dim = embed_dim
 
-        # MLP that maps mode encoding to embedding
-        self.mode_mlp = nn.Sequential(
-            nn.Linear(MODE_ENCODING_DIM, embed_dim),
-            nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-
-        # Initialize output layer to near-zero so identity starts as no-op
-        nn.init.zeros_(self.mode_mlp[-1].weight)
-        nn.init.zeros_(self.mode_mlp[-1].bias)
+        # MLP that maps mode encoding to embedding (zero-init for neutral start)
+        self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
         # Buffer to store current mode encoding
         # This is set by ModeEmbedModelWrapper before each forward
@@ -197,12 +191,3 @@ class ModeEmbedModelWrapper(nn.Module):
     def parameters(self, recurse: bool = True):
         """Get all parameters including mode MLP."""
         return self.model.parameters(recurse=recurse)
-
-    @property
-    def parameters_without_mode(self):
-        """Get model parameters excluding mode embedding.
-
-        Useful if you want to use different learning rates.
-        """
-        mode_param_ids = {id(p) for p in self.mode_time_embed.mode_mlp.parameters()}
-        return (p for p in self.model.parameters() if id(p) not in mode_param_ids)

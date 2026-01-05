@@ -100,6 +100,8 @@ class NiFTIDataset(Dataset):
         self.data: List[str] = sorted(os.listdir(data_dir))
         self.mr_sequence: str = mr_sequence
         self.transform: Optional[Compose] = transform
+        # Cache loader to avoid recreating on every __getitem__ call
+        self._loader: LoadImage = LoadImage(image_only=True)
 
     def __len__(self) -> int:
         """Return number of patients in dataset."""
@@ -123,7 +125,6 @@ class NiFTIDataset(Dataset):
             volume = self.transform(nifti_path)
         else:
             # Load NIfTI file directly if no transform provided
-            loader = LoadImage(image_only=True)
-            volume = loader(nifti_path)
+            volume = self._loader(nifti_path)
 
         return volume, patient_name

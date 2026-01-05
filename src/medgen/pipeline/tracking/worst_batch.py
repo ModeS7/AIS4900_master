@@ -6,7 +6,7 @@ during training for both DiffusionTrainer and VAETrainer.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import matplotlib
 matplotlib.use('Agg')
@@ -146,11 +146,13 @@ def create_worst_batch_figure_3d(
     loss: float,
     loss_breakdown: Optional[Dict[str, float]] = None,
     num_slices: int = 8,
-) -> plt.Figure:
+    channel_names: Optional[List[str]] = None,
+) -> "plt.Figure":
     """Create visualization figure for worst 3D volume.
 
     Shows the N slices with highest reconstruction error from the worst volume.
-    Layout: 3 rows × num_slices columns (Original, Generated, Difference).
+    Layout: (3 × n_channels) rows × num_slices columns.
+    Each channel gets 3 rows: Original, Generated, Difference.
 
     Args:
         original: Ground truth volume [1, C, D, H, W] (single worst volume).
@@ -158,11 +160,15 @@ def create_worst_batch_figure_3d(
         loss: Total loss value.
         loss_breakdown: Optional dict of individual losses.
         num_slices: Number of worst slices to show. Default: 8.
+        channel_names: Optional list of channel names (e.g., ['t1_pre', 't1_gd']).
+            If None, uses 'Ch 0', 'Ch 1', etc. for multi-channel volumes.
 
     Returns:
         Matplotlib figure.
     """
-    # Compute per-slice error
+    n_channels = original.shape[1]
+
+    # Compute per-slice error (averaged over all channels)
     diff = torch.abs(original.float() - generated.float())
     # Mean over batch, channel, height, width -> [D]
     per_slice_error = diff.mean(dim=(0, 1, 3, 4))
@@ -174,38 +180,66 @@ def create_worst_batch_figure_3d(
     worst_indices = torch.topk(per_slice_error, k=num_slices).indices
     worst_indices = worst_indices.sort().values  # Sort for visual order
 
-    # Convert to numpy
-    orig_np = original[0, 0].cpu().float().numpy()  # [D, H, W]
-    gen_np = generated[0, 0].cpu().float().numpy()
-    diff_np = diff[0, 0].cpu().float().numpy()
+    # Generate channel labels
+    if channel_names is None:
+        if n_channels == 1:
+            labels = ['']  # No label needed for single channel
+        else:
+            labels = [f'Ch {i}' for i in range(n_channels)]
+    else:
+        labels = [name.replace('_', ' ').title() for name in channel_names]
 
-    # Create figure: 3 rows × num_slices columns
-    fig, axes = plt.subplots(3, num_slices, figsize=(2 * num_slices, 6))
+    # Create figure: (3 × n_channels) rows × num_slices columns
+    n_rows = 3 * n_channels
+    fig_height = 2 * n_channels + 1  # Slightly more than 2 per channel group
+    fig, axes = plt.subplots(n_rows, num_slices, figsize=(2 * num_slices, fig_height))
     if num_slices == 1:
-        axes = axes.reshape(3, 1)
+        axes = axes.reshape(n_rows, 1)
+    if n_rows == 1:
+        axes = axes.reshape(1, num_slices)
 
-    diff_max = diff_np.max()
+    # Process each channel
+    for ch_idx in range(n_channels):
+        # Convert to numpy for this channel
+        orig_np = original[0, ch_idx].cpu().float().numpy()  # [D, H, W]
+        gen_np = generated[0, ch_idx].cpu().float().numpy()
+        diff_np = diff[0, ch_idx].cpu().float().numpy()
+        diff_max = diff_np.max() if diff_np.max() > 0 else 1.0
 
-    for col, slice_idx in enumerate(worst_indices):
-        idx = slice_idx.item()
+        # Row offsets for this channel
+        row_orig = ch_idx * 3
+        row_gen = ch_idx * 3 + 1
+        row_diff = ch_idx * 3 + 2
 
-        # Row 0: Original
-        axes[0, col].imshow(np.clip(orig_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1)
-        axes[0, col].set_title(f'Slice {idx}', fontsize=8)
-        axes[0, col].axis('off')
+        label_suffix = f' {labels[ch_idx]}' if labels[ch_idx] else ''
 
-        # Row 1: Generated
-        axes[1, col].imshow(np.clip(gen_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1)
-        axes[1, col].axis('off')
+        for col, slice_idx in enumerate(worst_indices):
+            idx = slice_idx.item()
 
-        # Row 2: Difference heatmap
-        axes[2, col].imshow(diff_np[idx], cmap='hot', vmin=0, vmax=diff_max)
-        axes[2, col].axis('off')
+            # Only show slice titles on first channel group
+            if ch_idx == 0:
+                axes[row_orig, col].set_title(f'Slice {idx}', fontsize=8)
 
-    # Row labels
-    axes[0, 0].set_ylabel('Original', fontsize=10)
-    axes[1, 0].set_ylabel('Generated', fontsize=10)
-    axes[2, 0].set_ylabel('|Diff|', fontsize=10)
+            # Original
+            axes[row_orig, col].imshow(
+                np.clip(orig_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1
+            )
+            axes[row_orig, col].axis('off')
+
+            # Generated
+            axes[row_gen, col].imshow(
+                np.clip(gen_np[idx], 0, 1), cmap='gray', vmin=0, vmax=1
+            )
+            axes[row_gen, col].axis('off')
+
+            # Difference heatmap
+            axes[row_diff, col].imshow(diff_np[idx], cmap='hot', vmin=0, vmax=diff_max)
+            axes[row_diff, col].axis('off')
+
+        # Row labels (only on first column)
+        axes[row_orig, 0].set_ylabel(f'Original{label_suffix}', fontsize=9)
+        axes[row_gen, 0].set_ylabel(f'Generated{label_suffix}', fontsize=9)
+        axes[row_diff, 0].set_ylabel(f'|Diff|{label_suffix}', fontsize=9)
 
     # Build title
     title_parts = [f"Worst Volume - Loss: {loss:.4f}"]

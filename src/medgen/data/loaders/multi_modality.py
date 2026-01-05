@@ -13,7 +13,7 @@ from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.data.augmentation import build_vae_augmentation, create_vae_collate_fn
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import create_dataloader, DistributedArgs
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -76,14 +76,6 @@ def create_multi_modality_dataloader(
 
     train_dataset = Dataset(all_slices)
 
-    # Setup distributed sampler and batch size
-    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
-        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
-    )
-
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
     # Get batch augmentation settings (consistent with vae.py)
     batch_aug_cfg = cfg.training.get('batch_augment', {})
     batch_aug_enabled = batch_aug_cfg.get('enabled', False)
@@ -95,16 +87,14 @@ def create_multi_modality_dataloader(
         cutmix_prob = batch_aug_cfg.get('cutmix_prob', 0.2)
         collate_fn = create_vae_collate_fn(mixup_prob=mixup_prob, cutmix_prob=cutmix_prob)
 
-    dataloader = DataLoader(
+    # Create dataloader using shared helper
+    dataloader = create_dataloader(
         train_dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=shuffle,
+        cfg,
+        batch_size=batch_size,
+        shuffle=True,
         collate_fn=collate_fn,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        distributed_args=DistributedArgs(use_distributed, rank, world_size),
     )
 
     return dataloader, train_dataset
@@ -183,19 +173,13 @@ def create_multi_modality_validation_dataloader(
 
     val_dataset = Dataset(all_slices)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
     # Validation loader: shuffle enabled for diverse batch sampling
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         val_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,  # Ensure consistent batch sizes for worst_batch visualization
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -262,18 +246,13 @@ def create_single_modality_validation_loader(
         slices = extract_slices_single(dataset)
         val_dataset = Dataset(list(slices))
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create dataloader using shared helper
+    dataloader = create_dataloader(
         val_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader
@@ -352,18 +331,12 @@ def create_multi_modality_test_dataloader(
 
     test_dataset = Dataset(all_slices)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
     # Test loader: shuffle for diverse visualization samples
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         test_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset

@@ -9,6 +9,7 @@ from .augmentation import (
     mixup,
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
+from .base_embed import create_zero_init_mlp
 from .score_aug import ScoreAugTransform
 from .mode_embed import ModeEmbedModelWrapper, ModeTimeEmbed, MODE_ID_MAP, encode_mode_id
 from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed, create_conditioning_wrapper
@@ -68,6 +69,8 @@ __all__ = [
     'cutmix',
     # Score Augmentation
     'ScoreAugTransform',
+    # Base embedding helper
+    'create_zero_init_mlp',
     # Slice extraction utilities
     'extract_slices_single',
     'extract_slices_single_with_seg',

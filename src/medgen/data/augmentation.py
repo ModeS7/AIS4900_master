@@ -191,78 +191,82 @@ def build_vae_augmentation(enabled: bool = True) -> Optional[A.Compose]:
 # =============================================================================
 
 def mixup(
-    images: np.ndarray,
+    images: torch.Tensor,
     alpha: float = 0.4,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """Apply mixup augmentation to a batch of images.
 
     Blends pairs of images: mixed = lambda * img1 + (1-lambda) * img2
     Lambda sampled from Beta(alpha, alpha).
 
+    Operates directly on tensors (no numpy conversion).
+
     Args:
-        images: Batch of images [B, C, H, W].
+        images: Batch of images [B, C, H, W] as tensor.
         alpha: Beta distribution parameter (higher = more mixing).
 
     Returns:
         Tuple of (mixed_images, shuffled_indices, lambda_value).
     """
     batch_size = images.shape[0]
-    lam = np.random.beta(alpha, alpha)
+    lam = float(torch.distributions.Beta(alpha, alpha).sample())
 
     # Random permutation for pairing
-    indices = np.random.permutation(batch_size)
+    indices = torch.randperm(batch_size, device=images.device)
 
     # Mix images
     mixed = lam * images + (1 - lam) * images[indices]
 
-    return mixed.astype(np.float32), indices, lam
+    return mixed, indices, lam
 
 
 def cutmix(
-    images: np.ndarray,
+    images: torch.Tensor,
     alpha: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """Apply CutMix augmentation to a batch of images.
 
     Cuts a rectangular region from one image and pastes onto another.
     Lambda proportional to the area ratio.
 
+    Operates directly on tensors (no numpy conversion).
+
     Args:
-        images: Batch of images [B, C, H, W].
+        images: Batch of images [B, C, H, W] as tensor.
         alpha: Beta distribution parameter for lambda.
 
     Returns:
         Tuple of (mixed_images, shuffled_indices, lambda_value).
     """
     batch_size, c, h, w = images.shape
-    lam = np.random.beta(alpha, alpha)
+    lam = float(torch.distributions.Beta(alpha, alpha).sample())
 
     # Random permutation for pairing
-    indices = np.random.permutation(batch_size)
+    indices = torch.randperm(batch_size, device=images.device)
 
     # Get cut region size (proportional to 1-lambda)
-    cut_ratio = np.sqrt(1 - lam)
+    cut_ratio = (1 - lam) ** 0.5
     cut_h = int(h * cut_ratio)
     cut_w = int(w * cut_ratio)
 
     # Random center for cut
-    cy = np.random.randint(h)
-    cx = np.random.randint(w)
+    cy = random.randint(0, h - 1)
+    cx = random.randint(0, w - 1)
 
     # Bounding box (clipped to image bounds)
-    y1 = np.clip(cy - cut_h // 2, 0, h)
-    y2 = np.clip(cy + cut_h // 2, 0, h)
-    x1 = np.clip(cx - cut_w // 2, 0, w)
-    x2 = np.clip(cx + cut_w // 2, 0, w)
+    y1 = max(cy - cut_h // 2, 0)
+    y2 = min(cy + cut_h // 2, h)
+    x1 = max(cx - cut_w // 2, 0)
+    x2 = min(cx + cut_w // 2, w)
 
     # Apply cutmix
-    mixed = images.copy()
+    mixed = images.clone()
     mixed[:, :, y1:y2, x1:x2] = images[indices, :, y1:y2, x1:x2]
 
     # Adjust lambda based on actual cut area
     lam = 1 - ((y2 - y1) * (x2 - x1)) / (h * w)
 
-    return mixed.astype(np.float32), indices, lam
+    return mixed, indices, lam
 
 
 def create_vae_collate_fn(
@@ -310,13 +314,12 @@ def create_vae_collate_fn(
             masks = None
 
         # Apply batch augmentation to images only (not masks)
+        # mixup/cutmix now operate directly on tensors (no numpy conversion)
         r = random.random()
         if r < mixup_prob:
-            mixed, _, _ = mixup(images.numpy(), alpha=0.4)
-            images = torch.from_numpy(mixed).float()
+            images, _, _ = mixup(images, alpha=0.4)
         elif r < mixup_prob + cutmix_prob:
-            mixed, _, _ = cutmix(images.numpy(), alpha=1.0)
-            images = torch.from_numpy(mixed).float()
+            images, _, _ = cutmix(images, alpha=1.0)
 
         if has_masks:
             return (images, masks)

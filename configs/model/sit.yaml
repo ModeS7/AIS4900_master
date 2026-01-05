@@ -17,9 +17,3 @@ variant: B                           # Model variant: S, B, L, XL
 mlp_ratio: 4.0                       # MLP expansion ratio
 conditioning: concat                 # Conditioning mode: concat or cross_attn
 drop_rate: 0.0                       # Dropout rate
-
-# UNet fallback fields (for compatibility, not used by SiT)
-channels: [128, 256, 256]
-attention_levels: [false, true, true]
-num_res_blocks: 1
-num_head_channels: 256

@@ -19,7 +19,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.amp import autocast
@@ -32,6 +31,7 @@ set_track_meta(False)
 
 from monai.networks.nets import AutoencoderKL
 
+from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompression3DTrainer
 from .metrics import (
     compute_lpips_3d,
@@ -46,7 +46,7 @@ from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_
 logger = logging.getLogger(__name__)
 
 
-class CheckpointedAutoencoder(nn.Module):
+class CheckpointedAutoencoder(BaseCheckpointedModel):
     """Wrapper that applies gradient checkpointing to MONAI AutoencoderKL.
 
     MONAI's AutoencoderKL doesn't have built-in gradient checkpointing.
@@ -57,10 +57,6 @@ class CheckpointedAutoencoder(nn.Module):
         model: The underlying AutoencoderKL model.
     """
 
-    def __init__(self, model: AutoencoderKL):
-        super().__init__()
-        self.model = model
-
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass with gradient checkpointing."""
         def encode_fn(x):
@@ -69,23 +65,15 @@ class CheckpointedAutoencoder(nn.Module):
             z_log_var = self.model.quant_conv_log_sigma(h)
             return z_mu, z_log_var
 
-        z_mu, z_log_var = grad_checkpoint(encode_fn, x, use_reentrant=False)
+        z_mu, z_log_var = self.checkpoint(encode_fn, x)
         z = self.model.sampling(z_mu, z_log_var)
 
         def decode_fn(z):
             z_post = self.model.post_quant_conv(z)
             return self.model.decoder(z_post)
 
-        reconstruction = grad_checkpoint(decode_fn, z, use_reentrant=False)
+        reconstruction = self.checkpoint(decode_fn, z)
         return reconstruction, z_mu, z_log_var
-
-    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Encode input to latent space (for inference, no checkpointing)."""
-        return self.model.encode(x)
-
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode latent to output (for inference, no checkpointing)."""
-        return self.model.decode(z)
 
     def encode_stage_2_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """Get latent representation for diffusion model."""
@@ -281,24 +269,9 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             },
         }
 
-    def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Compute KL divergence loss.
-
-        Uses the same aggregation as 2D VAE: sum over spatial dimensions [C, D, H, W],
-        then average over batch. This ensures KL regularization strength is consistent
-        with 2D training (previous version used .mean() over all dims, making KL ~80,000x weaker).
-
-        Args:
-            mean: Mean of latent distribution [B, C, D, H, W].
-            logvar: Log variance of latent distribution [B, C, D, H, W].
-
-        Returns:
-            KL divergence loss (scalar).
-        """
-        # KL divergence: -0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-        # Sum over spatial dims [C, D, H, W], then average over batch
-        kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[1, 2, 3, 4])
-        return kl.mean()
+    # _compute_kl_loss is inherited from BaseCompression3DTrainer
+    # (which inherits from BaseCompressionTrainer)
+    # Works for both 2D and 3D by dynamically determining spatial dimensions
 
     def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute 3D VAE training step with KL loss.
@@ -400,6 +373,9 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         for step, batch in enumerate(pbar):
             result = self.train_step(batch)
             losses = result.to_legacy_dict('kl')
+
+            # Step profiler to mark training step boundary
+            self._profiler_step()
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

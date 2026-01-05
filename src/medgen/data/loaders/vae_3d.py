@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from ..dataset import NiFTIDataset
 from medgen.core.constants import DEFAULT_NUM_WORKERS
+from .common import create_dataloader, DataLoaderConfig, DistributedArgs
 
 logger = logging.getLogger(__name__)
 
@@ -49,23 +50,14 @@ class VolumeConfig:
     batch_size: int
     load_seg: bool
     image_keys: list
-    # DataLoader config
-    num_workers: int
-    prefetch_factor: Optional[int]
-    pin_memory: bool
-    persistent_workers: bool
+    # DataLoader config (stored as DataLoaderConfig)
+    _loader_config: DataLoaderConfig = None
 
     @classmethod
     def from_cfg(cls, cfg) -> 'VolumeConfig':
         """Extract volume configuration from Hydra config object."""
         logging_cfg = cfg.training.get('logging', {})
-
-        # Extract DataLoader settings (consistent with 2D loaders)
-        dl_cfg = cfg.training.get('dataloader', {})
-        num_workers = dl_cfg.get('num_workers', DEFAULT_NUM_WORKERS)
-        prefetch_factor = dl_cfg.get('prefetch_factor', 4) if num_workers > 0 else None
-        pin_memory = dl_cfg.get('pin_memory', True)
-        persistent_workers = dl_cfg.get('persistent_workers', True) and num_workers > 0
+        loader_config = DataLoaderConfig.from_cfg(cfg)
 
         return cls(
             height=cfg.volume.height,
@@ -76,11 +68,30 @@ class VolumeConfig:
             batch_size=cfg.training.batch_size,
             load_seg=logging_cfg.get('regional_losses', False),
             image_keys=cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd']),
-            num_workers=num_workers,
-            prefetch_factor=prefetch_factor,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
+            _loader_config=loader_config,
         )
+
+    @property
+    def loader_config(self) -> DataLoaderConfig:
+        """Get DataLoaderConfig for create_dataloader()."""
+        return self._loader_config
+
+    # Legacy properties for backwards compatibility
+    @property
+    def num_workers(self) -> int:
+        return self._loader_config.num_workers
+
+    @property
+    def prefetch_factor(self) -> Optional[int]:
+        return self._loader_config.prefetch_factor
+
+    @property
+    def pin_memory(self) -> bool:
+        return self._loader_config.pin_memory
+
+    @property
+    def persistent_workers(self) -> bool:
+        return self._loader_config.persistent_workers
 
 
 class Base3DVolumeDataset(Dataset):
@@ -390,7 +401,7 @@ def _create_loader(
     rank: int = 0,
     world_size: int = 1,
 ) -> DataLoader:
-    """Create DataLoader with standard settings.
+    """Create DataLoader with standard settings using shared create_dataloader().
 
     Args:
         dataset: Dataset to wrap.
@@ -404,24 +415,20 @@ def _create_loader(
     Returns:
         Configured DataLoader.
     """
-    if use_distributed:
-        from torch.utils.data.distributed import DistributedSampler
-        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
-        actual_shuffle = False
-    else:
-        sampler = None
-        actual_shuffle = shuffle
+    distributed_args = DistributedArgs(
+        use_distributed=use_distributed,
+        rank=rank,
+        world_size=world_size,
+    )
 
-    return DataLoader(
-        dataset,
+    return create_dataloader(
+        dataset=dataset,
         batch_size=vcfg.batch_size,
-        shuffle=actual_shuffle,
-        sampler=sampler,
-        num_workers=vcfg.num_workers,
-        prefetch_factor=vcfg.prefetch_factor,
-        pin_memory=vcfg.pin_memory,
-        persistent_workers=vcfg.persistent_workers,
+        shuffle=shuffle,
         drop_last=drop_last,
+        distributed_args=distributed_args,
+        loader_config=vcfg.loader_config,
+        scale_batch_for_distributed=False,  # 3D volumes: batch_size=1-2, don't divide
     )
 
 

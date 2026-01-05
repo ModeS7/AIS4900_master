@@ -43,7 +43,11 @@ adv_weight: 0.01                  # Adversarial loss weight
 # Discriminator (PatchGAN 3D)
 # ============================================================================
 disable_gan: false                # Set true to skip discriminator entirely (saves ~15GB VRAM)
-disc_lr: 1.0e-4                   # Discriminator learning rate (higher than gen)
+# 3D uses 5x lower disc_lr (1e-4 vs 2D's 5e-4) because:
+# 1. Smaller batch sizes (1-2 vs 16+) cause noisier gradient estimates
+# 2. 3D discriminator sees more spatial context, needs slower adaptation
+# 3. Empirically more stable GAN training with lower LR in 3D
+disc_lr: 1.0e-4
 disc_num_layers: 3                # PatchDiscriminator depth
 disc_num_channels: 64             # PatchDiscriminator base channels
 

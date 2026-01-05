@@ -47,7 +47,8 @@ class Attention(nn.Module):
         proj_drop: float = 0.0,
     ):
         super().__init__()
-        assert dim % num_heads == 0, f"dim {dim} not divisible by num_heads {num_heads}"
+        if dim % num_heads != 0:
+            raise ValueError(f"dim {dim} not divisible by num_heads {num_heads}")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
@@ -101,7 +102,8 @@ class CrossAttention(nn.Module):
         proj_drop: float = 0.0,
     ):
         super().__init__()
-        assert dim % num_heads == 0, f"dim {dim} not divisible by num_heads {num_heads}"
+        if dim % num_heads != 0:
+            raise ValueError(f"dim {dim} not divisible by num_heads {num_heads}")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
@@ -244,8 +246,13 @@ class SiTBlock(nn.Module):
             modulate(self.norm1(x), shift_msa, scale_msa)
         )
 
-        # Cross-attention (if context provided)
-        if self.use_cross_attn and context is not None:
+        # Cross-attention (required if use_cross_attn=True)
+        if self.use_cross_attn:
+            if context is None:
+                raise ValueError(
+                    "context tensor required when use_cross_attn=True. "
+                    "Either pass context or create block with use_cross_attn=False"
+                )
             x = x + self.cross_attn(self.norm_cross(x), context)
 
         # MLP with adaLN modulation

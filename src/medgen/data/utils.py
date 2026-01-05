@@ -7,6 +7,7 @@ and merging multiple MR sequences from the same patients.
 from typing import Dict, List, Optional
 
 import numpy as np
+import torch
 from monai.data import Dataset
 
 from medgen.core.constants import BINARY_THRESHOLD_GT
@@ -54,10 +55,12 @@ def extract_slices_single(
         volume, _ = nifti_dataset[i]  # Shape: [1, H, W, D]
 
         # Convert to numpy if tensor
-        if hasattr(volume, 'numpy'):
+        if isinstance(volume, torch.Tensor):
             volume = volume.numpy()
 
         # Extract non-empty slices along depth dimension (axis 3)
+        # Threshold > 1.0: normalized intensities sum > 1.0 indicates
+        # meaningful tissue content, not just background noise
         for k in range(volume.shape[3]):
             slice_data = volume[:, :, :, k]
             if np.sum(slice_data) > 1.0:
@@ -95,7 +98,7 @@ def extract_slices_dual(
         volume = merged_dataset[i]  # Shape: [C, H, W, D]
 
         # Convert to numpy if tensor
-        if hasattr(volume, 'numpy'):
+        if isinstance(volume, torch.Tensor):
             volume = volume.numpy()
 
         # Extract slices along depth dimension
@@ -174,9 +177,9 @@ def extract_slices_single_with_seg(
         seg_volume, seg_name = seg_dataset[i]  # Shape: [1, H, W, D]
 
         # Convert to numpy if tensor
-        if hasattr(image_volume, 'numpy'):
+        if isinstance(image_volume, torch.Tensor):
             image_volume = image_volume.numpy()
-        if hasattr(seg_volume, 'numpy'):
+        if isinstance(seg_volume, torch.Tensor):
             seg_volume = seg_volume.numpy()
 
         # Verify same patient

@@ -9,7 +9,7 @@ Provides shared functions to reduce duplication across loader modules:
 import logging
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from omegaconf import DictConfig
 from torch.utils.data import Dataset, DistributedSampler
@@ -144,12 +144,14 @@ class DistributedArgs:
 
 def create_dataloader(
     dataset: Dataset,
-    cfg: DictConfig,
+    cfg: Optional[DictConfig] = None,
     batch_size: Optional[int] = None,
     shuffle: bool = True,
     drop_last: bool = False,
-    collate_fn: Optional[callable] = None,
+    collate_fn: Optional[Callable] = None,
     distributed_args: Optional[DistributedArgs] = None,
+    loader_config: Optional[DataLoaderConfig] = None,
+    scale_batch_for_distributed: bool = True,
 ) -> 'DataLoader':
     """Create DataLoader with standard configuration.
 
@@ -160,11 +162,16 @@ def create_dataloader(
     Args:
         dataset: Dataset to wrap.
         cfg: Hydra configuration (for training.batch_size and training.dataloader).
+            Required unless loader_config and batch_size are provided.
         batch_size: Override batch size (default: cfg.training.batch_size).
         shuffle: Whether to shuffle (ignored if distributed, handled by sampler).
         drop_last: Whether to drop last incomplete batch.
         collate_fn: Optional custom collate function.
         distributed_args: Optional distributed training configuration.
+        loader_config: Pre-extracted DataLoaderConfig (alternative to cfg).
+        scale_batch_for_distributed: If True, divide batch_size by world_size
+            for distributed training. Set False for 3D volumes where batch_size
+            is typically 1-2 and shouldn't be divided.
 
     Returns:
         Configured DataLoader.
@@ -174,11 +181,20 @@ def create_dataloader(
         >>> loader = create_dataloader(dataset, cfg, shuffle=True)
         >>> for batch in loader:
         ...     train_step(batch)
+
+        >>> # With pre-extracted config (for 3D loaders)
+        >>> dl_cfg = DataLoaderConfig.from_cfg(cfg)
+        >>> loader = create_dataloader(
+        ...     dataset, batch_size=2, loader_config=dl_cfg,
+        ...     scale_batch_for_distributed=False
+        ... )
     """
     from torch.utils.data import DataLoader
 
     # Get batch size from config if not provided
     if batch_size is None:
+        if cfg is None:
+            raise ValueError("Either cfg or batch_size must be provided")
         batch_size = cfg.training.batch_size
 
     # Setup distributed sampler if needed
@@ -192,8 +208,17 @@ def create_dataloader(
         shuffle=shuffle,
     )
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
+    # Don't scale batch for 3D volumes
+    if not scale_batch_for_distributed:
+        batch_size_per_gpu = batch_size
+
+    # Get DataLoader settings from config or use provided
+    if loader_config is not None:
+        dl_cfg = loader_config
+    elif cfg is not None:
+        dl_cfg = DataLoaderConfig.from_cfg(cfg)
+    else:
+        raise ValueError("Either cfg or loader_config must be provided")
 
     return DataLoader(
         dataset,
@@ -236,7 +261,7 @@ def get_modality_keys(modality: str) -> List[str]:
 def validate_modality_keys(
     data_dir: str,
     modality: str,
-    validate_fn: callable,
+    validate_fn: Callable,
 ) -> List[str]:
     """Validate modality files exist and return keys to load.
 

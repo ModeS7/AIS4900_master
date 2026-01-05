@@ -192,6 +192,7 @@ class BaseTestEvaluator(ABC):
         writer: Optional[SummaryWriter] = None,
         metrics_config: Optional[MetricsConfig] = None,
         is_cluster: bool = False,
+        worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ):
         """Initialize test evaluator.
 
@@ -202,6 +203,7 @@ class BaseTestEvaluator(ABC):
             writer: Optional TensorBoard writer.
             metrics_config: Which metrics to compute.
             is_cluster: If True, disable tqdm progress bar.
+            worst_batch_figure_fn: Optional callable to create worst batch figure.
         """
         self.model = model
         self.device = device
@@ -209,6 +211,7 @@ class BaseTestEvaluator(ABC):
         self.writer = writer
         self.metrics_config = metrics_config or MetricsConfig()
         self.is_cluster = is_cluster
+        self.worst_batch_figure_fn = worst_batch_figure_fn
 
     def evaluate(
         self,
@@ -332,10 +335,35 @@ class BaseTestEvaluator(ABC):
             accumulators['msssim'] = 0.0
         return accumulators
 
-    @abstractmethod
-    def _prepare_batch(self, batch: Any) -> Any:
-        """Prepare batch for evaluation. Subclass implements."""
-        pass
+    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Prepare batch for evaluation, handling dict, tuple, or tensor inputs.
+
+        Handles three input formats:
+        - Dict: Extracts 'image'/'images' and 'mask'/'seg' keys
+        - Tuple/List: First element is images, second (optional) is mask
+        - Tensor: Uses as images directly with no mask
+
+        Args:
+            batch: Raw batch from DataLoader.
+
+        Returns:
+            Tuple of (images_tensor, mask_tensor_or_None).
+        """
+        if isinstance(batch, dict):
+            images = batch.get('image', batch.get('images'))
+            mask = batch.get('mask', batch.get('seg'))
+        elif isinstance(batch, (list, tuple)):
+            images = batch[0]
+            mask = batch[1] if len(batch) > 1 else None
+        else:
+            images = batch
+            mask = None
+
+        images = images.to(self.device, non_blocking=True)
+        if mask is not None:
+            mask = mask.to(self.device, non_blocking=True)
+
+        return images, mask
 
     @abstractmethod
     def _get_batch_size(self, batch_data: Any) -> int:
@@ -364,8 +392,28 @@ class BaseTestEvaluator(ABC):
         pass
 
     def _log_worst_batch(self, worst_batch_data: Any, label: str) -> None:
-        """Log worst batch figure. Can be overridden."""
-        pass
+        """Log worst batch figure to TensorBoard and save as PNG.
+
+        Args:
+            worst_batch_data: Dict with 'original', 'generated', 'loss' keys.
+            label: 'best' or 'latest' for filename.
+        """
+        import matplotlib.pyplot as plt
+
+        if self.worst_batch_figure_fn is None or self.writer is None:
+            return
+
+        # Log to TensorBoard
+        fig = self.worst_batch_figure_fn(worst_batch_data)
+        self.writer.add_figure(f'test_{label}/worst_batch', fig, 0)
+        plt.close(fig)
+
+        # Save as PNG
+        fig = self.worst_batch_figure_fn(worst_batch_data)
+        fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
+        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        logger.info(f"Test worst batch saved to: {fig_path}")
 
 
 # =============================================================================
@@ -410,12 +458,14 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             worst_batch_figure_fn: Optional callable to create worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics (e.g., ['t1_pre', 't1_gd']).
         """
-        super().__init__(model, device, save_dir, writer, metrics_config, is_cluster)
+        super().__init__(
+            model, device, save_dir, writer, metrics_config, is_cluster,
+            worst_batch_figure_fn=worst_batch_figure_fn
+        )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
         self.regional_tracker_factory = regional_tracker_factory
         self.volume_3d_msssim_fn = volume_3d_msssim_fn
-        self.worst_batch_figure_fn = worst_batch_figure_fn
         self.image_keys = image_keys
         self._regional_tracker: Optional[Any] = None
         # Per-channel metric accumulators
@@ -458,24 +508,6 @@ class CompressionTestEvaluator(BaseTestEvaluator):
                     self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
 
         return result
-
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Prepare batch for 2D compression evaluation."""
-        if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
-        elif isinstance(batch, (list, tuple)):
-            images = batch[0]
-            mask = batch[1] if len(batch) > 1 else None
-        else:
-            images = batch
-            mask = None
-
-        images = images.to(self.device, non_blocking=True)
-        if mask is not None:
-            mask = mask.to(self.device, non_blocking=True)
-
-        return images, mask
 
     def _get_batch_size(self, batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> int:
         """Get batch size from prepared batch."""
@@ -573,25 +605,6 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             if msssim_3d is not None:
                 metrics['msssim_3d'] = msssim_3d
 
-    def _log_worst_batch(self, worst_batch_data: Dict[str, Any], label: str) -> None:
-        """Log worst batch figure to TensorBoard and save as PNG."""
-        import matplotlib.pyplot as plt
-
-        if self.worst_batch_figure_fn is None or self.writer is None:
-            return
-
-        # Log to TensorBoard
-        fig = self.worst_batch_figure_fn(worst_batch_data)
-        self.writer.add_figure(f'test_{label}/worst_batch', fig, 0)
-        plt.close(fig)
-
-        # Save as PNG
-        fig = self.worst_batch_figure_fn(worst_batch_data)
-        fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        logger.info(f"Test worst batch saved to: {fig_path}")
-
 
 # =============================================================================
 # 3D Compression Test Evaluator
@@ -632,11 +645,13 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             worst_batch_figure_fn: Optional callable to create 3D worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics.
         """
-        super().__init__(model, device, save_dir, writer, metrics_config, is_cluster)
+        super().__init__(
+            model, device, save_dir, writer, metrics_config, is_cluster,
+            worst_batch_figure_fn=worst_batch_figure_fn
+        )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
         self.regional_tracker_factory = regional_tracker_factory
-        self.worst_batch_figure_fn = worst_batch_figure_fn
         self.image_keys = image_keys
         self._regional_tracker: Optional[Any] = None
         self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
@@ -685,24 +700,6 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
                     self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
 
         return result
-
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Prepare batch for 3D compression evaluation."""
-        if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
-        elif isinstance(batch, (list, tuple)):
-            images = batch[0]
-            mask = batch[1] if len(batch) > 1 else None
-        else:
-            images = batch
-            mask = None
-
-        images = images.to(self.device, non_blocking=True)
-        if mask is not None:
-            mask = mask.to(self.device, non_blocking=True)
-
-        return images, mask
 
     def _get_batch_size(self, batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> int:
         """Get batch size from prepared batch."""
@@ -804,22 +801,3 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             'generated': self._current_batch['reconstructed'].float().cpu(),
             'loss': batch_metrics.get('l1', 0.0),
         }
-
-    def _log_worst_batch(self, worst_batch_data: Dict[str, Any], label: str) -> None:
-        """Log 3D worst batch figure."""
-        import matplotlib.pyplot as plt
-
-        if self.worst_batch_figure_fn is None or self.writer is None:
-            return
-
-        # Log to TensorBoard
-        fig = self.worst_batch_figure_fn(worst_batch_data)
-        self.writer.add_figure(f'test_{label}/worst_batch', fig, 0)
-        plt.close(fig)
-
-        # Save as PNG
-        fig = self.worst_batch_figure_fn(worst_batch_data)
-        fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        logger.info(f"Test worst batch saved to: {fig_path}")

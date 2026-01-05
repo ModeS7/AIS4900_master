@@ -11,11 +11,19 @@ class ModeType(str, Enum):
 
     Using str inheritance allows direct comparison with config strings:
         mode_name == ModeType.DUAL  # works even if mode_name is "dual"
+
+    Note on multi-modality modes (easy to confuse):
+    - MULTI: Multi-modality DIFFUSION training with mode embedding conditioning.
+      The model learns to generate specific modalities (t1_pre, t1_gd, bravo, seg)
+      based on a mode ID embedding. Use this when training conditional diffusion.
+    - MULTI_MODALITY: Multi-modality VAE/compression training (pools all modalities).
+      The autoencoder treats all modality slices identically without knowing which
+      modality they are. Use this for VAE, VQ-VAE, and DC-AE training.
     """
-    SEG = "seg"
-    BRAVO = "bravo"
-    DUAL = "dual"
-    MULTI = "multi"  # Multi-modality diffusion with mode embedding
+    SEG = "seg"               # Segmentation mask only
+    BRAVO = "bravo"           # Single MRI modality (BRAVO/FLAIR)
+    DUAL = "dual"             # Two MRI modalities (t1_pre + t1_gd)
+    MULTI = "multi"           # Multi-modality diffusion with mode embedding
     MULTI_MODALITY = "multi_modality"  # Multi-modality VAE (no mode embedding)
 
 
@@ -35,11 +43,6 @@ DEFAULT_NUM_HEAD_CHANNELS = 256
 
 # Data loading
 DEFAULT_NUM_WORKERS = 4  # Parallel data loading workers
-
-# Medical imaging defaults
-# Default field of view in millimeters for brain MRI
-# Used for converting pixel distances to mm for RANO-BM tumor size classification
-DEFAULT_FOV_MM = 240.0
 
 # Dual mode default image keys
 DEFAULT_DUAL_IMAGE_KEYS = ['t1_pre', 't1_gd']

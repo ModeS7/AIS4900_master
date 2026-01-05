@@ -92,6 +92,16 @@ class SiT(nn.Module):
         self.conditioning = conditioning
         self.cond_channels = cond_channels
 
+        # Validate input dimensions are divisible by patch_size
+        if input_size % patch_size != 0:
+            raise ValueError(
+                f"input_size ({input_size}) must be divisible by patch_size ({patch_size})"
+            )
+        if spatial_dims == 3 and depth_size is not None and depth_size % patch_size != 0:
+            raise ValueError(
+                f"depth_size ({depth_size}) must be divisible by patch_size ({patch_size})"
+            )
+
         # Calculate number of patches
         if spatial_dims == 2:
             self.num_patches = (input_size // patch_size) ** 2

@@ -56,6 +56,25 @@ from .utils import save_full_checkpoint
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Shared Batch Preparation Helpers
+# =============================================================================
+
+def _tensor_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Move tensor to device with async transfer and MetaTensor handling.
+
+    Args:
+        tensor: Input tensor (may be MONAI MetaTensor).
+        device: Target device.
+
+    Returns:
+        Tensor on target device.
+    """
+    if hasattr(tensor, 'as_tensor'):
+        tensor = tensor.as_tensor()
+    return tensor.to(device, non_blocking=True)
+
+
 class BaseCompressionTrainer(BaseTrainer):
     """Base trainer for compression models (VAE, VQ-VAE, DC-AE).
 
@@ -330,8 +349,6 @@ class BaseCompressionTrainer(BaseTrainer):
         - Dict with image keys
         - Single tensor
 
-        Uses non_blocking=True for async GPU transfers to overlap with computation.
-
         Args:
             batch: Input batch.
 
@@ -341,31 +358,18 @@ class BaseCompressionTrainer(BaseTrainer):
         # Handle tuple of (image, seg)
         if isinstance(batch, (tuple, list)) and len(batch) == 2:
             images, mask = batch
-            if hasattr(images, 'as_tensor'):
-                images = images.as_tensor()
-            if hasattr(mask, 'as_tensor'):
-                mask = mask.as_tensor()
-            return (
-                images.to(self.device, non_blocking=True),
-                mask.to(self.device, non_blocking=True)
-            )
+            return _tensor_to_device(images, self.device), _tensor_to_device(mask, self.device)
 
         # Handle dict batches
         if isinstance(batch, dict):
             image_keys = self.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
-            tensors = []
-            for key in image_keys:
-                if key in batch:
-                    tensors.append(batch[key].to(self.device, non_blocking=True))
+            tensors = [_tensor_to_device(batch[k], self.device) for k in image_keys if k in batch]
             images = torch.cat(tensors, dim=1)
-            mask = batch['seg'].to(self.device, non_blocking=True) if 'seg' in batch else None
+            mask = _tensor_to_device(batch['seg'], self.device) if 'seg' in batch else None
             return images, mask
 
         # Handle tensor input
-        if hasattr(batch, 'as_tensor'):
-            tensor = batch.as_tensor().to(self.device, non_blocking=True)
-        else:
-            tensor = batch.to(self.device, non_blocking=True)
+        tensor = _tensor_to_device(batch, self.device)
 
         # Check if seg is stacked as last channel
         n_image_channels = self.cfg.mode.get('in_channels', 2)
@@ -399,7 +403,8 @@ class BaseCompressionTrainer(BaseTrainer):
             # Real images -> discriminator should output 1
             logits_real = self.discriminator(images.contiguous())
             # Fake images -> discriminator should output 0
-            logits_fake = self.discriminator(reconstruction.contiguous())
+            # Detach to prevent gradient flow through generator (saves memory)
+            logits_fake = self.discriminator(reconstruction.detach().contiguous())
 
             d_loss = 0.5 * (
                 self.adv_loss_fn(logits_real, target_is_real=True, for_discriminator=True)
@@ -456,6 +461,24 @@ class BaseCompressionTrainer(BaseTrainer):
         if self.perceptual_loss_fn is None:
             return torch.tensor(0.0, device=self.device)
         return self.perceptual_loss_fn(reconstruction, target)
+
+    def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """Compute KL divergence loss for VAE training.
+
+        Works for both 2D [B, C, H, W] and 3D [B, C, D, H, W] tensors by
+        summing over all spatial dimensions, then averaging over batch.
+
+        Args:
+            mean: Mean of latent distribution.
+            logvar: Log variance of latent distribution.
+
+        Returns:
+            KL divergence loss (scalar).
+        """
+        # Sum over all spatial dimensions (everything except batch dim 0)
+        spatial_dims = list(range(1, mean.dim()))
+        kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=spatial_dims)
+        return kl.mean()
 
     def _update_ema(self) -> None:
         """Update EMA if enabled."""
@@ -1323,8 +1346,6 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch for 3D compression training.
 
-        Uses non_blocking=True for async GPU transfers to overlap with computation.
-
         Args:
             batch: Input batch.
 
@@ -1341,9 +1362,8 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             images = batch
             mask = None
 
-        images = images.to(self.device, non_blocking=True)
-        if mask is not None:
-            mask = mask.to(self.device, non_blocking=True)
+        images = _tensor_to_device(images, self.device)
+        mask = _tensor_to_device(mask, self.device) if mask is not None else None
 
         return images, mask
 

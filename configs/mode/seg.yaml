@@ -17,4 +17,5 @@ name: seg
 is_conditional: false
 in_channels: 1   # noisy_seg only (unconditional)
 out_channels: 1  # predicted noise/velocity for seg
+image_keys: [seg]  # Which modalities to load
 description: "Unconditional segmentation mask generation"

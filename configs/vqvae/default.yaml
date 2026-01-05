@@ -8,7 +8,10 @@
 # ============================================================================
 # Vector Quantization Parameters
 # ============================================================================
-num_embeddings: 512              # Codebook size (512 standard for medical)
+# 512 codebook entries: standard for discrete latent spaces
+# Reference: VQ-VAE-2 (Razavi et al., 2019) uses 512
+# Larger codebooks (1024, 2048) show diminishing returns
+num_embeddings: 512
 embedding_dim: 3                 # Latent channels (MONAI: 3)
 commitment_cost: 0.25            # Commitment loss weight
 decay: 0.99                      # EMA decay for codebook updates

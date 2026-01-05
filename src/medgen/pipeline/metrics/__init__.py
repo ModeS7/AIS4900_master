@@ -22,7 +22,7 @@ from .quality import (
 from .regional_base import BaseRegionalMetricsTracker
 from .regional import RegionalMetricsTracker
 from .regional_3d import RegionalMetricsTracker3D
-from .figures import create_reconstruction_figure
+from .figures import create_reconstruction_figure, figure_to_buffer
 from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
 
 __all__ = [
@@ -46,4 +46,5 @@ __all__ = [
     'TUMOR_SIZE_CATEGORIES',
     # Visualization
     'create_reconstruction_figure',
+    'figure_to_buffer',
 ]

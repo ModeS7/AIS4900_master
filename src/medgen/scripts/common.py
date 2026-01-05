@@ -123,6 +123,40 @@ def create_per_modality_val_loaders(
     return per_modality_val_loaders
 
 
+def create_per_modality_val_loaders_3d(
+    cfg: DictConfig,
+    image_keys: list,
+    create_loader_fn,
+    log: logging.Logger,
+) -> Dict[str, Any]:
+    """Create per-modality validation loaders for 3D multi-modality training.
+
+    Simplified version of create_per_modality_val_loaders for 3D loaders
+    that take only (cfg, modality) as arguments.
+
+    Args:
+        cfg: Hydra configuration object.
+        image_keys: List of modality names (e.g., ['bravo', 'flair', 't1_pre', 't1_gd']).
+        create_loader_fn: Function with signature (cfg, modality) -> DataLoader.
+        log: Logger instance for output messages.
+
+    Returns:
+        Dictionary mapping modality names to validation loaders.
+    """
+    per_modality_val_loaders = {}
+
+    for modality in image_keys:
+        loader = create_loader_fn(cfg, modality)
+        if loader is not None:
+            per_modality_val_loaders[modality] = loader
+            log.info(f"  Per-modality 3D validation for {modality}: {len(loader.dataset)} volumes")
+
+    if per_modality_val_loaders:
+        log.info(f"Created {len(per_modality_val_loaders)} per-modality validation loaders")
+
+    return per_modality_val_loaders
+
+
 DEFAULT_MULTI_MODALITY_KEYS_2D = ['bravo', 't1_pre', 't1_gd']
 DEFAULT_MULTI_MODALITY_KEYS_3D = ['bravo', 'flair', 't1_pre', 't1_gd']
 

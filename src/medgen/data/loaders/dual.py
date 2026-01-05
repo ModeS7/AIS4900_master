@@ -12,6 +12,7 @@ from omegaconf import DictConfig
 
 from medgen.data.augmentation import build_diffusion_augmentation, build_vae_augmentation
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.single import _diffusion_collate_fn
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -109,6 +110,7 @@ def create_dual_image_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
+        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, train_dataset
@@ -186,6 +188,7 @@ def create_dual_image_validation_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
+        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, val_dataset
@@ -256,6 +259,7 @@ def create_dual_image_test_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
+        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, test_dataset

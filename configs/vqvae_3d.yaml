@@ -14,21 +14,14 @@ defaults:
   - mode: dual
   - vqvae_3d: default
   - training: default
+  - volume: default
   - _self_
 
 # Pretrained checkpoint (for fine-tuning)
 pretrained_checkpoint: null
 
-# ============================================================================
-# 3D Volume Configuration
-# ============================================================================
-volume:
-  depth: 160                      # Pad 150 -> 160 for clean 4x compression
-  height: 256
-  width: 256
-  pad_depth_to: 160
-  pad_mode: replicate
-  slice_step: 1                   # 1=all slices
+# Volume config is loaded from configs/volume/default.yaml
+# Override specific values here if needed
 
 # ============================================================================
 # Training Overrides for 3D

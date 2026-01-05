@@ -100,6 +100,14 @@ class BaseTrainer(ABC):
         self.log_flops: bool = logging_cfg.get('flops', True)
 
         # ─────────────────────────────────────────────────────────────────────
+        # Extract profiling config
+        # ─────────────────────────────────────────────────────────────────────
+        profiling_cfg = cfg.training.get('profiling', {})
+        self._profiling_enabled: bool = profiling_cfg.get('enabled', False)
+        self._profiling_config: Dict[str, Any] = profiling_cfg
+        self._profiler: Optional[torch.profiler.profile] = None
+
+        # ─────────────────────────────────────────────────────────────────────
         # Setup device and distributed training
         # ─────────────────────────────────────────────────────────────────────
         if self.use_multi_gpu:
@@ -241,6 +249,55 @@ class BaseTrainer(ABC):
         if self.writer is not None:
             self.writer.close()
             self.writer = None
+
+    def _setup_profiler(self) -> Optional[torch.profiler.profile]:
+        """Setup PyTorch profiler if enabled.
+
+        Creates a profiler with Chrome trace export for performance analysis.
+        Traces can be viewed in Perfetto UI (https://ui.perfetto.dev) or
+        TensorBoard with torch-tb-profiler plugin.
+
+        Returns:
+            Profiler context manager or None if profiling disabled.
+        """
+        if not self._profiling_enabled or not self.is_main_process:
+            return None
+
+        cfg = self._profiling_config
+        trace_dir = os.path.join(self.save_dir, 'profiling')
+        os.makedirs(trace_dir, exist_ok=True)
+
+        logger.info(
+            f"PyTorch profiler enabled: wait={cfg.get('wait', 5)}, "
+            f"warmup={cfg.get('warmup', 2)}, active={cfg.get('active', 10)}"
+        )
+        logger.info(f"Traces will be saved to: {trace_dir}")
+
+        return torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(
+                wait=cfg.get('wait', 5),
+                warmup=cfg.get('warmup', 2),
+                active=cfg.get('active', 10),
+                repeat=cfg.get('repeat', 1),
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
+            record_shapes=cfg.get('record_shapes', True),
+            profile_memory=cfg.get('profile_memory', True),
+            with_stack=cfg.get('with_stack', False),
+            with_flops=cfg.get('with_flops', True),
+        )
+
+    def _profiler_step(self) -> None:
+        """Step the profiler to mark training step boundary.
+
+        Call this after each training step in train_epoch().
+        """
+        if self._profiler is not None:
+            self._profiler.step()
 
     def _cleanup_distributed(self) -> None:
         """Cleanup distributed training resources."""
@@ -537,6 +594,11 @@ class BaseTrainer(ABC):
             except Exception as e:
                 logger.warning(f"FLOPs measurement failed: {e}")
 
+        # Setup PyTorch profiler if enabled
+        self._profiler = self._setup_profiler()
+        if self._profiler is not None:
+            self._profiler.__enter__()
+
         last_epoch = start_epoch
         total_start = time.time()
 
@@ -576,6 +638,13 @@ class BaseTrainer(ABC):
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
         finally:
+            # Cleanup profiler
+            if self._profiler is not None:
+                self._profiler.__exit__(None, None, None)
+                trace_dir = os.path.join(self.save_dir, 'profiling')
+                logger.info(f"Profiling traces saved to: {trace_dir}")
+                self._profiler = None
+
             total_time = time.time() - total_start
             self._on_training_end(total_time)
 

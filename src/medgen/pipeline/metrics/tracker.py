@@ -17,6 +17,8 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from scipy import ndimage
+from scipy.ndimage import label as scipy_label
+from skimage.measure import regionprops
 from torch.utils.tensorboard import SummaryWriter
 
 from .quality import (
@@ -25,6 +27,52 @@ from .quality import (
     compute_lpips as _compute_lpips,
 )
 from .constants import TUMOR_SIZE_THRESHOLDS_MM
+
+
+def _compute_max_feret_diameter(mask_np: np.ndarray, mm_per_pixel: float) -> float:
+    """Compute maximum Feret diameter across all tumors in a mask.
+
+    Uses connected component analysis and skimage regionprops to find the
+    longest edge-to-edge distance (Feret diameter) across all tumor regions.
+
+    Args:
+        mask_np: Binary 2D mask array (H, W).
+        mm_per_pixel: Millimeters per pixel for size conversion.
+
+    Returns:
+        Maximum Feret diameter in mm, or 0.0 if no valid tumors found.
+    """
+    labeled, num_tumors = scipy_label(mask_np)
+    if num_tumors == 0:
+        return 0.0
+
+    regions = regionprops(labeled)
+    max_feret_mm = 0.0
+
+    for region in regions:
+        # Skip tiny fragments (<5 pixels)
+        if region.area < 5:
+            continue
+        feret_px = region.feret_diameter_max
+        feret_mm = feret_px * mm_per_pixel
+        max_feret_mm = max(max_feret_mm, feret_mm)
+
+    return max_feret_mm
+
+
+def _classify_tumor_size_feret(diameter_mm: float) -> str:
+    """Classify tumor by Feret diameter using RANO-BM thresholds.
+
+    Args:
+        diameter_mm: Feret diameter (longest axis) in millimeters.
+
+    Returns:
+        Size category: 'tiny', 'small', 'medium', or 'large'.
+    """
+    for size_name, (low, high) in TUMOR_SIZE_THRESHOLDS_MM.items():
+        if low <= diameter_mm < high:
+            return size_name
+    return 'large'  # Fallback for very large tumors
 
 logger = logging.getLogger(__name__)
 
@@ -151,37 +199,27 @@ class MetricsTracker:
             self.grad_norm_max = torch.tensor(0.0, device=self.device)
 
     def _compute_tumor_size_thresholds(self) -> Dict[str, Tuple[float, float]]:
-        """Compute tumor size thresholds based on image resolution.
+        """Get RANO-BM tumor size thresholds and compute mm_per_pixel.
 
-        Clinical definitions (diameter):
+        Clinical definitions (Feret diameter):
             - tiny:   <10mm  (often non-measurable per RANO-BM)
             - small:  10-20mm (small metastases, SRS alone)
             - medium: 20-30mm (SRS candidates)
             - large:  >30mm  (often surgical)
 
         Returns:
-            Dictionary mapping size names to (low, high) area percentage ranges.
+            Dictionary mapping size names to (low, high) mm thresholds.
         """
         fov_mm = self.cfg.paths.get('fov_mm', 240.0)
-        mm_per_pixel = fov_mm / self.image_size
-        total_pixels = self.image_size ** 2
-
-        thresholds = {}
-        for size_name, (d_low, d_high) in TUMOR_SIZE_THRESHOLDS_MM.items():
-            d_low_px = d_low / mm_per_pixel
-            d_high_px = d_high / mm_per_pixel
-            area_low = math.pi * (d_low_px / 2) ** 2
-            area_high = math.pi * (d_high_px / 2) ** 2
-            pct_low = area_low / total_pixels
-            pct_high = area_high / total_pixels
-            thresholds[size_name] = (pct_low, pct_high)
+        self.mm_per_pixel = fov_mm / self.image_size
 
         if self.is_main_process:
-            logger.info(f"Tumor size thresholds for {self.image_size}px ({mm_per_pixel:.2f} mm/px):")
-            for name, (low, high) in thresholds.items():
-                logger.info(f"  {name}: {low*100:.3f}% - {high*100:.3f}%")
+            logger.info(f"Tumor size tracking: {self.image_size}px ({self.mm_per_pixel:.2f} mm/px)")
+            logger.info("  Using Feret diameter (RANO-BM thresholds):")
+            for name, (low, high) in TUMOR_SIZE_THRESHOLDS_MM.items():
+                logger.info(f"    {name}: {low}-{high}mm")
 
-        return thresholds
+        return TUMOR_SIZE_THRESHOLDS_MM
 
     def _init_regional_accumulators(self) -> None:
         """Initialize GPU accumulators for regional loss tracking."""
@@ -336,7 +374,11 @@ class MetricsTracker:
         images: Union[torch.Tensor, Dict[str, torch.Tensor]],
         mask: torch.Tensor
     ) -> None:
-        """Vectorized tracking of losses by region and tumor size."""
+        """Track losses by region and tumor size using Feret diameter classification.
+
+        Uses connected component analysis to compute Feret diameter (longest axis)
+        for tumor size classification, matching the validation metric approach.
+        """
         if not self._regional_accum_initialized:
             self._init_regional_accumulators()
 
@@ -356,16 +398,16 @@ class MetricsTracker:
         bg_mask_expanded = 1.0 - tumor_mask_expanded
 
         tumor_pixels = tumor_mask.sum(dim=(1, 2, 3))
-        total_pixels = mask.shape[2] * mask.shape[3]
 
         tumor_pixels_safe = tumor_pixels.clamp(min=1)
-        bg_pixels = total_pixels - tumor_pixels
+        bg_pixels = mask.shape[2] * mask.shape[3] - tumor_pixels
         bg_pixels_safe = bg_pixels.clamp(min=1)
 
         tumor_loss_per_sample = (sq_error * tumor_mask_expanded).sum(dim=(1, 2, 3)) / tumor_pixels_safe
         bg_loss_per_sample = (sq_error * bg_mask_expanded).sum(dim=(1, 2, 3)) / bg_pixels_safe
 
-        has_tumor_float = (tumor_pixels > 10).float()
+        has_tumor = (tumor_pixels > 10)
+        has_tumor_float = has_tumor.float()
         num_valid = has_tumor_float.sum().long()
 
         self.tumor_loss_sum += (tumor_loss_per_sample * has_tumor_float).sum()
@@ -373,11 +415,21 @@ class MetricsTracker:
         self.bg_loss_sum += (bg_loss_per_sample * has_tumor_float).sum()
         self.bg_loss_count += num_valid
 
-        tumor_ratios = tumor_pixels / total_pixels
-        for size_name, (low, high) in self.tumor_size_thresholds.items():
-            size_mask = has_tumor_float * ((tumor_ratios >= low) & (tumor_ratios < high)).float()
-            self.tumor_size_loss_sum[size_name] += (tumor_loss_per_sample * size_mask).sum()
-            self.tumor_size_loss_count[size_name] += size_mask.sum().long()
+        # Classify by Feret diameter (per-sample, requires connected components)
+        batch_size = mask.shape[0]
+        for i in range(batch_size):
+            if not has_tumor[i]:
+                continue
+
+            # Compute max Feret diameter for this sample
+            mask_np = mask[i, 0].cpu().numpy() > 0.5
+            feret_mm = _compute_max_feret_diameter(mask_np, self.mm_per_pixel)
+
+            if feret_mm > 0:
+                size_cat = _classify_tumor_size_feret(feret_mm)
+                sample_loss = tumor_loss_per_sample[i].item()
+                self.tumor_size_loss_sum[size_cat] += sample_loss
+                self.tumor_size_loss_count[size_cat] += 1
 
     def _track_timestep_region_loss(
         self,

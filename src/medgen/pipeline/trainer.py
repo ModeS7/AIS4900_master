@@ -943,6 +943,9 @@ class DiffusionTrainer(BaseTrainer):
         for step, batch in enumerate(epoch_iter):
             result = self.train_step(batch)
 
+            # Step profiler to mark training step boundary
+            self._profiler_step()
+
             epoch_loss += result.total_loss
             epoch_mse_loss += result.mse_loss
             epoch_perceptual_loss += result.perceptual_loss

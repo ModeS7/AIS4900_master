@@ -38,5 +38,7 @@ def setup_cuda_optimizations() -> None:
     # TF32 for matmul
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    # torch.compile cache
+    # torch.compile cache: 32 balances compilation overhead vs memory
+    # Higher values cache more compiled graphs but use more memory
+    # Default is 8; 32 handles typical training with varying batch dims
     torch._dynamo.config.cache_size_limit = 32

@@ -284,6 +284,9 @@ class VQVAETrainer(BaseCompressionTrainer):
             result = self.train_step(batch)
             losses = result.to_legacy_dict('vq')
 
+            # Step profiler to mark training step boundary
+            self._profiler_step()
+
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]
 

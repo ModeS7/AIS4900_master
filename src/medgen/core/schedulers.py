@@ -32,7 +32,16 @@ def create_warmup_cosine_scheduler(
 
     Returns:
         SequentialLR scheduler combining warmup and cosine annealing.
+
+    Raises:
+        ValueError: If warmup_epochs >= total_epochs.
     """
+    if warmup_epochs >= total_epochs:
+        raise ValueError(
+            f"warmup_epochs ({warmup_epochs}) must be less than "
+            f"total_epochs ({total_epochs})"
+        )
+
     warmup_scheduler = LinearLR(
         optimizer,
         start_factor=start_factor,

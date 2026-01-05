@@ -23,6 +23,8 @@ from typing import List, Tuple, Optional, Dict, Any
 import torch
 import torch.nn as nn
 
+from .base_embed import create_zero_init_mlp
+
 
 class ScoreAugTransform:
     """Applies transforms to noisy input and target per ScoreAug paper.
@@ -624,17 +626,8 @@ class OmegaTimeEmbed(nn.Module):
         self.original = original_time_embed
         self.embed_dim = embed_dim
 
-        # MLP that maps omega encoding to embedding
-        # Uses larger hidden dim for expressivity
-        self.omega_mlp = nn.Sequential(
-            nn.Linear(OMEGA_ENCODING_DIM, embed_dim),
-            nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-
-        # Initialize output layer to near-zero so identity starts as no-op
-        nn.init.zeros_(self.omega_mlp[-1].weight)
-        nn.init.zeros_(self.omega_mlp[-1].bias)
+        # MLP that maps omega encoding to embedding (zero-init for neutral start)
+        self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
 
         # Buffer to store current omega encoding
         # This is set by ScoreAugModelWrapper before each forward

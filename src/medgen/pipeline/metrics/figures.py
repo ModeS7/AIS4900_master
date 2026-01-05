@@ -4,6 +4,7 @@ Reconstruction figure visualization utilities.
 Shared function for worst_batch, validation, and test visualizations.
 Works for both VAE (no timesteps) and Diffusion (with timesteps).
 """
+import io
 from typing import Dict, Optional, Union
 
 import matplotlib
@@ -229,3 +230,22 @@ def _create_dual_reconstruction_figure(
 
     plt.tight_layout()
     return fig
+
+
+def figure_to_buffer(fig: plt.Figure) -> io.BytesIO:
+    """Convert matplotlib figure to PNG buffer and close figure.
+
+    Use this to safely convert figures for TensorBoard logging without
+    memory leaks. The figure is closed after conversion.
+
+    Args:
+        fig: Matplotlib figure to convert.
+
+    Returns:
+        BytesIO buffer containing PNG image data.
+    """
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)  # Prevent memory leak
+    return buf

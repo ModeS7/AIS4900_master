@@ -49,6 +49,9 @@ from .evaluation import (
 # Validation utilities
 from .validation import ValidationRunner, ValidationConfig, ValidationResult
 
+# Gradient checkpointing base class
+from .checkpointing import BaseCheckpointedModel
+
 __all__ = [
     # Trainers
     'DiffusionTrainer',
@@ -100,4 +103,6 @@ __all__ = [
     'ValidationRunner',
     'ValidationConfig',
     'ValidationResult',
+    # Gradient checkpointing
+    'BaseCheckpointedModel',
 ]

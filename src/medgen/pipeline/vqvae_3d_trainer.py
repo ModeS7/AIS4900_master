@@ -20,7 +20,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from torch.amp import autocast
@@ -33,6 +32,7 @@ set_track_meta(False)
 
 from monai.networks.nets import VQVAE
 
+from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompression3DTrainer
 from .metrics import (
     compute_lpips_3d,
@@ -47,7 +47,7 @@ from .utils import get_vram_usage, log_compression_epoch_summary
 logger = logging.getLogger(__name__)
 
 
-class CheckpointedVQVAE(nn.Module):
+class CheckpointedVQVAE(BaseCheckpointedModel):
     """Wrapper that applies gradient checkpointing to MONAI VQVAE.
 
     Reduces activation memory by ~50% for 3D volumes.
@@ -56,35 +56,23 @@ class CheckpointedVQVAE(nn.Module):
         model: The underlying VQVAE model.
     """
 
-    def __init__(self, model: VQVAE):
-        super().__init__()
-        self.model = model
-
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass with gradient checkpointing."""
         def encode_fn(x):
             return self.model.encode(x)
 
-        encoded = grad_checkpoint(encode_fn, x, use_reentrant=False)
+        encoded = self.checkpoint(encode_fn, x)
 
         def quantize_fn(z):
             return self.model.quantize(z)
 
-        quantized, vq_loss = grad_checkpoint(quantize_fn, encoded, use_reentrant=False)
+        quantized, vq_loss = self.checkpoint(quantize_fn, encoded)
 
         def decode_fn(z):
             return self.model.decode(z)
 
-        reconstruction = grad_checkpoint(decode_fn, quantized, use_reentrant=False)
+        reconstruction = self.checkpoint(decode_fn, quantized)
         return reconstruction, vq_loss
-
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode without checkpointing (for inference)."""
-        return self.model.encode(x)
-
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        """Decode without checkpointing (for inference)."""
-        return self.model.decode(z)
 
     def index_quantize(self, x: torch.Tensor) -> torch.Tensor:
         """Get codebook indices for input."""
@@ -385,6 +373,9 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         for step, batch in enumerate(pbar):
             result = self.train_step(batch)
             losses = result.to_legacy_dict('vq')
+
+            # Step profiler to mark training step boundary
+            self._profiler_step()
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

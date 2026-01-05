@@ -160,6 +160,37 @@ def validate_vqvae_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
+def validate_training_config(cfg: DictConfig) -> List[str]:
+    """Validate training configuration for common issues.
+
+    Checks:
+    - use_compile + gradient_checkpointing conflict
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    training = cfg.get('training', {})
+
+    # Check compile + gradient_checkpointing conflict
+    # torch.compile with reduce-overhead mode uses CUDA graphs which conflict
+    # with gradient checkpointing's dynamic recomputation
+    use_compile = training.get('use_compile', False)
+    use_checkpointing = training.get('gradient_checkpointing', False)
+
+    if use_compile and use_checkpointing:
+        errors.append(
+            "use_compile=True and gradient_checkpointing=True cannot be used together. "
+            "torch.compile with reduce-overhead mode uses CUDA graphs which conflict "
+            "with gradient checkpointing's dynamic recomputation. Set one to False."
+        )
+
+    return errors
+
+
 def run_validation(
     cfg: DictConfig,
     validators: List[Callable[[DictConfig], List[str]]],

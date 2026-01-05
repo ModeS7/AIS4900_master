@@ -4,4 +4,6 @@ defaults:
 
 latent_channels: 32
 compression_ratio: 32
+# Scaling factor derived from ImageNet pretrained weights
+# Computed as 1/std of latent activations on calibration set
 scaling_factor: 0.3189

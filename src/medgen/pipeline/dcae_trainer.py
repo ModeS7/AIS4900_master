@@ -401,6 +401,9 @@ class DCAETrainer(BaseCompressionTrainer):
             result = self.train_step(batch)
             losses = result.to_legacy_dict(None)  # DCAE has no regularization
 
+            # Step profiler to mark training step boundary
+            self._profiler_step()
+
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]
 
@@ -513,7 +516,7 @@ class DCAETrainer(BaseCompressionTrainer):
             estimated_flops = num_params * 4
             self._flops_tracker.forward_flops = estimated_flops
             self._flops_tracker.steps_per_epoch = steps_per_epoch
-            self._flops_tracker._measured = True
+            self._flops_tracker.mark_measured()
             gflops = estimated_flops / 1e9
             tflops_epoch = self._flops_tracker.get_tflops_epoch()
             logger.info(

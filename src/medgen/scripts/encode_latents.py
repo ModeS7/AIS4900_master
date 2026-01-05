@@ -178,6 +178,19 @@ def main():
 
                 latents.append(z.cpu())
 
+            # Validate shapes before stacking
+            if not latents:
+                print(f"  Warning: No slices encoded for {modality}, skipping")
+                continue
+
+            ref_shape = latents[0].shape
+            for i, lat in enumerate(latents[1:], start=1):
+                if lat.shape != ref_shape:
+                    raise ValueError(
+                        f"Latent shape mismatch at slice {i} for {modality}: "
+                        f"{lat.shape} != expected {ref_shape}"
+                    )
+
             # Stack all slices: [N_slices, C, H/8, W/8]
             latents = torch.cat(latents, dim=0)
 

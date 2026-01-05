@@ -1,4 +1,9 @@
-# Multi Mode - Multi-modality diffusion with mode embedding
+# Multi Mode - Multi-modality DIFFUSION with mode embedding
+#
+# NOTE: This is different from multi_modality.yaml which is for VAE training.
+# - multi.yaml: DIFFUSION with mode embedding (model learns which modality to generate)
+# - multi_modality.yaml: VAE training (pools all modalities, no mode embedding)
+# See also: ModeType.MULTI vs ModeType.MULTI_MODALITY in src/medgen/core/constants.py
 #
 # Trains on all modalities (bravo, flair, t1_pre, t1_gd) conditioned on seg mask.
 # Each sample includes mode_id so the model knows which modality to generate.

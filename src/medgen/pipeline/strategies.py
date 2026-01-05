@@ -131,11 +131,13 @@ class DiffusionStrategy(ABC):
         """
         pass
 
-    @abstractmethod
     def add_noise(
         self, clean_images: ImageOrDict, noise: ImageOrDict, timesteps: torch.Tensor
     ) -> ImageOrDict:
         """Add noise to clean images at specified timesteps.
+
+        Uses the scheduler's add_noise method. Handles both single-image
+        (tensor) and dual-image (dict) formats.
 
         Args:
             clean_images: Clean images (tensor or dict for dual-image mode).
@@ -145,7 +147,13 @@ class DiffusionStrategy(ABC):
         Returns:
             Noisy images in same format as input.
         """
-        pass
+        if isinstance(clean_images, dict):
+            return {
+                key: self.scheduler.add_noise(clean_images[key], noise[key], timesteps)
+                for key in clean_images.keys()
+            }
+        else:
+            return self.scheduler.add_noise(clean_images, noise, timesteps)
 
     @abstractmethod
     def predict_noise_or_velocity(
@@ -249,29 +257,6 @@ class DDPMStrategy(DiffusionStrategy):
             num_train_timesteps=num_timesteps, schedule='cosine'
         )
         return self.scheduler
-
-    def add_noise(
-        self, clean_images: ImageOrDict, noise: ImageOrDict, timesteps: torch.Tensor
-    ) -> ImageOrDict:
-        """Add noise to clean images using DDPM forward process.
-
-        Args:
-            clean_images: Tensor or dict for dual-image mode.
-            noise: Noise tensor or dict matching clean_images format.
-            timesteps: Timestep tensor.
-
-        Returns:
-            Noisy images in same format as input.
-        """
-        if isinstance(clean_images, dict):
-            # Dual-image case
-            return {
-                key: self.scheduler.add_noise(clean_images[key], noise[key], timesteps)
-                for key in clean_images.keys()
-            }
-        else:
-            # Single-image case
-            return self.scheduler.add_noise(clean_images, noise, timesteps)
 
     def predict_noise_or_velocity(self, model, model_input, timesteps):
         """DDPM predicts noise"""
@@ -446,15 +431,6 @@ class RFlowStrategy(DiffusionStrategy):
             spatial_dim=2
         )
         return self.scheduler
-
-    def add_noise(self, clean_images, noise, timesteps):
-        if isinstance(clean_images, dict):
-            return {
-                key: self.scheduler.add_noise(clean_images[key], noise[key], timesteps)
-                for key in clean_images.keys()
-            }
-        else:
-            return self.scheduler.add_noise(clean_images, noise, timesteps)
 
     def predict_noise_or_velocity(self, model, model_input, timesteps):
         """RFlow predicts velocity"""

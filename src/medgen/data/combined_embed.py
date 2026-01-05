@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
+from .base_embed import create_zero_init_mlp
 from .mode_embed import MODE_ENCODING_DIM, encode_mode_id, ModeEmbedModelWrapper
 from .score_aug import OMEGA_ENCODING_DIM, encode_omega, ScoreAugModelWrapper
 
@@ -85,23 +86,9 @@ class CombinedTimeEmbed(nn.Module):
         self.original = original_time_embed
         self.embed_dim = embed_dim
 
-        # Omega MLP (for ScoreAug conditioning)
-        self.omega_mlp = nn.Sequential(
-            nn.Linear(OMEGA_ENCODING_DIM, embed_dim),
-            nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-        nn.init.zeros_(self.omega_mlp[-1].weight)
-        nn.init.zeros_(self.omega_mlp[-1].bias)
-
-        # Mode MLP (for modality conditioning)
-        self.mode_mlp = nn.Sequential(
-            nn.Linear(MODE_ENCODING_DIM, embed_dim),
-            nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim),
-        )
-        nn.init.zeros_(self.mode_mlp[-1].weight)
-        nn.init.zeros_(self.mode_mlp[-1].bias)
+        # MLPs for conditioning (zero-init for neutral start)
+        self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
+        self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
         # Buffers for current encodings
         self.register_buffer('_omega_encoding', torch.zeros(1, OMEGA_ENCODING_DIM))
@@ -211,14 +198,3 @@ class CombinedModelWrapper(nn.Module):
     def parameters(self, recurse: bool = True):
         """Get all parameters including embedding MLPs."""
         return self.model.parameters(recurse=recurse)
-
-    @property
-    def parameters_without_embeddings(self):
-        """Get model parameters excluding omega and mode embeddings.
-
-        Useful if you want to use different learning rates.
-        """
-        omega_param_ids = {id(p) for p in self.combined_time_embed.omega_mlp.parameters()}
-        mode_param_ids = {id(p) for p in self.combined_time_embed.mode_mlp.parameters()}
-        exclude_ids = omega_param_ids | mode_param_ids
-        return (p for p in self.model.parameters() if id(p) not in exclude_ids)

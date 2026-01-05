@@ -158,19 +158,7 @@ class VAETrainer(BaseCompressionTrainer):
             'image_size': self.image_size,
         }
 
-    def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """Compute KL divergence loss.
-
-        Args:
-            mean: Mean of latent distribution [B, C, H, W].
-            logvar: Log variance of latent distribution [B, C, H, W].
-
-        Returns:
-            KL divergence loss (scalar).
-        """
-        # KL divergence: 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-        kl = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[1, 2, 3])
-        return kl.mean()
+    # _compute_kl_loss is inherited from BaseCompressionTrainer
 
     def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute VAE training step with KL loss.
@@ -273,6 +261,9 @@ class VAETrainer(BaseCompressionTrainer):
         for step, batch in enumerate(epoch_iter):
             result = self.train_step(batch)
             losses = result.to_legacy_dict('kl')
+
+            # Step profiler to mark training step boundary
+            self._profiler_step()
 
             for key in epoch_losses:
                 epoch_losses[key] += losses[key]

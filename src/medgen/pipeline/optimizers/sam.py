@@ -78,12 +78,15 @@ class SAM(Optimizer):
                 if p.grad is None:
                     continue
 
-                # Store original weights
+                # Store original weights (initialize state dict if needed)
+                if p not in self.state:
+                    self.state[p] = {}
                 self.state[p]["old_p"] = p.data.clone()
 
                 # Compute perturbation (adaptive uses weight magnitude normalization)
                 if group["adaptive"]:
-                    e_w = (torch.pow(p, 2) * p.grad * scale).to(p)
+                    # ASAM: normalize by |p| (element-wise absolute value)
+                    e_w = (torch.abs(p) * p.grad * scale).to(p)
                 else:
                     e_w = (p.grad * scale).to(p)
 
@@ -178,10 +181,46 @@ class SAM(Optimizer):
         return norm
 
     def load_state_dict(self, state_dict: dict) -> None:
-        """Load optimizer state."""
-        super().load_state_dict(state_dict)
-        self.base_optimizer.param_groups = self.param_groups
+        """Load optimizer state including SAM-specific state.
+
+        Handles both new format (with sam_state) and legacy format
+        (base optimizer only) for backwards compatibility.
+        """
+        if isinstance(state_dict, dict) and 'base_optimizer' in state_dict:
+            # New format with SAM state
+            self.base_optimizer.load_state_dict(state_dict['base_optimizer'])
+            self.param_groups = self.base_optimizer.param_groups
+
+            # Restore SAM state (old_p tensors for weight restoration)
+            sam_state = state_dict.get('sam_state', {})
+            for group_idx, group in enumerate(self.param_groups):
+                for param_idx, p in enumerate(group["params"]):
+                    key = f"{group_idx}_{param_idx}"
+                    if key in sam_state:
+                        if p not in self.state:
+                            self.state[p] = {}
+                        self.state[p]["old_p"] = sam_state[key]
+        else:
+            # Backwards compatibility: old format without SAM state
+            super().load_state_dict(state_dict)
+            self.base_optimizer.param_groups = self.param_groups
 
     def state_dict(self) -> dict:
-        """Return optimizer state."""
-        return self.base_optimizer.state_dict()
+        """Return optimizer state including SAM-specific state.
+
+        SAM state includes old_p tensors used for weight restoration during
+        second_step(). We serialize by parameter index (group_idx_param_idx)
+        rather than id(p) since object IDs change between sessions.
+        """
+        # Create mapping of param index -> SAM state
+        sam_state = {}
+        for group_idx, group in enumerate(self.param_groups):
+            for param_idx, p in enumerate(group["params"]):
+                if p in self.state and "old_p" in self.state[p]:
+                    key = f"{group_idx}_{param_idx}"
+                    sam_state[key] = self.state[p]["old_p"]
+
+        return {
+            'base_optimizer': self.base_optimizer.state_dict(),
+            'sam_state': sam_state,
+        }
