@@ -85,8 +85,11 @@ def _create_single_reconstruction_figure(
     if mask is not None:
         mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
 
-    # Create figure
-    fig, axes = plt.subplots(3, n_samples, figsize=(2 * n_samples, 6))
+    # Create figure with minimal spacing
+    fig, axes = plt.subplots(
+        3, n_samples, figsize=(1.5 * n_samples, 4),
+        gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
+    )
     if n_samples == 1:
         axes = axes.reshape(3, 1)
 
@@ -128,7 +131,7 @@ def _create_single_reconstruction_figure(
     if full_title:
         fig.suptitle(full_title, fontsize=10)
 
-    plt.tight_layout()
+    plt.tight_layout(pad=0.3, h_pad=0.1, w_pad=0.1)
     return fig
 
 
@@ -165,8 +168,11 @@ def _create_dual_reconstruction_figure(
     if mask is not None:
         mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
 
-    # Create figure: 6 rows (3 per channel)
-    fig, axes = plt.subplots(6, n_samples, figsize=(2 * n_samples, 12))
+    # Create figure: 6 rows (3 per channel) with minimal spacing
+    fig, axes = plt.subplots(
+        6, n_samples, figsize=(1.5 * n_samples, 7),
+        gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
+    )
     if n_samples == 1:
         axes = axes.reshape(6, 1)
 
@@ -228,7 +234,7 @@ def _create_dual_reconstruction_figure(
     if full_title:
         fig.suptitle(full_title, fontsize=10)
 
-    plt.tight_layout()
+    plt.tight_layout(pad=0.3, h_pad=0.1, w_pad=0.1)
     return fig
 
 

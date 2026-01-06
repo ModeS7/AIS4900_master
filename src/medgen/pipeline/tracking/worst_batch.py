@@ -189,10 +189,13 @@ def create_worst_batch_figure_3d(
     else:
         labels = [name.replace('_', ' ').title() for name in channel_names]
 
-    # Create figure: (3 × n_channels) rows × num_slices columns
+    # Create figure: (3 × n_channels) rows × num_slices columns with minimal spacing
     n_rows = 3 * n_channels
-    fig_height = 2 * n_channels + 1  # Slightly more than 2 per channel group
-    fig, axes = plt.subplots(n_rows, num_slices, figsize=(2 * num_slices, fig_height))
+    fig_height = 1.2 * n_channels + 0.5  # Compact height
+    fig, axes = plt.subplots(
+        n_rows, num_slices, figsize=(1.5 * num_slices, fig_height),
+        gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
+    )
     if num_slices == 1:
         axes = axes.reshape(n_rows, 1)
     if n_rows == 1:
@@ -248,7 +251,7 @@ def create_worst_batch_figure_3d(
         title_parts.append(f"({breakdown_str})")
 
     fig.suptitle(" ".join(title_parts), fontsize=10)
-    plt.tight_layout()
+    plt.tight_layout(pad=0.3, h_pad=0.1, w_pad=0.1)
     return fig
 
 
