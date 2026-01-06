@@ -1,0 +1,9 @@
+# DC-AE f128c512: 256×256 → 2×2×512 (128× spatial compression)
+defaults:
+  - default
+
+latent_channels: 512
+compression_ratio: 128
+# Scaling factor - may need calibration for medical images
+# Using estimate based on f32/f64 trend
+scaling_factor: 0.25
