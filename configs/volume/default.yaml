@@ -1,0 +1,16 @@
+# Shared 3D Volume Configuration
+#
+# Default volume dimensions for 3D training (VAE-3D, VQ-VAE-3D).
+# Used by: vae_3d.yaml, vqvae_3d.yaml
+
+# Input dimensions (after padding)
+depth: 160                        # Pad 150 -> 160 for clean 8x compression
+height: 256
+width: 256
+
+# Padding
+pad_depth_to: 160                 # Target depth after padding
+pad_mode: replicate               # replicate or constant (zeros)
+
+# Slice subsampling (for quick testing)
+slice_step: 1                     # 1=all slices, 2=every 2nd, 3=every 3rd
