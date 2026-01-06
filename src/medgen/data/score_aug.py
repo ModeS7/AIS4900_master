@@ -15,6 +15,11 @@ Conditioning requirements (per paper):
 - Rotation: REQUIRES omega conditioning (noise is rotation-invariant, model can cheat)
 - Translation/Cutout: Work without conditioning but risk data leakage
 - Brightness: Linear transform, works without conditioning
+
+v2 mode adds structured masking patterns:
+- Non-destructive transforms (can stack): rotation, flip, translation
+- Destructive transforms (pick one): cutout OR fixed patterns
+- Fixed patterns: checkerboard, grid dropout, coarse dropout, patch dropout
 """
 
 import random
@@ -22,8 +27,233 @@ from typing import List, Tuple, Optional, Dict, Any
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from .base_embed import create_zero_init_mlp
+
+
+# =============================================================================
+# Fixed Pattern Definitions (16 total)
+# =============================================================================
+# These are deterministic masks that the network learns via one-hot embedding.
+# Patterns are generated as functions of (H, W) for flexibility.
+
+def _checkerboard_mask(H: int, W: int, grid_size: int, offset: bool) -> torch.Tensor:
+    """Generate checkerboard mask (alternating grid cells).
+
+    Args:
+        H, W: Image dimensions
+        grid_size: Number of cells per dimension
+        offset: If True, shift pattern by 1 cell
+
+    Returns:
+        Mask tensor [H, W] with 0=keep, 1=drop
+    """
+    cell_h = H // grid_size
+    cell_w = W // grid_size
+    mask = torch.zeros(H, W)
+
+    for i in range(grid_size):
+        for j in range(grid_size):
+            # Checkerboard: drop if (i+j) is even (or odd if offset)
+            drop = ((i + j) % 2 == 0) if not offset else ((i + j) % 2 == 1)
+            if drop:
+                y1, y2 = i * cell_h, (i + 1) * cell_h
+                x1, x2 = j * cell_w, (j + 1) * cell_w
+                mask[y1:y2, x1:x2] = 1
+
+    return mask
+
+
+def _grid_dropout_mask(H: int, W: int, grid_size: int, drop_ratio: float, seed: int) -> torch.Tensor:
+    """Generate grid dropout mask (random cells dropped).
+
+    Args:
+        H, W: Image dimensions
+        grid_size: Number of cells per dimension
+        drop_ratio: Fraction of cells to drop
+        seed: Random seed for reproducibility
+
+    Returns:
+        Mask tensor [H, W] with 0=keep, 1=drop
+    """
+    rng = np.random.RandomState(seed)
+    cell_h = H // grid_size
+    cell_w = W // grid_size
+    mask = torch.zeros(H, W)
+
+    n_cells = grid_size * grid_size
+    n_drop = int(n_cells * drop_ratio)
+
+    # Randomly select cells to drop
+    drop_indices = rng.choice(n_cells, n_drop, replace=False)
+
+    for idx in drop_indices:
+        i = idx // grid_size
+        j = idx % grid_size
+        y1, y2 = i * cell_h, (i + 1) * cell_h
+        x1, x2 = j * cell_w, (j + 1) * cell_w
+        mask[y1:y2, x1:x2] = 1
+
+    return mask
+
+
+def _coarse_dropout_mask(H: int, W: int, pattern_id: int) -> torch.Tensor:
+    """Generate coarse dropout mask (predefined large holes).
+
+    Pattern definitions:
+        0: 2 holes - top-left, bottom-right corners
+        1: 2 holes - top-right, bottom-left corners
+        2: 3 holes - top-center, bottom-left, bottom-right
+        3: 4 holes - all corners
+
+    Args:
+        H, W: Image dimensions
+        pattern_id: Which pattern (0-3)
+
+    Returns:
+        Mask tensor [H, W] with 0=keep, 1=drop
+    """
+    mask = torch.zeros(H, W)
+    hole_h = H // 4  # 25% of height
+    hole_w = W // 4  # 25% of width
+
+    if pattern_id == 0:
+        # Top-left and bottom-right
+        mask[:hole_h, :hole_w] = 1
+        mask[-hole_h:, -hole_w:] = 1
+    elif pattern_id == 1:
+        # Top-right and bottom-left
+        mask[:hole_h, -hole_w:] = 1
+        mask[-hole_h:, :hole_w] = 1
+    elif pattern_id == 2:
+        # Top-center, bottom-left, bottom-right
+        mask[:hole_h, W//2 - hole_w//2:W//2 + hole_w//2] = 1
+        mask[-hole_h:, :hole_w] = 1
+        mask[-hole_h:, -hole_w:] = 1
+    elif pattern_id == 3:
+        # All four corners
+        mask[:hole_h, :hole_w] = 1
+        mask[:hole_h, -hole_w:] = 1
+        mask[-hole_h:, :hole_w] = 1
+        mask[-hole_h:, -hole_w:] = 1
+
+    return mask
+
+
+def _patch_dropout_mask(H: int, W: int, patch_size: int, drop_ratio: float, seed: int) -> torch.Tensor:
+    """Generate patch dropout mask (MAE-style random patches).
+
+    Args:
+        H, W: Image dimensions
+        patch_size: Size of each patch in pixels
+        drop_ratio: Fraction of patches to drop
+        seed: Random seed for reproducibility
+
+    Returns:
+        Mask tensor [H, W] with 0=keep, 1=drop
+    """
+    rng = np.random.RandomState(seed)
+
+    n_patches_h = H // patch_size
+    n_patches_w = W // patch_size
+    n_patches = n_patches_h * n_patches_w
+    n_drop = int(n_patches * drop_ratio)
+
+    mask = torch.zeros(H, W)
+
+    # Randomly select patches to drop
+    drop_indices = rng.choice(n_patches, n_drop, replace=False)
+
+    for idx in drop_indices:
+        i = idx // n_patches_w
+        j = idx % n_patches_w
+        y1, y2 = i * patch_size, (i + 1) * patch_size
+        x1, x2 = j * patch_size, (j + 1) * patch_size
+        mask[y1:y2, x1:x2] = 1
+
+    return mask
+
+
+def generate_pattern_mask(pattern_id: int, H: int, W: int) -> torch.Tensor:
+    """Generate mask for a fixed pattern ID.
+
+    Pattern IDs (16 total):
+        0-3:   Checkerboard (4x4 std, 4x4 offset, 8x8 std, 8x8 offset)
+        4-7:   Grid dropout (4x4 25% seed0, 4x4 25% seed1, 4x4 50% seed0, 4x4 50% seed1)
+        8-11:  Coarse dropout (patterns 0-3)
+        12-15: Patch dropout (8x8 25% seedA, 8x8 25% seedB, 8x8 50% seedA, 8x8 50% seedB)
+
+    Args:
+        pattern_id: Pattern index (0-15)
+        H, W: Image dimensions
+
+    Returns:
+        Mask tensor [H, W] with 0=keep, 1=drop
+    """
+    if pattern_id < 4:
+        # Checkerboard patterns
+        if pattern_id == 0:
+            return _checkerboard_mask(H, W, grid_size=4, offset=False)
+        elif pattern_id == 1:
+            return _checkerboard_mask(H, W, grid_size=4, offset=True)
+        elif pattern_id == 2:
+            return _checkerboard_mask(H, W, grid_size=8, offset=False)
+        elif pattern_id == 3:
+            return _checkerboard_mask(H, W, grid_size=8, offset=True)
+
+    elif pattern_id < 8:
+        # Grid dropout patterns
+        if pattern_id == 4:
+            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=42)
+        elif pattern_id == 5:
+            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=123)
+        elif pattern_id == 6:
+            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=42)
+        elif pattern_id == 7:
+            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=123)
+
+    elif pattern_id < 12:
+        # Coarse dropout patterns
+        return _coarse_dropout_mask(H, W, pattern_id=pattern_id - 8)
+
+    else:
+        # Patch dropout patterns (8x8 patches for 128px image = 16 patches)
+        patch_size = max(H // 8, 1)
+        if pattern_id == 12:
+            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=42)
+        elif pattern_id == 13:
+            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=123)
+        elif pattern_id == 14:
+            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=42)
+        elif pattern_id == 15:
+            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=123)
+
+    # Fallback: no masking
+    return torch.zeros(H, W)
+
+
+# Pattern category names for debugging/logging
+PATTERN_NAMES = [
+    "checker_4x4",      # 0
+    "checker_4x4_off",  # 1
+    "checker_8x8",      # 2
+    "checker_8x8_off",  # 3
+    "grid_4x4_25_s0",   # 4
+    "grid_4x4_25_s1",   # 5
+    "grid_4x4_50_s0",   # 6
+    "grid_4x4_50_s1",   # 7
+    "coarse_diag1",     # 8
+    "coarse_diag2",     # 9
+    "coarse_tri",       # 10
+    "coarse_corners",   # 11
+    "patch_25_s0",      # 12
+    "patch_25_s1",      # 13
+    "patch_50_s0",      # 14
+    "patch_50_s1",      # 15
+]
+
+NUM_PATTERNS = 16
 
 
 class ScoreAugTransform:
@@ -50,22 +280,44 @@ class ScoreAugTransform:
         brightness_range: float = 1.2,
         compose: bool = False,
         compose_prob: float = 0.5,
+        # v2 mode parameters
+        v2_mode: bool = False,
+        nondestructive_prob: float = 0.5,
+        destructive_prob: float = 0.5,
+        cutout_vs_pattern: float = 0.5,
+        patterns_checkerboard: bool = True,
+        patterns_grid_dropout: bool = True,
+        patterns_coarse_dropout: bool = True,
+        patterns_patch_dropout: bool = True,
     ):
         """Initialize ScoreAug transform.
 
-        Two modes:
-        - compose=False (default): One transform sampled with equal probability (per paper)
-        - compose=True: Each transform applied independently with compose_prob
+        Three modes:
+        - compose=False, v2_mode=False (default): One transform sampled with equal probability (per paper)
+        - compose=True, v2_mode=False: Each transform applied independently with compose_prob
+        - v2_mode=True: Structured augmentation (non-destructive stack + one destructive)
+
+        v2 mode separates transforms into:
+        - Non-destructive (can stack): rotation, flip, translation
+        - Destructive (pick one): cutout OR fixed pattern (checkerboard/grid/coarse/patch)
 
         Args:
             rotation: Enable 90, 180, 270 degree rotations (requires omega conditioning)
             flip: Enable horizontal flip (requires omega conditioning for consistency)
             translation: Enable ±40% X, ±20% Y translation with zero-padding
             cutout: Enable random rectangle cutout (10-30% each dimension)
-            brightness: Enable brightness scaling (experimental with normalized data)
-            brightness_range: Max brightness factor B, scales in [1/B, B]
-            compose: If True, apply transforms independently instead of picking one
-            compose_prob: Probability for each transform when compose=True (default 0.5)
+            brightness: Enable brightness scaling (DEPRECATED - do not use)
+            brightness_range: Max brightness factor B (DEPRECATED)
+            compose: If True, apply transforms independently (legacy mode)
+            compose_prob: Probability for each transform when compose=True
+            v2_mode: Enable structured non-destructive/destructive augmentation
+            nondestructive_prob: Probability for each non-destructive transform in v2
+            destructive_prob: Probability of applying any destructive transform in v2
+            cutout_vs_pattern: In v2, probability of cutout vs fixed patterns (0.5 = 50/50)
+            patterns_checkerboard: Enable checkerboard patterns (IDs 0-3)
+            patterns_grid_dropout: Enable grid dropout patterns (IDs 4-7)
+            patterns_coarse_dropout: Enable coarse dropout patterns (IDs 8-11)
+            patterns_patch_dropout: Enable patch dropout patterns (IDs 12-15)
         """
         self.rotation = rotation
         self.flip = flip
@@ -75,6 +327,30 @@ class ScoreAugTransform:
         self.brightness_range = brightness_range
         self.compose = compose
         self.compose_prob = compose_prob
+
+        # v2 mode parameters
+        self.v2_mode = v2_mode
+        self.nondestructive_prob = nondestructive_prob
+        self.destructive_prob = destructive_prob
+        self.cutout_vs_pattern = cutout_vs_pattern
+        self.patterns_checkerboard = patterns_checkerboard
+        self.patterns_grid_dropout = patterns_grid_dropout
+        self.patterns_coarse_dropout = patterns_coarse_dropout
+        self.patterns_patch_dropout = patterns_patch_dropout
+
+        # Build list of enabled pattern IDs for v2 mode
+        self._enabled_patterns = []
+        if patterns_checkerboard:
+            self._enabled_patterns.extend([0, 1, 2, 3])
+        if patterns_grid_dropout:
+            self._enabled_patterns.extend([4, 5, 6, 7])
+        if patterns_coarse_dropout:
+            self._enabled_patterns.extend([8, 9, 10, 11])
+        if patterns_patch_dropout:
+            self._enabled_patterns.extend([12, 13, 14, 15])
+
+        # Cache for pattern masks (generated lazily per image size)
+        self._pattern_cache: Dict[Tuple[int, int, int], torch.Tensor] = {}
 
     def sample_transform(self) -> Tuple[str, Dict[str, Any]]:
         """Sample a random transform with equal probability (per paper).
@@ -206,6 +482,102 @@ class ScoreAugTransform:
 
         return transforms
 
+    def sample_v2_transforms(self) -> Tuple[List[Tuple[str, Dict[str, Any]]], Optional[Tuple[str, Dict[str, Any]]]]:
+        """Sample transforms for v2 mode: non-destructive stack + one destructive.
+
+        Non-destructive transforms (can stack): rotation, flip, translation
+        Destructive transforms (pick one): cutout OR fixed pattern
+
+        Returns:
+            Tuple of:
+                - List of non-destructive (transform_type, params) tuples
+                - Optional destructive (transform_type, params) tuple, or None
+        """
+        nondestructive = []
+
+        # Sample non-destructive transforms (each with nondestructive_prob)
+        # Spatial (rotation/flip)
+        if (self.rotation or self.flip) and random.random() < self.nondestructive_prob:
+            spatial_options = []
+            if self.rotation:
+                spatial_options.extend([
+                    ('rot90', {'k': 1}),
+                    ('rot90', {'k': 2}),
+                    ('rot90', {'k': 3}),
+                ])
+            if self.flip:
+                spatial_options.extend([
+                    ('hflip', {}),
+                    ('vflip', {}),
+                ])
+            if self.rotation and self.flip:
+                spatial_options.extend([
+                    ('rot90_hflip', {'k': 1}),
+                    ('rot90_hflip', {'k': 3}),
+                ])
+            if spatial_options:
+                nondestructive.append(random.choice(spatial_options))
+
+        # Translation (non-destructive since brain is centered)
+        if self.translation and random.random() < self.nondestructive_prob:
+            dx = random.uniform(-0.4, 0.4)
+            dy = random.uniform(-0.2, 0.2)
+            nondestructive.append(('translate', {'dx': dx, 'dy': dy}))
+
+        # Sample destructive transform (with destructive_prob)
+        destructive = None
+        if random.random() < self.destructive_prob:
+            # Choose between cutout and fixed patterns
+            if random.random() < self.cutout_vs_pattern:
+                # Random cutout
+                size_x = random.uniform(0.1, 0.3)
+                size_y = random.uniform(0.1, 0.3)
+                cx = random.uniform(size_x / 2, 1 - size_x / 2)
+                cy = random.uniform(size_y / 2, 1 - size_y / 2)
+                destructive = ('cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y})
+            elif self._enabled_patterns:
+                # Fixed pattern (uniform over enabled patterns)
+                pattern_id = random.choice(self._enabled_patterns)
+                destructive = ('pattern', {'pattern_id': pattern_id})
+
+        return nondestructive, destructive
+
+    def _get_pattern_mask(self, pattern_id: int, H: int, W: int, device: torch.device) -> torch.Tensor:
+        """Get cached pattern mask, generating if needed.
+
+        Args:
+            pattern_id: Pattern index (0-15)
+            H, W: Image dimensions
+            device: Target device
+
+        Returns:
+            Mask tensor [H, W] with 0=keep, 1=drop
+        """
+        cache_key = (pattern_id, H, W)
+        if cache_key not in self._pattern_cache:
+            mask = generate_pattern_mask(pattern_id, H, W)
+            self._pattern_cache[cache_key] = mask
+        return self._pattern_cache[cache_key].to(device)
+
+    def _apply_pattern(self, x: torch.Tensor, pattern_id: int) -> torch.Tensor:
+        """Apply fixed pattern mask to tensor.
+
+        Args:
+            x: Input tensor [B, C, H, W]
+            pattern_id: Pattern index (0-15)
+
+        Returns:
+            Tensor with pattern regions zeroed
+        """
+        B, C, H, W = x.shape
+        mask = self._get_pattern_mask(pattern_id, H, W, x.device)
+
+        # Expand mask to [1, 1, H, W] for broadcasting
+        mask = mask.unsqueeze(0).unsqueeze(0)
+
+        # Zero out masked regions
+        return x * (1 - mask)
+
     def apply(
         self,
         x: torch.Tensor,
@@ -240,6 +612,8 @@ class ScoreAugTransform:
             return self._cutout(x, params['cx'], params['cy'], params['size_x'], params['size_y'])
         elif transform_type == 'brightness':
             return self._brightness(x, params['scale'])
+        elif transform_type == 'pattern':
+            return self._apply_pattern(x, params['pattern_id'])
         else:
             return x
 
@@ -285,8 +659,8 @@ class ScoreAugTransform:
         elif transform_type == 'brightness':
             # Inverse of multiply by scale is divide by scale
             return x / params['scale']
-        elif transform_type in ('translate', 'cutout'):
-            # Non-invertible transforms (zero-padded regions lose info)
+        elif transform_type in ('translate', 'cutout', 'pattern'):
+            # Non-invertible transforms (zero-padded/masked regions lose info)
             return None
         else:
             return x
@@ -462,7 +836,40 @@ class ScoreAugTransform:
             aug_target: Transformed target
             omega: Transform parameters for conditioning, None if identity
         """
-        if self.compose:
+        if self.v2_mode:
+            # v2 mode: non-destructive stack + one destructive
+            nondestructive, destructive = self.sample_v2_transforms()
+
+            if not nondestructive and destructive is None:
+                return noisy_input, target, None
+
+            # Apply non-destructive transforms first
+            aug_input = noisy_input
+            aug_target = target
+            all_transforms = []
+
+            for transform_type, params in nondestructive:
+                aug_input = self.apply(aug_input, transform_type, params)
+                aug_target = self.apply(aug_target, transform_type, params)
+                all_transforms.append((transform_type, params))
+
+            # Apply destructive transform if sampled
+            if destructive is not None:
+                transform_type, params = destructive
+                aug_input = self.apply(aug_input, transform_type, params)
+                aug_target = self.apply(aug_target, transform_type, params)
+                all_transforms.append((transform_type, params))
+
+            if not all_transforms:
+                return aug_input, aug_target, None
+
+            omega = {
+                'v2': True,
+                'transforms': all_transforms,
+            }
+            return aug_input, aug_target, omega
+
+        elif self.compose:
             # Compose mode: apply multiple transforms independently
             transforms = self.sample_compose_transforms()
 
@@ -505,13 +912,21 @@ class ScoreAugTransform:
 # Omega Conditioning (compile-compatible implementation)
 # =============================================================================
 
-# Omega encoding format:
-# Single mode: [type_onehot(8), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
+# Omega encoding format (32 dims total):
+#
+# Legacy mode (compose=False, v2=False) - uses dims 0-15:
+#   [type_onehot(8), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
 #   Types: 0=identity, 1=rotation, 2=hflip, 3=vflip, 4=rot90_hflip, 5=translation, 6=cutout, 7=brightness
-# Compose mode: [active_mask(4), rot_type(4), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
+#
+# Compose mode (compose=True) - uses dims 0-15:
+#   [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, brightness]
 #   Active mask: spatial, translation, cutout, brightness (1=active)
-#   Rot type: identity, rot90, hflip, vflip, rot90_hflip (one-hot within spatial)
-OMEGA_ENCODING_DIM = 16
+#
+# v2 mode (v2=True) - uses dims 0-31:
+#   Dims 0-15: Same as compose mode for non-destructive + cutout
+#   Dims 16-31: Pattern ID one-hot (16 patterns)
+#
+OMEGA_ENCODING_DIM = 32  # Extended to accommodate pattern IDs
 
 
 def encode_omega(
@@ -520,11 +935,11 @@ def encode_omega(
 ) -> torch.Tensor:
     """Encode omega dict into tensor format for MLP.
 
-    All samples in a batch get the same transform, so we return shape (1, 16)
-    which broadcasts to (B, 16) in the MLP. This keeps the buffer shape constant
+    All samples in a batch get the same transform, so we return shape (1, 32)
+    which broadcasts to (B, 32) in the MLP. This keeps the buffer shape constant
     for torch.compile compatibility.
 
-    Supports both single-transform mode and compose mode.
+    Supports single-transform mode, compose mode, and v2 mode.
 
     Args:
         omega: Transform parameters dict or None
@@ -540,7 +955,44 @@ def encode_omega(
         enc[0, 0] = 1.0
         return enc
 
-    # Check for compose mode
+    # Check for v2 mode
+    if omega.get('v2', False):
+        # v2 mode: encode all transforms (non-destructive + destructive)
+        # Format: [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, _, pattern_onehot(16)]
+        transforms = omega['transforms']
+
+        for t, p in transforms:
+            if t in ('rot90', 'hflip', 'vflip', 'rot90_hflip'):
+                enc[0, 0] = 1.0  # spatial active
+                if t == 'rot90':
+                    enc[0, 4] = 1.0  # rot90 type
+                    enc[0, 8] = p['k'] / 3.0
+                elif t == 'hflip':
+                    enc[0, 5] = 1.0  # hflip type
+                elif t == 'vflip':
+                    enc[0, 6] = 1.0  # vflip type
+                elif t == 'rot90_hflip':
+                    enc[0, 7] = 1.0  # rot90_hflip type
+                    enc[0, 8] = p['k'] / 3.0
+            elif t == 'translate':
+                enc[0, 1] = 1.0  # translation active
+                enc[0, 9] = p['dx']
+                enc[0, 10] = p['dy']
+            elif t == 'cutout':
+                enc[0, 2] = 1.0  # cutout active
+                enc[0, 11] = p['cx']
+                enc[0, 12] = p['cy']
+                enc[0, 13] = p['size_x']
+                enc[0, 14] = p['size_y']
+            elif t == 'pattern':
+                # Fixed pattern: encode as one-hot in dims 16-31
+                pattern_id = p['pattern_id']
+                enc[0, 3] = 1.0  # pattern active (replaces brightness in v2)
+                enc[0, 16 + pattern_id] = 1.0  # pattern one-hot
+
+        return enc
+
+    # Check for compose mode (legacy)
     if omega.get('compose', False):
         # Compose mode: encode all active transforms
         # Format: [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, brightness]
@@ -575,7 +1027,7 @@ def encode_omega(
 
         return enc
 
-    # Single transform mode
+    # Single transform mode (legacy)
     t = omega['type']
     p = omega['params']
 

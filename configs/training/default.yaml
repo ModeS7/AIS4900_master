@@ -55,6 +55,23 @@ score_aug:
   compose: false             # If true, each transform applied with compose_prob
   compose_prob: 0.5          # Probability for each transform in compose mode
 
+  # === v2 mode: structured non-destructive/destructive augmentation ===
+  # When enabled, separates transforms into:
+  # - Non-destructive (can stack): rotation, flip, translation
+  # - Destructive (pick one): cutout OR fixed patterns
+  v2_mode: false             # Enable v2 structured augmentation
+  nondestructive_prob: 0.5   # Probability for each non-destructive transform
+  destructive_prob: 0.5      # Probability of applying any destructive transform
+  cutout_vs_pattern: 0.5     # Split between cutout (random) and patterns (fixed)
+
+  # Fixed pattern options (16 total patterns, 4 per category)
+  # Patterns are deterministic masks learned via one-hot embedding
+  patterns:
+    checkerboard: true       # 4×4 and 8×8 alternating grids (IDs 0-3)
+    grid_dropout: true       # Random 25%/50% grid cells dropped (IDs 4-7)
+    coarse_dropout: true     # 2-4 large holes at corners/edges (IDs 8-11)
+    patch_dropout: true      # MAE-style 25%/50% patches dropped (IDs 12-15)
+
 # DataLoader optimization for CPU augmentation
 dataloader:
   num_workers: 8           # Parallel data loading workers
