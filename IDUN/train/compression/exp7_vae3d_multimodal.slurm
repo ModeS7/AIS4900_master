@@ -16,7 +16,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp7 3D VAE Multi-Modality 128x128x160 (8x compression) ==="
+echo "=== Exp7 3D VAE Multi-Modality (train 128x128, val 256x256) ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -32,8 +32,10 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-# Exp7: 3D VAE 128x128x160, all modalities, pure VAE (no GAN)
-# disable_gan=true skips discriminator creation entirely (saves ~15GB VRAM)
+# Exp7: 3D VAE train at 128x128x160, validate at 256x256x160
+# - Training at lower resolution for speed
+# - Validation at full resolution for accurate metrics
+# - disable_gan=true skips discriminator creation entirely (saves ~15GB VRAM)
 time python -m medgen.scripts.train_vae_3d \
     paths=cluster \
     mode=multi_modality \
@@ -41,8 +43,8 @@ time python -m medgen.scripts.train_vae_3d \
     training.batch_size=1 \
     training.gradient_checkpointing=true \
     vae_3d.disable_gan=true \
-    volume.height=128 \
-    volume.width=128 \
-    training.name=exp7_128x128x160_
+    volume.train_height=128 \
+    volume.train_width=128 \
+    training.name=exp7_train128_val256_
 
 conda deactivate

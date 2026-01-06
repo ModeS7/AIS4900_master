@@ -8,6 +8,12 @@ depth: 160                        # Pad 150 -> 160 for clean 8x compression
 height: 256
 width: 256
 
+# Training resolution (optional - defaults to height/width if not set)
+# Allows training at lower resolution for speed, while validating at full resolution.
+# Fully convolutional models generalize across resolutions.
+train_height: null                # null = use height (256)
+train_width: null                 # null = use width (256)
+
 # Padding
 pad_depth_to: 160                 # Target depth after padding
 pad_mode: replicate               # replicate or constant (zeros)

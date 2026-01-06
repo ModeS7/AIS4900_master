@@ -41,7 +41,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VolumeConfig:
-    """Configuration extracted from Hydra config for 3D volume loading."""
+    """Configuration extracted from Hydra config for 3D volume loading.
+
+    Supports separate train/val resolutions for efficient training:
+    - Train at lower resolution (e.g., 128×128) for speed
+    - Validate at full resolution (e.g., 256×256) for accurate metrics
+    """
     height: int
     width: int
     pad_depth_to: int
@@ -50,6 +55,9 @@ class VolumeConfig:
     batch_size: int
     load_seg: bool
     image_keys: list
+    # Optional training resolution (defaults to height/width)
+    _train_height: Optional[int] = None
+    _train_width: Optional[int] = None
     # DataLoader config (stored as DataLoaderConfig)
     _loader_config: DataLoaderConfig = None
 
@@ -58,6 +66,10 @@ class VolumeConfig:
         """Extract volume configuration from Hydra config object."""
         logging_cfg = cfg.training.get('logging', {})
         loader_config = DataLoaderConfig.from_cfg(cfg)
+
+        # Get optional train resolution (null in config becomes None)
+        train_height = cfg.volume.get('train_height', None)
+        train_width = cfg.volume.get('train_width', None)
 
         return cls(
             height=cfg.volume.height,
@@ -68,8 +80,25 @@ class VolumeConfig:
             batch_size=cfg.training.batch_size,
             load_seg=logging_cfg.get('regional_losses', False),
             image_keys=cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd']),
+            _train_height=train_height,
+            _train_width=train_width,
             _loader_config=loader_config,
         )
+
+    @property
+    def train_height(self) -> int:
+        """Height for training (may be lower resolution)."""
+        return self._train_height if self._train_height is not None else self.height
+
+    @property
+    def train_width(self) -> int:
+        """Width for training (may be lower resolution)."""
+        return self._train_width if self._train_width is not None else self.width
+
+    @property
+    def uses_reduced_train_resolution(self) -> bool:
+        """Whether training uses lower resolution than validation."""
+        return self.train_height != self.height or self.train_width != self.width
 
     @property
     def loader_config(self) -> DataLoaderConfig:
@@ -359,6 +388,8 @@ def _create_single_dual_dataset(
     data_dir: str,
     modality: str,
     vcfg: VolumeConfig,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
 ) -> Dataset:
     """Create Volume3DDataset or DualVolume3DDataset based on modality.
 
@@ -366,15 +397,20 @@ def _create_single_dual_dataset(
         data_dir: Path to data directory (train/val/test_new).
         modality: 'dual' for DualVolume3DDataset, else Volume3DDataset.
         vcfg: Volume configuration.
+        height: Override height (defaults to vcfg.height).
+        width: Override width (defaults to vcfg.width).
 
     Returns:
         Appropriate dataset instance.
     """
+    h = height if height is not None else vcfg.height
+    w = width if width is not None else vcfg.width
+
     if modality == 'dual':
         return DualVolume3DDataset(
             data_dir=data_dir,
-            height=vcfg.height,
-            width=vcfg.width,
+            height=h,
+            width=w,
             pad_depth_to=vcfg.pad_depth_to,
             pad_mode=vcfg.pad_mode,
             slice_step=vcfg.slice_step,
@@ -383,8 +419,8 @@ def _create_single_dual_dataset(
     return Volume3DDataset(
         data_dir=data_dir,
         modality=modality,
-        height=vcfg.height,
-        width=vcfg.width,
+        height=h,
+        width=w,
         pad_depth_to=vcfg.pad_depth_to,
         pad_mode=vcfg.pad_mode,
         slice_step=vcfg.slice_step,
@@ -441,6 +477,9 @@ def create_vae_3d_dataloader(
 ) -> Tuple[DataLoader, Dataset]:
     """Create 3D VAE training dataloader.
 
+    Uses train_height/train_width if configured, allowing training at lower
+    resolution than validation for faster iteration.
+
     Args:
         cfg: Hydra configuration object.
         modality: Modality name or 'dual' for dual-channel.
@@ -453,7 +492,20 @@ def create_vae_3d_dataloader(
     """
     vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
-    dataset = _create_single_dual_dataset(data_dir, modality, vcfg)
+
+    # Use training resolution (may be lower than validation resolution)
+    dataset = _create_single_dual_dataset(
+        data_dir, modality, vcfg,
+        height=vcfg.train_height,
+        width=vcfg.train_width,
+    )
+
+    if vcfg.uses_reduced_train_resolution:
+        logger.info(
+            f"Training at {vcfg.train_height}x{vcfg.train_width}, "
+            f"validation at {vcfg.height}x{vcfg.width}"
+        )
+
     loader = _create_loader(
         dataset, vcfg, shuffle=True, drop_last=True,
         use_distributed=use_distributed, rank=rank, world_size=world_size
@@ -580,13 +632,28 @@ class MultiModality3DDataset(Base3DVolumeDataset):
         return result
 
 
-def _create_multi_modality_dataset(data_dir: str, vcfg: VolumeConfig) -> MultiModality3DDataset:
-    """Create MultiModality3DDataset with config."""
+def _create_multi_modality_dataset(
+    data_dir: str,
+    vcfg: VolumeConfig,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
+) -> MultiModality3DDataset:
+    """Create MultiModality3DDataset with config.
+
+    Args:
+        data_dir: Path to data directory.
+        vcfg: Volume configuration.
+        height: Override height (defaults to vcfg.height).
+        width: Override width (defaults to vcfg.width).
+    """
+    h = height if height is not None else vcfg.height
+    w = width if width is not None else vcfg.width
+
     return MultiModality3DDataset(
         data_dir=data_dir,
         image_keys=vcfg.image_keys,
-        height=vcfg.height,
-        width=vcfg.width,
+        height=h,
+        width=w,
         pad_depth_to=vcfg.pad_depth_to,
         pad_mode=vcfg.pad_mode,
         slice_step=vcfg.slice_step,
@@ -602,6 +669,9 @@ def create_vae_3d_multi_modality_dataloader(
 ) -> Tuple[DataLoader, Dataset]:
     """Create 3D VAE multi-modality training dataloader.
 
+    Uses train_height/train_width if configured, allowing training at lower
+    resolution than validation for faster iteration.
+
     Args:
         cfg: Hydra configuration object.
         use_distributed: Whether to use distributed sampling.
@@ -613,7 +683,20 @@ def create_vae_3d_multi_modality_dataloader(
     """
     vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
-    dataset = _create_multi_modality_dataset(data_dir, vcfg)
+
+    # Use training resolution (may be lower than validation resolution)
+    dataset = _create_multi_modality_dataset(
+        data_dir, vcfg,
+        height=vcfg.train_height,
+        width=vcfg.train_width,
+    )
+
+    if vcfg.uses_reduced_train_resolution:
+        logger.info(
+            f"Training at {vcfg.train_height}x{vcfg.train_width}, "
+            f"validation at {vcfg.height}x{vcfg.width}"
+        )
+
     loader = _create_loader(
         dataset, vcfg, shuffle=True, drop_last=True,
         use_distributed=use_distributed, rank=rank, world_size=world_size
