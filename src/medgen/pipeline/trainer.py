@@ -106,6 +106,9 @@ class DiffusionTrainer(BaseTrainer):
         self.use_min_snr: bool = cfg.training.use_min_snr
         self.min_snr_gamma: float = cfg.training.min_snr_gamma
 
+        # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
+        self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
+
         # SAM (Sharpness-Aware Minimization)
         sam_cfg = cfg.training.get('sam', {})
         self.use_sam: bool = sam_cfg.get('enabled', False)
@@ -480,7 +483,11 @@ class DiffusionTrainer(BaseTrainer):
             self._compiled_forward_dual = None
             return
 
-        # Define and compile forward functions (same as original)
+        # Capture use_fp32_loss for closure
+        use_fp32 = self.use_fp32_loss
+
+        # Define and compile forward functions
+        # When use_fp32=False, reproduces pre-Jan-7-2026 BF16 behavior
         def _forward_single(
             model: nn.Module,
             perceptual_fn: nn.Module,
@@ -504,12 +511,19 @@ class DiffusionTrainer(BaseTrainer):
 
             if strategy_name == 'rflow':
                 target = images - noise
-                # Cast to FP32 for MSE to match strategy.compute_loss() precision
-                mse_loss = ((prediction.float() - target.float()) ** 2).mean()
+                if use_fp32:
+                    # FP32: accurate gradients (recommended)
+                    mse_loss = ((prediction.float() - target.float()) ** 2).mean()
+                else:
+                    # BF16: reproduces old behavior (suboptimal gradients)
+                    mse_loss = ((prediction - target) ** 2).mean()
             else:
-                mse_loss = ((prediction.float() - noise.float()) ** 2).mean()
+                if use_fp32:
+                    mse_loss = ((prediction.float() - noise.float()) ** 2).mean()
+                else:
+                    mse_loss = ((prediction - noise) ** 2).mean()
 
-            # Cast to FP32 for perceptual loss - pretrained SqueezeNet unstable with BF16
+            # Perceptual loss always uses FP32 (pretrained networks need it)
             p_loss = perceptual_fn(predicted_clean.float(), images.float()) if perceptual_weight > 0 else torch.tensor(0.0, device=images.device)
             total_loss = mse_loss + perceptual_weight * p_loss
             return total_loss, mse_loss, p_loss, predicted_clean
@@ -540,16 +554,22 @@ class DiffusionTrainer(BaseTrainer):
                 clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
                 target_0 = images_0 - noise_0
                 target_1 = images_1 - noise_1
-                # Cast to FP32 for MSE to match strategy.compute_loss() precision
-                mse_loss = (((pred_0.float() - target_0.float()) ** 2).mean() + ((pred_1.float() - target_1.float()) ** 2).mean()) / 2
+                if use_fp32:
+                    # FP32: accurate gradients (recommended)
+                    mse_loss = (((pred_0.float() - target_0.float()) ** 2).mean() + ((pred_1.float() - target_1.float()) ** 2).mean()) / 2
+                else:
+                    # BF16: reproduces old behavior (suboptimal gradients)
+                    mse_loss = (((pred_0 - target_0) ** 2).mean() + ((pred_1 - target_1) ** 2).mean()) / 2
             else:
                 clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
                 clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
-                # Cast to FP32 for MSE to match strategy.compute_loss() precision
-                mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() + ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2
+                if use_fp32:
+                    mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() + ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2
+                else:
+                    mse_loss = (((pred_0 - noise_0) ** 2).mean() + ((pred_1 - noise_1) ** 2).mean()) / 2
 
             if perceptual_weight > 0:
-                # Cast to FP32 for perceptual loss - pretrained SqueezeNet unstable with BF16
+                # Perceptual loss always uses FP32 (pretrained networks need it)
                 p_loss = (perceptual_fn(clean_0.float(), images_0.float()) + perceptual_fn(clean_1.float(), images_1.float())) / 2
             else:
                 p_loss = torch.tensor(0.0, device=images_0.device)
@@ -565,7 +585,8 @@ class DiffusionTrainer(BaseTrainer):
         )
 
         if self.is_main_process:
-            logger.info("Compiled fused forward passes (CUDA graphs enabled)")
+            precision = "FP32" if use_fp32 else "BF16 (legacy)"
+            logger.info(f"Compiled fused forward passes (CUDA graphs enabled, MSE precision: {precision})")
 
     def _get_trainer_type(self) -> str:
         """Return trainer type for metadata."""
