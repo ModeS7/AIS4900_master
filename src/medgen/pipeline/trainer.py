@@ -741,7 +741,7 @@ class DiffusionTrainer(BaseTrainer):
                                 predicted_clean = aug_clean  # Use augmented for metrics
                             else:
                                 predicted_clean = inv_clean
-                                p_loss = self.perceptual_loss_fn(predicted_clean, images)
+                                p_loss = self.perceptual_loss_fn(predicted_clean.float(), images.float())
                         else:
                             # Single channel mode
                             aug_noisy = self.score_aug.apply_omega(noisy_images, omega)
@@ -761,7 +761,7 @@ class DiffusionTrainer(BaseTrainer):
                                 predicted_clean = aug_clean
                             else:
                                 predicted_clean = inv_clean
-                                p_loss = self.perceptual_loss_fn(predicted_clean, images)
+                                p_loss = self.perceptual_loss_fn(predicted_clean.float(), images.float())
                     else:
                         p_loss = torch.tensor(0.0, device=self.device)
                         predicted_clean = images  # Placeholder for metrics
@@ -793,7 +793,8 @@ class DiffusionTrainer(BaseTrainer):
                             images_decoded = images
 
                         # Wrapper handles both tensor and dict inputs
-                        p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
+                        # Cast to FP32 for perceptual loss stability
+                        p_loss = self.perceptual_loss_fn(pred_decoded.float(), images_decoded.float())
                     else:
                         p_loss = torch.tensor(0.0, device=self.device)
 
@@ -868,7 +869,7 @@ class DiffusionTrainer(BaseTrainer):
                             images_decoded_2 = self.space.decode_batch(images)
                         else:
                             pred_decoded_2, images_decoded_2 = predicted_clean_2, images
-                        p_loss_2 = self.perceptual_loss_fn(pred_decoded_2, images_decoded_2)
+                        p_loss_2 = self.perceptual_loss_fn(pred_decoded_2.float(), images_decoded_2.float())
                     else:
                         p_loss_2 = torch.tensor(0.0, device=self.device)
                     total_loss_2 = mse_loss_2 + self.perceptual_weight * p_loss_2
@@ -1066,7 +1067,7 @@ class DiffusionTrainer(BaseTrainer):
                     else:
                         pred_decoded = predicted_clean
                         images_decoded = images
-                    p_loss = self.perceptual_loss_fn(pred_decoded, images_decoded)
+                    p_loss = self.perceptual_loss_fn(pred_decoded.float(), images_decoded.float())
                 else:
                     p_loss = torch.tensor(0.0, device=self.device)
 
