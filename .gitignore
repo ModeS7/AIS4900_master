@@ -31,3 +31,4 @@ misc/bench/benchmark_results/
 # IDE
 .idea/
 *.iml
+/papers/
