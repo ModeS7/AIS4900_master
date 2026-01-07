@@ -453,6 +453,7 @@ class DiffusionTrainer(BaseTrainer):
         """
         snr_weights = self.metrics.compute_snr_weights(timesteps)
 
+        # Cast to FP32 for MSE computation (BF16 underflow causes ~15-20% lower loss)
         if isinstance(images, dict):
             keys = list(images.keys())
             if self.strategy_name == 'rflow':
@@ -461,12 +462,12 @@ class DiffusionTrainer(BaseTrainer):
             else:
                 target_0, target_1 = noise[keys[0]], noise[keys[1]]
             pred_0, pred_1 = prediction[:, 0:1, :, :], prediction[:, 1:2, :, :]
-            mse_0 = ((pred_0 - target_0) ** 2).mean(dim=(1, 2, 3))
-            mse_1 = ((pred_1 - target_1) ** 2).mean(dim=(1, 2, 3))
+            mse_0 = ((pred_0.float() - target_0.float()) ** 2).mean(dim=(1, 2, 3))
+            mse_1 = ((pred_1.float() - target_1.float()) ** 2).mean(dim=(1, 2, 3))
             mse_per_sample = (mse_0 + mse_1) / 2
         else:
             target = images - noise if self.strategy_name == 'rflow' else noise
-            mse_per_sample = ((prediction - target) ** 2).mean(dim=(1, 2, 3))
+            mse_per_sample = ((prediction.float() - target.float()) ** 2).mean(dim=(1, 2, 3))
 
         return (mse_per_sample * snr_weights).mean()
 
