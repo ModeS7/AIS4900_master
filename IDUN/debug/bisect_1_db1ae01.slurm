@@ -1,0 +1,55 @@
+#!/bin/sh
+#SBATCH --partition=GPUQ
+#SBATCH --account=share-ie-idi
+#SBATCH --time=0-02:00:00
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:1
+#SBATCH --constraint="a100|h100"
+#SBATCH --job-name="bisect_db1ae01"
+#SBATCH --output=IDUN/output/debug/bisect_db1ae01_%j.out
+#SBATCH --error=IDUN/output/debug/bisect_db1ae01_%j.err
+#SBATCH --mail-user=modestas@stud.ntnu.no
+#SBATCH --mail-type=ALL
+
+# Bisect test: commit db1ae01 (first after d2839b9)
+COMMIT="db1ae01"
+WORKTREE_DIR="/tmp/bisect_${COMMIT}_${SLURM_JOB_ID}"
+
+cd ${SLURM_SUBMIT_DIR}
+
+echo "=== Bisect test: commit ${COMMIT} ==="
+echo "Job ID: $SLURM_JOB_ID"
+nvidia-smi
+
+module purge
+module load Anaconda3/2024.02-1
+conda activate AIS4900
+
+# Create isolated worktree for this commit
+echo "Creating worktree at ${WORKTREE_DIR}..."
+git worktree add ${WORKTREE_DIR} ${COMMIT}
+cd ${WORKTREE_DIR}
+
+# Install package from this commit
+pip install -e . --quiet
+
+# Run training
+echo "Starting training at commit ${COMMIT}..."
+time python -m medgen.scripts.train \
+    paths=cluster \
+    strategy=rflow \
+    mode=bravo \
+    model.image_size=64 \
+    training.epochs=100 \
+    training.augment=false \
+    training.use_ema=false \
+    training.use_min_snr=false \
+    training.name=bisect_${COMMIT}_
+
+# Cleanup worktree
+cd ${SLURM_SUBMIT_DIR}
+git worktree remove ${WORKTREE_DIR} --force
+
+conda deactivate
