@@ -4,7 +4,7 @@
 #SBATCH --time=0-01:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
+#SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
 #SBATCH --job-name="test_old_d2839b9"
@@ -13,9 +13,13 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# Test OLD commit d2839b9 (Dec 26 baseline) using isolated worktree
+COMMIT="d2839b9"
+WORKTREE_DIR="/tmp/test_old_${COMMIT}_${SLURM_JOB_ID}"
+
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Testing OLD commit d2839b9 (12-26) ==="
+echo "=== Testing OLD commit d2839b9 (Dec 26) ==="
 echo "Job ID: $SLURM_JOB_ID"
 nvidia-smi
 
@@ -23,28 +27,29 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate AIS4900
 
-# Checkout old commit
-git stash
-git checkout d2839b9
+# Create isolated worktree for this commit
+echo "Creating worktree at ${WORKTREE_DIR}..."
+git worktree add ${WORKTREE_DIR} ${COMMIT}
+cd ${WORKTREE_DIR}
 
-# Reinstall package with old code
+# Install package from this commit
 pip install -e . --quiet
 
-# Run short training
+# Run training
+echo "Starting training at commit ${COMMIT}..."
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
     model.image_size=64 \
-    training.epochs=100 \
+    training.epochs=500 \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
     training.name=debug_old_d2839b9_
 
-# Return to main and reinstall current code
-git checkout main
-git stash pop
-pip install -e . --quiet
+# Cleanup worktree
+cd ${SLURM_SUBMIT_DIR}
+git worktree remove ${WORKTREE_DIR} --force
 
 conda deactivate
