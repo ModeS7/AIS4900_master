@@ -32,7 +32,7 @@ time python -m medgen.scripts.train \
     strategy=rflow \
     mode=bravo \
     model.image_size=64 \
-    training.epochs=500 \
+    training.epochs=100 \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
