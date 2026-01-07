@@ -503,11 +503,13 @@ class DiffusionTrainer(BaseTrainer):
 
             if strategy_name == 'rflow':
                 target = images - noise
-                mse_loss = ((prediction - target) ** 2).mean()
+                # Cast to FP32 for MSE to match strategy.compute_loss() precision
+                mse_loss = ((prediction.float() - target.float()) ** 2).mean()
             else:
-                mse_loss = ((prediction - noise) ** 2).mean()
+                mse_loss = ((prediction.float() - noise.float()) ** 2).mean()
 
-            p_loss = perceptual_fn(predicted_clean, images) if perceptual_weight > 0 else torch.tensor(0.0, device=images.device)
+            # Cast to FP32 for perceptual loss - pretrained SqueezeNet unstable with BF16
+            p_loss = perceptual_fn(predicted_clean.float(), images.float()) if perceptual_weight > 0 else torch.tensor(0.0, device=images.device)
             total_loss = mse_loss + perceptual_weight * p_loss
             return total_loss, mse_loss, p_loss, predicted_clean
 
@@ -537,14 +539,17 @@ class DiffusionTrainer(BaseTrainer):
                 clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
                 target_0 = images_0 - noise_0
                 target_1 = images_1 - noise_1
-                mse_loss = (((pred_0 - target_0) ** 2).mean() + ((pred_1 - target_1) ** 2).mean()) / 2
+                # Cast to FP32 for MSE to match strategy.compute_loss() precision
+                mse_loss = (((pred_0.float() - target_0.float()) ** 2).mean() + ((pred_1.float() - target_1.float()) ** 2).mean()) / 2
             else:
                 clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
                 clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
-                mse_loss = (((pred_0 - noise_0) ** 2).mean() + ((pred_1 - noise_1) ** 2).mean()) / 2
+                # Cast to FP32 for MSE to match strategy.compute_loss() precision
+                mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() + ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2
 
             if perceptual_weight > 0:
-                p_loss = (perceptual_fn(clean_0, images_0) + perceptual_fn(clean_1, images_1)) / 2
+                # Cast to FP32 for perceptual loss - pretrained SqueezeNet unstable with BF16
+                p_loss = (perceptual_fn(clean_0.float(), images_0.float()) + perceptual_fn(clean_1.float(), images_1.float())) / 2
             else:
                 p_loss = torch.tensor(0.0, device=images_0.device)
 
