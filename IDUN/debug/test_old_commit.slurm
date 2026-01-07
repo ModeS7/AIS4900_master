@@ -32,9 +32,8 @@ time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    strategy.num_train_timesteps=100 \
     model.image_size=64 \
-    training.epochs=10 \
+    training.epochs=500 \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
