@@ -36,7 +36,7 @@ time python -m medgen.scripts.train \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
-    training.use_fp32_loss=false \
+    +training.use_fp32_loss=false \
     training.name=debug_bf16_repro_
 
 conda deactivate
