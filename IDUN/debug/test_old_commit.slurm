@@ -33,7 +33,8 @@ git worktree add ${WORKTREE_DIR} ${COMMIT}
 cd ${WORKTREE_DIR}
 
 # Install package from this commit
-pip install -e . --quiet
+pip uninstall medgen -y 2>/dev/null || true
+pip install -e . --quiet --no-build-isolation
 
 # Run training
 echo "Starting training at commit ${COMMIT}..."

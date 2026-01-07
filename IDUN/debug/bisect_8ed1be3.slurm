@@ -28,7 +28,8 @@ conda activate AIS4900
 
 git worktree add ${WORKTREE_DIR} ${COMMIT}
 cd ${WORKTREE_DIR}
-pip install -e . --quiet
+pip uninstall medgen -y 2>/dev/null || true
+pip install -e . --quiet --no-build-isolation
 
 time python -m medgen.scripts.train \
     paths=cluster \
