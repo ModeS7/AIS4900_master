@@ -27,6 +27,9 @@ conda activate AIS4900
 git stash
 git checkout d2839b9
 
+# Reinstall package with old code
+pip install -e . --quiet
+
 # Run short training
 time python -m medgen.scripts.train \
     paths=cluster \
@@ -39,8 +42,9 @@ time python -m medgen.scripts.train \
     training.use_min_snr=false \
     training.name=debug_old_d2839b9_
 
-# Return to main
+# Return to main and reinstall current code
 git checkout main
 git stash pop
+pip install -e . --quiet
 
 conda deactivate

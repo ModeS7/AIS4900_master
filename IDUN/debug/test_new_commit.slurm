@@ -23,6 +23,9 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate AIS4900
 
+# Reinstall package to pick up any module changes
+pip install -e . --quiet
+
 # Run short training on current code
 time python -m medgen.scripts.train \
     paths=cluster \
