@@ -34,7 +34,7 @@ from .metrics import (
     create_reconstruction_figure,
     RegionalMetricsTracker,
 )
-from .tracking import create_worst_batch_figure
+from .tracking import create_worst_batch_figure, CodebookTracker
 from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,9 @@ class VQVAETrainer(BaseCompressionTrainer):
         )
 
         self.image_size: int = cfg.model.image_size
+
+        # Codebook tracking (initialized after model setup)
+        self._codebook_tracker: Optional[CodebookTracker] = None
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for VQ-VAE."""
@@ -148,6 +151,9 @@ class VQVAETrainer(BaseCompressionTrainer):
 
         # Setup EMA
         self._setup_ema()
+
+        # Initialize codebook tracker
+        self._codebook_tracker = CodebookTracker(self.num_embeddings, self.device)
 
         # Save metadata
         if self.is_main_process:
@@ -398,3 +404,75 @@ class VQVAETrainer(BaseCompressionTrainer):
         """
         reconstructed, _ = model(images)
         return reconstructed
+
+    def _track_codebook_usage(
+        self,
+        data_loader: DataLoader,
+        max_batches: int = 50,
+    ) -> None:
+        """Track codebook usage on validation data.
+
+        Samples batches from validation data and tracks which codebook
+        indices are selected. Results are stored in self._codebook_tracker.
+
+        Args:
+            data_loader: Validation data loader.
+            max_batches: Maximum batches to process for tracking.
+        """
+        if self._codebook_tracker is None:
+            return
+
+        self._codebook_tracker.reset()
+        model_to_use = self._get_model_for_eval()
+        model_to_use.eval()
+
+        # Get the raw model for index_quantize (unwrap DDP/compiled)
+        raw_model = self.model_raw
+
+        with torch.inference_mode():
+            for i, batch in enumerate(data_loader):
+                if i >= max_batches:
+                    break
+
+                images, _ = self._prepare_batch(batch)
+
+                # Get codebook indices
+                indices = raw_model.index_quantize(images)
+                self._codebook_tracker.update_fast(indices)
+
+    def compute_validation_losses(
+        self,
+        data_loader: DataLoader,
+        epoch: int,
+    ) -> Dict[str, float]:
+        """Compute validation losses with codebook tracking.
+
+        Extends parent method to also track codebook utilization.
+
+        Args:
+            data_loader: Validation data loader.
+            epoch: Current epoch number.
+
+        Returns:
+            Dictionary of validation metrics.
+        """
+        # Call parent validation
+        metrics = super().compute_validation_losses(data_loader, epoch)
+
+        # Track codebook usage and log
+        if self.is_main_process and self._codebook_tracker is not None:
+            self._track_codebook_usage(data_loader, max_batches=50)
+
+            if self.writer is not None:
+                cb_metrics = self._codebook_tracker.log_to_tensorboard(
+                    self.writer, epoch, prefix='Codebook'
+                )
+
+                # Add to returned metrics for logging
+                metrics['codebook_perplexity'] = cb_metrics['perplexity']
+                metrics['codebook_utilization'] = cb_metrics['utilization']
+
+            # Log summary to console
+            self._codebook_tracker.log_summary()
+
+        return metrics
