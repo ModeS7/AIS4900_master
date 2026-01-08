@@ -457,4 +457,6 @@ class ValidationVisualizer:
                     exc_info=True
                 )
         finally:
+            # Reset model to train mode (was set to eval at start)
+            model.train()
             torch.cuda.empty_cache()

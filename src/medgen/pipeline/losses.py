@@ -69,7 +69,9 @@ class PerceptualLoss(nn.Module):
             self._loss_fn = self._loss_fn.to(device)
 
         if use_compile:
-            self._loss_fn = torch.compile(self._loss_fn, mode="reduce-overhead")
+            # Use "default" mode - "reduce-overhead" uses CUDA graphs which can cause
+            # "tensor deallocate during graph recording" errors with dynamic shapes
+            self._loss_fn = torch.compile(self._loss_fn, mode="default")
 
         self.network_type = network_type
 

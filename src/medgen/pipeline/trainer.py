@@ -108,6 +108,7 @@ class DiffusionTrainer(BaseTrainer):
 
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
+        logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss} (from config override)")
 
         # SAM (Sharpness-Aware Minimization)
         sam_cfg = cfg.training.get('sam', {})
