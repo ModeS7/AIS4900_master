@@ -186,7 +186,8 @@ class CombinedModelWrapper(nn.Module):
             Model prediction [B, C_out, H, W]
         """
         # Encode both conditioning signals
-        omega_encoding = encode_omega(omega, x.device)
+        # Pass mode_id to encode_omega to include mode intensity scaling info (dims 32-35)
+        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
         mode_encoding = encode_mode_id(mode_id, x.device)
 
         # Set both encodings

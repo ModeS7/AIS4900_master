@@ -140,7 +140,23 @@ class ValidationVisualizer:
         while len(seg_masks) < num_samples and attempts < max_attempts:
             idx = torch.randint(0, len(train_dataset), (1,)).item()
             data = train_dataset[idx]
-            tensor = torch.from_numpy(data).float() if hasattr(data, '__array__') else torch.tensor(data).float()
+
+            # Handle tuple (images, seg) format from extract_slices_dual
+            if isinstance(data, tuple):
+                images, seg_arr = data
+                if isinstance(images, np.ndarray):
+                    images = torch.from_numpy(images).float()
+                else:
+                    images = images.float()
+                if isinstance(seg_arr, np.ndarray):
+                    seg_arr = torch.from_numpy(seg_arr).float()
+                else:
+                    seg_arr = seg_arr.float()
+                # Combine into [C, H, W] format with seg as last channel
+                tensor = torch.cat([images, seg_arr], dim=0)
+            else:
+                tensor = torch.from_numpy(data).float() if hasattr(data, '__array__') else torch.tensor(data).float()
+
             seg = tensor[seg_channel_idx:seg_channel_idx + 1, :, :]
 
             if seg.sum() > 0:
@@ -369,9 +385,9 @@ class ValidationVisualizer:
                             model, model_input, self.num_timesteps, mode_id=mode_id
                         )
                     else:
-                        # Note: strategy.generate() doesn't support mode_id yet (Bug 20)
                         samples = self.strategy.generate(
-                            model, model_input, num_steps=self.num_timesteps, device=self.device
+                            model, model_input, num_steps=self.num_timesteps, device=self.device,
+                            mode_id=mode_id
                         )
 
                 # Decode from latent space to pixel space for visualization

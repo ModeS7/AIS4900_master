@@ -149,6 +149,8 @@ class DiffusionTrainer(BaseTrainer):
         # ScoreAug initialization (applies transforms to noisy data)
         self.score_aug = None
         self.use_omega_conditioning = False
+        self.use_mode_intensity_scaling = False
+        self._apply_mode_intensity_scale = None  # Function reference (lazy import)
         score_aug_cfg = cfg.training.get('score_aug', {})
         if score_aug_cfg.get('enabled', False):
             from medgen.data.score_aug import ScoreAugTransform
@@ -164,6 +166,13 @@ class DiffusionTrainer(BaseTrainer):
             )
             self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
 
+            # Mode intensity scaling: scales input by modality-specific factor
+            # Forces model to use mode conditioning (similar to how rotation requires omega)
+            self.use_mode_intensity_scaling = score_aug_cfg.get('mode_intensity_scaling', False)
+            if self.use_mode_intensity_scaling:
+                from medgen.data.score_aug import apply_mode_intensity_scale
+                self._apply_mode_intensity_scale = apply_mode_intensity_scale
+
             # Validate: rotation/flip require omega conditioning per ScoreAug paper
             # Gaussian noise is rotation-invariant, allowing model to "cheat" without conditioning
             has_spatial_transforms = (
@@ -174,6 +183,13 @@ class DiffusionTrainer(BaseTrainer):
                     "ScoreAug rotation/flip require omega conditioning (per ScoreAug paper). "
                     "Gaussian noise is rotation-invariant, allowing the model to detect "
                     "rotation from noise patterns and 'cheat' by inverting before denoising. "
+                    "Fix: Set training.score_aug.use_omega_conditioning=true"
+                )
+
+            # Validate: mode_intensity_scaling requires omega conditioning + mode embedding
+            if self.use_mode_intensity_scaling and not self.use_omega_conditioning:
+                raise ValueError(
+                    "Mode intensity scaling requires omega conditioning. "
                     "Fix: Set training.score_aug.use_omega_conditioning=true"
                 )
 
@@ -193,7 +209,8 @@ class DiffusionTrainer(BaseTrainer):
                 logger.info(
                     f"ScoreAug enabled: transforms=[{', '.join(transforms)}], "
                     f"each with 1/{n_options} prob (uniform), "
-                    f"omega_conditioning={self.use_omega_conditioning}"
+                    f"omega_conditioning={self.use_omega_conditioning}, "
+                    f"mode_intensity_scaling={self.use_mode_intensity_scaling}"
                 )
 
         # Mode embedding for multi-modality training
@@ -712,13 +729,19 @@ class DiffusionTrainer(BaseTrainer):
                     else:
                         aug_input, aug_velocity, omega = self.score_aug(model_input, velocity_target)
 
+                    # Apply mode intensity scaling if enabled (after ScoreAug, before model)
+                    # This scales the input by a modality-specific factor, forcing the model
+                    # to use mode conditioning to correctly predict the unscaled target
+                    if self.use_mode_intensity_scaling and mode_id is not None:
+                        aug_input, _ = self._apply_mode_intensity_scale(aug_input, mode_id)
+
                     # Get prediction from augmented input
                     if self.use_omega_conditioning and self.use_mode_embedding:
                         # Model is CombinedModelWrapper, pass both omega and mode_id
                         prediction = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
                     elif self.use_omega_conditioning:
-                        # Model is ScoreAugModelWrapper, pass omega for conditioning
-                        prediction = self.model(aug_input, timesteps, omega=omega)
+                        # Model is ScoreAugModelWrapper, pass omega and mode_id for conditioning
+                        prediction = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
                     elif self.use_mode_embedding:
                         # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
                         prediction = self.model(aug_input, timesteps, mode_id=mode_id)
@@ -865,7 +888,7 @@ class DiffusionTrainer(BaseTrainer):
                     if self.use_omega_conditioning and self.use_mode_embedding:
                         prediction_2 = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
                     elif self.use_omega_conditioning:
-                        prediction_2 = self.model(aug_input, timesteps, omega=omega)
+                        prediction_2 = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
                     elif self.use_mode_embedding:
                         prediction_2 = self.model(aug_input, timesteps, mode_id=mode_id)
                     else:
@@ -1074,6 +1097,10 @@ class DiffusionTrainer(BaseTrainer):
                 timesteps = self.strategy.sample_timesteps(images)
                 noisy_images = self.strategy.add_noise(images, noise, timesteps)
                 model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                # Apply mode intensity scaling for validation consistency
+                if self.use_mode_intensity_scaling and mode_id is not None:
+                    model_input, _ = self._apply_mode_intensity_scale(model_input, mode_id)
 
                 # Predict and compute loss
                 if self.use_mode_embedding and mode_id is not None:
@@ -1600,6 +1627,10 @@ class DiffusionTrainer(BaseTrainer):
                 timesteps = self.strategy.sample_timesteps(images)
                 noisy_images = self.strategy.add_noise(images, noise, timesteps)
                 model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                # Apply mode intensity scaling for test consistency
+                if self.use_mode_intensity_scaling and mode_id is not None:
+                    model_input, _ = self._apply_mode_intensity_scale(model_input, mode_id)
 
                 with autocast('cuda', enabled=True, dtype=torch.bfloat16):
                     if self.use_mode_embedding and mode_id is not None:

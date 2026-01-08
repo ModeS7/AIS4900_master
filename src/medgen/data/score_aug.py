@@ -909,10 +909,80 @@ class ScoreAugTransform:
 
 
 # =============================================================================
+# Mode-Specific Intensity Scaling
+# =============================================================================
+# Each modality gets a different intensity scale applied AFTER noise addition.
+# This makes mode conditioning NECESSARY - model cannot predict correct output
+# without knowing the scale factor (similar to how rotation requires omega).
+#
+# Scales are intentionally asymmetric around 1.0 to force the model to learn
+# modality-specific features rather than just inverting a simple transform.
+
+MODE_INTENSITY_SCALE = {
+    0: 0.85,   # bravo  - darker
+    1: 1.15,   # flair  - brighter
+    2: 0.92,   # t1_pre - slightly darker
+    3: 1.08,   # t1_gd  - slightly brighter
+}
+
+# Reverse mapping for inference
+MODE_INTENSITY_SCALE_INV = {k: 1.0 / v for k, v in MODE_INTENSITY_SCALE.items()}
+
+
+def apply_mode_intensity_scale(
+    x: torch.Tensor,
+    mode_id: Optional[torch.Tensor],
+) -> Tuple[torch.Tensor, float]:
+    """Apply modality-specific intensity scaling to input.
+
+    This makes mode conditioning NECESSARY for correct predictions.
+    The model sees scaled input but must predict unscaled target.
+
+    Args:
+        x: Input tensor [B, C, H, W]
+        mode_id: Mode ID tensor [B] or None (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+
+    Returns:
+        Tuple of (scaled_input, scale_factor)
+        - scaled_input: x * scale_factor
+        - scale_factor: The scale applied (1.0 if mode_id is None)
+    """
+    if mode_id is None:
+        return x, 1.0
+
+    # Get mode index (all batch elements should have same mode)
+    if mode_id.dim() == 0:
+        idx = mode_id.item()
+    else:
+        idx = mode_id[0].item()
+
+    scale = MODE_INTENSITY_SCALE.get(int(idx), 1.0)
+    return x * scale, scale
+
+
+def inverse_mode_intensity_scale(
+    x: torch.Tensor,
+    scale: float,
+) -> torch.Tensor:
+    """Inverse the mode intensity scaling.
+
+    Args:
+        x: Scaled tensor [B, C, H, W]
+        scale: The scale factor that was applied
+
+    Returns:
+        Unscaled tensor: x / scale
+    """
+    if scale == 1.0:
+        return x
+    return x / scale
+
+
+# =============================================================================
 # Omega Conditioning (compile-compatible implementation)
 # =============================================================================
 
-# Omega encoding format (32 dims total):
+# Omega encoding format (36 dims total):
 #
 # Legacy mode (compose=False, v2=False) - uses dims 0-15:
 #   [type_onehot(8), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
@@ -926,29 +996,43 @@ class ScoreAugTransform:
 #   Dims 0-15: Same as compose mode for non-destructive + cutout
 #   Dims 16-31: Pattern ID one-hot (16 patterns)
 #
-OMEGA_ENCODING_DIM = 32  # Extended to accommodate pattern IDs
+# Mode intensity scaling - dims 32-35:
+#   Dims 32-35: Mode one-hot (4 modalities) - indicates which scale was applied
+#
+OMEGA_ENCODING_DIM = 36  # Extended to accommodate pattern IDs + mode scaling
 
 
 def encode_omega(
     omega: Optional[Dict[str, Any]],
     device: torch.device,
+    mode_id: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Encode omega dict into tensor format for MLP.
 
-    All samples in a batch get the same transform, so we return shape (1, 32)
-    which broadcasts to (B, 32) in the MLP. This keeps the buffer shape constant
+    All samples in a batch get the same transform, so we return shape (1, 36)
+    which broadcasts to (B, 36) in the MLP. This keeps the buffer shape constant
     for torch.compile compatibility.
 
-    Supports single-transform mode, compose mode, and v2 mode.
+    Supports single-transform mode, compose mode, v2 mode, and mode intensity scaling.
 
     Args:
         omega: Transform parameters dict or None
         device: Target device
+        mode_id: Optional mode ID tensor for intensity scaling (0=bravo, 1=flair, etc.)
 
     Returns:
-        Tensor [1, OMEGA_ENCODING_DIM] encoding the transform
+        Tensor [1, OMEGA_ENCODING_DIM] encoding the transform + mode
     """
     enc = torch.zeros(1, OMEGA_ENCODING_DIM, device=device)
+
+    # Encode mode intensity scaling in dims 32-35 (always, if provided)
+    if mode_id is not None:
+        if mode_id.dim() == 0:
+            idx = mode_id.item()
+        else:
+            idx = mode_id[0].item()
+        if 0 <= idx < 4:
+            enc[0, 32 + int(idx)] = 1.0
 
     if omega is None:
         # Identity: type_onehot[0] = 1, rest = 0
@@ -1148,6 +1232,7 @@ class ScoreAugModelWrapper(nn.Module):
         x: torch.Tensor,
         timesteps: torch.Tensor,
         omega: Optional[Dict[str, Any]] = None,
+        mode_id: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass with omega conditioning.
 
@@ -1155,13 +1240,14 @@ class ScoreAugModelWrapper(nn.Module):
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
             omega: Optional augmentation parameters for conditioning
+            mode_id: Optional mode ID for intensity scaling (0=bravo, 1=flair, etc.)
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
-        # Encode omega as (1, 12) - broadcasts to batch in MLP
+        # Encode omega + mode_id as (1, 36) - broadcasts to batch in MLP
         # Using fixed shape keeps torch.compile happy
-        omega_encoding = encode_omega(omega, x.device)
+        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
         self.omega_time_embed.set_omega_encoding(omega_encoding)
 
         # Call model normally
