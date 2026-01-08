@@ -16,8 +16,8 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp8.12: 3D VQ-VAE DEEPER (3 res blocks per level vs 2) ==="
-echo "Hypothesis: Deeper encoder/decoder can learn better representations"
+echo "=== Exp8.12: 3D VQ-VAE 8x compression + DEEPER (3 res blocks) ==="
+echo "Hypothesis: Deeper encoder/decoder compensates for higher compression"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 nvidia-smi
@@ -30,13 +30,20 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Exp8.12: Deeper network (3 residual blocks per level instead of 2)
+# Exp8.12: 8x compression + deeper network (3 residual blocks), 4 latent channels
+# 3 levels: 256->128->64->32 (8x spatial compression)
+# Latent shape: [4, 32, 32, 20]
 time python -m medgen.scripts.train_vqvae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \
     training.batch_size=1 \
+    vqvae_3d.embedding_dim=4 \
     vqvae_3d.num_res_layers=3 \
+    'vqvae_3d.channels=[64,128,256]' \
+    'vqvae_3d.num_res_channels=[64,128,256]' \
+    'vqvae_3d.downsample_parameters=[[2,4,1,1],[2,4,1,1],[2,4,1,1]]' \
+    'vqvae_3d.upsample_parameters=[[2,4,1,1,0],[2,4,1,1,0],[2,4,1,1,0]]' \
     training.name=exp8_12_
 
 conda deactivate

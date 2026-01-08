@@ -16,8 +16,8 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp8.11: 3D VQ-VAE LARGER codebook (1024 vs 512) ==="
-echo "Hypothesis: More codebook entries = finer-grained discrete representation"
+echo "=== Exp8.11: 3D VQ-VAE 8x compression + LARGER codebook (1024) ==="
+echo "Hypothesis: More codebook entries compensates for higher compression"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 nvidia-smi
@@ -30,14 +30,20 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Exp8.11: Larger codebook (1024 entries instead of 512)
-# Monitor codebook utilization to check for dead codes
+# Exp8.11: 8x compression + larger codebook (1024 entries), 4 latent channels
+# 3 levels: 256->128->64->32 (8x spatial compression)
+# Latent shape: [4, 32, 32, 20]
 time python -m medgen.scripts.train_vqvae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \
     training.batch_size=1 \
+    vqvae_3d.embedding_dim=4 \
     vqvae_3d.num_embeddings=1024 \
+    'vqvae_3d.channels=[64,128,256]' \
+    'vqvae_3d.num_res_channels=[64,128,256]' \
+    'vqvae_3d.downsample_parameters=[[2,4,1,1],[2,4,1,1],[2,4,1,1]]' \
+    'vqvae_3d.upsample_parameters=[[2,4,1,1,0],[2,4,1,1,0],[2,4,1,1,0]]' \
     training.name=exp8_11_
 
 conda deactivate
