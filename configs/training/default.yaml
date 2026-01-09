@@ -55,6 +55,10 @@ score_aug:
   compose: false             # If true, each transform applied with compose_prob
   compose_prob: 0.5          # Probability for each transform in compose mode
 
+  # Mode intensity scaling: multiply input by mode-specific scale factor
+  # Forces model to use mode conditioning to predict correct target
+  mode_intensity_scaling: false  # Requires use_omega_conditioning + mode.use_mode_embedding
+
   # === v2 mode: structured non-destructive/destructive augmentation ===
   # When enabled, separates transforms into:
   # - Non-destructive (can stack): rotation, flip, translation
