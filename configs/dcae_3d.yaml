@@ -21,6 +21,7 @@
 
 defaults:
   - paths: local
+  - model: default
   - mode: multi_modality
   - dcae_3d: default
   - training: default
