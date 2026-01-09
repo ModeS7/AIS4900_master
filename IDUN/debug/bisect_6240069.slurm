@@ -7,19 +7,19 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="bisect_0c6c6c7"
-#SBATCH --output=IDUN/output/debug/bisect_0c6c6c7_%j.out
-#SBATCH --error=IDUN/output/debug/bisect_0c6c6c7_%j.err
+#SBATCH --job-name="bisect_6240069"
+#SBATCH --output=IDUN/output/debug/bisect_6240069_%j.out
+#SBATCH --error=IDUN/output/debug/bisect_6240069_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# 0c6c6c7 - midpoint (dataloader refactoring)
-COMMIT="0c6c6c7"
+# 6240069 - VAE volume validation loader, quality metrics
+COMMIT="6240069"
 WORKTREE_DIR="/tmp/bisect_${COMMIT}_${SLURM_JOB_ID}"
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Bisect: ${COMMIT} (dataloader refactoring) ==="
+echo "=== Bisect: ${COMMIT} (VAE volume validation, quality metrics) ==="
 nvidia-smi
 
 module purge
@@ -40,7 +40,7 @@ time python -m medgen.scripts.train \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=false \
-    training.name=bisect_0c6c6c7_
+    training.name=bisect_6240069_
 
 cd ${SLURM_SUBMIT_DIR}
 git worktree remove ${WORKTREE_DIR} --force
