@@ -1017,7 +1017,7 @@ class DiffusionTrainer(BaseTrainer):
             self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
             self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
             self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-            self.writer.add_scalar('LR/Model', self.lr_scheduler.get_last_lr()[0], epoch)
+            self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
 
         return avg_loss, avg_mse, avg_perceptual
 
@@ -1321,7 +1321,7 @@ class DiffusionTrainer(BaseTrainer):
                         self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
                         self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
                         self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-                        self.writer.add_scalar('LR/Model', self.lr_scheduler.get_last_lr()[0], epoch)
+                        self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
 
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
