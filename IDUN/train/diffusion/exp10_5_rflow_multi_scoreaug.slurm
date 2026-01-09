@@ -7,18 +7,17 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="exp10_5_compose_mode"
-#SBATCH --output=IDUN/output/train/diffusion/exp10_5_compose_mode_%j.out
-#SBATCH --error=IDUN/output/train/diffusion/exp10_5_compose_mode_%j.err
+#SBATCH --job-name="exp10_5_multi_scoreaug"
+#SBATCH --output=IDUN/output/train/diffusion/exp10_5_multi_scoreaug_%j.out
+#SBATCH --error=IDUN/output/train/diffusion/exp10_5_multi_scoreaug_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp10.5: Multi-modality + ScoreAug COMPOSE + Mode Intensity Scaling ==="
-echo "Compose mode: each transform has 50% independent probability"
-echo "Mode intensity scaling forces model to use mode conditioning"
-echo "Scales: bravo=0.85, flair=1.15, t1_pre=0.92, t1_gd=1.08"
+echo "=== Exp10.5: Multi-modality Diffusion + ScoreAug Compose ==="
+echo "Mode embedding + ScoreAug compose mode (like exp9_5)"
+echo "4x training data: bravo, flair, t1_pre, t1_gd (all conditioned on seg)"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 nvidia-smi
@@ -29,15 +28,19 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# exp10_5: ScoreAug compose mode + mode intensity scaling (exp9_5 style)
-# Compose mode: each transform applied independently with 50% prob
-# Possible combinations: 2^3 = 8 (spatial, translate, cutout)
-# + Mode intensity scaling: input *= mode_scale, target unchanged
-# Model MUST learn mode to predict correct velocity
+# exp10_5: Multi-modality diffusion + ScoreAug compose (exp10_4 + exp9_5)
+# - mode=multi uses mode embedding (model learns modality from mode_id)
+# - 4x training data from all modalities
+# - ScoreAug compose mode: each transform has 50% independent probability
+#
+# Transforms (each 50% chance):
+#   - spatial: 7 D4 symmetries (rotation + flip combos)
+#   - translation: +-40% X, +-20% Y
+#   - cutout: random rectangle 10-30%
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
-    mode=multi_modality \
+    mode=multi \
     strategy.num_train_timesteps=100 \
     model.image_size=128 \
     training.augment=false \
@@ -53,8 +56,6 @@ time python -m medgen.scripts.train \
     training.score_aug.compose=true \
     training.score_aug.compose_prob=0.5 \
     training.score_aug.use_omega_conditioning=true \
-    training.score_aug.mode_intensity_scaling=true \
-    mode.use_mode_embedding=true \
     training.name=exp10_5_
 
 conda deactivate
