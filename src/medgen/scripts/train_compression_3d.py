@@ -27,7 +27,7 @@ from medgen.data import (
     create_vae_3d_multi_modality_test_dataloader,
     create_vae_3d_single_modality_validation_loader,
 )
-from medgen.pipeline import VAE3DTrainer, VQVAE3DTrainer
+from medgen.pipeline import VAE3DTrainer, VQVAE3DTrainer, DCAE3DTrainer
 from .common import override_vae_channels, run_test_evaluation, get_image_keys, create_per_modality_val_loaders_3d
 
 # Enable CUDA optimizations at module import
@@ -112,6 +112,73 @@ def validate_vqvae_3d_config(cfg: DictConfig) -> list:
     return errors
 
 
+def validate_dcae_3d_config(cfg: DictConfig) -> list:
+    """Validate 3D DC-AE configuration.
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error messages (empty if valid).
+    """
+    import math
+
+    errors = []
+
+    # Check volume config exists
+    if 'volume' not in cfg:
+        errors.append("Missing 'volume' config section for 3D DC-AE")
+        return errors
+
+    volume = cfg.volume
+    if volume.get('depth', 0) <= 0:
+        errors.append("volume.depth must be positive")
+    if volume.get('height', 0) <= 0:
+        errors.append("volume.height must be positive")
+    if volume.get('width', 0) <= 0:
+        errors.append("volume.width must be positive")
+
+    # Check dcae_3d config exists
+    if 'dcae_3d' not in cfg:
+        errors.append("Missing 'dcae_3d' config section")
+        return errors
+
+    dcae = cfg.dcae_3d
+
+    # Compute compression from architecture
+    n_stages = len(dcae.encoder_block_out_channels)
+    n_down_blocks = n_stages - 1
+    spatial_compression = 2 ** n_down_blocks
+    depth_factors = dcae.depth_factors
+    depth_compression = math.prod(depth_factors)
+
+    # Validate depth_factors length
+    if len(depth_factors) != n_down_blocks:
+        errors.append(
+            f"depth_factors ({len(depth_factors)}) must have {n_down_blocks} elements "
+            f"(one per down block between {n_stages} stages)"
+        )
+
+    # Check volume dimensions are divisible by compression
+    if volume.get('height', 0) % spatial_compression != 0:
+        errors.append(
+            f"volume.height ({volume.get('height')}) must be divisible by "
+            f"spatial_compression ({spatial_compression})"
+        )
+    if volume.get('width', 0) % spatial_compression != 0:
+        errors.append(
+            f"volume.width ({volume.get('width')}) must be divisible by "
+            f"spatial_compression ({spatial_compression})"
+        )
+    if volume.get('depth', 0) % depth_compression != 0:
+        errors.append(
+            f"volume.depth ({volume.get('depth')}) must be divisible by "
+            f"depth_compression ({depth_compression})"
+        )
+
+    return errors
+
+
 # =============================================================================
 # Trainer Registry
 # =============================================================================
@@ -153,6 +220,12 @@ TRAINER_3D_REGISTRY: Dict[str, Trainer3DConfig] = {
         validator=validate_vqvae_3d_config,
         config_section='vqvae_3d',
         display_name='3D VQ-VAE',
+    ),
+    'dcae_3d': Trainer3DConfig(
+        trainer_class=DCAE3DTrainer,
+        validator=validate_dcae_3d_config,
+        config_section='dcae_3d',
+        display_name='3D DC-AE',
     ),
 }
 
@@ -294,6 +367,8 @@ def _build_extra_info_3d(trainer_type: str, cfg: DictConfig) -> str:
     Returns:
         Extra info string for logging.
     """
+    import math
+
     if trainer_type == 'vae_3d':
         return f"Latent channels: {cfg.vae_3d.latent_channels}"
     elif trainer_type == 'vqvae_3d':
@@ -304,5 +379,18 @@ def _build_extra_info_3d(trainer_type: str, cfg: DictConfig) -> str:
         return (
             f"Latent: {latent_w}x{latent_h}x{latent_d} ({n_downsamples}x compression) | "
             f"Codebook: {cfg.vqvae_3d.num_embeddings} x {cfg.vqvae_3d.embedding_dim}"
+        )
+    elif trainer_type == 'dcae_3d':
+        dcae = cfg.dcae_3d
+        n_stages = len(dcae.encoder_block_out_channels)
+        n_down_blocks = n_stages - 1
+        spatial_comp = 2 ** n_down_blocks
+        depth_comp = math.prod(dcae.depth_factors)
+        latent_h = cfg.volume.height // spatial_comp
+        latent_w = cfg.volume.width // spatial_comp
+        latent_d = cfg.volume.depth // depth_comp
+        return (
+            f"Latent: {latent_w}x{latent_h}x{latent_d}x{dcae.latent_channels} | "
+            f"Compression: {spatial_comp}x spatial, {depth_comp}x depth"
         )
     return ""

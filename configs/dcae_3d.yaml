@@ -1,0 +1,59 @@
+# DC-AE 3D (Deep Compression Autoencoder 3D) Training Configuration
+#
+# High-compression 3D autoencoder for volumetric MRI encoding.
+# Adapts MIT HAN Lab's DC-AE to 3D: https://arxiv.org/abs/2410.10733
+#
+# Key features:
+# - 32x spatial compression (256->8)
+# - 4x depth compression (160->40)
+# - Residual autoencoding for stable training
+# - Deterministic (no KL/VQ regularization)
+#
+# Usage:
+#   # Train from scratch (local)
+#   python -m medgen.scripts.train_dcae_3d
+#
+#   # Cluster training
+#   python -m medgen.scripts.train_dcae_3d paths=cluster
+#
+#   # Different mode
+#   python -m medgen.scripts.train_dcae_3d mode=multi_modality
+
+defaults:
+  - paths: local
+  - mode: multi_modality
+  - dcae_3d: default
+  - training: default
+  - volume: default
+  - _self_
+
+# Pretrained checkpoint (for fine-tuning)
+pretrained_checkpoint: null
+
+# ============================================================================
+# Training Overrides for 3D DC-AE
+# ============================================================================
+training:
+  epochs: 125
+  batch_size: 1              # 3D volumes are large
+  learning_rate: 5.0e-5      # Lower LR for 3D
+  gradient_clip_norm: 1.0
+  warmup_epochs: 5
+  use_ema: false             # EMA doubles memory
+  use_compile: false         # Conflicts with gradient checkpointing
+  gradient_checkpointing: true
+
+  logging:
+    grad_norm: true
+    regional_losses: true
+    psnr: true
+    lpips: true
+    msssim: true
+    flops: true
+
+hydra:
+  run:
+    dir: ${paths.model_dir}/compression_3d/${mode.name}/dcae_${oc.select:training.name,""}${volume.height}x${volume.depth}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/compression_3d/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

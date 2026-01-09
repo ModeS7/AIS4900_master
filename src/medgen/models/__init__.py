@@ -14,6 +14,7 @@ from .embeddings import (
     get_3d_sincos_pos_embed,
 )
 from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer
+from .autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
 
 __all__ = [
     # Main model classes
@@ -40,4 +41,7 @@ __all__ = [
     "CrossAttention",
     "Mlp",
     "FinalLayer",
+    # 3D Autoencoders
+    "AutoencoderDC3D",
+    "CheckpointedAutoencoderDC3D",
 ]

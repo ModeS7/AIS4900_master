@@ -1,0 +1,47 @@
+# DC-AE 3D default architecture configuration
+# Shared settings for all compression variants
+#
+# Based on:
+# - DC-AE: https://arxiv.org/abs/2410.10733
+# - DC-VideoGen: https://arxiv.org/abs/2509.25182
+
+# Compression settings
+latent_channels: 32
+# Spatial and depth compression are derived from architecture:
+# - 6 stages = 5 down blocks = 2^5 = 32x spatial
+# - depth_factors product = depth compression
+
+# Scaling factor (compute from calibration set, 1.0 = no scaling)
+scaling_factor: 1.0
+
+# Loss weights
+l1_weight: 1.0
+# DC-AE uses higher perceptual weight (deterministic, no KL regularization)
+perceptual_weight: 0.1
+adv_weight: 0.0              # Phase 1: no GAN
+
+# Architecture - 6 stages for 32x spatial compression
+# Smaller channels than 2D DC-AE to fit in GPU memory
+encoder_block_out_channels: [64, 128, 256, 256, 512, 512]
+decoder_block_out_channels: [64, 128, 256, 256, 512, 512]
+encoder_layers_per_block: [2, 2, 2, 2, 2, 2]
+decoder_layers_per_block: [2, 2, 2, 2, 2, 2]
+
+# Depth factors per down block (5 blocks between 6 stages)
+# [2, 2, 1, 1, 1] = 2*2*1*1*1 = 4x depth compression
+# First 2 blocks compress depth, remaining 3 only compress spatial
+depth_factors: [2, 2, 1, 1, 1]
+
+# Residual autoencoding (essential for high compression stability)
+encoder_out_shortcut: true
+decoder_in_shortcut: true
+
+# GAN settings (for Phase 3 training, currently disabled)
+disable_gan: true
+disc_lr: 1.0e-4
+disc_num_layers: 3
+disc_num_channels: 32        # Smaller for 3D
+
+# 2.5D perceptual loss (samples slices for 2D perceptual network)
+use_2_5d_perceptual: true
+perceptual_slice_fraction: 0.25
