@@ -26,6 +26,9 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate AIS4900
 
+pip uninstall medgen -y 2>/dev/null || true
+pip install -e . --quiet
+
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
