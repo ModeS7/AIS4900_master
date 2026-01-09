@@ -1035,6 +1035,11 @@ class DiffusionTrainer(BaseTrainer):
         if self.val_loader is None:
             return {}, None
 
+        # Save random state - validation uses torch.randn_like() which would otherwise
+        # shift the global RNG and cause training to diverge across epochs
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state(self.device) if torch.cuda.is_available() else None
+
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
 
@@ -1245,6 +1250,11 @@ class DiffusionTrainer(BaseTrainer):
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
                     self.writer.add_scalar('Validation/MS-SSIM-3D', msssim_3d, epoch)
+
+        # Restore random state to not affect subsequent training epochs
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, self.device)
 
         return metrics, worst_batch_data
 
