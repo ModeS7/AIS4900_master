@@ -1433,6 +1433,11 @@ class DiffusionTrainer(BaseTrainer):
         # Use mid-range timestep for reconstruction quality measurement
         mid_timestep = self.num_timesteps // 2
 
+        # Save random state - this method generates random noise which would otherwise
+        # shift the global RNG and cause training to diverge across epochs
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state(self.device) if torch.cuda.is_available() else None
+
         with torch.inference_mode():
             for batch in volume_loader:
                 # batch['image'] is [1, C, H, W, D] (batch_size=1 for volumes)
@@ -1504,6 +1509,11 @@ class DiffusionTrainer(BaseTrainer):
                 n_volumes += 1
 
         model_to_use.train()
+
+        # Restore random state to not affect subsequent training epochs
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, self.device)
 
         if n_volumes == 0:
             return None
