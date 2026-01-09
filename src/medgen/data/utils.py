@@ -83,22 +83,20 @@ def extract_slices_dual(
 
     Args:
         merged_dataset: Dataset with volumes of shape [C, H, W, D]
-            where C = 2 (no seg) or C = 3 (pre+gd+seg).
+            where C = 2 (bravo+seg) or C = 3 (pre+gd+seg).
         has_seg: Whether last channel is segmentation mask to binarize.
         augmentation: Optional albumentations Compose for data augmentation.
 
     Returns:
-        Dataset of 2D slices. If has_seg=True, returns tuples (images, seg)
-        where images has shape [C-1, H, W] and seg has shape [1, H, W].
-        Otherwise returns arrays with shape [C, H, W].
+        Dataset of 2D slices with shape [C, H, W].
     """
-    all_slices: List = []
+    all_slices: List[np.ndarray] = []
 
     for i in range(len(merged_dataset)):
         volume = merged_dataset[i]  # Shape: [C, H, W, D]
 
         # Convert to numpy if tensor
-        if isinstance(volume, torch.Tensor):
+        if hasattr(volume, 'numpy'):
             volume = volume.numpy()
 
         # Extract slices along depth dimension
@@ -125,13 +123,11 @@ def extract_slices_dual(
                     slice_data_copy = apply_augmentation(
                         slice_data_copy, augmentation, has_mask=True, mask_channel=-1
                     )
-                    # Separate images and seg
-                    images = slice_data_copy[:-1, :, :]  # Shape: [C-1, H, W]
-                    seg = slice_data_copy[-1:, :, :]  # Shape: [1, H, W]
                     # Binarize seg AFTER augmentation to avoid interpolation artifacts
-                    seg = make_binary(seg, threshold=BINARY_THRESHOLD_GT)
-                    # Return as tuple (images, seg)
-                    all_slices.append((images, seg))
+                    slice_data_copy[-1, :, :] = make_binary(
+                        slice_data_copy[-1, :, :], threshold=BINARY_THRESHOLD_GT
+                    )
+                    all_slices.append(slice_data_copy)
             else:
                 # No seg mask, keep all non-empty slices
                 if np.sum(slice_data) > 1.0:

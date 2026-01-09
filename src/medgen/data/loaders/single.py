@@ -6,10 +6,8 @@ or bravo+seg conditioning).
 """
 import logging
 import os
-from typing import Callable, List, Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Tuple
 
-import numpy as np
-import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
@@ -25,52 +23,6 @@ from medgen.data.utils import extract_slices_dual, extract_slices_single, merge_
 logger = logging.getLogger(__name__)
 
 AugmentType = Literal["diffusion", "vae"]
-
-
-def _diffusion_collate_fn(
-    batch: List[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]]
-) -> torch.Tensor:
-    """Collate function for diffusion training with optional seg masks.
-
-    Handles both single tensors and (images, seg) tuples from extract_slices_dual.
-    Returns a single stacked tensor with seg concatenated to images.
-
-    Args:
-        batch: List of arrays or tuples (images, seg).
-
-    Returns:
-        Stacked tensor [B, C, H, W] with seg as last channel(s), dtype float32.
-    """
-    if len(batch) == 0:
-        return torch.empty(0)
-
-    # Check if batch contains tuples (images, seg) from extract_slices_dual
-    if isinstance(batch[0], tuple):
-        images_list = []
-        for images, seg in batch:
-            # Convert to tensor with float32 dtype
-            if isinstance(images, np.ndarray):
-                images = torch.from_numpy(images.astype(np.float32))
-            else:
-                images = images.float()
-            if isinstance(seg, np.ndarray):
-                seg = torch.from_numpy(seg.astype(np.float32))
-            else:
-                seg = seg.float()
-            # Concatenate images and seg along channel dimension
-            combined = torch.cat([images, seg], dim=0)
-            images_list.append(combined)
-        return torch.stack(images_list, dim=0)
-    else:
-        # Single tensor format (seg mode)
-        tensors = []
-        for item in batch:
-            if isinstance(item, np.ndarray):
-                item = torch.from_numpy(item.astype(np.float32))
-            else:
-                item = item.float()
-            tensors.append(item)
-        return torch.stack(tensors, dim=0)
 
 
 def create_dataloader(
@@ -154,7 +106,6 @@ def create_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
-        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, train_dataset
@@ -233,7 +184,6 @@ def create_validation_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
-        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, val_dataset
@@ -305,7 +255,6 @@ def create_test_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
-        collate_fn=_diffusion_collate_fn,
     )
 
     return dataloader, test_dataset
