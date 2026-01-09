@@ -285,13 +285,10 @@ class DiffusionTrainer(BaseTrainer):
             raw_model = create_diffusion_model(self.cfg, self.device, in_channels, out_channels)
 
             if self.use_omega_conditioning or self.use_mode_embedding:
-                if self.is_main_process:
-                    logger.warning(
-                        "Omega/mode conditioning wrappers not yet supported for transformer models. "
-                        "Disabling wrappers."
-                    )
-                self.use_omega_conditioning = False
-                self.use_mode_embedding = False
+                raise ValueError(
+                    "Omega/mode conditioning wrappers are not yet supported for transformer models. "
+                    "Either use model=default (UNet) or disable omega_conditioning/mode_embedding."
+                )
         else:
             channels = tuple(self.cfg.model.channels)
             attention_levels = tuple(self.cfg.model.attention_levels)
@@ -355,13 +352,13 @@ class DiffusionTrainer(BaseTrainer):
                 is_main_process=self.is_main_process,
             )
 
-        # Warn about DDP incompatibility with embedding wrappers
+        # Block DDP with embedding wrappers - embeddings won't sync across GPUs
         if self.use_multi_gpu and (self.use_omega_conditioning or self.use_mode_embedding):
-            if self.is_main_process:
-                logger.warning(
-                    "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
-                    "Embeddings will NOT be synchronized across GPUs."
-                )
+            raise ValueError(
+                "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
+                "Embeddings would NOT be synchronized across GPUs, causing silent training corruption. "
+                "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
+            )
 
         # Setup perceptual loss
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
@@ -375,6 +372,8 @@ class DiffusionTrainer(BaseTrainer):
         )
 
         # Compile fused forward pass setup
+        # Compiled forward doesn't support mode_id parameter, so disable when using
+        # mode embedding or omega conditioning (wrappers need extra kwargs)
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
         if self.use_multi_gpu:
             compile_fused = False
@@ -385,6 +384,10 @@ class DiffusionTrainer(BaseTrainer):
         elif self.score_aug is not None:
             compile_fused = False
         elif self.use_sam:
+            compile_fused = False
+        elif self.use_mode_embedding:
+            compile_fused = False
+        elif self.use_omega_conditioning:
             compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
@@ -1425,6 +1428,11 @@ class DiffusionTrainer(BaseTrainer):
         mode_name = self.cfg.mode.get('name', 'bravo')
         out_channels = self.cfg.mode.get('out_channels', 1)
         modality = 'dual' if out_channels > 1 else mode_name
+
+        # Skip for multi_modality mode - volume loader doesn't support mixed modalities
+        # and computing volume metrics on mixed slices doesn't make sense
+        if modality == 'multi_modality':
+            return None
 
         # Create volume dataloader
         result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)

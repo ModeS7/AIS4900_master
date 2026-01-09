@@ -61,13 +61,16 @@ def create_conditioning_wrapper(
 
 
 class CombinedTimeEmbed(nn.Module):
-    """Wrapper around time_embed that adds BOTH omega and mode conditioning.
+    """Wrapper around time_embed that adds BOTH omega and per-sample mode conditioning.
 
     Combines the logic from OmegaTimeEmbed and ModeTimeEmbed:
     - omega_mlp: maps omega encoding (16-dim) to embed_dim
-    - mode_mlp: maps mode encoding (4-dim) to embed_dim
+    - mode_mlp: maps mode encoding (4-dim) to embed_dim (per-sample)
     - Both use zero-init for neutral start
     - Adds both embeddings to time_embed output
+
+    Supports mixed modalities within a batch - each sample can have a different
+    mode_id and will receive its own mode embedding.
 
     This is compile-compatible because:
     - No hooks, just module replacement
@@ -90,17 +93,36 @@ class CombinedTimeEmbed(nn.Module):
         self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
         self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
-        # Buffers for current encodings
+        # Omega uses buffer (same for all samples in batch)
         self.register_buffer('_omega_encoding', torch.zeros(1, OMEGA_ENCODING_DIM))
-        self.register_buffer('_mode_encoding', torch.zeros(1, MODE_ENCODING_DIM))
+
+        # Mode uses regular tensor (per-sample, variable batch size)
+        self._mode_encoding: Optional[torch.Tensor] = None
 
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
         """Set omega encoding for next forward pass."""
         self._omega_encoding.copy_(omega_encoding)
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
-        """Set mode encoding for next forward pass."""
-        self._mode_encoding.copy_(mode_encoding)
+        """Set mode encoding for next forward pass.
+
+        Args:
+            mode_encoding: Tensor [B, MODE_ENCODING_DIM] with per-sample encodings
+
+        Raises:
+            ValueError: If mode_encoding has wrong shape
+        """
+        if mode_encoding.dim() != 2:
+            raise ValueError(
+                f"mode_encoding must be 2D [B, {MODE_ENCODING_DIM}], "
+                f"got {mode_encoding.dim()}D with shape {mode_encoding.shape}"
+            )
+        if mode_encoding.shape[1] != MODE_ENCODING_DIM:
+            raise ValueError(
+                f"mode_encoding.shape[1] must be {MODE_ENCODING_DIM}, "
+                f"got {mode_encoding.shape[1]}"
+            )
+        self._mode_encoding = mode_encoding
 
     def set_encodings(
         self,
@@ -109,10 +131,10 @@ class CombinedTimeEmbed(nn.Module):
     ):
         """Set both encodings for next forward pass."""
         self._omega_encoding.copy_(omega_encoding)
-        self._mode_encoding.copy_(mode_encoding)
+        self._mode_encoding = mode_encoding
 
     def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
-        """Forward pass: original time_embed + omega + mode embeddings.
+        """Forward pass: original time_embed + omega + per-sample mode embeddings.
 
         Args:
             t_emb: Timestep embedding input [B, C]
@@ -123,19 +145,23 @@ class CombinedTimeEmbed(nn.Module):
         # Original time embedding
         out = self.original(t_emb)
 
-        # Add omega embedding
+        # Add omega embedding (broadcasts from [1, embed_dim] to [B, embed_dim])
         omega_emb = self.omega_mlp(self._omega_encoding)
         out = out + omega_emb
 
-        # Add mode embedding
-        mode_emb = self.mode_mlp(self._mode_encoding)
-        out = out + mode_emb
+        # Add per-sample mode embedding
+        if self._mode_encoding is not None:
+            mode_emb = self.mode_mlp(self._mode_encoding)  # [B, embed_dim]
+            out = out + mode_emb
 
         return out
 
 
 class CombinedModelWrapper(nn.Module):
-    """Wrapper to inject both omega and mode conditioning into MONAI UNet.
+    """Wrapper to inject both omega and per-sample mode conditioning into MONAI UNet.
+
+    Supports mixed modalities within a batch - each sample can have a different
+    mode_id and will receive its own mode embedding.
 
     Use this when:
     - training.score_aug.enabled=true AND
@@ -167,6 +193,14 @@ class CombinedModelWrapper(nn.Module):
         # Replace the model's time_embed
         model.time_embed = self.combined_time_embed
 
+        # Ensure combined_time_embed is on same device as model
+        try:
+            device = next(model.parameters()).device
+            self.combined_time_embed = self.combined_time_embed.to(device)
+            model.time_embed = self.combined_time_embed
+        except StopIteration:
+            pass  # Model has no parameters, keep on CPU
+
     def forward(
         self,
         x: torch.Tensor,
@@ -174,21 +208,23 @@ class CombinedModelWrapper(nn.Module):
         omega: Optional[Dict[str, Any]] = None,
         mode_id: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Forward pass with combined omega and mode conditioning.
+        """Forward pass with combined omega and per-sample mode conditioning.
 
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
             omega: Optional ScoreAug parameters for conditioning
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+                Can contain different mode_ids for different samples.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
         # Encode both conditioning signals
+        batch_size = x.shape[0]
         # Pass mode_id to encode_omega to include mode intensity scaling info (dims 32-35)
         omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
-        mode_encoding = encode_mode_id(mode_id, x.device)
+        mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
 
         # Set both encodings
         self.combined_time_embed.set_encodings(omega_encoding, mode_encoding)

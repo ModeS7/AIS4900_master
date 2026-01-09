@@ -932,48 +932,58 @@ MODE_INTENSITY_SCALE_INV = {k: 1.0 / v for k, v in MODE_INTENSITY_SCALE.items()}
 def apply_mode_intensity_scale(
     x: torch.Tensor,
     mode_id: Optional[torch.Tensor],
-) -> Tuple[torch.Tensor, float]:
-    """Apply modality-specific intensity scaling to input.
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply modality-specific intensity scaling to input (per-sample).
 
     This makes mode conditioning NECESSARY for correct predictions.
     The model sees scaled input but must predict unscaled target.
+
+    Supports mixed modalities within a batch - each sample gets its own
+    scale factor based on its mode_id.
 
     Args:
         x: Input tensor [B, C, H, W]
         mode_id: Mode ID tensor [B] or None (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
 
     Returns:
-        Tuple of (scaled_input, scale_factor)
-        - scaled_input: x * scale_factor
-        - scale_factor: The scale applied (1.0 if mode_id is None)
+        Tuple of (scaled_input, scale_factors)
+        - scaled_input: x * scale_factors (per-sample scaling)
+        - scale_factors: Tensor [B, 1, 1, 1] with per-sample scales (or [1] if mode_id is None)
     """
     if mode_id is None:
-        return x, 1.0
+        return x, torch.ones(1, device=x.device, dtype=x.dtype)
 
-    # Get mode index (all batch elements should have same mode)
     if mode_id.dim() == 0:
-        idx = mode_id.item()
-    else:
-        idx = mode_id[0].item()
+        mode_id = mode_id.unsqueeze(0)
 
-    scale = MODE_INTENSITY_SCALE.get(int(idx), 1.0)
-    return x * scale, scale
+    if mode_id.numel() == 0:
+        return x, torch.ones(1, device=x.device, dtype=x.dtype)
+
+    # Per-sample scales [B]
+    scales = torch.tensor(
+        [MODE_INTENSITY_SCALE.get(int(m.item()), 1.0) for m in mode_id],
+        device=x.device,
+        dtype=x.dtype,
+    )
+    # Reshape for broadcasting [B, 1, 1, 1]
+    scales = scales.view(-1, 1, 1, 1)
+    return x * scales, scales
 
 
 def inverse_mode_intensity_scale(
     x: torch.Tensor,
-    scale: float,
+    scale: torch.Tensor,
 ) -> torch.Tensor:
-    """Inverse the mode intensity scaling.
+    """Inverse the mode intensity scaling (per-sample).
 
     Args:
         x: Scaled tensor [B, C, H, W]
-        scale: The scale factor that was applied
+        scale: The scale factors that were applied [B, 1, 1, 1] or [1]
 
     Returns:
         Unscaled tensor: x / scale
     """
-    if scale == 1.0:
+    if scale.numel() == 1 and scale.item() == 1.0:
         return x
     return x / scale
 
@@ -1026,7 +1036,9 @@ def encode_omega(
     enc = torch.zeros(1, OMEGA_ENCODING_DIM, device=device)
 
     # Encode mode intensity scaling in dims 32-35 (always, if provided)
-    if mode_id is not None:
+    # NOTE: Uses first sample's mode_id since omega transforms are per-batch.
+    # Actual per-sample mode conditioning is handled by ModeTimeEmbed.
+    if mode_id is not None and mode_id.numel() > 0:
         if mode_id.dim() == 0:
             idx = mode_id.item()
         else:

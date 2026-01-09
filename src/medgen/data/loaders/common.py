@@ -8,11 +8,12 @@ Provides shared functions to reduce duplication across loader modules:
 """
 import logging
 import os
+import random
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple
 
 from omegaconf import DictConfig
-from torch.utils.data import Dataset, DistributedSampler
+from torch.utils.data import Dataset, DistributedSampler, Sampler
 
 from medgen.core.constants import DEFAULT_NUM_WORKERS
 
@@ -96,6 +97,83 @@ def setup_distributed_sampler(
         actual_shuffle = shuffle
 
     return sampler, batch_size_per_gpu, actual_shuffle
+
+
+class GroupedBatchSampler(Sampler[List[int]]):
+    """Batch sampler that ensures all samples in a batch belong to the same group.
+
+    Used for multi-modality training where mode embedding requires homogeneous
+    batches (all samples must have the same mode_id).
+
+    Groups are shuffled each epoch, and samples within each group are shuffled.
+    Batches are formed from consecutive samples within a group.
+
+    Args:
+        group_ids: List where group_ids[i] is the group ID for sample i.
+        batch_size: Number of samples per batch.
+        shuffle: Whether to shuffle groups and samples within groups each epoch.
+        drop_last: Whether to drop the last incomplete batch in each group.
+
+    Example:
+        >>> # Dataset with 100 samples, 4 groups (mode_ids 0-3)
+        >>> group_ids = [sample[2] for sample in dataset]  # Extract mode_ids
+        >>> sampler = GroupedBatchSampler(group_ids, batch_size=16)
+        >>> loader = DataLoader(dataset, batch_sampler=sampler)
+    """
+
+    def __init__(
+        self,
+        group_ids: List[int],
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = False,
+    ):
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+
+        # Build index groups: {group_id: [sample_indices]}
+        self.groups: dict[int, List[int]] = {}
+        for idx, gid in enumerate(group_ids):
+            if gid not in self.groups:
+                self.groups[gid] = []
+            self.groups[gid].append(idx)
+
+        self.group_ids = list(self.groups.keys())
+        logger.debug(
+            f"GroupedBatchSampler: {len(group_ids)} samples, "
+            f"{len(self.groups)} groups, batch_size={batch_size}"
+        )
+
+    def __iter__(self) -> Iterator[List[int]]:
+        """Yield batches of indices, each batch from a single group."""
+        # Shuffle group order
+        group_order = self.group_ids.copy()
+        if self.shuffle:
+            random.shuffle(group_order)
+
+        for gid in group_order:
+            indices = self.groups[gid].copy()
+            if self.shuffle:
+                random.shuffle(indices)
+
+            # Yield full batches
+            for start in range(0, len(indices), self.batch_size):
+                batch = indices[start:start + self.batch_size]
+                if len(batch) == self.batch_size:
+                    yield batch
+                elif not self.drop_last:
+                    yield batch
+
+    def __len__(self) -> int:
+        """Total number of batches."""
+        total = 0
+        for indices in self.groups.values():
+            n_batches = len(indices) // self.batch_size
+            if not self.drop_last and len(indices) % self.batch_size != 0:
+                n_batches += 1
+            total += n_batches
+        return total
 
 
 def get_data_dir(cfg: DictConfig, split: str) -> Optional[str]:

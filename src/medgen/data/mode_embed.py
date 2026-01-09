@@ -32,56 +32,58 @@ MODE_ENCODING_DIM = 4
 def encode_mode_id(
     mode_id: Optional[torch.Tensor],
     device: torch.device,
+    batch_size: int = 1,
 ) -> torch.Tensor:
-    """Encode mode_id to one-hot tensor.
+    """Encode mode_id to one-hot tensor (per-sample encoding).
+
+    Supports mixed modalities within a batch - each sample gets its own
+    one-hot encoding based on its mode_id.
 
     Args:
-        mode_id: Optional integer tensor [B] with mode IDs (0-3), or None for identity.
-            All values in the batch MUST be identical (same modality per batch).
+        mode_id: Optional integer tensor [B] with mode IDs (0-3), or None for zeros.
+            Can contain different mode_ids for different samples in the batch.
         device: Device to create tensor on.
+        batch_size: Batch size (used when mode_id is None).
 
     Returns:
-        One-hot tensor [1, MODE_ENCODING_DIM] - uses single encoding
-        that broadcasts to batch in MLP.
+        One-hot tensor [B, MODE_ENCODING_DIM] with per-sample encodings.
 
     Raises:
         ValueError: If mode_id contains invalid values outside [0, MODE_ENCODING_DIM).
-        ValueError: If batch contains mixed mode_ids (different modalities).
     """
     if mode_id is None:
-        return torch.zeros(1, MODE_ENCODING_DIM, device=device)
+        return torch.zeros(batch_size, MODE_ENCODING_DIM, device=device)
 
-    # Extract the mode index
+    # Handle scalar mode_id (single sample or uniform batch)
     if mode_id.dim() == 0:
-        idx = mode_id.item()
-    else:
-        # Validate all mode_ids in batch are identical
-        # Mixed modalities in a batch would apply wrong conditioning to most samples
-        if not torch.all(mode_id == mode_id[0]):
-            unique_modes = torch.unique(mode_id).tolist()
-            mode_names = [ID_TO_MODE.get(int(m), f"unknown({m})") for m in unique_modes]
-            raise ValueError(
-                f"Mixed mode_ids in batch: {unique_modes} ({mode_names}). "
-                f"All samples in a batch must have the same modality when using mode embedding. "
-                f"Consider using a GroupedSampler or disabling shuffle for multi-modality training."
-            )
-        idx = mode_id[0].item()
+        mode_id = mode_id.unsqueeze(0)
+
+    batch_size = mode_id.shape[0]
 
     # Validate mode_id range
-    if not (0 <= idx < MODE_ENCODING_DIM):
+    if torch.any(mode_id < 0) or torch.any(mode_id >= MODE_ENCODING_DIM):
+        invalid = mode_id[(mode_id < 0) | (mode_id >= MODE_ENCODING_DIM)]
         raise ValueError(
-            f"Invalid mode_id: {idx}. Expected value in [0, {MODE_ENCODING_DIM - 1}]. "
+            f"Invalid mode_id values: {invalid.tolist()}. "
+            f"Expected values in [0, {MODE_ENCODING_DIM - 1}]. "
             f"Valid modes: {list(MODE_ID_MAP.keys())}"
         )
 
-    enc = torch.zeros(1, MODE_ENCODING_DIM, device=device)
-    enc[0, idx] = 1.0
+    # Move mode_id to target device (fixes CPU/GPU mismatch)
+    mode_id = mode_id.to(device)
+
+    # Create per-sample one-hot encoding [B, MODE_ENCODING_DIM]
+    enc = torch.zeros(batch_size, MODE_ENCODING_DIM, device=device)
+    enc.scatter_(1, mode_id.unsqueeze(1).long(), 1.0)
 
     return enc
 
 
 class ModeTimeEmbed(nn.Module):
-    """Wrapper around time_embed that adds mode conditioning.
+    """Wrapper around time_embed that adds per-sample mode conditioning.
+
+    Supports mixed modalities within a batch - each sample can have a different
+    mode_id and will receive its own mode embedding.
 
     This is compile-compatible because:
     - No hooks, just module replacement
@@ -103,22 +105,33 @@ class ModeTimeEmbed(nn.Module):
         # MLP that maps mode encoding to embedding (zero-init for neutral start)
         self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
-        # Buffer to store current mode encoding
-        # This is set by ModeEmbedModelWrapper before each forward
-        self.register_buffer('_mode_encoding', torch.zeros(1, MODE_ENCODING_DIM))
+        # Store current mode encoding (set before each forward)
+        # Using None instead of buffer to support variable batch sizes
+        self._mode_encoding: Optional[torch.Tensor] = None
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
         """Set mode encoding for next forward pass.
 
-        Uses in-place copy to maintain buffer identity for torch.compile.
-
         Args:
-            mode_encoding: Tensor [1, MODE_ENCODING_DIM]
+            mode_encoding: Tensor [B, MODE_ENCODING_DIM] with per-sample encodings
+
+        Raises:
+            ValueError: If mode_encoding has wrong shape
         """
-        self._mode_encoding.copy_(mode_encoding)
+        if mode_encoding.dim() != 2:
+            raise ValueError(
+                f"mode_encoding must be 2D [B, {MODE_ENCODING_DIM}], "
+                f"got {mode_encoding.dim()}D with shape {mode_encoding.shape}"
+            )
+        if mode_encoding.shape[1] != MODE_ENCODING_DIM:
+            raise ValueError(
+                f"mode_encoding.shape[1] must be {MODE_ENCODING_DIM}, "
+                f"got {mode_encoding.shape[1]}"
+            )
+        self._mode_encoding = mode_encoding
 
     def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
-        """Forward pass: original time_embed + mode embedding.
+        """Forward pass: original time_embed + per-sample mode embedding.
 
         Args:
             t_emb: Timestep embedding input [B, C]
@@ -129,14 +142,19 @@ class ModeTimeEmbed(nn.Module):
         # Original time embedding
         out = self.original(t_emb)
 
-        # Add mode embedding (always computed, zero for no mode due to init)
-        mode_emb = self.mode_mlp(self._mode_encoding)
+        # Add per-sample mode embedding
+        if self._mode_encoding is not None:
+            mode_emb = self.mode_mlp(self._mode_encoding)  # [B, embed_dim]
+            out = out + mode_emb
 
-        return out + mode_emb
+        return out
 
 
 class ModeEmbedModelWrapper(nn.Module):
-    """Wrapper to inject mode conditioning into MONAI UNet.
+    """Wrapper to inject per-sample mode conditioning into MONAI UNet.
+
+    Supports mixed modalities within a batch - each sample can have a different
+    mode_id and will receive its own mode embedding.
 
     This implementation is compile-compatible:
     - Replaces time_embed with ModeTimeEmbed (no hooks)
@@ -165,24 +183,34 @@ class ModeEmbedModelWrapper(nn.Module):
         # Replace the model's time_embed
         model.time_embed = self.mode_time_embed
 
+        # Ensure mode_time_embed is on same device as model
+        try:
+            device = next(model.parameters()).device
+            self.mode_time_embed = self.mode_time_embed.to(device)
+            model.time_embed = self.mode_time_embed
+        except StopIteration:
+            pass  # Model has no parameters, keep on CPU
+
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
         mode_id: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Forward pass with mode conditioning.
+        """Forward pass with per-sample mode conditioning.
 
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+                Can contain different mode_ids for different samples.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
-        # Encode mode_id as (1, 4) - broadcasts to batch in MLP
-        mode_encoding = encode_mode_id(mode_id, x.device)
+        # Encode mode_id as [B, 4] - per-sample encoding
+        batch_size = x.shape[0]
+        mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
         self.mode_time_embed.set_mode_encoding(mode_encoding)
 
         # Call model normally
