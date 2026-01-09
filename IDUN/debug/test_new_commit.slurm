@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100"
+#SBATCH --constraint="gpu80g"
 #SBATCH --job-name="test_new_HEAD"
 #SBATCH --output=IDUN/output/debug/test_new_%j.out
 #SBATCH --error=IDUN/output/debug/test_new_%j.err
