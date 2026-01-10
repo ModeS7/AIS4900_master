@@ -6,9 +6,10 @@ like multi-channel inputs consistently across all trainers.
 """
 import logging
 import os
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from torch import nn, Tensor
 
 from monai.losses import PerceptualLoss as MonaiPerceptualLoss
@@ -144,3 +145,109 @@ class PerceptualLoss(nn.Module):
         if isinstance(input, dict):
             return self.forward_dict(input, target)
         return self.forward(input, target)
+
+
+class SegmentationLoss(nn.Module):
+    """Combined segmentation loss: BCE + Dice + Boundary.
+
+    For segmentation mask compression training. All losses are computed
+    on logits (BCE) or sigmoid(logits) (Dice, Boundary).
+
+    Args:
+        bce_weight: Weight for BCE loss (default 1.0).
+        dice_weight: Weight for Dice loss (default 1.0).
+        boundary_weight: Weight for Boundary loss (default 0.5).
+        smooth: Smoothing factor for Dice to avoid division by zero.
+
+    Example:
+        >>> loss_fn = SegmentationLoss(bce_weight=1.0, dice_weight=1.0)
+        >>> total_loss, breakdown = loss_fn(logits, target_mask)
+        >>> print(breakdown)  # {'bce': 0.5, 'dice': 0.2, 'boundary': 0.1}
+    """
+
+    def __init__(
+        self,
+        bce_weight: float = 1.0,
+        dice_weight: float = 1.0,
+        boundary_weight: float = 0.5,
+        smooth: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.bce_weight = bce_weight
+        self.dice_weight = dice_weight
+        self.boundary_weight = boundary_weight
+        self.smooth = smooth
+
+    def forward(
+        self,
+        logits: Tensor,
+        target: Tensor,
+    ) -> Tuple[Tensor, Dict[str, float]]:
+        """Compute combined segmentation loss.
+
+        Args:
+            logits: Model output (before sigmoid) [B, 1, H, W].
+            target: Binary target mask [B, 1, H, W].
+
+        Returns:
+            Tuple of (total_loss, loss_breakdown_dict).
+        """
+        # BCE loss (numerically stable, applies sigmoid internally)
+        bce = F.binary_cross_entropy_with_logits(logits, target)
+
+        # Dice loss (on probabilities)
+        probs = torch.sigmoid(logits)
+        intersection = (probs * target).sum(dim=(2, 3))
+        union = probs.sum(dim=(2, 3)) + target.sum(dim=(2, 3))
+        dice_score = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1.0 - dice_score.mean()
+
+        # Boundary loss (weighted BCE on boundary pixels)
+        boundary_loss = self._compute_boundary_loss(logits, target)
+
+        # Combined loss
+        total = (
+            self.bce_weight * bce
+            + self.dice_weight * dice_loss
+            + self.boundary_weight * boundary_loss
+        )
+
+        breakdown = {
+            'bce': bce.item(),
+            'dice': dice_loss.item(),
+            'boundary': boundary_loss.item(),
+        }
+
+        return total, breakdown
+
+    def _compute_boundary_loss(self, logits: Tensor, target: Tensor) -> Tensor:
+        """Compute boundary-weighted BCE loss.
+
+        Extracts boundary pixels using morphological gradient (dilation - erosion)
+        and applies higher weight to boundary regions. Important for small tumors
+        with high boundary-to-area ratio.
+
+        Args:
+            logits: Model output (before sigmoid) [B, 1, H, W].
+            target: Binary target mask [B, 1, H, W].
+
+        Returns:
+            Boundary-weighted BCE loss tensor.
+        """
+        # Extract boundaries using max_pool - min_pool (morphological gradient)
+        kernel_size = 3
+        padding = kernel_size // 2
+
+        dilated = F.max_pool2d(target, kernel_size, stride=1, padding=padding)
+        eroded = -F.max_pool2d(-target, kernel_size, stride=1, padding=padding)
+        boundary = dilated - eroded  # Boundary mask
+
+        # Compute BCE only on boundary pixels
+        if boundary.sum() > 0:
+            boundary_bce = F.binary_cross_entropy_with_logits(
+                logits, target, weight=boundary, reduction='sum'
+            ) / (boundary.sum() + 1e-6)
+        else:
+            boundary_bce = torch.tensor(0.0, device=logits.device)
+
+        return boundary_bce

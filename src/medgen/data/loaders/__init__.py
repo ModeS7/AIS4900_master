@@ -65,6 +65,13 @@ from .vae_3d import (
     SingleModality3DDatasetWithSeg,
 )
 
+# Segmentation mask compression dataloaders (seg-only for DC-AE)
+from .seg_compression import (
+    create_seg_compression_dataloader,
+    create_seg_compression_validation_dataloader,
+    create_seg_compression_test_dataloader,
+)
+
 __all__ = [
     # Common utilities
     'DataLoaderConfig',
@@ -110,4 +117,8 @@ __all__ = [
     'DualVolume3DDataset',
     'MultiModality3DDataset',
     'SingleModality3DDatasetWithSeg',
+    # Segmentation mask compression
+    'create_seg_compression_dataloader',
+    'create_seg_compression_validation_dataloader',
+    'create_seg_compression_test_dataloader',
 ]

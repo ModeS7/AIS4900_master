@@ -26,8 +26,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .compression_trainer import BaseCompressionTrainer
+from .losses import SegmentationLoss
 from .results import TrainingStepResult
 from .metrics import (
+    compute_dice,
+    compute_iou,
     compute_lpips,
     compute_msssim,
     compute_psnr,
@@ -98,6 +101,24 @@ class DCAETrainer(BaseCompressionTrainer):
                 )
 
         self.image_size: int = cfg.dcae.get('image_size', 256)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Segmentation mode (for mask compression)
+        # ─────────────────────────────────────────────────────────────────────
+        self.seg_mode: bool = cfg.dcae.get('seg_mode', False)
+        self.seg_loss_fn: Optional[SegmentationLoss] = None
+
+        if self.seg_mode:
+            seg_weights = cfg.dcae.get('seg_loss_weights', {})
+            self.seg_loss_fn = SegmentationLoss(
+                bce_weight=seg_weights.get('bce', 1.0),
+                dice_weight=seg_weights.get('dice', 1.0),
+                boundary_weight=seg_weights.get('boundary', 0.5),
+            )
+            # Disable perceptual loss for seg mode (meaningless for binary masks)
+            self.perceptual_weight = 0.0
+            if self.is_main_process:
+                logger.info("Seg mode enabled: BCE + Dice + Boundary loss")
 
     def _get_disc_lr(self, cfg: DictConfig) -> float:
         """Get discriminator LR from dcae config."""
@@ -317,7 +338,7 @@ class DCAETrainer(BaseCompressionTrainer):
             trainable = sum(p.numel() for p in self.model_raw.parameters()
                             if p.requires_grad)
             logger.info(f"Phase 3: Frozen parameters: {frozen/1e6:.2f}M")
-            logger.info(f"Phase 3: Trainable decoder head: {trainable/1e6:.2f}M")
+            logger.info(f"Phase 3: Trainable decoder head: {trainable:,} params ({trainable/1e3:.1f}K)")
 
     def _get_trainer_type(self) -> str:
         """Return trainer type for metadata."""
@@ -331,7 +352,48 @@ class DCAETrainer(BaseCompressionTrainer):
             'scaling_factor': self.scaling_factor,
             'pretrained': self.pretrained,
             'image_size': self.image_size,
+            'seg_mode': self.seg_mode,
         }
+
+    def _create_validation_runner(self) -> 'ValidationRunner':
+        """Create ValidationRunner with seg_mode support.
+
+        Overrides base method to pass seg_mode flag to ValidationConfig.
+
+        Returns:
+            Configured ValidationRunner instance.
+        """
+        from .validation import ValidationRunner, ValidationConfig
+
+        config = ValidationConfig(
+            log_msssim=self.log_msssim and not self.seg_mode,  # Disable for seg
+            log_psnr=self.log_psnr and not self.seg_mode,       # Disable for seg
+            log_lpips=self.log_lpips and not self.seg_mode,     # Disable for seg
+            log_regional_losses=self.log_regional_losses,  # Enable for both modes
+            weight_dtype=self.weight_dtype,
+            use_compile=self.use_compile,
+            seg_mode=self.seg_mode,  # Pass seg_mode flag
+        )
+
+        # Image mode: standard regional tracker
+        regional_factory = None
+        if self.log_regional_losses and not self.seg_mode:
+            regional_factory = self._create_regional_tracker
+
+        # Seg mode: per-tumor Dice tracker
+        seg_regional_factory = None
+        if self.log_regional_losses and self.seg_mode:
+            seg_regional_factory = self._create_seg_regional_tracker
+
+        return ValidationRunner(
+            config=config,
+            device=self.device,
+            forward_fn=self._forward_for_validation,
+            perceptual_loss_fn=self._compute_perceptual_loss if not self.seg_mode else None,
+            regional_tracker_factory=regional_factory,
+            seg_regional_tracker_factory=seg_regional_factory,
+            prepare_batch_fn=self._prepare_batch,
+        )
 
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Prepare batch for DC-AE training.
@@ -365,6 +427,20 @@ class DCAETrainer(BaseCompressionTrainer):
 
         return images, mask
 
+    def _create_seg_regional_tracker(self) -> 'SegRegionalMetricsTracker':
+        """Create SegRegionalMetricsTracker for per-tumor Dice tracking.
+
+        Returns:
+            Configured SegRegionalMetricsTracker instance.
+        """
+        from .metrics import SegRegionalMetricsTracker
+
+        return SegRegionalMetricsTracker(
+            image_size=self.cfg.dcae.image_size,
+            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            device=self.device,
+        )
+
     def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute DC-AE training step.
 
@@ -388,16 +464,27 @@ class DCAETrainer(BaseCompressionTrainer):
             latent = self.model.encode(images, return_dict=False)[0]
             reconstruction = self.model.decode(latent, return_dict=False)[0]
 
-            # L1 reconstruction loss
-            l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
-
-            # Perceptual loss
-            if self.perceptual_weight > 0 and self.perceptual_loss_fn is not None:
-                p_loss = self._compute_perceptual_loss(reconstruction.float(), images.float())
-            else:
+            if self.seg_mode and self.seg_loss_fn is not None:
+                # Segmentation loss: BCE + Dice + Boundary on logits
+                # Model outputs logits for numerically stable BCE
+                seg_loss, seg_breakdown = self.seg_loss_fn(reconstruction, images)
+                l1_loss = seg_loss  # Reuse variable for total seg loss
                 p_loss = torch.tensor(0.0, device=self.device)
+                # Accumulate breakdown for epoch averaging
+                if hasattr(self, '_epoch_seg_breakdown'):
+                    for key in seg_breakdown:
+                        self._epoch_seg_breakdown[key] += seg_breakdown[key]
+            else:
+                # Standard L1 reconstruction loss
+                l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
 
-            # Adversarial loss
+                # Perceptual loss
+                if self.perceptual_weight > 0 and self.perceptual_loss_fn is not None:
+                    p_loss = self._compute_perceptual_loss(reconstruction.float(), images.float())
+                else:
+                    p_loss = torch.tensor(0.0, device=self.device)
+
+            # Adversarial loss (typically disabled for seg mode)
             if not self.disable_gan:
                 adv_loss = self._compute_adversarial_loss(reconstruction)
 
@@ -454,6 +541,10 @@ class DCAETrainer(BaseCompressionTrainer):
 
         epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'adv': 0}
 
+        # Initialize seg breakdown accumulator for epoch averaging
+        if self.seg_mode:
+            self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
+
         epoch_iter = create_epoch_iterator(
             data_loader, epoch, self.is_cluster, self.is_main_process,
             limit_batches=self.limit_train_batches
@@ -485,8 +576,17 @@ class DCAETrainer(BaseCompressionTrainer):
         # Log training metrics (single-GPU only)
         if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
             self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
-            self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
+
+            if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
+                # Seg mode: log epoch-averaged BCE, Dice, Boundary losses
+                avg_seg = {k: v / n_batches for k, v in self._epoch_seg_breakdown.items()}
+                self.writer.add_scalar('Loss/BCE_train', avg_seg.get('bce', 0), epoch)
+                self.writer.add_scalar('Loss/Dice_train', avg_seg.get('dice', 0), epoch)
+                self.writer.add_scalar('Loss/Boundary_train', avg_seg.get('boundary', 0), epoch)
+            else:
+                # Standard mode: log L1, Perceptual
+                self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
+                self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
 
             if not self.disable_gan:
                 self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
@@ -508,6 +608,144 @@ class DCAETrainer(BaseCompressionTrainer):
         reconstruction = model.decode(latent, return_dict=False)[0]
         # DC-AE is deterministic - no regularization loss
         return reconstruction, torch.tensor(0.0, device=self.device)
+
+    def _create_worst_batch_figure(
+        self,
+        worst_batch_data: Dict[str, Any],
+    ) -> plt.Figure:
+        """Create worst batch figure with seg_mode support.
+
+        In seg_mode, applies sigmoid to generated logits for visualization.
+
+        Args:
+            worst_batch_data: Dict with 'original', 'generated', 'loss', 'loss_breakdown'.
+
+        Returns:
+            Matplotlib figure.
+        """
+        generated = worst_batch_data['generated']
+
+        # Apply sigmoid for seg_mode visualization (model outputs logits)
+        if self.seg_mode and isinstance(generated, torch.Tensor):
+            generated = torch.sigmoid(generated)
+
+        return create_worst_batch_figure(
+            original=worst_batch_data['original'],
+            generated=generated,
+            loss=worst_batch_data['loss'],
+            loss_breakdown=worst_batch_data.get('loss_breakdown'),
+        )
+
+    def _log_validation_metrics(
+        self,
+        epoch: int,
+        metrics: Dict[str, float],
+        worst_batch_data: Optional[Dict[str, Any]],
+        regional_tracker: Optional[RegionalMetricsTracker],
+        log_figures: bool,
+    ) -> None:
+        """Log validation metrics with seg_mode support.
+
+        In seg_mode, logs Dice/IoU instead of L1/Perceptual/PSNR/LPIPS/MS-SSIM.
+
+        Args:
+            epoch: Current epoch number.
+            metrics: Dictionary of validation metrics.
+            worst_batch_data: Worst batch data for visualization.
+            regional_tracker: Regional metrics tracker.
+            log_figures: Whether to log figures.
+        """
+        if self.writer is None:
+            return
+
+        if self.seg_mode:
+            # Seg mode: log Dice and IoU metrics
+            if 'dice' in metrics:
+                self.writer.add_scalar('Validation/Dice', metrics['dice'], epoch)
+            if 'iou' in metrics:
+                self.writer.add_scalar('Validation/IoU', metrics['iou'], epoch)
+            # Log seg loss as generator loss
+            if 'seg_loss' in metrics:
+                self.writer.add_scalar('Loss/Seg_val', metrics['seg_loss'], epoch)
+        else:
+            # Standard mode: use parent implementation
+            self.writer.add_scalar('Loss/L1_val', metrics.get('l1', 0), epoch)
+            self.writer.add_scalar('Loss/Perceptual_val', metrics.get('perc', 0), epoch)
+            self.writer.add_scalar('Loss/Generator_val', metrics.get('gen', 0), epoch)
+
+            if 'psnr' in metrics:
+                self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
+            if 'lpips' in metrics:
+                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+            if 'msssim' in metrics:
+                self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
+
+        # Log worst batch figure
+        if log_figures and worst_batch_data is not None:
+            fig = self._create_worst_batch_figure(worst_batch_data)
+            self.writer.add_figure('Validation/worst_batch', fig, epoch)
+            plt.close(fig)
+
+        # Log regional metrics (different prefix for seg vs image mode)
+        if regional_tracker is not None:
+            prefix = 'regional_seg' if self.seg_mode else 'regional'
+            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+
+    def _create_test_evaluator(self) -> 'CompressionTestEvaluator':
+        """Create test evaluator with seg_mode support.
+
+        Overrides parent to pass seg_mode flag for Dice/IoU metrics.
+
+        Returns:
+            Configured CompressionTestEvaluator instance.
+        """
+        from .evaluation import CompressionTestEvaluator, MetricsConfig
+
+        # Create metrics config - use seg metrics when seg_mode enabled
+        metrics_config = MetricsConfig(
+            compute_l1=not self.seg_mode,
+            compute_psnr=not self.seg_mode,
+            compute_lpips=not self.seg_mode,
+            compute_msssim=self.log_msssim and not self.seg_mode,
+            compute_msssim_3d=False,
+            compute_regional=self.log_regional_losses and not self.seg_mode,
+            seg_mode=self.seg_mode,
+        )
+
+        # Regional tracker factory (if configured and not seg_mode)
+        regional_factory = None
+        if self.log_regional_losses and not self.seg_mode:
+            regional_factory = self._create_regional_tracker
+
+        # Volume 3D MS-SSIM callback (disabled for seg_mode)
+        def volume_3d_msssim() -> Optional[float]:
+            if self.seg_mode:
+                return None
+            return self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
+
+        # Worst batch figure callback
+        worst_batch_fig_fn = self._create_worst_batch_figure
+
+        # Get image keys for per-channel metrics
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        image_keys = None
+        if n_channels > 1 and not self.seg_mode:
+            image_keys = self.cfg.mode.get('image_keys', None)
+
+        return CompressionTestEvaluator(
+            model=self.model_raw,
+            device=self.device,
+            save_dir=self.save_dir,
+            forward_fn=self._test_forward,
+            weight_dtype=self.weight_dtype,
+            writer=self.writer,
+            metrics_config=metrics_config,
+            is_cluster=self.is_cluster,
+            regional_tracker_factory=regional_factory,
+            volume_3d_msssim_fn=volume_3d_msssim,
+            worst_batch_figure_fn=worst_batch_fig_fn,
+            image_keys=image_keys,
+        )
 
     def _get_model_config(self) -> Dict[str, Any]:
         """Get DC-AE model configuration for checkpoint."""

@@ -10,6 +10,8 @@ This module provides:
 
 from .tracker import MetricsTracker
 from .quality import (
+    compute_dice,
+    compute_iou,
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
@@ -22,6 +24,7 @@ from .quality import (
 from .regional_base import BaseRegionalMetricsTracker
 from .regional import RegionalMetricsTracker
 from .regional_3d import RegionalMetricsTracker3D
+from .regional_seg import SegRegionalMetricsTracker
 from .figures import create_reconstruction_figure, figure_to_buffer
 from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
 
@@ -29,6 +32,8 @@ __all__ = [
     # Main tracker
     'MetricsTracker',
     # Quality metrics
+    'compute_dice',
+    'compute_iou',
     'compute_msssim',
     'compute_msssim_2d_slicewise',
     'compute_psnr',
@@ -41,6 +46,7 @@ __all__ = [
     'BaseRegionalMetricsTracker',
     'RegionalMetricsTracker',
     'RegionalMetricsTracker3D',
+    'SegRegionalMetricsTracker',
     # Constants
     'TUMOR_SIZE_THRESHOLDS_MM',
     'TUMOR_SIZE_CATEGORIES',

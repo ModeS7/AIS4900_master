@@ -102,6 +102,12 @@ def log_test_results(
         n_samples: Number of test samples evaluated.
     """
     logger.info(f"Test Results - {label} ({n_samples} samples):")
+    # Segmentation metrics
+    if 'dice' in metrics:
+        logger.info(f"  Dice:    {metrics['dice']:.4f}")
+    if 'iou' in metrics:
+        logger.info(f"  IoU:     {metrics['iou']:.4f}")
+    # Image metrics
     if 'l1' in metrics:
         logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
     if 'mse' in metrics:
@@ -141,6 +147,8 @@ def log_metrics_to_tensorboard(
         'msssim_3d': 'MS-SSIM-3D',
         'psnr': 'PSNR',
         'lpips': 'LPIPS',
+        'dice': 'Dice',
+        'iou': 'IoU',
     }
 
     for key, value in metrics.items():
@@ -164,6 +172,7 @@ class MetricsConfig:
     compute_msssim: bool = True
     compute_msssim_3d: bool = False  # For 3D trainers
     compute_regional: bool = False
+    seg_mode: bool = False  # Compute Dice/IoU instead of image metrics
 
 
 # =============================================================================
@@ -301,9 +310,13 @@ class BaseTestEvaluator(ABC):
                     if key in accumulators:
                         accumulators[key] += value
 
-                # Track worst batch by L1/MSE loss
-                loss_key = 'l1' if 'l1' in batch_metrics else 'mse'
-                batch_loss = batch_metrics.get(loss_key, 0.0)
+                # Track worst batch by loss (L1/MSE for images, 1-Dice for seg)
+                if self.metrics_config.seg_mode:
+                    # Seg mode: worst batch = lowest Dice (use 1-Dice as loss)
+                    batch_loss = 1.0 - batch_metrics.get('dice', 1.0)
+                else:
+                    loss_key = 'l1' if 'l1' in batch_metrics else 'mse'
+                    batch_loss = batch_metrics.get(loss_key, 0.0)
                 if batch_loss > worst_loss:
                     worst_loss = batch_loss
                     worst_batch_data = self._capture_worst_batch(
@@ -325,14 +338,20 @@ class BaseTestEvaluator(ABC):
     def _init_accumulators(self) -> Dict[str, float]:
         """Initialize metric accumulators based on config."""
         accumulators = {}
-        if self.metrics_config.compute_l1:
-            accumulators['l1'] = 0.0
-        if self.metrics_config.compute_psnr:
-            accumulators['psnr'] = 0.0
-        if self.metrics_config.compute_lpips:
-            accumulators['lpips'] = 0.0
-        if self.metrics_config.compute_msssim:
-            accumulators['msssim'] = 0.0
+        if self.metrics_config.seg_mode:
+            # Segmentation mode: Dice and IoU
+            accumulators['dice'] = 0.0
+            accumulators['iou'] = 0.0
+        else:
+            # Standard image metrics
+            if self.metrics_config.compute_l1:
+                accumulators['l1'] = 0.0
+            if self.metrics_config.compute_psnr:
+                accumulators['psnr'] = 0.0
+            if self.metrics_config.compute_lpips:
+                accumulators['lpips'] = 0.0
+            if self.metrics_config.compute_msssim:
+                accumulators['msssim'] = 0.0
         return accumulators
 
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -521,7 +540,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
     ) -> Dict[str, float]:
         """Compute metrics for a single batch."""
         from torch.amp import autocast
-        from .metrics import compute_lpips, compute_msssim, compute_psnr
+        from .metrics import compute_lpips, compute_msssim, compute_psnr, compute_dice, compute_iou
 
         images, mask = batch_data
 
@@ -530,23 +549,29 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         metrics = {}
 
-        # L1 loss
-        if self.metrics_config.compute_l1:
-            metrics['l1'] = torch.abs(reconstructed - images).mean().item()
+        # Segmentation mode: compute Dice/IoU instead of image metrics
+        if self.metrics_config.seg_mode:
+            metrics['dice'] = compute_dice(reconstructed, images, apply_sigmoid=True)
+            metrics['iou'] = compute_iou(reconstructed, images, apply_sigmoid=True)
+        else:
+            # Standard image metrics
+            # L1 loss
+            if self.metrics_config.compute_l1:
+                metrics['l1'] = torch.abs(reconstructed - images).mean().item()
 
-        # MS-SSIM
-        if self.metrics_config.compute_msssim:
-            metrics['msssim'] = compute_msssim(reconstructed.float(), images.float())
+            # MS-SSIM
+            if self.metrics_config.compute_msssim:
+                metrics['msssim'] = compute_msssim(reconstructed.float(), images.float())
 
-        # PSNR
-        if self.metrics_config.compute_psnr:
-            metrics['psnr'] = compute_psnr(reconstructed, images)
+            # PSNR
+            if self.metrics_config.compute_psnr:
+                metrics['psnr'] = compute_psnr(reconstructed, images)
 
-        # LPIPS
-        if self.metrics_config.compute_lpips:
-            metrics['lpips'] = compute_lpips(
-                reconstructed.float(), images.float(), device=self.device
-            )
+            # LPIPS
+            if self.metrics_config.compute_lpips:
+                metrics['lpips'] = compute_lpips(
+                    reconstructed.float(), images.float(), device=self.device
+                )
 
         # Regional tracking
         if self._regional_tracker is not None and mask is not None:
@@ -589,13 +614,24 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         if not hasattr(self, '_current_batch'):
             return None
 
+        # Build loss breakdown based on mode
+        if self.metrics_config.seg_mode:
+            loss = 1.0 - batch_metrics.get('dice', 1.0)  # 1-Dice as loss
+            loss_breakdown = {
+                'Dice': batch_metrics.get('dice', 0.0),
+                'IoU': batch_metrics.get('iou', 0.0),
+            }
+        else:
+            loss = batch_metrics.get('l1', batch_metrics.get('mse', 0.0))
+            loss_breakdown = {
+                'L1': batch_metrics.get('l1', 0.0),
+            }
+
         return {
             'original': self._current_batch['images'].cpu(),
             'generated': self._current_batch['reconstructed'].float().cpu(),
-            'loss': batch_metrics.get('l1', batch_metrics.get('mse', 0.0)),
-            'loss_breakdown': {
-                'L1': batch_metrics.get('l1', 0.0),
-            },
+            'loss': loss,
+            'loss_breakdown': loss_breakdown,
         }
 
     def _add_additional_metrics(self, metrics: Dict[str, float]) -> None:

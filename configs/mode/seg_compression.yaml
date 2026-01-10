@@ -1,0 +1,26 @@
+# Segmentation Mask Compression Mode - DC-AE only
+#
+# Compresses segmentation masks using DC-AE with seg-specific losses:
+# - BCE + Dice + Boundary loss (instead of L1 + Perceptual)
+# - Dice/IoU metrics (instead of MS-SSIM, PSNR, LPIPS)
+#
+# For DC-AE training:
+#   in_channels: 1 = seg mask
+#   out_channels: 1 = reconstructed mask (logits)
+#   Loss: BCE + Dice + Boundary
+#   Output: Apply sigmoid + threshold 0.5 at inference
+#
+# Usage:
+#   python -m medgen.scripts.train_dcae \
+#       mode=seg_compression \
+#       dcae.seg_mode=true
+
+name: seg_compression
+is_conditional: false
+in_channels: 1
+out_channels: 1
+image_keys: [seg]
+description: "Segmentation mask compression with DC-AE"
+
+# Dataloader override - use seg_compression loaders
+dataloader_type: seg_compression

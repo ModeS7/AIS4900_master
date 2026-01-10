@@ -429,3 +429,101 @@ def compute_msssim_2d_slicewise(
 
     # Compute MS-SSIM in single batched call
     return compute_msssim(gen_flat, ref_flat, data_range, spatial_dims=2)
+
+
+# =============================================================================
+# Segmentation Metrics
+# =============================================================================
+
+def compute_dice(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    threshold: float = 0.5,
+    smooth: float = 1.0,
+    apply_sigmoid: bool = True,
+) -> float:
+    """Compute Dice coefficient between prediction and target masks.
+
+    Dice = 2 * |A ∩ B| / (|A| + |B|)
+
+    Works with logits (applies sigmoid) or probabilities.
+
+    Args:
+        pred: Predicted mask (logits or probabilities) [B, C, H, W].
+        target: Binary target mask [B, C, H, W] with values in {0, 1}.
+        threshold: Threshold for binarization (default 0.5).
+        smooth: Smoothing factor to avoid division by zero.
+        apply_sigmoid: Whether to apply sigmoid to pred (True for logits,
+            False if pred is already probabilities in [0, 1]).
+
+    Returns:
+        Dice coefficient (0-1, higher is better, 1.0 = perfect overlap).
+
+    Example:
+        >>> logits = model(images)  # Raw model output
+        >>> dice = compute_dice(logits, target_masks, apply_sigmoid=True)
+    """
+    with torch.no_grad():
+        pred = pred.float()
+        target = target.float()
+
+        # Apply sigmoid if input is logits
+        if apply_sigmoid:
+            pred = torch.sigmoid(pred)
+
+        # Binarize prediction
+        pred_binary = (pred > threshold).float()
+
+        # Compute Dice
+        intersection = (pred_binary * target).sum()
+        union = pred_binary.sum() + target.sum()
+        dice = (2.0 * intersection + smooth) / (union + smooth)
+
+        return dice.item()
+
+
+def compute_iou(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    threshold: float = 0.5,
+    smooth: float = 1.0,
+    apply_sigmoid: bool = True,
+) -> float:
+    """Compute Intersection over Union (IoU/Jaccard) between prediction and target masks.
+
+    IoU = |A ∩ B| / |A ∪ B|
+
+    Works with logits (applies sigmoid) or probabilities.
+
+    Args:
+        pred: Predicted mask (logits or probabilities) [B, C, H, W].
+        target: Binary target mask [B, C, H, W] with values in {0, 1}.
+        threshold: Threshold for binarization (default 0.5).
+        smooth: Smoothing factor to avoid division by zero.
+        apply_sigmoid: Whether to apply sigmoid to pred (True for logits,
+            False if pred is already probabilities in [0, 1]).
+
+    Returns:
+        IoU score (0-1, higher is better, 1.0 = perfect overlap).
+
+    Example:
+        >>> logits = model(images)  # Raw model output
+        >>> iou = compute_iou(logits, target_masks, apply_sigmoid=True)
+    """
+    with torch.no_grad():
+        pred = pred.float()
+        target = target.float()
+
+        # Apply sigmoid if input is logits
+        if apply_sigmoid:
+            pred = torch.sigmoid(pred)
+
+        # Binarize prediction
+        pred_binary = (pred > threshold).float()
+
+        # Compute IoU
+        intersection = (pred_binary * target).sum()
+        union = pred_binary.sum() + target.sum() - intersection
+        iou = (intersection + smooth) / (union + smooth)
+
+        return iou.item()

@@ -34,12 +34,30 @@ disc_lr: 5.0e-4
 
 # Phase 3 training notes:
 # - Freezes ALL layers EXCEPT decoder head (norm_out, conv_out)
-# - Only ~30K trainable params (vs ~323M total) - very targeted refinement
+# - Only ~1.4K trainable params (vs ~323M total) - very targeted refinement
 # - Paper: "we only tune the head layers of the decoder"
 # - Recommended overrides for Phase 3:
 #   training.learning_rate: 5.4e-5
 #   training.optimizer.betas: [0.5, 0.9]
 #   dcae.adv_weight: 0.1
+
+# ============================================================================
+# Segmentation Mode (for mask compression)
+# ============================================================================
+# When seg_mode=true:
+# - Uses BCE + Dice + Boundary loss instead of L1 + Perceptual
+# - Validation uses Dice/IoU instead of PSNR/LPIPS/MS-SSIM
+# - Model outputs logits, sigmoid applied at inference
+#
+# Usage:
+#   python -m medgen.scripts.train_dcae dcae.seg_mode=true mode=seg_compression
+seg_mode: false
+
+# Segmentation loss weights (only used when seg_mode=true)
+seg_loss_weights:
+  bce: 1.0       # Binary cross-entropy (numerically stable)
+  dice: 1.0      # Dice loss (handles class imbalance)
+  boundary: 0.5  # Boundary-weighted BCE (important for small tumors)
 
 # Architecture (shared across f32/f64)
 encoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]

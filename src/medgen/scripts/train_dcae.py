@@ -34,6 +34,11 @@ from medgen.data.loaders.multi_modality import (
     create_multi_modality_test_dataloader,
     create_single_modality_validation_loader,
 )
+from medgen.data.loaders.seg_compression import (
+    create_seg_compression_dataloader,
+    create_seg_compression_validation_dataloader,
+    create_seg_compression_test_dataloader,
+)
 from medgen.pipeline import DCAETrainer
 from .common import override_vae_channels, run_test_evaluation, create_per_modality_val_loaders, get_image_keys
 
@@ -117,10 +122,25 @@ def main(cfg: DictConfig) -> None:
 
     # Create data loaders
     mode_name = cfg.mode.get('name', 'multi_modality')
+    is_seg_mode = cfg.dcae.get('seg_mode', False)
 
     image_keys = get_image_keys(cfg, is_3d=False)  # DC-AE is 2D, uses all 4 modalities by default
 
-    if mode_name == 'multi_modality':
+    if is_seg_mode or mode_name == 'seg_compression':
+        # Segmentation mask compression mode
+        train_loader, train_dataset = create_seg_compression_dataloader(
+            cfg=cfg,
+            image_size=cfg.dcae.image_size,
+            batch_size=cfg.training.batch_size,
+            augment=True,
+        )
+        val_result = create_seg_compression_validation_dataloader(
+            cfg=cfg,
+            image_size=cfg.dcae.image_size,
+            batch_size=cfg.training.batch_size,
+        )
+        val_loader = val_result[0] if val_result else None
+    elif mode_name == 'multi_modality':
         # Multi-modality: mixed slices from all modalities
         train_loader, train_dataset = create_multi_modality_dataloader(
             cfg=cfg,
@@ -153,8 +173,9 @@ def main(cfg: DictConfig) -> None:
         log.warning("No validation data found")
 
     # Create per-modality validation loaders for multi_modality mode
+    # (not applicable for seg_compression which only has seg masks)
     per_modality_val_loaders = {}
-    if mode_name == 'multi_modality':
+    if mode_name == 'multi_modality' and not is_seg_mode:
         per_modality_val_loaders = create_per_modality_val_loaders(
             cfg=cfg,
             image_keys=image_keys,
@@ -179,7 +200,13 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Run test evaluation if test_new/ directory exists
-    if mode_name == 'multi_modality':
+    if is_seg_mode or mode_name == 'seg_compression':
+        test_result = create_seg_compression_test_dataloader(
+            cfg=cfg,
+            image_size=cfg.dcae.image_size,
+            batch_size=cfg.training.batch_size,
+        )
+    elif mode_name == 'multi_modality':
         test_result = create_multi_modality_test_dataloader(
             cfg=cfg,
             image_keys=image_keys,

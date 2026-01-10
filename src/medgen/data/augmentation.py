@@ -3,6 +3,7 @@
 Separate augmentation pipelines for diffusion and VAE training:
 - Diffusion: Conservative (flip, discrete translate) - preserves image quality
 - VAE: Aggressive (+ noise, blur, scale, mixup, cutmix) - learns robust features
+- Segmentation: Hardcore spatial (+ mosaic, cutmix, copy-paste) - binary mask compression
 
 Batch-level augmentations (mixup, cutmix) are applied via collate function.
 """
@@ -13,6 +14,14 @@ import albumentations as A
 from albumentations.core.transforms_interface import ImageOnlyTransform
 import numpy as np
 import torch
+
+# Module-level imports for segmentation augmentations (avoid import inside functions)
+try:
+    from skimage.transform import resize as skimage_resize
+    from scipy.ndimage import label as scipy_label
+    _SEG_AUG_AVAILABLE = True
+except ImportError:
+    _SEG_AUG_AVAILABLE = False
 
 
 # =============================================================================
@@ -415,5 +424,325 @@ def apply_augmentation(
     output = np.transpose(result, (2, 0, 1)).copy()
 
     return output
+
+
+# =============================================================================
+# Segmentation Mask Augmentation (Hardcore Spatial)
+# =============================================================================
+
+def build_seg_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+    """Build hardcore augmentation for segmentation mask compression.
+
+    Aggressive spatial transforms for learning robust mask representations.
+    All augmentations preserve binary nature via final thresholding.
+
+    Transforms:
+        - HorizontalFlip, VerticalFlip (p=0.5 each)
+        - Rotate 90/180/270 (p=0.5)
+        - Affine: translate ±20%, scale 0.8-1.2x (p=0.5)
+        - ElasticTransform (p=0.3)
+        - GridDistortion (p=0.3)
+        - CoarseDropout (p=0.3)
+
+    Note: Mosaic, CutMix, CopyPaste are batch-level augmentations
+    implemented separately in collate function.
+
+    Args:
+        enabled: Whether to enable augmentation.
+
+    Returns:
+        Albumentations Compose object, or None if disabled.
+    """
+    if not enabled:
+        return None
+
+    return A.Compose([
+        # Flips (lossless)
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+
+        # 90-degree rotations (lossless for binary masks)
+        A.RandomRotate90(p=0.5),
+
+        # Affine transforms (more aggressive than VAE)
+        A.Affine(
+            translate_percent={"x": (-0.2, 0.2), "y": (-0.2, 0.2)},
+            scale=(0.8, 1.2),
+            rotate=(-45, 45),
+            border_mode=0,  # Zero padding
+            p=0.5,
+        ),
+
+        # Elastic deformation (more aggressive for seg)
+        A.ElasticTransform(
+            alpha=120,
+            sigma=12,
+            border_mode=0,
+            p=0.3,
+        ),
+
+        # Grid distortion
+        A.GridDistortion(
+            num_steps=5,
+            distort_limit=0.3,
+            border_mode=0,
+            p=0.3,
+        ),
+
+        # Coarse dropout (simulates missing regions)
+        A.CoarseDropout(
+            max_holes=8,
+            max_height=32,
+            max_width=32,
+            min_holes=1,
+            min_height=8,
+            min_width=8,
+            fill_value=0,
+            p=0.3,
+        ),
+    ])
+
+
+def binarize_mask(mask: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+    """Binarize mask after augmentation.
+
+    CRITICAL: Must be called after any augmentation that uses interpolation
+    (rotation, affine, elastic) to restore binary values.
+
+    Args:
+        mask: Mask array (may have non-binary values from interpolation).
+        threshold: Binarization threshold.
+
+    Returns:
+        Binary mask (0.0 or 1.0).
+    """
+    return (mask > threshold).astype(np.float32)
+
+
+def mosaic_augmentation(
+    masks: List[np.ndarray],
+    output_size: int = 256,
+) -> np.ndarray:
+    """Create mosaic from 4 masks (2x2 grid).
+
+    Combines 4 different masks into a single training sample.
+
+    Args:
+        masks: List of exactly 4 masks [H, W] or [1, H, W] or [H, W, C].
+        output_size: Output image size.
+
+    Returns:
+        Mosaic mask [1, output_size, output_size].
+    """
+    if not _SEG_AUG_AVAILABLE:
+        raise ImportError("skimage required for mosaic_augmentation")
+
+    assert len(masks) == 4, "Mosaic requires exactly 4 masks"
+
+    half = output_size // 2
+    mosaic = np.zeros((output_size, output_size), dtype=np.float32)
+
+    # Resize and place each mask in quadrant
+    positions = [(0, 0), (0, half), (half, 0), (half, half)]
+    for mask, (y, x) in zip(masks, positions):
+        # Handle different channel formats
+        if mask.ndim == 3:
+            if mask.shape[0] == 1:  # [1, H, W] format
+                mask = mask[0]
+            elif mask.shape[-1] == 1:  # [H, W, 1] format
+                mask = mask[:, :, 0]
+            else:  # [H, W, C] format
+                mask = mask[:, :, 0]
+
+        # Simple resize (nearest neighbor for binary)
+        resized = skimage_resize(mask, (half, half), order=0, preserve_range=True)
+        mosaic[y:y+half, x:x+half] = resized
+
+    # Binarize and add channel dimension
+    mosaic = (mosaic > 0.5).astype(np.float32)
+    return mosaic[np.newaxis, :, :]  # [1, H, W]
+
+
+def copy_paste_augmentation(
+    mask: np.ndarray,
+    donor_mask: np.ndarray,
+    p: float = 0.5,
+) -> np.ndarray:
+    """Copy-paste augmentation: paste tumor regions from donor to target.
+
+    Args:
+        mask: Target mask to modify [H, W] or [1, H, W].
+        donor_mask: Donor mask to copy from [H, W] or [1, H, W].
+        p: Probability of applying.
+
+    Returns:
+        Augmented mask (same shape as input).
+    """
+    if not _SEG_AUG_AVAILABLE:
+        raise ImportError("scipy required for copy_paste_augmentation")
+
+    if random.random() > p:
+        return mask
+
+    had_channel = mask.ndim == 3
+
+    # Normalize to [H, W]
+    if had_channel:
+        if mask.shape[0] == 1:
+            mask = mask[0]
+        else:
+            mask = mask[:, :, 0]
+
+    donor = donor_mask
+    if donor.ndim == 3:
+        if donor.shape[0] == 1:
+            donor = donor[0]
+        else:
+            donor = donor[:, :, 0]
+
+    # Find tumor regions in donor
+    donor_binary = donor > 0.5
+    labeled, num_tumors = scipy_label(donor_binary)
+
+    if num_tumors == 0:
+        result = (mask > 0.5).astype(np.float32)
+        if had_channel:
+            result = result[np.newaxis, :, :]
+        return result
+
+    # Randomly select one tumor to paste
+    tumor_id = random.randint(1, num_tumors)
+    tumor_mask = (labeled == tumor_id)
+
+    # Random translation
+    h, w = mask.shape[:2]
+    dy = random.randint(-h//4, h//4)
+    dx = random.randint(-w//4, w//4)
+
+    # Paste (OR operation)
+    result = mask.copy()
+    tumor_shifted = np.roll(tumor_mask.astype(np.float32), (dy, dx), axis=(0, 1))
+    result = np.maximum(result, tumor_shifted)
+    result = (result > 0.5).astype(np.float32)
+
+    # Restore original shape
+    if had_channel:
+        result = result[np.newaxis, :, :]
+
+    return result
+
+
+def _cutmix_masks(
+    mask1: np.ndarray,
+    mask2: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply cutmix between two masks.
+
+    Args:
+        mask1: First mask [H, W] or [1, H, W].
+        mask2: Second mask [H, W] or [1, H, W].
+
+    Returns:
+        Tuple of two swapped masks (same shape as input).
+    """
+    # Track original shape for restoration
+    had_channel = mask1.ndim == 3
+
+    # Normalize to [H, W]
+    if had_channel:
+        if mask1.shape[0] == 1:
+            mask1_2d = mask1[0]
+        else:
+            mask1_2d = mask1[:, :, 0]
+        if mask2.shape[0] == 1:
+            mask2_2d = mask2[0]
+        else:
+            mask2_2d = mask2[:, :, 0]
+    else:
+        mask1_2d = mask1
+        mask2_2d = mask2
+
+    h, w = mask1_2d.shape[:2]
+
+    # Random rectangle
+    cx, cy = random.randint(0, w), random.randint(0, h)
+    rw, rh = random.randint(w//4, w//2), random.randint(h//4, h//2)
+
+    x1, x2 = max(0, cx - rw//2), min(w, cx + rw//2)
+    y1, y2 = max(0, cy - rh//2), min(h, cy + rh//2)
+
+    # Swap regions
+    result1, result2 = mask1_2d.copy(), mask2_2d.copy()
+    result1[y1:y2, x1:x2] = mask2_2d[y1:y2, x1:x2]
+    result2[y1:y2, x1:x2] = mask1_2d[y1:y2, x1:x2]
+
+    # Binarize
+    result1 = (result1 > 0.5).astype(np.float32)
+    result2 = (result2 > 0.5).astype(np.float32)
+
+    # Restore channel dimension if input had it
+    if had_channel:
+        result1 = result1[np.newaxis, :, :]
+        result2 = result2[np.newaxis, :, :]
+
+    return result1, result2
+
+
+def create_seg_collate_fn(
+    mosaic_prob: float = 0.2,
+    cutmix_prob: float = 0.2,
+    copy_paste_prob: float = 0.3,
+) -> Callable[[List], torch.Tensor]:
+    """Create collate function with batch-level seg augmentations.
+
+    Args:
+        mosaic_prob: Probability of mosaic augmentation.
+        cutmix_prob: Probability of cutmix augmentation.
+        copy_paste_prob: Probability of copy-paste per sample.
+
+    Returns:
+        Collate function for DataLoader.
+    """
+    def collate_fn(batch: List) -> torch.Tensor:
+        # Convert to numpy if needed
+        augmented = []
+        for item in batch:
+            if isinstance(item, torch.Tensor):
+                mask = item.numpy()
+            else:
+                mask = item
+            augmented.append(mask)
+
+        # Copy-paste (needs other samples in batch)
+        for i in range(len(augmented)):
+            if random.random() < copy_paste_prob and len(augmented) > 1:
+                donor_idx = random.choice([j for j in range(len(augmented)) if j != i])
+                augmented[i] = copy_paste_augmentation(
+                    augmented[i], augmented[donor_idx], p=1.0
+                )
+
+        # CRITICAL: Final binarization
+        for i in range(len(augmented)):
+            augmented[i] = binarize_mask(augmented[i])
+
+        # Mosaic (replaces first sample with mosaic of 4 random samples)
+        if random.random() < mosaic_prob and len(augmented) >= 4:
+            indices = random.sample(range(len(augmented)), 4)
+            mosaic = mosaic_augmentation([augmented[i] for i in indices])
+            augmented[0] = mosaic
+
+        # CutMix (swap regions between pairs)
+        if random.random() < cutmix_prob and len(augmented) >= 2:
+            i, j = random.sample(range(len(augmented)), 2)
+            augmented[i], augmented[j] = _cutmix_masks(augmented[i], augmented[j])
+
+        # Stack and convert to tensor
+        stacked = np.stack(augmented, axis=0)
+        if stacked.ndim == 3:
+            stacked = stacked[:, np.newaxis, :, :]  # Add channel dim if missing
+
+        return torch.from_numpy(stacked).float()
+
+    return collate_fn
 
 

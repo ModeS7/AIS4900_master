@@ -14,6 +14,8 @@ from torch.amp import autocast
 from torch.utils.data import DataLoader
 
 from .metrics import (
+    compute_dice,
+    compute_iou,
     compute_lpips,
     compute_lpips_3d,
     compute_msssim,
@@ -37,6 +39,8 @@ class ValidationConfig:
         weight_dtype: Data type for autocast.
         use_compile: Whether to use torch.compile.
         spatial_dims: 2 for 2D images, 3 for 3D volumes.
+        seg_mode: Whether to use segmentation metrics (Dice/IoU) instead of
+            image quality metrics (MS-SSIM, PSNR, LPIPS).
     """
 
     log_msssim: bool = True
@@ -46,6 +50,7 @@ class ValidationConfig:
     weight_dtype: torch.dtype = torch.bfloat16
     use_compile: bool = False
     spatial_dims: int = 2  # 2 for 2D images, 3 for 3D volumes
+    seg_mode: bool = False  # Use Dice/IoU instead of MS-SSIM/PSNR/LPIPS
 
 
 @dataclass
@@ -90,6 +95,7 @@ class ValidationRunner:
         forward_fn: Callable[[nn.Module, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]],
         perceptual_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
         regional_tracker_factory: Optional[Callable[[], Any]] = None,
+        seg_regional_tracker_factory: Optional[Callable[[], Any]] = None,
         prepare_batch_fn: Optional[Callable[[Any], Tuple[torch.Tensor, Optional[torch.Tensor]]]] = None,
     ):
         """Initialize validation runner.
@@ -101,6 +107,7 @@ class ValidationRunner:
                 (reconstruction, regularization_loss). This is trainer-specific.
             perceptual_loss_fn: Optional perceptual loss function.
             regional_tracker_factory: Optional factory to create regional tracker.
+            seg_regional_tracker_factory: Optional factory for seg mode regional tracker.
             prepare_batch_fn: Optional function to prepare batch data.
         """
         self.config = config
@@ -108,6 +115,7 @@ class ValidationRunner:
         self.forward_fn = forward_fn
         self.perceptual_loss_fn = perceptual_loss_fn
         self.regional_tracker_factory = regional_tracker_factory
+        self.seg_regional_tracker_factory = seg_regional_tracker_factory
         self.prepare_batch_fn = prepare_batch_fn or self._default_prepare_batch
 
     def _default_prepare_batch(
@@ -150,6 +158,7 @@ class ValidationRunner:
             ValidationResult with metrics and optional tracking data.
         """
         is_3d = self.config.spatial_dims == 3
+        is_seg_mode = self.config.seg_mode
 
         # Initialize accumulators
         total_l1 = 0.0
@@ -160,15 +169,22 @@ class ValidationRunner:
         total_msssim_3d = 0.0  # For 3D: volumetric MS-SSIM
         total_psnr = 0.0
         total_lpips = 0.0
+        # Seg mode metrics
+        total_dice = 0.0
+        total_iou = 0.0
         n_batches = 0
 
         # Worst batch tracking
         worst_batch_tracker = WorstBatchTracker(enabled=log_figures)
 
-        # Regional tracker
+        # Regional tracker (seg_regional_tracker for seg_mode, regular for images)
         regional_tracker = None
-        if self.config.log_regional_losses and self.regional_tracker_factory is not None:
-            regional_tracker = self.regional_tracker_factory()
+        seg_regional_tracker = None
+        if self.config.log_regional_losses:
+            if is_seg_mode and self.seg_regional_tracker_factory is not None:
+                seg_regional_tracker = self.seg_regional_tracker_factory()
+            elif not is_seg_mode and self.regional_tracker_factory is not None:
+                regional_tracker = self.regional_tracker_factory()
 
         # Mark CUDA graph step boundary
         if self.config.use_compile:
@@ -182,91 +198,131 @@ class ValidationRunner:
                     # Forward pass (subclass-specific)
                     reconstruction, reg_loss = self.forward_fn(model, images)
 
-                    # L1 reconstruction loss
-                    l1_loss = torch.abs(reconstruction - images).mean()
+                    if is_seg_mode:
+                        # SEG MODE: Compute Dice/IoU metrics instead of L1/perceptual
+                        # Model outputs logits, apply sigmoid for metrics
+                        dice = compute_dice(reconstruction, images, apply_sigmoid=True)
+                        iou = compute_iou(reconstruction, images, apply_sigmoid=True)
 
-                    # Perceptual loss
-                    if self.perceptual_loss_fn is not None and perceptual_weight > 0:
-                        p_loss = self.perceptual_loss_fn(reconstruction, images)
+                        # Use 1-Dice as "loss" for worst batch tracking
+                        # (higher = worse, matching loss semantics)
+                        loss_val = 1.0 - dice
+
+                        total_dice += dice
+                        total_iou += iou
+
+                        # Track worst batch by lowest Dice
+                        worst_batch_tracker.update(
+                            loss=loss_val,
+                            original=images,
+                            generated=reconstruction,
+                            loss_breakdown={
+                                'Dice': dice,
+                                'IoU': iou,
+                                '1-Dice': loss_val,
+                            },
+                        )
+
+                        # Per-tumor regional Dice tracking
+                        if seg_regional_tracker is not None:
+                            seg_regional_tracker.update(
+                                reconstruction, images, apply_sigmoid=True
+                            )
                     else:
-                        p_loss = torch.tensor(0.0, device=self.device)
+                        # STANDARD MODE: L1 reconstruction loss
+                        l1_loss = torch.abs(reconstruction - images).mean()
 
-                    # Total generator loss
-                    g_loss = l1_loss + perceptual_weight * p_loss + reg_loss
+                        # Perceptual loss
+                        if self.perceptual_loss_fn is not None and perceptual_weight > 0:
+                            p_loss = self.perceptual_loss_fn(reconstruction, images)
+                        else:
+                            p_loss = torch.tensor(0.0, device=self.device)
 
-                # Accumulate losses
-                loss_val = g_loss.item()
-                total_l1 += l1_loss.item()
-                total_perc += p_loss.item()
-                total_reg += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
-                total_gen += loss_val
+                        # Total generator loss
+                        g_loss = l1_loss + perceptual_weight * p_loss + reg_loss
 
-                # Track worst batch
-                worst_batch_tracker.update(
-                    loss=loss_val,
-                    original=images,
-                    generated=reconstruction,
-                    loss_breakdown={
-                        'L1': l1_loss.item(),
-                        'Perc': p_loss.item(),
-                        'Reg': reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss,
-                    },
-                )
+                        # Accumulate losses
+                        loss_val = g_loss.item()
+                        total_l1 += l1_loss.item()
+                        total_perc += p_loss.item()
+                        total_reg += reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss
+                        total_gen += loss_val
 
-                # Quality metrics - use appropriate functions based on spatial_dims
-                if self.config.log_msssim:
-                    if is_3d:
-                        # 3D: compute both volumetric and slice-by-slice MS-SSIM
-                        total_msssim_3d += compute_msssim(
-                            reconstruction.float(), images.float(), spatial_dims=3
-                        )
-                        total_msssim += compute_msssim_2d_slicewise(
-                            reconstruction.float(), images.float()
-                        )
-                    else:
-                        # 2D: standard MS-SSIM
-                        total_msssim += compute_msssim(reconstruction, images)
-                if self.config.log_psnr:
-                    total_psnr += compute_psnr(reconstruction, images)
-                if self.config.log_lpips:
-                    if is_3d:
-                        total_lpips += compute_lpips_3d(
-                            reconstruction.float(), images.float(), device=self.device
-                        )
-                    else:
-                        total_lpips += compute_lpips(
-                            reconstruction, images, device=self.device
+                        # Track worst batch
+                        worst_batch_tracker.update(
+                            loss=loss_val,
+                            original=images,
+                            generated=reconstruction,
+                            loss_breakdown={
+                                'L1': l1_loss.item(),
+                                'Perc': p_loss.item(),
+                                'Reg': reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss,
+                            },
                         )
 
-                # Regional tracking
-                if regional_tracker is not None and mask is not None:
+                        # Quality metrics - use appropriate functions based on spatial_dims
+                        if self.config.log_msssim:
+                            if is_3d:
+                                # 3D: compute both volumetric and slice-by-slice MS-SSIM
+                                total_msssim_3d += compute_msssim(
+                                    reconstruction.float(), images.float(), spatial_dims=3
+                                )
+                                total_msssim += compute_msssim_2d_slicewise(
+                                    reconstruction.float(), images.float()
+                                )
+                            else:
+                                # 2D: standard MS-SSIM
+                                total_msssim += compute_msssim(reconstruction, images)
+                        if self.config.log_psnr:
+                            total_psnr += compute_psnr(reconstruction, images)
+                        if self.config.log_lpips:
+                            if is_3d:
+                                total_lpips += compute_lpips_3d(
+                                    reconstruction.float(), images.float(), device=self.device
+                                )
+                            else:
+                                total_lpips += compute_lpips(
+                                    reconstruction, images, device=self.device
+                                )
+
+                # Regional tracking (only for non-seg mode where mask is tumor regions)
+                if regional_tracker is not None and mask is not None and not is_seg_mode:
                     regional_tracker.update(reconstruction, images, mask)
 
                 n_batches += 1
 
-        # Compute averages
-        metrics = {
-            'l1': total_l1 / n_batches if n_batches > 0 else 0.0,
-            'perc': total_perc / n_batches if n_batches > 0 else 0.0,
-            'reg': total_reg / n_batches if n_batches > 0 else 0.0,
-            'gen': total_gen / n_batches if n_batches > 0 else 0.0,
-        }
-        if self.config.log_psnr:
-            metrics['psnr'] = total_psnr / n_batches if n_batches > 0 else 0.0
-        if self.config.log_lpips:
-            metrics['lpips'] = total_lpips / n_batches if n_batches > 0 else 0.0
-        if self.config.log_msssim:
-            # msssim is always slice-by-slice 2D (for comparison with 2D trainers)
-            metrics['msssim'] = total_msssim / n_batches if n_batches > 0 else 0.0
-            if is_3d:
-                # msssim_3d is volumetric 3D MS-SSIM (captures cross-slice structure)
-                metrics['msssim_3d'] = total_msssim_3d / n_batches if n_batches > 0 else 0.0
+        # Compute averages based on mode
+        if is_seg_mode:
+            metrics = {
+                'dice': total_dice / n_batches if n_batches > 0 else 0.0,
+                'iou': total_iou / n_batches if n_batches > 0 else 0.0,
+            }
+        else:
+            metrics = {
+                'l1': total_l1 / n_batches if n_batches > 0 else 0.0,
+                'perc': total_perc / n_batches if n_batches > 0 else 0.0,
+                'reg': total_reg / n_batches if n_batches > 0 else 0.0,
+                'gen': total_gen / n_batches if n_batches > 0 else 0.0,
+            }
+            if self.config.log_psnr:
+                metrics['psnr'] = total_psnr / n_batches if n_batches > 0 else 0.0
+            if self.config.log_lpips:
+                metrics['lpips'] = total_lpips / n_batches if n_batches > 0 else 0.0
+            if self.config.log_msssim:
+                # msssim is always slice-by-slice 2D (for comparison with 2D trainers)
+                metrics['msssim'] = total_msssim / n_batches if n_batches > 0 else 0.0
+                if is_3d:
+                    # msssim_3d is volumetric 3D MS-SSIM (captures cross-slice structure)
+                    metrics['msssim_3d'] = total_msssim_3d / n_batches if n_batches > 0 else 0.0
 
         # Get worst batch data
         worst_batch_data = worst_batch_tracker.get_and_reset()
 
+        # Return whichever regional tracker was used
+        active_regional_tracker = seg_regional_tracker if is_seg_mode else regional_tracker
+
         return ValidationResult(
             metrics=metrics,
             worst_batch_data=worst_batch_data,
-            regional_tracker=regional_tracker,
+            regional_tracker=active_regional_tracker,
         )

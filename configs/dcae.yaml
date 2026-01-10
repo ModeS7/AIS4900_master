@@ -22,7 +22,7 @@
 #   # Phase 1: Use f64 compression
 #   python -m medgen.scripts.train_dcae dcae=f64
 #
-#   # Phase 3: GAN refinement (freeze all EXCEPT decoder head ~30K params)
+#   # Phase 3: GAN refinement (freeze all EXCEPT decoder head ~1.4K params)
 #   # Paper: "we only tune the head layers of the decoder"
 #   python -m medgen.scripts.train_dcae \
 #       training.phase=3 \
@@ -33,6 +33,11 @@
 #
 #   # Cluster training
 #   python -m medgen.scripts.train_dcae paths=cluster
+#
+#   # Segmentation mask compression (BCE + Dice + Boundary loss)
+#   python -m medgen.scripts.train_dcae \
+#       mode=seg_compression \
+#       dcae.seg_mode=true
 
 defaults:
   - paths: local
@@ -63,7 +68,7 @@ training:
 
   # Training phase (paper uses 3-phase approach)
   # Phase 1: L1 + Perceptual loss (main training, full model)
-  # Phase 3: Add GAN loss (only decoder head trainable ~30K params)
+  # Phase 3: Add GAN loss (only decoder head trainable ~1.4K params)
   phase: 1
 
   # Logging (all enabled for consistent tracking)
