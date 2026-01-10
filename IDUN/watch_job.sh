@@ -1,6 +1,6 @@
 #!/bin/bash
 # watch_job.sh - nvidia-smi style monitoring with multi-GPU support
-# Usage: ./watch_job.sh <JOBID>
+# Usage: ./IDUN/watch_job.sh <JOBID>
 
 JOBID=$1
 REFRESH=1
