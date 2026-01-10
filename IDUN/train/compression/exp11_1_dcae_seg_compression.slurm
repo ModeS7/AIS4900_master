@@ -8,15 +8,15 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp11_seg_compress"
-#SBATCH --output=IDUN/output/train/compression/exp11_dcae_seg_compression_%j.out
-#SBATCH --error=IDUN/output/train/compression/exp11_dcae_seg_compression_%j.err
+#SBATCH --job-name="exp11_1_seg_compress"
+#SBATCH --output=IDUN/output/train/compression/exp11_1_dcae_seg_compression_%j.out
+#SBATCH --error=IDUN/output/train/compression/exp11_1_dcae_seg_compression_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp11 DC-AE Segmentation Mask Compression ==="
+echo "=== Exp11.1 DC-AE Segmentation Mask Compression ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -31,7 +31,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Exp11: DC-AE Segmentation Mask Compression
+# Exp11.1: DC-AE Segmentation Mask Compression
 # Input: 256x256x1 seg masks -> Latent: 8x8x32
 # Loss: BCE + Dice + Boundary (no perceptual, no GAN)
 # Metrics: Dice, IoU (not PSNR/LPIPS/MS-SSIM)
@@ -47,6 +47,6 @@ time python -m medgen.scripts.train_dcae \
     training.learning_rate=1e-4 \
     training.use_compile=false \
     training.logging.regional_losses=true \
-    training.name=exp11_seg_compress_
+    training.name=exp11_1_seg_compress_
 
 conda deactivate
