@@ -20,6 +20,7 @@ from .mode_embed import (
     ModeEmbedDropoutModelWrapper,
     NoModeModelWrapper,
     LateModeModelWrapper,
+    FiLMModeModelWrapper,
 )
 from .score_aug import OMEGA_ENCODING_DIM, encode_omega, ScoreAugModelWrapper
 
@@ -48,6 +49,7 @@ def create_conditioning_wrapper(
             - 'dropout': Randomly drop mode embedding with mode_dropout_prob
             - 'none': No mode embedding (hard parameter sharing)
             - 'late': Late mode conditioning (inject at later UNet levels)
+            - 'film': FiLM conditioning (scale and shift instead of additive)
         mode_dropout_prob: Probability of dropping mode embedding (for 'dropout' strategy).
         late_mode_start_level: UNet level to start injecting mode (for 'late' strategy).
 
@@ -55,7 +57,8 @@ def create_conditioning_wrapper(
         Tuple of (wrapped_model, wrapper_name):
         - wrapped_model: The model with conditioning wrapper applied (or original if no conditioning)
         - wrapper_name: String describing the wrapper type, or None if no wrapper applied.
-            Values: "combined", "omega", "mode", "mode_dropout", "no_mode", "late_mode", or None
+            Values: "combined", "combined_film", "omega", "mode", "mode_dropout", "no_mode",
+            "late_mode", "film", or None
 
     Example:
         >>> wrapper, wrapper_name = create_conditioning_wrapper(
@@ -77,9 +80,11 @@ def create_conditioning_wrapper(
             # No conditioning at all, but wrap for API compatibility
             return NoModeModelWrapper(model), "no_mode"
 
-    # Handle combined omega + mode (only for 'full' strategy currently)
+    # Handle combined omega + mode
     if use_omega and use_mode:
-        if mode_strategy == 'full':
+        if mode_strategy == 'film':
+            return CombinedFiLMModelWrapper(model, embed_dim=embed_dim), "combined_film"
+        elif mode_strategy == 'full':
             return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
         elif mode_strategy == 'dropout':
             # TODO: Implement CombinedDropoutModelWrapper if needed
@@ -106,6 +111,8 @@ def create_conditioning_wrapper(
             return LateModeModelWrapper(
                 model, embed_dim=embed_dim, start_level=late_mode_start_level
             ), "late_mode"
+        elif mode_strategy == 'film':
+            return FiLMModeModelWrapper(model, embed_dim=embed_dim), "film"
         else:  # 'full' or default
             return ModeEmbedModelWrapper(model, embed_dim=embed_dim), "mode"
 
@@ -283,6 +290,166 @@ class CombinedModelWrapper(nn.Module):
         self.combined_time_embed.set_encodings(omega_encoding, mode_encoding)
 
         # Call model normally
+        return self.model(x, timesteps)
+
+    def parameters(self, recurse: bool = True):
+        """Get all parameters including embedding MLPs."""
+        return self.model.parameters(recurse=recurse)
+
+
+class CombinedFiLMTimeEmbed(nn.Module):
+    """Wrapper around time_embed with omega (additive) + FiLM mode conditioning.
+
+    Combines:
+    - omega_mlp: maps omega encoding (16-dim) to embed_dim (additive)
+    - film_mlp: maps mode encoding (4-dim) to gamma and beta for FiLM
+
+    Order of operations:
+    1. out = original(t_emb)
+    2. out = out + omega_emb  (additive omega)
+    3. out = gamma * out + beta  (FiLM mode modulation)
+    """
+
+    def __init__(self, original_time_embed: nn.Module, embed_dim: int):
+        """Initialize combined FiLM time embedding.
+
+        Args:
+            original_time_embed: The original time_embed module from DiffusionModelUNet
+            embed_dim: Output dimension (should match original time_embed output)
+        """
+        super().__init__()
+        self.original = original_time_embed
+        self.embed_dim = embed_dim
+
+        # Import FiLM MLP creator
+        from .base_embed import create_film_mlp
+
+        # Omega uses additive embedding (zero-init)
+        self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
+
+        # Mode uses FiLM (gamma/beta initialized to identity)
+        self.film_mlp = create_film_mlp(MODE_ENCODING_DIM, embed_dim)
+
+        # Omega uses buffer (same for all samples in batch)
+        self.register_buffer('_omega_encoding', torch.zeros(1, OMEGA_ENCODING_DIM))
+
+        # Mode uses regular tensor (per-sample, variable batch size)
+        self._mode_encoding: Optional[torch.Tensor] = None
+
+    def set_omega_encoding(self, omega_encoding: torch.Tensor):
+        """Set omega encoding for next forward pass."""
+        self._omega_encoding.copy_(omega_encoding)
+
+    def set_mode_encoding(self, mode_encoding: torch.Tensor):
+        """Set mode encoding for next forward pass."""
+        if mode_encoding.dim() != 2:
+            raise ValueError(
+                f"mode_encoding must be 2D [B, {MODE_ENCODING_DIM}], "
+                f"got {mode_encoding.dim()}D with shape {mode_encoding.shape}"
+            )
+        if mode_encoding.shape[1] != MODE_ENCODING_DIM:
+            raise ValueError(
+                f"mode_encoding.shape[1] must be {MODE_ENCODING_DIM}, "
+                f"got {mode_encoding.shape[1]}"
+            )
+        self._mode_encoding = mode_encoding
+
+    def set_encodings(
+        self,
+        omega_encoding: torch.Tensor,
+        mode_encoding: torch.Tensor,
+    ):
+        """Set both encodings for next forward pass."""
+        self._omega_encoding.copy_(omega_encoding)
+        self._mode_encoding = mode_encoding
+
+    def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
+        """Forward pass: original + omega (additive) + mode (FiLM).
+
+        Args:
+            t_emb: Timestep embedding input [B, C]
+
+        Returns:
+            Time embedding with combined conditioning [B, embed_dim]
+        """
+        # Original time embedding
+        out = self.original(t_emb)
+
+        # Add omega embedding (broadcasts from [1, embed_dim] to [B, embed_dim])
+        omega_emb = self.omega_mlp(self._omega_encoding)
+        out = out + omega_emb
+
+        # Apply FiLM modulation for mode
+        if self._mode_encoding is not None:
+            film_params = self.film_mlp(self._mode_encoding)  # [B, 2*embed_dim]
+            gamma = film_params[:, :self.embed_dim]  # [B, embed_dim]
+            beta = film_params[:, self.embed_dim:]   # [B, embed_dim]
+            out = gamma * out + beta
+
+        return out
+
+
+class CombinedFiLMModelWrapper(nn.Module):
+    """Wrapper with omega (additive) + FiLM mode conditioning.
+
+    Use this when:
+    - training.score_aug.enabled=true AND
+    - mode.use_mode_embedding=true AND
+    - mode.mode_embedding_strategy=film
+    """
+
+    def __init__(self, model: nn.Module, embed_dim: int = 256):
+        """Initialize wrapper.
+
+        Args:
+            model: MONAI DiffusionModelUNet to wrap
+            embed_dim: Embedding dimension (should match model's time_embed output)
+        """
+        super().__init__()
+        self.model = model
+        self.embed_dim = embed_dim
+
+        if not hasattr(model, 'time_embed'):
+            raise ValueError("Model does not have 'time_embed' attribute")
+
+        original_time_embed = model.time_embed
+        self.combined_film_time_embed = CombinedFiLMTimeEmbed(original_time_embed, embed_dim)
+
+        # Replace the model's time_embed
+        model.time_embed = self.combined_film_time_embed
+
+        # Ensure on same device as model
+        try:
+            device = next(model.parameters()).device
+            self.combined_film_time_embed = self.combined_film_time_embed.to(device)
+            model.time_embed = self.combined_film_time_embed
+        except StopIteration:
+            pass
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        omega: Optional[Dict[str, Any]] = None,
+        mode_id: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass with omega + FiLM mode conditioning.
+
+        Args:
+            x: Noisy input tensor [B, C, H, W]
+            timesteps: Timestep tensor [B]
+            omega: Optional ScoreAug parameters for conditioning
+            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+
+        Returns:
+            Model prediction [B, C_out, H, W]
+        """
+        batch_size = x.shape[0]
+        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
+        mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
+
+        self.combined_film_time_embed.set_encodings(omega_encoding, mode_encoding)
+
         return self.model(x, timesteps)
 
     def parameters(self, recurse: bool = True):

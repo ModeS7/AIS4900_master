@@ -21,6 +21,7 @@
 #   - 'dropout': Randomly drop mode embedding with probability mode_embedding_dropout
 #   - 'none': No mode embedding (hard parameter sharing, forces shared representations)
 #   - 'late': Late conditioning (inject mode only in later UNet blocks)
+#   - 'film': FiLM conditioning (learns scale and shift instead of additive embedding)
 
 name: multi
 is_conditional: true
@@ -28,7 +29,7 @@ in_channels: 2   # [noisy_image, seg_mask] - same as bravo
 out_channels: 1  # predicted noise/velocity
 image_keys: [bravo, flair, t1_pre, t1_gd]
 use_mode_embedding: true
-mode_embedding_strategy: full  # Options: full, dropout, none, late
+mode_embedding_strategy: full  # Options: full, dropout, none, late, film
 mode_embedding_dropout: 0.2    # Probability of dropping mode embedding (when strategy=dropout)
 late_mode_start_level: 2       # UNet level to start injecting mode (when strategy=late, 0-indexed)
 description: "Multi-modality diffusion with mode embedding (4x training data)"

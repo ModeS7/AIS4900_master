@@ -18,7 +18,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from .base_embed import create_zero_init_mlp
+from .base_embed import create_zero_init_mlp, create_film_mlp
 
 # Mode ID mapping
 MODE_ID_MAP = {
@@ -572,3 +572,142 @@ class LateModeModelWrapper(nn.Module):
         if hasattr(self, '_hooks'):
             for hook in self._hooks:
                 hook.remove()
+
+
+class FiLMModeTimeEmbed(nn.Module):
+    """Time embedding with FiLM (Feature-wise Linear Modulation) mode conditioning.
+
+    Instead of adding mode embedding to time_embed output, FiLM learns to
+    scale (gamma) and shift (beta) the features per mode:
+
+        output = gamma * time_embed + beta
+
+    This gives the model more expressive power to adapt features per modality.
+
+    Initialization ensures FiLM starts as identity: gamma=1, beta=0
+    """
+
+    def __init__(self, original_time_embed: nn.Module, embed_dim: int):
+        """Initialize FiLM time embedding.
+
+        Args:
+            original_time_embed: The original time_embed module from DiffusionModelUNet
+            embed_dim: Output dimension (should match original time_embed output)
+        """
+        super().__init__()
+        self.original = original_time_embed
+        self.embed_dim = embed_dim
+
+        # FiLM MLP: mode encoding -> [gamma, beta]
+        self.film_mlp = create_film_mlp(MODE_ENCODING_DIM, embed_dim)
+
+        # Store current mode encoding
+        self._mode_encoding: Optional[torch.Tensor] = None
+
+    def set_mode_encoding(self, mode_encoding: torch.Tensor):
+        """Set mode encoding for next forward pass.
+
+        Args:
+            mode_encoding: Tensor [B, MODE_ENCODING_DIM] with per-sample encodings
+        """
+        if mode_encoding.dim() != 2:
+            raise ValueError(
+                f"mode_encoding must be 2D [B, {MODE_ENCODING_DIM}], "
+                f"got {mode_encoding.dim()}D with shape {mode_encoding.shape}"
+            )
+        if mode_encoding.shape[1] != MODE_ENCODING_DIM:
+            raise ValueError(
+                f"mode_encoding.shape[1] must be {MODE_ENCODING_DIM}, "
+                f"got {mode_encoding.shape[1]}"
+            )
+        self._mode_encoding = mode_encoding
+
+    def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
+        """Forward pass: FiLM modulation of time embedding.
+
+        Args:
+            t_emb: Timestep embedding input [B, C]
+
+        Returns:
+            FiLM-modulated time embedding [B, embed_dim]
+        """
+        # Original time embedding
+        out = self.original(t_emb)
+
+        # Apply FiLM modulation if mode encoding is set
+        if self._mode_encoding is not None:
+            # Get gamma and beta from FiLM MLP
+            film_params = self.film_mlp(self._mode_encoding)  # [B, 2*embed_dim]
+            gamma = film_params[:, :self.embed_dim]  # [B, embed_dim]
+            beta = film_params[:, self.embed_dim:]   # [B, embed_dim]
+
+            # Apply FiLM: gamma * out + beta
+            out = gamma * out + beta
+
+        return out
+
+
+class FiLMModeModelWrapper(nn.Module):
+    """Wrapper to inject FiLM mode conditioning into MONAI UNet.
+
+    FiLM (Feature-wise Linear Modulation) learns per-mode scale and shift
+    parameters that modulate the time embedding features. This is more
+    expressive than simple additive conditioning.
+
+    Use this when mode.mode_embedding_strategy='film'
+    """
+
+    def __init__(self, model: nn.Module, embed_dim: int = 256):
+        """Initialize FiLM wrapper.
+
+        Args:
+            model: MONAI DiffusionModelUNet to wrap
+            embed_dim: Embedding dimension (should match model's time_embed output)
+        """
+        super().__init__()
+        self.model = model
+        self.embed_dim = embed_dim
+
+        # Replace time_embed with FiLM version
+        if not hasattr(model, 'time_embed'):
+            raise ValueError("Model does not have 'time_embed' attribute")
+
+        original_time_embed = model.time_embed
+        self.film_time_embed = FiLMModeTimeEmbed(original_time_embed, embed_dim)
+
+        # Replace the model's time_embed
+        model.time_embed = self.film_time_embed
+
+        # Ensure film_time_embed is on same device as model
+        try:
+            device = next(model.parameters()).device
+            self.film_time_embed = self.film_time_embed.to(device)
+            model.time_embed = self.film_time_embed
+        except StopIteration:
+            pass
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        timesteps: torch.Tensor,
+        mode_id: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass with FiLM mode conditioning.
+
+        Args:
+            x: Noisy input tensor [B, C, H, W]
+            timesteps: Timestep tensor [B]
+            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+
+        Returns:
+            Model prediction [B, C_out, H, W]
+        """
+        batch_size = x.shape[0]
+        mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
+        self.film_time_embed.set_mode_encoding(mode_encoding)
+
+        return self.model(x, timesteps)
+
+    def parameters(self, recurse: bool = True):
+        """Get all parameters including FiLM MLP."""
+        return self.model.parameters(recurse=recurse)
