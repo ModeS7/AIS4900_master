@@ -13,7 +13,7 @@
 #SBATCH --error=IDUN/output/train/compression/exp11_1_dcae_seg_compression_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --exclude=idun-06-06
+#SBATCH --exclude=idun-06-[01-07]
 
 cd ${SLURM_SUBMIT_DIR}
 
