@@ -149,6 +149,9 @@ def log_metrics_to_tensorboard(
         'lpips': 'LPIPS',
         'dice': 'Dice',
         'iou': 'IoU',
+        'bce': 'BCE',
+        'boundary': 'Boundary',
+        'gen': 'Generator',
     }
 
     for key, value in metrics.items():
@@ -459,6 +462,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         volume_3d_msssim_fn: Optional[Callable[[], Optional[float]]] = None,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
         image_keys: Optional[List[str]] = None,
+        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
     ):
         """Initialize 2D compression evaluator.
 
@@ -476,6 +480,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             volume_3d_msssim_fn: Optional callable to compute volume-level 3D MS-SSIM.
             worst_batch_figure_fn: Optional callable to create worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics (e.g., ['t1_pre', 't1_gd']).
+            seg_loss_fn: Optional segmentation loss function for seg_mode (returns total, breakdown).
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
@@ -486,6 +491,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         self.regional_tracker_factory = regional_tracker_factory
         self.volume_3d_msssim_fn = volume_3d_msssim_fn
         self.image_keys = image_keys
+        self.seg_loss_fn = seg_loss_fn
         self._regional_tracker: Optional[Any] = None
         # Per-channel metric accumulators
         self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
@@ -549,10 +555,16 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         metrics = {}
 
-        # Segmentation mode: compute Dice/IoU instead of image metrics
+        # Segmentation mode: compute Dice/IoU and seg losses
         if self.metrics_config.seg_mode:
             metrics['dice'] = compute_dice(reconstructed, images, apply_sigmoid=True)
             metrics['iou'] = compute_iou(reconstructed, images, apply_sigmoid=True)
+            # Compute BCE, Boundary and total seg loss if seg_loss_fn available
+            if self.seg_loss_fn is not None:
+                seg_loss, seg_breakdown = self.seg_loss_fn(reconstructed, images)
+                metrics['bce'] = seg_breakdown.get('bce', 0.0)
+                metrics['boundary'] = seg_breakdown.get('boundary', 0.0)
+                metrics['gen'] = seg_loss.item()
         else:
             # Standard image metrics
             # L1 loss

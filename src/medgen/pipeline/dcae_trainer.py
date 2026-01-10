@@ -390,6 +390,7 @@ class DCAETrainer(BaseCompressionTrainer):
             device=self.device,
             forward_fn=self._forward_for_validation,
             perceptual_loss_fn=self._compute_perceptual_loss if not self.seg_mode else None,
+            seg_loss_fn=self.seg_loss_fn if self.seg_mode else None,
             regional_tracker_factory=regional_factory,
             seg_regional_tracker_factory=seg_regional_factory,
             prepare_batch_fn=self._prepare_batch,
@@ -561,10 +562,16 @@ class DCAETrainer(BaseCompressionTrainer):
                 epoch_losses[key] += losses[key]
 
             if hasattr(epoch_iter, 'set_postfix'):
-                epoch_iter.set_postfix(
-                    G=f"{epoch_losses['gen'] / (step + 1):.4f}",
-                    L1=f"{epoch_losses['recon'] / (step + 1):.4f}"
-                )
+                if self.seg_mode:
+                    epoch_iter.set_postfix(
+                        G=f"{epoch_losses['gen'] / (step + 1):.4f}",
+                        Dice=f"{self._epoch_seg_breakdown['dice'] / (step + 1):.4f}"
+                    )
+                else:
+                    epoch_iter.set_postfix(
+                        G=f"{epoch_losses['gen'] / (step + 1):.4f}",
+                        L1=f"{epoch_losses['recon'] / (step + 1):.4f}"
+                    )
 
             if epoch == 1 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
@@ -573,16 +580,20 @@ class DCAETrainer(BaseCompressionTrainer):
         n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
         avg_losses = {key: val / n_batches for key, val in epoch_losses.items()}
 
+        # Add seg breakdown to avg_losses for epoch summary
+        if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
+            avg_seg = {k: v / n_batches for k, v in self._epoch_seg_breakdown.items()}
+            avg_losses.update(avg_seg)
+
         # Log training metrics (single-GPU only)
         if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
             self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
 
-            if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
-                # Seg mode: log epoch-averaged BCE, Dice, Boundary losses
-                avg_seg = {k: v / n_batches for k, v in self._epoch_seg_breakdown.items()}
-                self.writer.add_scalar('Loss/BCE_train', avg_seg.get('bce', 0), epoch)
-                self.writer.add_scalar('Loss/Dice_train', avg_seg.get('dice', 0), epoch)
-                self.writer.add_scalar('Loss/Boundary_train', avg_seg.get('boundary', 0), epoch)
+            if self.seg_mode:
+                # Seg mode: log BCE, Dice, Boundary losses
+                self.writer.add_scalar('Loss/BCE_train', avg_losses.get('bce', 0), epoch)
+                self.writer.add_scalar('Loss/Dice_train', avg_losses.get('dice', 0), epoch)
+                self.writer.add_scalar('Loss/Boundary_train', avg_losses.get('boundary', 0), epoch)
             else:
                 # Standard mode: log L1, Perceptual
                 self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
@@ -659,16 +670,19 @@ class DCAETrainer(BaseCompressionTrainer):
             return
 
         if self.seg_mode:
-            # Seg mode: log Dice and IoU metrics
+            # Seg mode: losses under Loss/, metrics under Validation/
             if 'dice' in metrics:
-                self.writer.add_scalar('Validation/Dice', metrics['dice'], epoch)
+                self.writer.add_scalar('Loss/Dice_val', metrics['dice'], epoch)
+            if 'bce' in metrics:
+                self.writer.add_scalar('Loss/BCE_val', metrics['bce'], epoch)
+            if 'boundary' in metrics:
+                self.writer.add_scalar('Loss/Boundary_val', metrics['boundary'], epoch)
+            if 'gen' in metrics:
+                self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
             if 'iou' in metrics:
                 self.writer.add_scalar('Validation/IoU', metrics['iou'], epoch)
-            # Log seg loss as generator loss
-            if 'seg_loss' in metrics:
-                self.writer.add_scalar('Loss/Seg_val', metrics['seg_loss'], epoch)
         else:
-            # Standard mode: use parent implementation
+            # Standard mode: loss metrics
             self.writer.add_scalar('Loss/L1_val', metrics.get('l1', 0), epoch)
             self.writer.add_scalar('Loss/Perceptual_val', metrics.get('perc', 0), epoch)
             self.writer.add_scalar('Loss/Generator_val', metrics.get('gen', 0), epoch)
@@ -679,6 +693,8 @@ class DCAETrainer(BaseCompressionTrainer):
                 self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
             if 'msssim' in metrics:
                 self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
+            if 'msssim_3d' in metrics:
+                self.writer.add_scalar('Validation/MS-SSIM-3D', metrics['msssim_3d'], epoch)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:
@@ -745,6 +761,7 @@ class DCAETrainer(BaseCompressionTrainer):
             volume_3d_msssim_fn=volume_3d_msssim,
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
+            seg_loss_fn=self.seg_loss_fn if self.seg_mode else None,
         )
 
     def _get_model_config(self) -> Dict[str, Any]:
@@ -754,6 +771,7 @@ class DCAETrainer(BaseCompressionTrainer):
             'latent_channels': self.latent_channels,
             'scaling_factor': self.scaling_factor,
             'pretrained': self.pretrained,
+            'seg_mode': self.seg_mode,
         }
 
     def _log_epoch_summary(
@@ -765,10 +783,32 @@ class DCAETrainer(BaseCompressionTrainer):
         elapsed_time: float,
     ) -> None:
         """Log DC-AE epoch summary."""
-        log_compression_epoch_summary(
-            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
-            regularization_key=None,  # DC-AE has no regularization
-        )
+        if self.seg_mode:
+            # Seg mode: show Dice, BCE, Boundary, IoU
+            import time
+            timestamp = time.strftime("%H:%M:%S")
+            epoch_pct = ((epoch + 1) / total_epochs) * 100
+
+            val_gen = f"(v:{val_metrics.get('gen', 0):.4f})" if val_metrics else ""
+            val_dice = f"(v:{val_metrics.get('dice', 0):.4f})" if val_metrics else ""
+
+            # Seg metrics
+            iou_str = f"IoU: {val_metrics.get('iou', 0):.3f}" if val_metrics and val_metrics.get('iou') else ""
+
+            logger.info(
+                f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
+                f"G: {avg_losses['gen']:.4f}{val_gen} | "
+                f"Dice: {avg_losses.get('dice', 0):.4f}{val_dice} | "
+                f"BCE: {avg_losses.get('bce', 0):.4f} | "
+                f"Bnd: {avg_losses.get('boundary', 0):.4f} | "
+                f"{iou_str} | "
+                f"Time: {elapsed_time:.1f}s"
+            )
+        else:
+            log_compression_epoch_summary(
+                epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
+                regularization_key=None,  # DC-AE has no regularization
+            )
 
     def _measure_model_flops(
         self,

@@ -545,12 +545,13 @@ class BaseCompressionTrainer(BaseTrainer):
         self._log_vram(epoch)
         self._log_flops(epoch)
 
-        # Per-modality validation (multi_modality mode)
-        if self.per_modality_val_loaders:
+        # Per-modality validation (multi_modality mode, skip for seg_mode)
+        if self.per_modality_val_loaders and not getattr(self, 'seg_mode', False):
             self._compute_per_modality_validation(epoch)
 
-        # Per-channel validation (dual mode)
-        self._compute_per_channel_validation(epoch)
+        # Per-channel validation (dual mode, skip for seg_mode)
+        if not getattr(self, 'seg_mode', False):
+            self._compute_per_channel_validation(epoch)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Validation
@@ -659,10 +660,11 @@ class BaseCompressionTrainer(BaseTrainer):
             result.regional_tracker, log_figures
         )
 
-        # Compute 3D MS-SSIM on full volumes (2D trainers only)
-        msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
-        if msssim_3d is not None:
-            result.metrics['msssim_3d'] = msssim_3d
+        # Compute 3D MS-SSIM on full volumes (2D trainers only, skip for seg_mode)
+        if not getattr(self, 'seg_mode', False):
+            msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
+            if msssim_3d is not None:
+                result.metrics['msssim_3d'] = msssim_3d
 
         return result.metrics
 

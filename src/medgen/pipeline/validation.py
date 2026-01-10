@@ -94,6 +94,7 @@ class ValidationRunner:
         device: torch.device,
         forward_fn: Callable[[nn.Module, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]],
         perceptual_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
         regional_tracker_factory: Optional[Callable[[], Any]] = None,
         seg_regional_tracker_factory: Optional[Callable[[], Any]] = None,
         prepare_batch_fn: Optional[Callable[[Any], Tuple[torch.Tensor, Optional[torch.Tensor]]]] = None,
@@ -106,6 +107,7 @@ class ValidationRunner:
             forward_fn: Function that takes (model, images) and returns
                 (reconstruction, regularization_loss). This is trainer-specific.
             perceptual_loss_fn: Optional perceptual loss function.
+            seg_loss_fn: Optional segmentation loss function (returns total, breakdown).
             regional_tracker_factory: Optional factory to create regional tracker.
             seg_regional_tracker_factory: Optional factory for seg mode regional tracker.
             prepare_batch_fn: Optional function to prepare batch data.
@@ -114,6 +116,7 @@ class ValidationRunner:
         self.device = device
         self.forward_fn = forward_fn
         self.perceptual_loss_fn = perceptual_loss_fn
+        self.seg_loss_fn = seg_loss_fn
         self.regional_tracker_factory = regional_tracker_factory
         self.seg_regional_tracker_factory = seg_regional_tracker_factory
         self.prepare_batch_fn = prepare_batch_fn or self._default_prepare_batch
@@ -172,6 +175,9 @@ class ValidationRunner:
         # Seg mode metrics
         total_dice = 0.0
         total_iou = 0.0
+        total_bce = 0.0
+        total_boundary = 0.0
+        total_seg_gen = 0.0
         n_batches = 0
 
         # Worst batch tracking
@@ -199,19 +205,26 @@ class ValidationRunner:
                     reconstruction, reg_loss = self.forward_fn(model, images)
 
                     if is_seg_mode:
-                        # SEG MODE: Compute Dice/IoU metrics instead of L1/perceptual
+                        # SEG MODE: Compute Dice/IoU metrics and seg losses
                         # Model outputs logits, apply sigmoid for metrics
                         dice = compute_dice(reconstruction, images, apply_sigmoid=True)
                         iou = compute_iou(reconstruction, images, apply_sigmoid=True)
 
-                        # Use 1-Dice as "loss" for worst batch tracking
-                        # (higher = worse, matching loss semantics)
-                        loss_val = 1.0 - dice
+                        # Compute seg loss (BCE + Dice + Boundary)
+                        if self.seg_loss_fn is not None:
+                            seg_loss, seg_breakdown = self.seg_loss_fn(reconstruction, images)
+                            total_bce += seg_breakdown.get('bce', 0.0)
+                            total_boundary += seg_breakdown.get('boundary', 0.0)
+                            total_seg_gen += seg_loss.item()
+                            loss_val = seg_loss.item()
+                        else:
+                            # Fallback: use 1-Dice as loss
+                            loss_val = 1.0 - dice
 
                         total_dice += dice
                         total_iou += iou
 
-                        # Track worst batch by lowest Dice
+                        # Track worst batch by highest loss
                         worst_batch_tracker.update(
                             loss=loss_val,
                             original=images,
@@ -219,7 +232,7 @@ class ValidationRunner:
                             loss_breakdown={
                                 'Dice': dice,
                                 'IoU': iou,
-                                '1-Dice': loss_val,
+                                'Loss': loss_val,
                             },
                         )
 
@@ -296,6 +309,9 @@ class ValidationRunner:
             metrics = {
                 'dice': total_dice / n_batches if n_batches > 0 else 0.0,
                 'iou': total_iou / n_batches if n_batches > 0 else 0.0,
+                'bce': total_bce / n_batches if n_batches > 0 else 0.0,
+                'boundary': total_boundary / n_batches if n_batches > 0 else 0.0,
+                'gen': total_seg_gen / n_batches if n_batches > 0 else 0.0,
             }
         else:
             metrics = {

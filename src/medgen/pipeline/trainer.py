@@ -1406,8 +1406,87 @@ class DiffusionTrainer(BaseTrainer):
                 logger.warning(f"Could not measure FLOPs: {e}")
 
     def _compute_per_modality_validation(self, epoch: int) -> None:
-        """Compute per-modality validation metrics (placeholder)."""
-        pass
+        """Compute and log validation metrics for each modality separately.
+
+        For multi-modality training, this logs PSNR, LPIPS, MS-SSIM and regional
+        metrics for each modality (bravo, t1_pre, t1_gd) to compare with
+        single-modality experiments.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if not hasattr(self, 'per_modality_val_loaders') or not self.per_modality_val_loaders:
+            return
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        for modality, loader in self.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim = 0.0
+            n_batches = 0
+
+            # Initialize regional tracker for this modality
+            regional_tracker = None
+            if self.metrics.log_regional_losses:
+                regional_tracker = RegionalMetricsTracker(
+                    image_size=self.image_size,
+                    fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                    loss_fn='mse',
+                    device=self.device,
+                )
+
+            with torch.no_grad():
+                for batch in loader:
+                    prepared = self.mode.prepare_batch(batch, self.device)
+                    images = prepared['images']
+                    labels = prepared.get('labels')
+
+                    # Encode to diffusion space (identity for PixelSpace)
+                    images = self.space.encode_batch(images)
+                    if labels is not None:
+                        labels = self.space.encode(labels)
+
+                    labels_dict = {'labels': labels}
+
+                    # Sample timesteps and noise
+                    noise = torch.randn_like(images).to(self.device)
+                    timesteps = self.strategy.sample_timesteps(images)
+                    noisy_images = self.strategy.add_noise(images, noise, timesteps)
+                    model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                    # Predict
+                    prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    _, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+
+                    # Compute metrics
+                    total_psnr += compute_psnr(predicted_clean, images)
+                    if self.metrics.log_lpips:
+                        total_lpips += compute_lpips(predicted_clean, images, device=self.device)
+                    total_msssim += compute_msssim(predicted_clean, images)
+
+                    # Regional tracking (tumor vs background)
+                    if regional_tracker is not None and labels is not None:
+                        regional_tracker.update(predicted_clean, images, labels)
+
+                    n_batches += 1
+
+            # Compute averages and log
+            if n_batches > 0 and self.writer is not None:
+                avg_psnr = total_psnr / n_batches
+                avg_msssim = total_msssim / n_batches
+                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
+                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+                if self.metrics.log_lpips:
+                    avg_lpips = total_lpips / n_batches
+                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+
+                # Log regional metrics for this modality
+                if regional_tracker is not None:
+                    regional_tracker.log_to_tensorboard(
+                        self.writer, epoch, prefix=f'regional_{modality}'
+                    )
 
     def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
