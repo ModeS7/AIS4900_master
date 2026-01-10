@@ -13,7 +13,14 @@ import torch
 from torch import nn
 
 from .base_embed import create_zero_init_mlp
-from .mode_embed import MODE_ENCODING_DIM, encode_mode_id, ModeEmbedModelWrapper
+from .mode_embed import (
+    MODE_ENCODING_DIM,
+    encode_mode_id,
+    ModeEmbedModelWrapper,
+    ModeEmbedDropoutModelWrapper,
+    NoModeModelWrapper,
+    LateModeModelWrapper,
+)
 from .score_aug import OMEGA_ENCODING_DIM, encode_omega, ScoreAugModelWrapper
 
 
@@ -22,42 +29,88 @@ def create_conditioning_wrapper(
     use_omega: bool = False,
     use_mode: bool = False,
     embed_dim: int = 256,
+    mode_strategy: str = 'full',
+    mode_dropout_prob: float = 0.2,
+    late_mode_start_level: int = 2,
 ) -> Tuple[nn.Module, Optional[str]]:
     """Factory function to create appropriate conditioning wrapper.
 
     Simplifies the if-elif chain in trainer.py by selecting the right
-    wrapper based on conditioning flags.
+    wrapper based on conditioning flags and mode strategy.
 
     Args:
         model: MONAI DiffusionModelUNet to wrap.
         use_omega: Whether to use omega (ScoreAug) conditioning.
         use_mode: Whether to use mode (modality) conditioning.
         embed_dim: Embedding dimension for time_embed.
+        mode_strategy: Mode embedding strategy (only used if use_mode=True):
+            - 'full': Standard mode embedding (original behavior)
+            - 'dropout': Randomly drop mode embedding with mode_dropout_prob
+            - 'none': No mode embedding (hard parameter sharing)
+            - 'late': Late mode conditioning (inject at later UNet levels)
+        mode_dropout_prob: Probability of dropping mode embedding (for 'dropout' strategy).
+        late_mode_start_level: UNet level to start injecting mode (for 'late' strategy).
 
     Returns:
         Tuple of (wrapped_model, wrapper_name):
         - wrapped_model: The model with conditioning wrapper applied (or original if no conditioning)
         - wrapper_name: String describing the wrapper type, or None if no wrapper applied.
-            Values: "combined", "omega", "mode", or None
+            Values: "combined", "omega", "mode", "mode_dropout", "no_mode", "late_mode", or None
 
     Example:
         >>> wrapper, wrapper_name = create_conditioning_wrapper(
         ...     model=raw_model,
         ...     use_omega=cfg.training.score_aug.use_omega_conditioning,
         ...     use_mode=cfg.mode.use_mode_embedding,
+        ...     mode_strategy=cfg.mode.get('mode_embedding_strategy', 'full'),
         ...     embed_dim=4 * channels[0],
         ... )
         >>> if wrapper_name:
         ...     logger.info(f"Applied {wrapper_name} conditioning wrapper")
     """
+    # Handle 'none' strategy - no mode embedding at all
+    if use_mode and mode_strategy == 'none':
+        if use_omega:
+            # Omega only, no mode
+            return ScoreAugModelWrapper(model, embed_dim=embed_dim), "omega"
+        else:
+            # No conditioning at all, but wrap for API compatibility
+            return NoModeModelWrapper(model), "no_mode"
+
+    # Handle combined omega + mode (only for 'full' strategy currently)
     if use_omega and use_mode:
-        return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
-    elif use_omega:
+        if mode_strategy == 'full':
+            return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
+        elif mode_strategy == 'dropout':
+            # TODO: Implement CombinedDropoutModelWrapper if needed
+            # For now, use CombinedModelWrapper (omega always applied, mode dropped)
+            return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
+        elif mode_strategy == 'late':
+            # TODO: Implement CombinedLateModeWrapper if needed
+            # For now, use CombinedModelWrapper
+            return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
+        else:
+            return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
+
+    # Handle omega only
+    if use_omega:
         return ScoreAugModelWrapper(model, embed_dim=embed_dim), "omega"
-    elif use_mode:
-        return ModeEmbedModelWrapper(model, embed_dim=embed_dim), "mode"
-    else:
-        return model, None
+
+    # Handle mode only (with strategy)
+    if use_mode:
+        if mode_strategy == 'dropout':
+            return ModeEmbedDropoutModelWrapper(
+                model, embed_dim=embed_dim, dropout_prob=mode_dropout_prob
+            ), "mode_dropout"
+        elif mode_strategy == 'late':
+            return LateModeModelWrapper(
+                model, embed_dim=embed_dim, start_level=late_mode_start_level
+            ), "late_mode"
+        else:  # 'full' or default
+            return ModeEmbedModelWrapper(model, embed_dim=embed_dim), "mode"
+
+    # No conditioning
+    return model, None
 
 
 class CombinedTimeEmbed(nn.Module):

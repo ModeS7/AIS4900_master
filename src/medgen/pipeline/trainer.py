@@ -215,8 +215,15 @@ class DiffusionTrainer(BaseTrainer):
 
         # Mode embedding for multi-modality training
         self.use_mode_embedding = cfg.mode.get('use_mode_embedding', False)
+        self.mode_embedding_strategy = cfg.mode.get('mode_embedding_strategy', 'full')
+        self.mode_embedding_dropout = cfg.mode.get('mode_embedding_dropout', 0.2)
+        self.late_mode_start_level = cfg.mode.get('late_mode_start_level', 2)
+
         if self.use_mode_embedding and self.is_main_process:
-            logger.info("Mode embedding enabled for multi-modality training")
+            logger.info(
+                f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
+                f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
+            )
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for diffusion trainer."""
@@ -327,6 +334,9 @@ class DiffusionTrainer(BaseTrainer):
                 use_omega=self.use_omega_conditioning,
                 use_mode=self.use_mode_embedding,
                 embed_dim=time_embed_dim,
+                mode_strategy=self.mode_embedding_strategy,
+                mode_dropout_prob=self.mode_embedding_dropout,
+                late_mode_start_level=self.late_mode_start_level,
             )
             wrapper = wrapper.to(self.device)
 
