@@ -33,9 +33,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Exp9.1 Phase 3: DC-AE f32 GAN local refinement
 # Paper: "we only tune the head layers of the decoder"
-# Trainable: ~30K params (decoder head only)
-# Frozen: encoder + decoder body (~323M params)
+# Trainable: ~1.4K params (decoder head only)
+# Frozen: encoder + decoder body (~362M params)
 # Constant LR: 5.4e-5 (no warmup, eta_min=LR)
+# NOTE: epochs = Phase1_epochs + Phase3_epochs (checkpoint resumes epoch counter)
 #
 CHECKPOINT="runs/compression_2d/multi_modality/exp9_f32_20251231-175024/latest.pt"
 
@@ -49,7 +50,7 @@ time python -m medgen.scripts.train_dcae \
     training.learning_rate=5.4e-5 \
     training.warmup_epochs=0 \
     training.eta_min=5.4e-5 \
-    training.epochs=50 \
+    training.epochs=175 \
     training.batch_size=16 \
     training.use_compile=false \
     training.name=exp9_1_f32_phase3_ \
