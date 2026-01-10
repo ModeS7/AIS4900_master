@@ -4,18 +4,18 @@ Multi-modality dataloaders for diffusion training with mode embedding.
 Provides dataloaders that pool multiple MR modalities, each paired with seg mask
 and mode_id for training a single model on all modalities.
 
-Uses lazy loading to avoid storing all slices in memory (~125GB for 400 patients).
+Uses eager loading like other loaders - all slices extracted upfront into memory.
 """
 import logging
 import os
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import build_diffusion_augmentation
+from medgen.data.augmentation import build_diffusion_augmentation, apply_augmentation
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,
@@ -28,103 +28,99 @@ from medgen.core.constants import BINARY_THRESHOLD_GT
 logger = logging.getLogger(__name__)
 
 
-class LazyMultiDiffusionDataset(Dataset):
-    """Dataset that lazily loads slices from disk with mode_id.
+def extract_slices_with_seg_and_mode(
+    image_dataset: Dataset,
+    seg_dataset: Dataset,
+    mode_id: int,
+    augmentation: Optional[Callable] = None,
+) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+    """Extract 2D slices with paired seg masks and mode_id.
 
-    Instead of storing all slices in memory (which would require ~125GB for
-    400 patients x 160 slices x 4 modalities), this stores only metadata
-    and loads data on demand in __getitem__.
-
-    Each sample is (image, seg, mode_id) where:
+    Each slice is returned as a tuple (image, seg, mode_id) where:
     - image: [1, H, W] single-channel image
     - seg: [1, H, W] binary segmentation mask
     - mode_id: int (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+
+    Args:
+        image_dataset: Dataset of 3D image volumes with shape [1, H, W, D].
+        seg_dataset: Dataset of 3D seg volumes with shape [1, H, W, D].
+        mode_id: Integer mode ID for this modality.
+        augmentation: Optional albumentations Compose for data augmentation.
+
+    Returns:
+        List of tuples (image_slice, seg_slice, mode_id).
+    """
+    all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
+
+    if len(image_dataset) != len(seg_dataset):
+        raise ValueError(
+            f"Image dataset ({len(image_dataset)}) and seg dataset ({len(seg_dataset)}) "
+            "must have same number of patients"
+        )
+
+    for i in range(len(image_dataset)):
+        image_volume, image_name = image_dataset[i]  # Shape: [1, H, W, D]
+        seg_volume, seg_name = seg_dataset[i]  # Shape: [1, H, W, D]
+
+        # Convert to numpy if tensor
+        if isinstance(image_volume, torch.Tensor):
+            image_volume = image_volume.numpy()
+        if isinstance(seg_volume, torch.Tensor):
+            seg_volume = seg_volume.numpy()
+
+        # Verify same patient
+        if image_name != seg_name:
+            raise ValueError(f"Patient mismatch: {image_name} vs {seg_name}")
+
+        # Extract non-empty slices along depth dimension (axis 3)
+        for k in range(image_volume.shape[3]):
+            image_slice = image_volume[:, :, :, k].copy()
+            seg_slice = seg_volume[:, :, :, k].copy()
+
+            if np.sum(image_slice) > 1.0:
+                if augmentation is not None:
+                    # Transpose to [H, W, C] for albumentations
+                    img_hwc = np.transpose(image_slice, (1, 2, 0))
+                    seg_hwc = np.transpose(seg_slice, (1, 2, 0))
+
+                    transformed = augmentation(image=img_hwc, mask=seg_hwc)
+                    img_aug = transformed['image']
+                    seg_aug = transformed['mask']
+
+                    # Transpose back to [C, H, W]
+                    image_slice = np.transpose(img_aug, (2, 0, 1))
+                    seg_slice = np.transpose(seg_aug, (2, 0, 1))
+
+                # Binarize seg mask
+                seg_slice = (seg_slice > BINARY_THRESHOLD_GT).astype(np.float32)
+
+                all_slices.append((image_slice, seg_slice, mode_id))
+
+    return all_slices
+
+
+class MultiDiffusionDataset(Dataset):
+    """Dataset that returns (image, seg, mode_id) tuples.
+
+    Wraps a list of pre-extracted slices for efficient training.
     """
 
-    def __init__(
-        self,
-        image_datasets: Dict[str, NiFTIDataset],
-        seg_dataset: NiFTIDataset,
-        image_keys: List[str],
-        augmentation: Optional[Callable] = None,
-    ):
-        """Initialize lazy dataset.
+    def __init__(self, samples: List[Tuple[np.ndarray, np.ndarray, int]]):
+        """Initialize dataset.
 
         Args:
-            image_datasets: Dict mapping modality key to NiFTIDataset.
-            seg_dataset: NiFTIDataset for segmentation masks.
-            image_keys: List of modality keys to include.
-            augmentation: Optional albumentations Compose for data augmentation.
+            samples: List of (image, seg, mode_id) tuples.
         """
-        self.image_datasets = image_datasets
-        self.seg_dataset = seg_dataset
-        self.image_keys = image_keys
-        self.augmentation = augmentation
-
-        # Build index: list of (modality_key, volume_idx, slice_idx, mode_id)
-        self.index: List[Tuple[str, int, int, int]] = []
-        self._build_index()
-
-    def _build_index(self):
-        """Build index of all valid slices without loading data."""
-        for key in self.image_keys:
-            mode_id = MODE_ID_MAP.get(key)
-            if mode_id is None:
-                raise ValueError(
-                    f"Unknown modality key '{key}'. "
-                    f"Valid keys: {list(MODE_ID_MAP.keys())}"
-                )
-
-            image_dataset = self.image_datasets[key]
-            n_volumes = len(image_dataset)
-
-            for vol_idx in range(n_volumes):
-                # Get volume to count slices (loads header only for shape)
-                image_volume, _ = image_dataset[vol_idx]
-                n_slices = image_volume.shape[3]
-
-                for slice_idx in range(n_slices):
-                    # Check if slice is non-empty (quick sum check)
-                    image_slice = np.array(image_volume[:, :, :, slice_idx])
-                    if np.sum(image_slice) > 1.0:
-                        self.index.append((key, vol_idx, slice_idx, mode_id))
-
-        logger.info(f"LazyMultiDiffusionDataset: indexed {len(self.index)} slices")
+        self.samples = samples
 
     def __len__(self):
-        return len(self.index)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        key, vol_idx, slice_idx, mode_id = self.index[idx]
-
-        # Load data from disk
-        image_volume, _ = self.image_datasets[key][vol_idx]
-        seg_volume, _ = self.seg_dataset[vol_idx]
-
-        # Extract slice
-        image_slice = np.array(image_volume[:, :, :, slice_idx])
-        seg_slice = np.array(seg_volume[:, :, :, slice_idx])
-
-        # Apply augmentation if provided
-        if self.augmentation is not None:
-            # Transpose to [H, W, C] for albumentations
-            img_hwc = np.transpose(image_slice, (1, 2, 0))
-            seg_hwc = np.transpose(seg_slice, (1, 2, 0))
-
-            transformed = self.augmentation(image=img_hwc, mask=seg_hwc)
-            img_aug = transformed['image']
-            seg_aug = transformed['mask']
-
-            # Transpose back to [C, H, W]
-            image_slice = np.transpose(img_aug, (2, 0, 1))
-            seg_slice = np.transpose(seg_aug, (2, 0, 1))
-
-        # Binarize seg mask (using consistent threshold with utils.py)
-        seg_slice = (seg_slice > BINARY_THRESHOLD_GT).astype(np.float32)
-
+        image, seg, mode_id = self.samples[idx]
         return (
-            torch.from_numpy(image_slice).float(),
-            torch.from_numpy(seg_slice).float(),
+            torch.from_numpy(image).float(),
+            torch.from_numpy(seg).float(),
             torch.tensor(mode_id, dtype=torch.long),
         )
 
@@ -141,8 +137,6 @@ def create_multi_diffusion_dataloader(
 
     Loads multiple MR sequences, each paired with seg mask and mode_id.
     Each batch contains mixed slices from all modalities with their mode IDs.
-
-    Uses lazy loading to avoid storing all slices in memory.
 
     Args:
         cfg: Hydra configuration with paths.
@@ -173,20 +167,28 @@ def create_multi_diffusion_dataloader(
         data_dir=data_dir, mr_sequence='seg', transform=transform
     )
 
-    # Create image datasets for each modality
-    image_datasets: Dict[str, NiFTIDataset] = {}
+    # Extract all slices from all modalities
+    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+
     for key in image_keys:
-        image_datasets[key] = NiFTIDataset(
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            raise ValueError(
+                f"Unknown modality key '{key}'. "
+                f"Valid keys: {list(MODE_ID_MAP.keys())}"
+            )
+
+        image_dataset = NiFTIDataset(
             data_dir=data_dir, mr_sequence=key, transform=transform
         )
 
-    # Create lazy dataset
-    train_dataset = LazyMultiDiffusionDataset(
-        image_datasets=image_datasets,
-        seg_dataset=seg_dataset,
-        image_keys=image_keys,
-        augmentation=aug,
-    )
+        slices = extract_slices_with_seg_and_mode(
+            image_dataset, seg_dataset, mode_id, augmentation=aug
+        )
+        all_samples.extend(slices)
+        logger.info(f"Extracted {len(slices)} slices from {key}")
+
+    train_dataset = MultiDiffusionDataset(all_samples)
     logger.info(f"Total training slices: {len(train_dataset)}")
 
     # Setup distributed sampler and batch size
@@ -253,20 +255,24 @@ def create_multi_diffusion_validation_dataloader(
         data_dir=val_dir, mr_sequence='seg', transform=transform
     )
 
-    # Create image datasets for each modality
-    image_datasets: Dict[str, NiFTIDataset] = {}
+    # Extract all slices (no augmentation for validation)
+    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+
     for key in image_keys:
-        image_datasets[key] = NiFTIDataset(
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            continue
+
+        image_dataset = NiFTIDataset(
             data_dir=val_dir, mr_sequence=key, transform=transform
         )
 
-    # Create lazy dataset (no augmentation for validation)
-    val_dataset = LazyMultiDiffusionDataset(
-        image_datasets=image_datasets,
-        seg_dataset=seg_dataset,
-        image_keys=image_keys,
-        augmentation=None,
-    )
+        slices = extract_slices_with_seg_and_mode(
+            image_dataset, seg_dataset, mode_id, augmentation=None
+        )
+        all_samples.extend(slices)
+
+    val_dataset = MultiDiffusionDataset(all_samples)
 
     # Get DataLoader settings
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
@@ -326,20 +332,24 @@ def create_multi_diffusion_test_dataloader(
         data_dir=test_dir, mr_sequence='seg', transform=transform
     )
 
-    # Create image datasets for each modality
-    image_datasets: Dict[str, NiFTIDataset] = {}
+    # Extract all slices (no augmentation for test)
+    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+
     for key in image_keys:
-        image_datasets[key] = NiFTIDataset(
+        mode_id = MODE_ID_MAP.get(key)
+        if mode_id is None:
+            continue
+
+        image_dataset = NiFTIDataset(
             data_dir=test_dir, mr_sequence=key, transform=transform
         )
 
-    # Create lazy dataset (no augmentation for test)
-    test_dataset = LazyMultiDiffusionDataset(
-        image_datasets=image_datasets,
-        seg_dataset=seg_dataset,
-        image_keys=image_keys,
-        augmentation=None,
-    )
+        slices = extract_slices_with_seg_and_mode(
+            image_dataset, seg_dataset, mode_id, augmentation=None
+        )
+        all_samples.extend(slices)
+
+    test_dataset = MultiDiffusionDataset(all_samples)
 
     # Get DataLoader settings
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
@@ -395,13 +405,13 @@ def create_single_modality_diffusion_val_loader(
         data_dir=val_dir, mr_sequence='seg', transform=transform
     )
 
-    # Create lazy dataset for single modality
-    val_dataset = LazyMultiDiffusionDataset(
-        image_datasets={modality: image_dataset},
-        seg_dataset=seg_dataset,
-        image_keys=[modality],
-        augmentation=None,
+    mode_id = MODE_ID_MAP.get(modality, 0)
+
+    slices = extract_slices_with_seg_and_mode(
+        image_dataset, seg_dataset, mode_id, augmentation=None
     )
+
+    val_dataset = MultiDiffusionDataset(slices)
 
     # Get DataLoader settings
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
