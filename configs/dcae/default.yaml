@@ -15,14 +15,31 @@ image_size: 256  # Input image size
 #   - "mit-han-lab/dc-ae-f64c128-in-1.0-diffusers": ImageNet f64
 pretrained: null
 
-# Loss weights (Phase 1: L1 + Perceptual, no GAN)
+# Loss weights
+# Phase 1: L1 + Perceptual (no GAN)
+# Phase 3: L1 + Perceptual + GAN (adv_weight > 0)
 l1_weight: 1.0
 # DC-AE uses 100x higher perceptual weight (0.1 vs VAE's 0.001) because:
 # 1. DC-AE is deterministic (no KL regularization) - needs stronger perceptual guidance
 # 2. Higher compression (32x or 64x) loses more detail - perceptual loss compensates
 # 3. Empirically tuned for stable GAN training at high compression ratios
 perceptual_weight: 0.1
-adv_weight: 0.0  # Set >0 for Phase 3 GAN training
+# GAN loss weight - set >0 for Phase 3 training
+# Paper uses 0.1 for Phase 3 local refinement
+adv_weight: 0.0
+# Discriminator learning rate
+# Phase 1: 5e-4 (default, but GAN disabled)
+# Phase 3: 5.4e-5 (paper recommendation)
+disc_lr: 5.0e-4
+
+# Phase 3 training notes:
+# - Freezes ALL layers EXCEPT decoder head (norm_out, conv_out)
+# - Only ~30K trainable params (vs ~323M total) - very targeted refinement
+# - Paper: "we only tune the head layers of the decoder"
+# - Recommended overrides for Phase 3:
+#   training.learning_rate: 5.4e-5
+#   training.optimizer.betas: [0.5, 0.9]
+#   dcae.adv_weight: 0.1
 
 # Architecture (shared across f32/f64)
 encoder_block_out_channels: [128, 256, 512, 512, 1024, 1024]

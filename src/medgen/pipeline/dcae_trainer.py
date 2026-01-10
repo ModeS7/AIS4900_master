@@ -83,6 +83,20 @@ class DCAETrainer(BaseCompressionTrainer):
         if self.training_phase == 1 or self.adv_weight == 0.0:
             self.disable_gan = True
 
+        # Validate Phase 3 configuration
+        if self.training_phase == 3:
+            if self.adv_weight == 0.0:
+                logger.warning(
+                    "Phase 3 training with adv_weight=0.0 is unusual. "
+                    "Phase 3 is meant for GAN refinement. Set dcae.adv_weight > 0."
+                )
+            if cfg.get('pretrained_checkpoint') is None and self.pretrained is None:
+                logger.warning(
+                    "Phase 3 training without pretrained checkpoint. "
+                    "Phase 3 expects a model trained in Phase 1. "
+                    "Set pretrained_checkpoint=/path/to/phase1/checkpoint_best.pt"
+                )
+
         self.image_size: int = cfg.dcae.get('image_size', 256)
 
     def _get_disc_lr(self, cfg: DictConfig) -> float:
@@ -139,6 +153,11 @@ class DCAETrainer(BaseCompressionTrainer):
 
         # Wrap models with DDP/compile
         self._wrap_models(raw_model, raw_disc)
+
+        # Phase 3: Freeze all except decoder head (local refinement with GAN)
+        # Paper: "we only tune the head layers of the decoder"
+        if self.training_phase == 3:
+            self._freeze_for_phase3()
 
         # Setup perceptual and adversarial loss
         if self.perceptual_weight > 0:
@@ -256,6 +275,49 @@ class DCAETrainer(BaseCompressionTrainer):
             raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
             if self.is_main_process:
                 logger.info(f"Loaded discriminator weights from {checkpoint_path}")
+
+    def _freeze_for_phase3(self) -> None:
+        """Freeze all layers except decoder head for Phase 3 training.
+
+        Paper (DC-AE, ICLR 2025): "we only tune the head layers of the decoder
+        while freezing all the other layers"
+
+        Decoder head layers (trainable):
+        - norm_out: Final normalization
+        - conv_act: Final activation
+        - conv_out: Output projection
+
+        All other layers (frozen):
+        - Entire encoder (conv_in, down_blocks, conv_out)
+        - Decoder body (conv_in, up_blocks)
+
+        This design:
+        1. Prevents latent space drift during GAN training
+        2. GAN loss only improves local details, so only head layers needed
+        3. Lower training cost and better accuracy than full GAN training
+        """
+        # Freeze entire encoder
+        for param in self.model_raw.encoder.parameters():
+            param.requires_grad = False
+
+        # Freeze decoder body (conv_in + up_blocks)
+        for param in self.model_raw.decoder.conv_in.parameters():
+            param.requires_grad = False
+        for param in self.model_raw.decoder.up_blocks.parameters():
+            param.requires_grad = False
+
+        # Decoder head layers remain trainable:
+        # - decoder.norm_out
+        # - decoder.conv_act
+        # - decoder.conv_out
+
+        if self.is_main_process:
+            frozen = sum(p.numel() for p in self.model_raw.parameters()
+                         if not p.requires_grad)
+            trainable = sum(p.numel() for p in self.model_raw.parameters()
+                            if p.requires_grad)
+            logger.info(f"Phase 3: Frozen parameters: {frozen/1e6:.2f}M")
+            logger.info(f"Phase 3: Trainable decoder head: {trainable/1e6:.2f}M")
 
     def _get_trainer_type(self) -> str:
         """Return trainer type for metadata."""

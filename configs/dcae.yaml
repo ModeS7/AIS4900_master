@@ -8,15 +8,28 @@
 # - Residual autoencoding for stable high-compression training
 # - Better reconstruction than SD-VAE-f8 at higher compression
 #
+# Training Phases (from paper):
+# - Phase 1: L1 + Perceptual loss only (main training, no GAN)
+# - Phase 3: GAN local refinement (freeze all EXCEPT decoder head layers)
+#
 # Usage:
-#   # Train from scratch with f32 (default)
+#   # Phase 1: Train from scratch with f32 (default)
 #   python -m medgen.scripts.train_dcae
 #
-#   # Fine-tune from pretrained
+#   # Phase 1: Fine-tune from pretrained ImageNet weights
 #   python -m medgen.scripts.train_dcae dcae.pretrained="mit-han-lab/dc-ae-f32c32-in-1.0-diffusers"
 #
-#   # Use f64 compression
+#   # Phase 1: Use f64 compression
 #   python -m medgen.scripts.train_dcae dcae=f64
+#
+#   # Phase 3: GAN refinement (freeze all EXCEPT decoder head ~30K params)
+#   # Paper: "we only tune the head layers of the decoder"
+#   python -m medgen.scripts.train_dcae \
+#       training.phase=3 \
+#       dcae.adv_weight=0.1 \
+#       dcae.disc_lr=5.4e-5 \
+#       training.learning_rate=5.4e-5 \
+#       pretrained_checkpoint=runs/compression_2d/.../checkpoint_best.pt
 #
 #   # Cluster training
 #   python -m medgen.scripts.train_dcae paths=cluster
@@ -49,8 +62,8 @@ training:
   use_compile: false  # torch.compile causes OOM with DC-AE's 362M params
 
   # Training phase (paper uses 3-phase approach)
-  # Phase 1: L1 + Perceptual loss (main training)
-  # Phase 3: Add GAN loss (optional refinement)
+  # Phase 1: L1 + Perceptual loss (main training, full model)
+  # Phase 3: Add GAN loss (only decoder head trainable ~30K params)
   phase: 1
 
   # Logging (all enabled for consistent tracking)
