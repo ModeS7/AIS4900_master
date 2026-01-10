@@ -490,14 +490,12 @@ def build_seg_augmentation(enabled: bool = True) -> Optional[A.Compose]:
         ),
 
         # Coarse dropout (simulates missing regions)
+        # Note: albumentations 2.0+ uses different API
         A.CoarseDropout(
-            max_holes=8,
-            max_height=32,
-            max_width=32,
-            min_holes=1,
-            min_height=8,
-            min_width=8,
-            fill_value=0,
+            num_holes_range=(1, 8),
+            hole_height_range=(0.03, 0.12),  # ~8-32 pixels on 256x256
+            hole_width_range=(0.03, 0.12),
+            fill=0,
             p=0.3,
         ),
     ])

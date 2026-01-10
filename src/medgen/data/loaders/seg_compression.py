@@ -2,6 +2,12 @@
 
 Loads segmentation masks only (no image modalities) for training
 autoencoder-based mask compression.
+
+Design note:
+    Augmentation is applied during training iteration (in __getitem__),
+    NOT during slice extraction. This ensures:
+    1. Fast dataloader creation (no per-slice augmentation at startup)
+    2. Different augmentations each epoch (training variety)
 """
 import logging
 import os
@@ -9,6 +15,7 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
+from torch.utils.data import Dataset as TorchDataset
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
@@ -29,22 +36,58 @@ from medgen.data.dataset import (
 logger = logging.getLogger(__name__)
 
 
+class AugmentedSegDataset(TorchDataset):
+    """Dataset wrapper that applies augmentation on-the-fly during __getitem__.
+
+    This ensures augmentation happens during training iteration, not dataloader
+    creation, providing both fast startup and training variety.
+    """
+
+    def __init__(
+        self,
+        slices: List[np.ndarray],
+        augmentation: Optional[Callable] = None,
+    ):
+        """Initialize dataset with pre-extracted slices.
+
+        Args:
+            slices: List of 2D mask slices [1, H, W].
+            augmentation: Optional albumentations transform.
+        """
+        self.slices = slices
+        self.augmentation = augmentation
+
+    def __len__(self) -> int:
+        return len(self.slices)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        slice_2d = self.slices[idx].copy()  # Avoid modifying original
+
+        # Apply augmentation during iteration (different each epoch)
+        if self.augmentation is not None:
+            slice_2d = apply_augmentation(slice_2d, self.augmentation, has_mask=False)
+
+        # CRITICAL: Binarize after augmentation
+        slice_2d = binarize_mask(slice_2d, threshold=BINARY_THRESHOLD_GT)
+
+        return torch.from_numpy(slice_2d).float()
+
+
 def extract_seg_slices(
     seg_dataset: Dataset,
-    augmentation: Optional[Callable] = None,
     min_tumor_pixels: int = 10,
 ) -> List[np.ndarray]:
     """Extract 2D segmentation mask slices from 3D volumes.
 
     Only keeps slices with actual tumor content (non-empty masks).
+    No augmentation is applied here - augmentation happens in AugmentedSegDataset.__getitem__.
 
     Args:
         seg_dataset: NiFTI dataset with seg volumes.
-        augmentation: Optional albumentations transform.
         min_tumor_pixels: Minimum number of tumor pixels to keep slice.
 
     Returns:
-        List of 2D mask slices [1, H, W].
+        List of 2D mask slices [1, H, W] (binary, float32).
     """
     all_slices: List[np.ndarray] = []
 
@@ -63,16 +106,8 @@ def extract_seg_slices(
             if slice_2d.sum() < min_tumor_pixels:
                 continue
 
-            # Ensure float32
+            # Ensure float32 and binary
             slice_2d = slice_2d.astype(np.float32)
-
-            # Apply augmentation if provided
-            if augmentation is not None:
-                # apply_augmentation expects [C, H, W] and returns [C, H, W]
-                slice_2d = apply_augmentation(slice_2d, augmentation, has_mask=False)
-
-            # CRITICAL: Binarize after augmentation to restore binary values
-            # (interpolation from rotation/affine creates non-binary values)
             slice_2d = binarize_mask(slice_2d, threshold=BINARY_THRESHOLD_GT)
 
             all_slices.append(slice_2d)
@@ -88,8 +123,11 @@ def create_seg_compression_dataloader(
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True,
-) -> Tuple[DataLoader, Dataset]:
+) -> Tuple[DataLoader, TorchDataset]:
     """Create dataloader for segmentation mask compression training.
+
+    Augmentation is applied on-the-fly during __getitem__, NOT during slice
+    extraction. This ensures fast startup and variety across epochs.
 
     Args:
         cfg: Hydra configuration with paths.
@@ -109,7 +147,6 @@ def create_seg_compression_dataloader(
     validate_modality_exists(data_dir, 'seg')
 
     transform = build_standard_transform(image_size)
-    aug = build_seg_augmentation(enabled=augment)
 
     # Load seg volumes
     seg_dataset = NiFTIDataset(
@@ -118,11 +155,13 @@ def create_seg_compression_dataloader(
         transform=transform,
     )
 
-    # Extract 2D slices
-    slices = extract_seg_slices(seg_dataset, augmentation=aug)
+    # Extract 2D slices (no augmentation here - applied in __getitem__)
+    slices = extract_seg_slices(seg_dataset)
     logger.info(f"Extracted {len(slices)} seg slices with tumor content")
 
-    train_dataset = Dataset(slices)
+    # Create augmented dataset (augmentation applied per-access)
+    aug = build_seg_augmentation(enabled=augment)
+    train_dataset = AugmentedSegDataset(slices, augmentation=aug)
 
     # Create collate with batch augmentations if enabled
     batch_aug_cfg = cfg.training.get('batch_augment', {})
@@ -150,7 +189,7 @@ def create_seg_compression_validation_dataloader(
     cfg: DictConfig,
     image_size: int,
     batch_size: int,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> Optional[Tuple[DataLoader, TorchDataset]]:
     """Create validation dataloader for seg compression.
 
     No augmentation for validation.
@@ -184,10 +223,11 @@ def create_seg_compression_validation_dataloader(
     )
 
     # No augmentation for validation
-    slices = extract_seg_slices(seg_dataset, augmentation=None)
+    slices = extract_seg_slices(seg_dataset)
     logger.info(f"Extracted {len(slices)} validation seg slices")
 
-    val_dataset = Dataset(slices)
+    # No augmentation wrapper needed for validation
+    val_dataset = AugmentedSegDataset(slices, augmentation=None)
 
     dataloader = create_dataloader(
         val_dataset,
@@ -204,7 +244,7 @@ def create_seg_compression_test_dataloader(
     cfg: DictConfig,
     image_size: int,
     batch_size: int,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> Optional[Tuple[DataLoader, TorchDataset]]:
     """Create test dataloader for seg compression evaluation.
 
     No augmentation for testing.
@@ -238,10 +278,11 @@ def create_seg_compression_test_dataloader(
     )
 
     # No augmentation for testing
-    slices = extract_seg_slices(seg_dataset, augmentation=None)
+    slices = extract_seg_slices(seg_dataset)
     logger.info(f"Extracted {len(slices)} test seg slices")
 
-    test_dataset = Dataset(slices)
+    # No augmentation wrapper needed for testing
+    test_dataset = AugmentedSegDataset(slices, augmentation=None)
 
     dataloader = create_dataloader(
         test_dataset,
