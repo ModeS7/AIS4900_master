@@ -13,7 +13,6 @@
 #SBATCH --error=IDUN/output/train/compression/exp11_1_dcae_seg_compression_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --exclude=idun-06-[01-07]
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -31,6 +30,8 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Unbuffered Python output for real-time logging
+export PYTHONUNBUFFERED=1
 
 # Exp11.1: DC-AE Segmentation Mask Compression
 # Input: 256x256x1 seg masks -> Latent: 8x8x32
@@ -38,7 +39,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Metrics: Dice, IoU (not PSNR/LPIPS/MS-SSIM)
 # Regional: Per-tumor Dice by size category (RANO-BM thresholds)
 # Augmentation: Aggressive spatial + Mosaic + CutMix + CopyPaste
-time python -m medgen.scripts.train_dcae \
+time python -u -m medgen.scripts.train_dcae \
     paths=cluster \
     mode=seg \
     dcae=f32 \
@@ -48,6 +49,8 @@ time python -m medgen.scripts.train_dcae \
     training.learning_rate=1e-4 \
     training.use_compile=false \
     training.logging.regional_losses=true \
+    training.dataloader.num_workers=4 \
+    training.dataloader.persistent_workers=false \
     training.name=exp11_1_seg_compress_
 
 conda deactivate
