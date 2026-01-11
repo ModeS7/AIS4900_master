@@ -13,6 +13,7 @@
 #SBATCH --error=IDUN/output/train/compression/exp9_4_dcae_f128_lpips_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --exclude=idun-06-[01-07]
 
 cd ${SLURM_SUBMIT_DIR}
 
