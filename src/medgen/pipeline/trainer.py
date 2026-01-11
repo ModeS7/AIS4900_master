@@ -116,6 +116,10 @@ class DiffusionTrainer(BaseTrainer):
         self.sam_rho: float = sam_cfg.get('rho', 0.05)
         self.sam_adaptive: bool = sam_cfg.get('adaptive', False)
 
+        # Optimizer settings
+        optimizer_cfg = cfg.training.get('optimizer', {})
+        self.weight_decay: float = optimizer_cfg.get('weight_decay', 0.0)
+
         # EMA (from config, not in base trainer)
         self.use_ema: bool = cfg.training.use_ema
         self.ema_decay: float = cfg.training.ema.decay
@@ -410,11 +414,19 @@ class DiffusionTrainer(BaseTrainer):
                 rho=self.sam_rho,
                 adaptive=self.sam_adaptive,
                 lr=self.learning_rate,
+                weight_decay=self.weight_decay,
             )
             if self.is_main_process:
                 logger.info(f"Using SAM optimizer (rho={self.sam_rho}, adaptive={self.sam_adaptive})")
         else:
-            self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
+            self.optimizer = AdamW(
+                self.model_raw.parameters(),
+                lr=self.learning_rate,
+                weight_decay=self.weight_decay,
+            )
+
+        if self.is_main_process and self.weight_decay > 0:
+            logger.info(f"Using weight decay: {self.weight_decay}")
 
         # Warmup + Cosine scheduler
         self.lr_scheduler = create_warmup_cosine_scheduler(
