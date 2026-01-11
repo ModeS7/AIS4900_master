@@ -670,17 +670,17 @@ class DCAETrainer(BaseCompressionTrainer):
             return
 
         if self.seg_mode:
-            # Seg mode: losses under Loss/, metrics under Validation/
+            # Seg mode: scores under Validation/ (higher=better), losses under Loss/ (lower=better)
             if 'dice' in metrics:
-                self.writer.add_scalar('Loss/Dice_val', metrics['dice'], epoch)
+                self.writer.add_scalar('Validation/Dice', metrics['dice'], epoch)
+            if 'iou' in metrics:
+                self.writer.add_scalar('Validation/IoU', metrics['iou'], epoch)
             if 'bce' in metrics:
                 self.writer.add_scalar('Loss/BCE_val', metrics['bce'], epoch)
             if 'boundary' in metrics:
                 self.writer.add_scalar('Loss/Boundary_val', metrics['boundary'], epoch)
             if 'gen' in metrics:
                 self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
-            if 'iou' in metrics:
-                self.writer.add_scalar('Validation/IoU', metrics['iou'], epoch)
         else:
             # Standard mode: loss metrics
             self.writer.add_scalar('Loss/L1_val', metrics.get('l1', 0), epoch)

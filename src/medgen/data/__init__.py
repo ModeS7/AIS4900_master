@@ -22,6 +22,18 @@ from .mode_embed import (
 )
 from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed, create_conditioning_wrapper
 from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
+from .lossless_mask_codec import (
+    encode_mask_lossless,
+    decode_mask_lossless,
+    get_latent_shape,
+    encode_f32,
+    decode_f32,
+    encode_f64,
+    decode_f64,
+    encode_f128,
+    decode_f128,
+    FORMATS as LOSSLESS_FORMATS,
+)
 
 # Import all loaders from loaders subpackage
 from .loaders import (
@@ -131,4 +143,15 @@ __all__ = [
     'CombinedModelWrapper',
     'CombinedTimeEmbed',
     'create_conditioning_wrapper',
+    # Lossless mask codec
+    'encode_mask_lossless',
+    'decode_mask_lossless',
+    'get_latent_shape',
+    'encode_f32',
+    'decode_f32',
+    'encode_f64',
+    'decode_f64',
+    'encode_f128',
+    'decode_f128',
+    'LOSSLESS_FORMATS',
 ]
