@@ -30,14 +30,12 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 
 # Memory optimization
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-# Unbuffered Python output for real-time logging
-export PYTHONUNBUFFERED=1
 
 # Exp9.4: DC-AE f128c512 with LPIPS loss (DC-AE paper setting)
 # Compare with exp9.3 which uses RadImageNet perceptual loss
 # Input: 256x256x1 -> Latent: 2x2x512
 # Phase 1 training: L1 + LPIPS loss (no GAN)
-time python -u -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f128 \
@@ -46,8 +44,6 @@ time python -u -m medgen.scripts.train_dcae \
     training.batch_size=16 \
     training.learning_rate=1e-4 \
     training.use_compile=false \
-    training.dataloader.num_workers=4 \
-    training.dataloader.persistent_workers=false \
     training.name=exp9_4_f128_lpips_
 
 conda deactivate
