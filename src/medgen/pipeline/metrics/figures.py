@@ -85,39 +85,40 @@ def _create_single_reconstruction_figure(
     if mask is not None:
         mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
 
-    # Create figure with minimal spacing
+    # Create figure with minimal spacing - tight layout
     fig, axes = plt.subplots(
-        3, n_samples, figsize=(1.5 * n_samples, 4),
+        3, n_samples, figsize=(1.2 * n_samples, 3.5),
         gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
     )
     if n_samples == 1:
         axes = axes.reshape(3, 1)
 
+    row_labels = ['Original', 'Generated', '|Diff|']
+
     for i in range(n_samples):
         # Column title with timestep if provided
         if timesteps is not None:
             t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
-            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8, pad=2)
 
         # Row 1: Original
         axes[0, i].imshow(np.clip(orig_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         axes[0, i].axis('off')
-        if i == 0:
-            axes[0, i].set_ylabel('Original', fontsize=10)
 
         # Row 2: Generated (with optional mask contour)
         axes[1, i].imshow(np.clip(gen_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         if mask_np is not None and mask_np.shape[0] > i:
             axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
         axes[1, i].axis('off')
-        if i == 0:
-            axes[1, i].set_ylabel('Generated', fontsize=10)
 
         # Row 3: Difference heatmap
         im = axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
         axes[2, i].axis('off')
-        if i == 0:
-            axes[2, i].set_ylabel('|Diff|', fontsize=10)
+
+    # Add row labels on the left side
+    for row, label in enumerate(row_labels):
+        axes[row, 0].text(-0.05, 0.5, label, transform=axes[row, 0].transAxes,
+                          fontsize=9, va='center', ha='right', rotation=90)
 
     # Build title
     full_title = title or ''
@@ -129,9 +130,10 @@ def _create_single_reconstruction_figure(
             full_title = metrics_str
 
     if full_title:
-        fig.suptitle(full_title, fontsize=10)
+        fig.suptitle(full_title, fontsize=10, y=0.98)
 
-    plt.tight_layout(pad=0.3, h_pad=0.1, w_pad=0.1)
+    # Tight margins - minimal whitespace
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.02, hspace=0.02, wspace=0.02)
     return fig
 
 
@@ -170,7 +172,7 @@ def _create_dual_reconstruction_figure(
 
     # Create figure: 6 rows (3 per channel) with minimal spacing
     fig, axes = plt.subplots(
-        6, n_samples, figsize=(1.5 * n_samples, 7),
+        6, n_samples, figsize=(1.2 * n_samples, 6.5),
         gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
     )
     if n_samples == 1:
@@ -179,48 +181,45 @@ def _create_dual_reconstruction_figure(
     # Row labels based on key names
     label1 = key1.replace('_', ' ').title()
     label2 = key2.replace('_', ' ').title()
+    row_labels = [
+        f'GT {label1}', f'Pred {label1}', f'|Diff| {label1}',
+        f'GT {label2}', f'Pred {label2}', f'|Diff| {label2}'
+    ]
 
     for i in range(n_samples):
         # Column title with timestep if provided
         if timesteps is not None:
             t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
-            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8)
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8, pad=2)
 
         # Channel 1
         axes[0, i].imshow(np.clip(orig1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         axes[0, i].axis('off')
-        if i == 0:
-            axes[0, i].set_ylabel(f'GT {label1}', fontsize=9)
 
         axes[1, i].imshow(np.clip(gen1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         if mask_np is not None and mask_np.shape[0] > i:
             axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
         axes[1, i].axis('off')
-        if i == 0:
-            axes[1, i].set_ylabel(f'Pred {label1}', fontsize=9)
 
         axes[2, i].imshow(diff1[i], cmap='hot', vmin=0, vmax=diff1.max())
         axes[2, i].axis('off')
-        if i == 0:
-            axes[2, i].set_ylabel(f'|Diff| {label1}', fontsize=9)
 
         # Channel 2
         axes[3, i].imshow(np.clip(orig2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         axes[3, i].axis('off')
-        if i == 0:
-            axes[3, i].set_ylabel(f'GT {label2}', fontsize=9)
 
         axes[4, i].imshow(np.clip(gen2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
         if mask_np is not None and mask_np.shape[0] > i:
             axes[4, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
         axes[4, i].axis('off')
-        if i == 0:
-            axes[4, i].set_ylabel(f'Pred {label2}', fontsize=9)
 
         im = axes[5, i].imshow(diff2[i], cmap='hot', vmin=0, vmax=diff2.max())
         axes[5, i].axis('off')
-        if i == 0:
-            axes[5, i].set_ylabel(f'|Diff| {label2}', fontsize=9)
+
+    # Add row labels on the left side
+    for row, label in enumerate(row_labels):
+        axes[row, 0].text(-0.05, 0.5, label, transform=axes[row, 0].transAxes,
+                          fontsize=8, va='center', ha='right', rotation=90)
 
     # Build title
     full_title = title or ''
@@ -232,9 +231,10 @@ def _create_dual_reconstruction_figure(
             full_title = metrics_str
 
     if full_title:
-        fig.suptitle(full_title, fontsize=10)
+        fig.suptitle(full_title, fontsize=10, y=0.98)
 
-    plt.tight_layout(pad=0.3, h_pad=0.1, w_pad=0.1)
+    # Tight margins - minimal whitespace
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.94, bottom=0.02, hspace=0.02, wspace=0.02)
     return fig
 
 

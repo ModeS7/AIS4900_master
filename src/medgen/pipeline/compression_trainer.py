@@ -138,6 +138,12 @@ class BaseCompressionTrainer(BaseTrainer):
         progressive_cfg = cfg.get('progressive', {})
         self.use_constant_lr: bool = progressive_cfg.get('use_constant_lr', False)
 
+        # Optimizer betas (important for GAN training stability)
+        # Default: (0.9, 0.999), Phase 3 DC-AE: (0.5, 0.9) per paper
+        optimizer_cfg = cfg.training.get('optimizer', {})
+        betas_list = optimizer_cfg.get('betas', [0.9, 0.999])
+        self.optimizer_betas: Tuple[float, float] = tuple(betas_list)
+
         # ─────────────────────────────────────────────────────────────────────
         # Initialize compression-specific trackers
         # ─────────────────────────────────────────────────────────────────────
@@ -261,12 +267,25 @@ class BaseCompressionTrainer(BaseTrainer):
         Args:
             n_channels: Number of input channels (for discriminator).
         """
-        # Generator optimizer
-        self.optimizer = AdamW(self.model_raw.parameters(), lr=self.learning_rate)
+        # Generator optimizer with configurable betas
+        # Default: (0.9, 0.999), Phase 3 DC-AE: (0.5, 0.9) per paper
+        self.optimizer = AdamW(
+            self.model_raw.parameters(),
+            lr=self.learning_rate,
+            betas=self.optimizer_betas,
+        )
 
         # Discriminator optimizer (only if GAN enabled)
+        # Uses same betas as generator for consistent GAN training dynamics
         if not self.disable_gan and self.discriminator_raw is not None:
-            self.optimizer_d = AdamW(self.discriminator_raw.parameters(), lr=self.disc_lr)
+            self.optimizer_d = AdamW(
+                self.discriminator_raw.parameters(),
+                lr=self.disc_lr,
+                betas=self.optimizer_betas,
+            )
+
+        if self.is_main_process:
+            logger.info(f"Optimizer betas: {self.optimizer_betas}")
 
         # LR schedulers (only if not using constant LR)
         if not self.use_constant_lr:

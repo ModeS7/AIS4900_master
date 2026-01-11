@@ -36,9 +36,10 @@ disc_lr: 5.0e-4
 # - Freezes ALL layers EXCEPT decoder head (norm_out, conv_out)
 # - Only ~1.4K trainable params (vs ~323M total) - very targeted refinement
 # - Paper: "we only tune the head layers of the decoder"
+# - CRITICAL: Must use different optimizer betas for GAN stability
 # - Recommended overrides for Phase 3:
 #   training.learning_rate: 5.4e-5
-#   training.optimizer.betas: [0.5, 0.9]
+#   training.optimizer.betas: [0.5, 0.9]  # REQUIRED - default [0.9,0.999] causes metric degradation
 #   dcae.adv_weight: 0.1
 
 # ============================================================================

@@ -50,6 +50,7 @@ time python -m medgen.scripts.train_dcae \
     training.learning_rate=5.4e-5 \
     training.warmup_epochs=0 \
     training.eta_min=5.4e-5 \
+    'training.optimizer.betas=[0.5,0.9]' \
     training.epochs=175 \
     training.batch_size=16 \
     training.use_compile=false \

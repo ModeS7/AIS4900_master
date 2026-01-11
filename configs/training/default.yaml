@@ -115,6 +115,12 @@ disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves me
 # Learning rate scheduler
 eta_min: 1.0e-6              # Minimum LR for cosine annealing
 
+# Optimizer settings
+optimizer:
+  betas: [0.9, 0.999]        # AdamW momentum parameters (beta1, beta2)
+                             # Default: [0.9, 0.999]
+                             # Phase 3 GAN refinement: [0.5, 0.9] (per DC-AE paper)
+
 # torch.compile optimization
 # Compiles model and loss functions for faster training
 use_compile: true            # Compile VAE/discriminator/perceptual loss
