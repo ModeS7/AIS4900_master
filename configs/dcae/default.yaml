@@ -24,6 +24,11 @@ l1_weight: 1.0
 # 2. Higher compression (32x or 64x) loses more detail - perceptual loss compensates
 # 3. Empirically tuned for stable GAN training at high compression ratios
 perceptual_weight: 0.1
+# Perceptual loss type:
+#   - "radimagenet": MONAI's RadImageNet ResNet50 (default, medical imaging features)
+#   - "lpips": LPIPS library with VGG backbone (Zhang 2018, human perceptual calibration)
+# DC-AE paper uses LPIPS for training. RadImageNet may be better for medical data.
+perceptual_loss_type: radimagenet
 # GAN loss weight - set >0 for Phase 3 training
 # Paper uses 0.1 for Phase 3 local refinement
 adv_weight: 0.0

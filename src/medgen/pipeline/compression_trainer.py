@@ -41,7 +41,7 @@ from monai.networks.nets import PatchDiscriminator
 
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
 from .base_trainer import BaseTrainer
-from .losses import PerceptualLoss
+from .losses import LPIPSLoss, PerceptualLoss
 from .metrics import (
     RegionalMetricsTracker,
     compute_lpips,
@@ -109,6 +109,7 @@ class BaseCompressionTrainer(BaseTrainer):
         # ─────────────────────────────────────────────────────────────────────
         self.disc_lr: float = self._get_disc_lr(cfg)
         self.perceptual_weight: float = self._get_perceptual_weight(cfg)
+        self.perceptual_loss_type: str = self._get_perceptual_loss_type(cfg)
         self.adv_weight: float = self._get_adv_weight(cfg)
 
         # GAN config
@@ -156,7 +157,7 @@ class BaseCompressionTrainer(BaseTrainer):
         self.discriminator_raw: Optional[nn.Module] = None
         self.optimizer_d: Optional[AdamW] = None
         self.lr_scheduler_d: Optional[LRScheduler] = None
-        self.perceptual_loss_fn: Optional[PerceptualLoss] = None
+        self.perceptual_loss_fn: Optional[nn.Module] = None  # PerceptualLoss or LPIPSLoss
         self.adv_loss_fn: Optional[PatchAdversarialLoss] = None
         self.ema: Optional[EMA] = None
 
@@ -217,6 +218,18 @@ class BaseCompressionTrainer(BaseTrainer):
         """Get discriminator number of channels from config."""
         return self._get_config_value(cfg, 'disc_num_channels', 64)
 
+    def _get_perceptual_loss_type(self, cfg: DictConfig) -> str:
+        """Get perceptual loss type from config.
+
+        Options:
+            - 'radimagenet': MONAI's RadImageNet ResNet50 (default)
+            - 'lpips': LPIPS library with VGG backbone (DC-AE paper uses this)
+
+        Returns:
+            Loss type string.
+        """
+        return self._get_config_value(cfg, 'perceptual_loss_type', 'radimagenet')
+
     # ─────────────────────────────────────────────────────────────────────────
     # Model setup helpers
     # ─────────────────────────────────────────────────────────────────────────
@@ -242,15 +255,39 @@ class BaseCompressionTrainer(BaseTrainer):
             num_layers_d=self.disc_num_layers,
         ).to(self.device)
 
-    def _create_perceptual_loss(self, spatial_dims: int = 2) -> PerceptualLoss:
-        """Create perceptual loss function.
+    def _create_perceptual_loss(self, spatial_dims: int = 2) -> nn.Module:
+        """Create perceptual loss function based on config.
+
+        Uses self.perceptual_loss_type to choose:
+        - 'radimagenet': MONAI RadImageNet ResNet50 (medical imaging features)
+        - 'lpips': LPIPS library with VGG backbone (DC-AE paper)
 
         Args:
             spatial_dims: Spatial dimensions (2 for 2D, 3 for 3D).
+                         Note: LPIPS only supports 2D.
 
         Returns:
-            PerceptualLoss instance.
+            PerceptualLoss or LPIPSLoss instance.
         """
+        loss_type = self.perceptual_loss_type.lower()
+
+        if loss_type == 'lpips':
+            if spatial_dims != 2:
+                logger.warning(
+                    f"LPIPS only supports 2D images. Got spatial_dims={spatial_dims}. "
+                    "Falling back to RadImageNet perceptual loss."
+                )
+                loss_type = 'radimagenet'
+            else:
+                logger.info("Using LPIPS loss with VGG backbone (DC-AE paper setting)")
+                return LPIPSLoss(
+                    net='vgg',
+                    device=self.device,
+                    use_compile=self.use_compile,
+                )
+
+        # Default: RadImageNet perceptual loss
+        logger.info("Using RadImageNet ResNet50 perceptual loss")
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
         return PerceptualLoss(
             spatial_dims=spatial_dims,

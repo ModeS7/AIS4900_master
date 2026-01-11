@@ -14,6 +14,13 @@ from torch import nn, Tensor
 
 from monai.losses import PerceptualLoss as MonaiPerceptualLoss
 
+# Import LPIPS library (Zhang et al. 2018)
+try:
+    import lpips
+    LPIPS_AVAILABLE = True
+except ImportError:
+    LPIPS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +148,133 @@ class PerceptualLoss(nn.Module):
 
         Returns:
             Scalar perceptual loss tensor.
+        """
+        if isinstance(input, dict):
+            return self.forward_dict(input, target)
+        return self.forward(input, target)
+
+
+class LPIPSLoss(nn.Module):
+    """LPIPS (Learned Perceptual Image Patch Similarity) loss wrapper.
+
+    Uses the actual LPIPS library (Zhang et al. 2018) with learned linear weights
+    calibrated to human perceptual judgments. This differs from raw perceptual
+    loss which uses unweighted deep features.
+
+    The DC-AE paper uses LPIPS loss for training (not raw perceptual loss).
+
+    Reference: https://arxiv.org/abs/1801.03924
+
+    Args:
+        net: Backbone network - 'alex' (fastest), 'vgg', or 'squeeze'.
+             DC-AE paper uses VGG for training.
+        device: Target device for the loss function.
+        use_compile: Whether to use torch.compile for optimization.
+
+    Example:
+        >>> loss_fn = LPIPSLoss(net='vgg', device=device)
+        >>> loss = loss_fn(recon, target)  # [B, C, H, W]
+    """
+
+    def __init__(
+        self,
+        net: str = "vgg",
+        device: Optional[torch.device] = None,
+        use_compile: bool = False,
+    ) -> None:
+        super().__init__()
+
+        if not LPIPS_AVAILABLE:
+            raise ImportError(
+                "LPIPS library not installed. Install with: pip install lpips"
+            )
+
+        # Create LPIPS model
+        # spatial=False means return scalar loss (not per-pixel map)
+        self._loss_fn = lpips.LPIPS(net=net, spatial=False, verbose=False)
+
+        if device is not None:
+            self._loss_fn = self._loss_fn.to(device)
+
+        # Set to eval mode - LPIPS uses pretrained weights
+        self._loss_fn.eval()
+
+        if use_compile:
+            self._loss_fn = torch.compile(self._loss_fn, mode="default")
+
+        self.net = net
+        logger.info(f"LPIPSLoss initialized with {net} backbone")
+
+    def forward(
+        self,
+        input: Tensor,
+        target: Tensor,
+    ) -> Tensor:
+        """Compute LPIPS loss between input and target.
+
+        Handles any number of input channels by computing per-channel
+        LPIPS loss and averaging.
+
+        Args:
+            input: Predicted/reconstructed images [B, C, H, W].
+            target: Ground truth images [B, C, H, W].
+
+        Returns:
+            Scalar LPIPS loss tensor.
+        """
+        num_channels = input.shape[1]
+
+        if num_channels == 1:
+            # 1-channel: repeat to 3 channels for LPIPS
+            input_3ch = input.repeat(1, 3, 1, 1)
+            target_3ch = target.repeat(1, 3, 1, 1)
+            return self._loss_fn(input_3ch.float(), target_3ch.float()).mean()
+
+        if num_channels == 3:
+            # 3-channel: use directly
+            return self._loss_fn(input.float(), target.float()).mean()
+
+        # Multi-channel (not 1 or 3): compute per-channel loss and average
+        losses = []
+        for ch in range(num_channels):
+            ch_input = input[:, ch:ch+1].repeat(1, 3, 1, 1).float()   # [B, 3, H, W]
+            ch_target = target[:, ch:ch+1].repeat(1, 3, 1, 1).float()  # [B, 3, H, W]
+            losses.append(self._loss_fn(ch_input, ch_target).mean())
+
+        return sum(losses) / len(losses)
+
+    def forward_dict(
+        self,
+        input: Dict[str, Tensor],
+        target: Dict[str, Tensor],
+    ) -> Tensor:
+        """Compute LPIPS loss for dict inputs.
+
+        Args:
+            input: Dict of predicted images {key: [B, C, H, W]}.
+            target: Dict of ground truth images {key: [B, C, H, W]}.
+
+        Returns:
+            Average LPIPS loss across all keys.
+        """
+        losses = []
+        for key, pred in input.items():
+            losses.append(self.forward(pred, target[key]))
+        return sum(losses) / len(losses)
+
+    def __call__(
+        self,
+        input: Union[Tensor, Dict[str, Tensor]],
+        target: Union[Tensor, Dict[str, Tensor]],
+    ) -> Tensor:
+        """Compute LPIPS loss, auto-detecting input type.
+
+        Args:
+            input: Predicted images - tensor [B, C, H, W] or dict {key: tensor}.
+            target: Ground truth images - same format as input.
+
+        Returns:
+            Scalar LPIPS loss tensor.
         """
         if isinstance(input, dict):
             return self.forward_dict(input, target)
