@@ -133,6 +133,32 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Codebook tracking (initialized after model setup)
         self._codebook_tracker: Optional[CodebookTracker] = None
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Segmentation mode (seg_mode)
+        # ─────────────────────────────────────────────────────────────────────
+        self.seg_mode: bool = cfg.vqvae_3d.get('seg_mode', False)
+        self.seg_loss_fn: Optional['SegmentationLoss'] = None
+
+        if self.seg_mode:
+            from .losses import SegmentationLoss
+            seg_weights = cfg.vqvae_3d.get('seg_loss_weights', {})
+            self.seg_loss_fn = SegmentationLoss(
+                bce_weight=seg_weights.get('bce', 1.0),
+                dice_weight=seg_weights.get('dice', 1.0),
+                boundary_weight=seg_weights.get('boundary', 0.5),
+                spatial_dims=3,  # 3D volumes
+            )
+            # Disable perceptual loss for binary masks
+            self.perceptual_weight = 0.0
+            # Disable GAN for binary masks
+            self.disable_gan = True
+            if self.is_main_process:
+                logger.info("Seg mode enabled: BCE + Dice + Boundary loss")
+
+        # Initialize unified metrics system
+        self.spatial_dims = 3
+        self._init_unified_metrics('vqvae')
+
     def _get_disc_lr(self, cfg: DictConfig) -> float:
         """Get discriminator LR from vqvae_3d config."""
         return cfg.vqvae_3d.get('disc_lr', 5e-4)
@@ -303,14 +329,25 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
             # VQVAE forward returns (reconstruction, vq_loss)
             reconstruction, vq_loss = self.model(images)
 
-            # L1 reconstruction loss
-            l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
-
-            # Perceptual loss (2.5D)
-            if self.perceptual_weight > 0 and self.perceptual_loss_fn is not None:
-                p_loss = self._compute_2_5d_perceptual_loss(reconstruction, images)
-            else:
+            # Compute reconstruction loss based on mode
+            if self.seg_mode and self.seg_loss_fn is not None:
+                # Segmentation loss: BCE + Dice + Boundary
+                seg_loss, seg_breakdown = self.seg_loss_fn(reconstruction, images)
+                l1_loss = seg_loss  # Reuse variable for total seg loss
                 p_loss = torch.tensor(0.0, device=self.device)
+                # Track breakdown for epoch averaging
+                if hasattr(self, '_epoch_seg_breakdown'):
+                    for key in seg_breakdown:
+                        self._epoch_seg_breakdown[key] += seg_breakdown[key]
+            else:
+                # Standard L1 reconstruction loss
+                l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
+
+                # Perceptual loss (2.5D)
+                if self.perceptual_weight > 0 and self.perceptual_loss_fn is not None:
+                    p_loss = self._compute_2_5d_perceptual_loss(reconstruction, images)
+                else:
+                    p_loss = torch.tensor(0.0, device=self.device)
 
             # Adversarial loss
             if not self.disable_gan:
@@ -369,7 +406,12 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         if not self.disable_gan and self.discriminator is not None:
             self.discriminator.train()
 
-        epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'vq': 0, 'adv': 0}
+        # Use unified loss accumulator
+        self._loss_accumulator.reset()
+
+        # Initialize seg breakdown tracking for this epoch
+        if self.seg_mode:
+            self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
 
         disable_pbar = not self.is_main_process or self.is_cluster
         total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
@@ -383,30 +425,29 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
             # Step profiler to mark training step boundary
             self._profiler_step()
 
-            for key in epoch_losses:
-                epoch_losses[key] += losses[key]
+            # Accumulate with unified system
+            self._loss_accumulator.update(losses)
 
             if not disable_pbar:
+                avg_so_far = self._loss_accumulator.compute()
                 pbar.set_postfix(
-                    G=f"{losses['gen']:.4f}",
-                    VQ=f"{losses['vq']:.4f}",
-                    D=f"{losses['disc']:.4f}"
+                    G=f"{avg_so_far.get('gen', 0):.4f}",
+                    VQ=f"{avg_so_far.get('vq', 0):.4f}",
+                    D=f"{avg_so_far.get('disc', 0):.4f}"
                 )
 
-        # Average losses
-        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-        avg_losses = {key: val / n_batches for key, val in epoch_losses.items()}
+        # Compute average losses using unified system
+        avg_losses = self._loss_accumulator.compute()
 
-        # Log training metrics (single-GPU only)
-        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
-            self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
-            self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
-            self.writer.add_scalar('Loss/VQ_train', avg_losses['vq'], epoch)
+        # Log training metrics using unified system
+        self._log_training_metrics_unified(epoch, avg_losses)
 
-            if not self.disable_gan:
-                self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
-                self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
+        # Log seg breakdown if in seg_mode (not handled by unified system)
+        if self.seg_mode and self.writer is not None and self.is_main_process and not self.use_multi_gpu:
+            n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
+            self.writer.add_scalar('Loss/BCE_train', self._epoch_seg_breakdown['bce'] / n_batches, epoch)
+            self.writer.add_scalar('Loss/Dice_train', self._epoch_seg_breakdown['dice'] / n_batches, epoch)
+            self.writer.add_scalar('Loss/Boundary_train', self._epoch_seg_breakdown['boundary'] / n_batches, epoch)
 
         return avg_losses
 
@@ -422,6 +463,62 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         """
         reconstruction, vq_loss = model(images)
         return reconstruction, vq_loss
+
+    def _create_validation_runner(self) -> 'ValidationRunner':
+        """Create ValidationRunner for 3D VQ-VAE with seg_mode support.
+
+        Overrides parent to add seg_mode configuration for segmentation
+        mask compression training.
+
+        Returns:
+            Configured ValidationRunner instance.
+        """
+        from .validation import ValidationRunner, ValidationConfig
+
+        config = ValidationConfig(
+            log_msssim=self.log_msssim and not self.seg_mode,
+            log_psnr=self.log_psnr and not self.seg_mode,
+            log_lpips=self.log_lpips and not self.seg_mode,
+            log_regional_losses=self.log_regional_losses,
+            weight_dtype=self.weight_dtype,
+            use_compile=self.use_compile,
+            spatial_dims=3,
+            seg_mode=self.seg_mode,
+        )
+
+        # Regional tracker factory based on mode
+        regional_factory = None
+        seg_regional_factory = None
+        if self.log_regional_losses:
+            if self.seg_mode:
+                seg_regional_factory = self._create_seg_regional_tracker
+            else:
+                regional_factory = self._create_regional_tracker
+
+        return ValidationRunner(
+            config=config,
+            device=self.device,
+            forward_fn=self._forward_for_validation,
+            perceptual_loss_fn=self._compute_perceptual_loss if not self.seg_mode else None,
+            seg_loss_fn=self.seg_loss_fn if self.seg_mode else None,
+            regional_tracker_factory=regional_factory,
+            seg_regional_tracker_factory=seg_regional_factory,
+            prepare_batch_fn=self._prepare_batch,
+        )
+
+    def _create_seg_regional_tracker(self) -> 'SegRegionalMetricsTracker':
+        """Create SegRegionalMetricsTracker for per-tumor Dice tracking.
+
+        Returns:
+            Configured SegRegionalMetricsTracker instance.
+        """
+        from .metrics import SegRegionalMetricsTracker
+
+        return SegRegionalMetricsTracker(
+            image_size=self.volume_height,  # Use volume dimensions
+            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            device=self.device,
+        )
 
     def _get_model_config(self) -> Dict[str, Any]:
         """Get 3D VQ-VAE model configuration for checkpoint."""
@@ -450,16 +547,35 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         regional_tracker: Optional[RegionalMetricsTracker3D],
         log_figures: bool,
     ) -> None:
-        """Log 3D VQ-VAE validation metrics including VQ loss."""
+        """Log 3D VQ-VAE validation metrics including VQ loss.
+
+        For seg_mode, logs Dice/IoU metrics instead of PSNR/LPIPS/MS-SSIM.
+        """
         if self.writer is None:
             return
 
-        # Call base class method first
-        super()._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
+        # Use unified validation logging for common metrics
+        self._log_validation_metrics_unified(epoch, metrics)
 
-        # Add VQ-VAE-specific VQ loss logging
-        if 'reg' in metrics:
-            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
+        # VQ-VAE-specific: log VQ loss (no unweighting needed)
+        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_regularization(epoch, metrics['reg'], suffix='val')
+
+        # Log worst batch figure if available (for seg_mode)
+        if log_figures and worst_batch_data is not None and 'original' in worst_batch_data:
+            fig = create_worst_batch_figure_3d(
+                worst_batch_data['original'],
+                worst_batch_data['generated'],
+                worst_batch_data.get('loss', 0.0),
+                loss_breakdown=worst_batch_data.get('loss_breakdown'),
+            )
+            if fig is not None:
+                self.writer.add_figure('Validation/WorstBatch_3D', fig, epoch)
+                plt.close(fig)
+
+        # Log regional metrics
+        if regional_tracker is not None:
+            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
     def _log_epoch_summary(
         self,
@@ -469,11 +585,8 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         val_metrics: Dict[str, float],
         elapsed_time: float,
     ) -> None:
-        """Log 3D VQ-VAE epoch summary."""
-        log_compression_epoch_summary(
-            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
-            regularization_key='vq',
-        )
+        """Log 3D VQ-VAE epoch summary using unified system."""
+        self._log_epoch_summary_unified(epoch, avg_losses, val_metrics, elapsed_time)
 
     def _test_forward(
         self,
@@ -532,26 +645,26 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
 
     def compute_validation_losses(
         self,
-        data_loader: DataLoader,
         epoch: int,
+        log_figures: bool = True,
     ) -> Dict[str, float]:
         """Compute validation losses with codebook tracking.
 
         Extends parent method to also track codebook utilization.
 
         Args:
-            data_loader: Validation data loader.
             epoch: Current epoch number.
+            log_figures: Whether to log figures.
 
         Returns:
             Dictionary of validation metrics.
         """
         # Call parent validation
-        metrics = super().compute_validation_losses(data_loader, epoch)
+        metrics = super().compute_validation_losses(epoch, log_figures)
 
         # Track codebook usage and log
         if self.is_main_process and self._codebook_tracker is not None:
-            self._track_codebook_usage(data_loader, max_batches=10)
+            self._track_codebook_usage(self.val_loader, max_batches=10)
 
             if self.writer is not None:
                 cb_metrics = self._codebook_tracker.log_to_tensorboard(

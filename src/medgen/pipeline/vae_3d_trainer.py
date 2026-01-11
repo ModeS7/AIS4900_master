@@ -118,6 +118,10 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         self.attention_levels: Tuple[bool, ...] = tuple(cfg.vae_3d.attention_levels)
         self.num_res_blocks: int = cfg.vae_3d.get('num_res_blocks', 2)
 
+        # Initialize unified metrics system (3D VAE)
+        self.spatial_dims = 3
+        self._init_unified_metrics('vae')
+
     def _get_disc_lr(self, cfg: DictConfig) -> float:
         """Get discriminator LR from vae_3d config."""
         return cfg.vae_3d.get('disc_lr', 1e-4)
@@ -363,7 +367,8 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         if not self.disable_gan and self.discriminator is not None:
             self.discriminator.train()
 
-        epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'kl': 0, 'adv': 0}
+        # Use unified loss accumulator
+        self._loss_accumulator.reset()
 
         disable_pbar = not self.is_main_process or self.is_cluster
         total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
@@ -377,8 +382,8 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             # Step profiler to mark training step boundary
             self._profiler_step()
 
-            for key in epoch_losses:
-                epoch_losses[key] += losses[key]
+            # Accumulate with unified system
+            self._loss_accumulator.update(losses)
 
             if not disable_pbar:
                 if not self.disable_gan:
@@ -394,20 +399,11 @@ class VAE3DTrainer(BaseCompression3DTrainer):
                         KL=f"{losses['kl']:.4f}",
                     )
 
-        # Average losses
-        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-        avg_losses = {key: val / n_batches for key, val in epoch_losses.items()}
+        # Compute average losses using unified system
+        avg_losses = self._loss_accumulator.compute()
 
-        # Log training metrics (single-GPU only)
-        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
-            self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
-            self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
-            self.writer.add_scalar('Loss/KL_train', avg_losses['kl'], epoch)
-
-            if not self.disable_gan:
-                self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
-                self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
+        # Log training metrics using unified system
+        self._log_training_metrics_unified(epoch, avg_losses)
 
         return avg_losses
 
@@ -450,12 +446,30 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         if self.writer is None:
             return
 
-        # Call base class method first
-        super()._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
+        # Use unified validation logging for common metrics
+        self._log_validation_metrics_unified(epoch, metrics)
 
-        # Add VAE-specific KL loss logging
-        if 'reg' in metrics and self.kl_weight > 0:
-            self.writer.add_scalar('Loss/KL_val', metrics['reg'] / self.kl_weight, epoch)
+        # VAE-specific: log unweighted KL
+        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_regularization(
+                epoch, metrics['reg'], weight=self.kl_weight, suffix='val'
+            )
+
+        # Log worst batch figure
+        if log_figures and worst_batch_data is not None:
+            fig = create_worst_batch_figure_3d(
+                worst_batch_data['original'],
+                worst_batch_data['generated'],
+                worst_batch_data.get('loss', 0.0),
+                loss_breakdown=worst_batch_data.get('loss_breakdown'),
+            )
+            if fig is not None:
+                self.writer.add_figure('Validation/WorstBatch_3D', fig, epoch)
+                plt.close(fig)
+
+        # Log regional metrics
+        if regional_tracker is not None:
+            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
     def _log_epoch_summary(
         self,
@@ -465,11 +479,8 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         val_metrics: Dict[str, float],
         elapsed_time: float,
     ) -> None:
-        """Log 3D VAE epoch summary."""
-        log_compression_epoch_summary(
-            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
-            regularization_key=None,  # VAE's KL is in 'gen' already
-        )
+        """Log 3D VAE epoch summary using unified system."""
+        self._log_epoch_summary_unified(epoch, avg_losses, val_metrics, elapsed_time)
 
     def _test_forward(
         self,

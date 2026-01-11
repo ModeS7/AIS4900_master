@@ -6,30 +6,31 @@ Key differences from 2D:
 - Applies depth padding for clean compression
 - Memory-efficient batch sizes (typically 1-2)
 
-Note: Data Augmentation Limitation
-    Unlike 2D loaders which support albumentations-based augmentation via the
-    `augment` parameter, 3D loaders do NOT currently support data augmentation.
+Data Augmentation:
+    3D augmentation is supported via MONAI transforms. Use `augment=True` in
+    dataloader creation to enable random flips and 90° rotations.
 
-    This is because:
-    1. Albumentations is designed for 2D images only
-    2. 3D augmentation requires MONAI 3D transforms or custom implementations
-    3. Memory constraints - augmented 3D volumes would require significant VRAM
+    Available augmentations:
+    - RandFlipd: Random flips along each spatial axis (p=0.5 each)
+    - RandRotate90d: Random 90° rotations in the axial plane
 
-    For 3D training, consider:
-    - Relying on test-time augmentation (TTA) during inference
-    - Using multiple training runs with different random seeds
-    - Implementing MONAI 3D transforms if augmentation is critical:
-      - RandRotate90d, RandFlipd for geometric transforms
-      - RandGaussianNoised, RandScaleIntensityd for intensity transforms
+    For segmentation masks, augmentations preserve binary values (no interpolation).
 """
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-from monai.transforms import Compose, LoadImage, EnsureChannelFirst, ScaleIntensity
+from monai.transforms import (
+    Compose,
+    LoadImage,
+    EnsureChannelFirst,
+    ScaleIntensity,
+    RandFlipd,
+    RandRotate90d,
+)
 from torch.utils.data import DataLoader, Dataset
 
 from ..dataset import NiFTIDataset
@@ -37,6 +38,30 @@ from medgen.core.constants import DEFAULT_NUM_WORKERS
 from .common import create_dataloader, DataLoaderConfig, DistributedArgs
 
 logger = logging.getLogger(__name__)
+
+
+def build_3d_augmentation(seg_mode: bool = False) -> Callable:
+    """Build 3D augmentation pipeline using MONAI transforms.
+
+    Args:
+        seg_mode: If True, augmentations are for binary segmentation masks.
+                  Uses nearest-neighbor interpolation to preserve binary values.
+
+    Returns:
+        MONAI Compose transform that operates on dict with 'image' key.
+    """
+    # For seg masks, we need to preserve binary values
+    # RandFlip and RandRotate90 don't interpolate, so they're safe for binary masks
+    transforms = [
+        # Random flips along each axis (p=0.5 each)
+        RandFlipd(keys=['image'], prob=0.5, spatial_axis=0),  # Flip along depth
+        RandFlipd(keys=['image'], prob=0.5, spatial_axis=1),  # Flip along height
+        RandFlipd(keys=['image'], prob=0.5, spatial_axis=2),  # Flip along width
+        # Random 90° rotations in axial plane (H, W)
+        RandRotate90d(keys=['image'], prob=0.5, spatial_axes=(1, 2)),
+    ]
+
+    return Compose(transforms)
 
 
 @dataclass
@@ -130,6 +155,7 @@ class Base3DVolumeDataset(Dataset):
     - Transform setup for 3D volumes
     - Depth padding (replicate or constant mode)
     - Volume loading and processing
+    - Optional 3D augmentation (flips, rotations)
     """
 
     def __init__(
@@ -141,6 +167,7 @@ class Base3DVolumeDataset(Dataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
+        augmentation: Optional[Callable] = None,
     ) -> None:
         self.data_dir = data_dir
         self.height = height
@@ -149,6 +176,7 @@ class Base3DVolumeDataset(Dataset):
         self.pad_mode = pad_mode
         self.slice_step = slice_step
         self.load_seg = load_seg
+        self.augmentation = augmentation
 
         # Track padding statistics for logging
         self._padding_stats = {'volumes_padded': 0, 'total_slices_padded': 0}
@@ -228,6 +256,29 @@ class Base3DVolumeDataset(Dataset):
 
         return volume
 
+    def _apply_augmentation(self, result: dict) -> dict:
+        """Apply augmentation if configured.
+
+        Args:
+            result: Dict containing 'image' tensor and optionally 'seg'.
+
+        Returns:
+            Augmented dict (in-place modification).
+        """
+        if self.augmentation is None:
+            return result
+
+        # MONAI transforms expect dict format
+        aug_result = self.augmentation(result)
+
+        # Ensure tensors are contiguous after transforms
+        if 'image' in aug_result:
+            result['image'] = aug_result['image'].contiguous()
+        if 'seg' in aug_result:
+            result['seg'] = aug_result['seg'].contiguous()
+
+        return result
+
     def _load_seg(self, patient_dir: str) -> Optional[torch.Tensor]:
         """Load and preprocess segmentation mask if it exists.
 
@@ -278,6 +329,7 @@ class Volume3DDataset(Base3DVolumeDataset):
         pad_mode: Padding mode ('replicate' or 'constant').
         slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
         load_seg: Whether to load segmentation masks for regional metrics.
+        augmentation: Optional MONAI augmentation transform.
     """
 
     def __init__(
@@ -290,8 +342,9 @@ class Volume3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
+        augmentation: Optional[Callable] = None,
     ) -> None:
-        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
         self.modality = modality
 
         # List patient directories
@@ -321,6 +374,9 @@ class Volume3DDataset(Base3DVolumeDataset):
             if seg is not None:
                 result['seg'] = seg
 
+        # Apply augmentation if configured
+        result = self._apply_augmentation(result)
+
         return result
 
 
@@ -335,6 +391,7 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         pad_mode: Padding mode ('replicate' or 'constant').
         slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
         load_seg: Whether to load segmentation masks for regional metrics.
+        augmentation: Optional MONAI augmentation transform.
     """
 
     def __init__(
@@ -346,8 +403,9 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
+        augmentation: Optional[Callable] = None,
     ) -> None:
-        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
 
         # List patient directories
         self.patients = sorted([
@@ -380,6 +438,9 @@ class DualVolume3DDataset(Base3DVolumeDataset):
             seg = self._load_seg(patient_dir)
             if seg is not None:
                 result['seg'] = seg
+
+        # Apply augmentation if configured
+        result = self._apply_augmentation(result)
 
         return result
 
@@ -575,6 +636,7 @@ class MultiModality3DDataset(Base3DVolumeDataset):
         pad_mode: Padding mode ('replicate' or 'constant').
         slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
         load_seg: Whether to load segmentation masks for regional metrics.
+        augmentation: Optional MONAI augmentation transform.
     """
 
     def __init__(
@@ -587,8 +649,9 @@ class MultiModality3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
+        augmentation: Optional[Callable] = None,
     ) -> None:
-        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
         self.image_keys = image_keys
 
         # List patient directories
@@ -629,6 +692,9 @@ class MultiModality3DDataset(Base3DVolumeDataset):
             if seg is not None:
                 result['seg'] = seg
 
+        # Apply augmentation if configured
+        result = self._apply_augmentation(result)
+
         return result
 
 
@@ -637,6 +703,8 @@ def _create_multi_modality_dataset(
     vcfg: VolumeConfig,
     height: Optional[int] = None,
     width: Optional[int] = None,
+    augment: bool = False,
+    seg_mode: bool = False,
 ) -> MultiModality3DDataset:
     """Create MultiModality3DDataset with config.
 
@@ -645,9 +713,13 @@ def _create_multi_modality_dataset(
         vcfg: Volume configuration.
         height: Override height (defaults to vcfg.height).
         width: Override width (defaults to vcfg.width).
+        augment: Whether to apply 3D augmentation.
+        seg_mode: Whether this is for segmentation masks (binary).
     """
     h = height if height is not None else vcfg.height
     w = width if width is not None else vcfg.width
+
+    aug = build_3d_augmentation(seg_mode=seg_mode) if augment else None
 
     return MultiModality3DDataset(
         data_dir=data_dir,
@@ -658,6 +730,7 @@ def _create_multi_modality_dataset(
         pad_mode=vcfg.pad_mode,
         slice_step=vcfg.slice_step,
         load_seg=vcfg.load_seg,
+        augmentation=aug,
     )
 
 
@@ -684,11 +757,18 @@ def create_vae_3d_multi_modality_dataloader(
     vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
+    # Check if augmentation is enabled
+    augment = getattr(cfg.training, 'augment', False)
+    # Check if this is seg mode (for binary mask handling)
+    seg_mode = getattr(cfg.mode, 'name', '') == 'seg'
+
     # Use training resolution (may be lower than validation resolution)
     dataset = _create_multi_modality_dataset(
         data_dir, vcfg,
         height=vcfg.train_height,
         width=vcfg.train_width,
+        augment=augment,
+        seg_mode=seg_mode,
     )
 
     if vcfg.uses_reduced_train_resolution:

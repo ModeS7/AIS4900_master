@@ -231,6 +231,90 @@ class BaseCompressionTrainer(BaseTrainer):
         return self._get_config_value(cfg, 'perceptual_loss_type', 'radimagenet')
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Unified Metrics System
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _init_unified_metrics(self, trainer_type: str) -> None:
+        """Initialize unified metrics system.
+
+        Called by subclass __init__ after model-specific config is set.
+        Creates TrainerMetricsConfig, LossAccumulator, and MetricsLogger.
+
+        Args:
+            trainer_type: One of 'vae', 'vqvae', 'dcae'.
+        """
+        from .metrics import (
+            TrainerMetricsConfig,
+            LossAccumulator,
+            MetricsLogger,
+            create_metrics_config,
+        )
+
+        seg_mode = getattr(self, 'seg_mode', False)
+        spatial_dims = getattr(self, 'spatial_dims', 2)
+
+        self._metrics_config = create_metrics_config(
+            trainer_type=trainer_type,
+            has_gan=not self.disable_gan,
+            spatial_dims=spatial_dims,
+            seg_mode=seg_mode,
+            log_msssim=self.log_msssim,
+            log_lpips=self.log_lpips,
+        )
+        self._loss_accumulator = LossAccumulator(self._metrics_config)
+        self._metrics_logger = MetricsLogger(
+            self.writer,
+            self._metrics_config,
+            use_multi_gpu=self.use_multi_gpu,
+        )
+
+    def _log_training_metrics_unified(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+        """Log training metrics using unified system.
+
+        Args:
+            epoch: Current epoch number.
+            avg_losses: Dictionary of averaged losses from LossAccumulator.compute().
+        """
+        if hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_training(epoch, avg_losses)
+
+    def _log_validation_metrics_unified(
+        self,
+        epoch: int,
+        metrics: Dict[str, float],
+        prefix: str = '',
+    ) -> None:
+        """Log validation metrics using unified system.
+
+        Args:
+            epoch: Current epoch number.
+            metrics: Dictionary of validation metrics.
+            prefix: Optional prefix for per-modality logging.
+        """
+        if hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_validation(epoch, metrics, prefix)
+
+    def _log_epoch_summary_unified(
+        self,
+        epoch: int,
+        avg_losses: Dict[str, float],
+        val_metrics: Optional[Dict[str, float]],
+        elapsed_time: float,
+    ) -> None:
+        """Log epoch summary using unified system.
+
+        Args:
+            epoch: Current epoch number.
+            avg_losses: Dictionary of averaged training losses.
+            val_metrics: Dictionary of validation metrics (may be None).
+            elapsed_time: Time taken for epoch in seconds.
+        """
+        if hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_epoch_summary(
+                epoch, self.n_epochs, avg_losses, val_metrics, elapsed_time
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Model setup helpers
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1689,20 +1773,28 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         from .evaluation import Compression3DTestEvaluator, MetricsConfig
         from .tracking import create_worst_batch_figure_3d
 
+        # Check for seg_mode (added by subclasses like VQVAE3DTrainer)
+        seg_mode = getattr(self, 'seg_mode', False)
+        seg_loss_fn = getattr(self, 'seg_loss_fn', None)
+
         # Create metrics config for 3D evaluation
         metrics_config = MetricsConfig(
-            compute_l1=True,
-            compute_psnr=True,
-            compute_lpips=True,
-            compute_msssim=self.log_msssim,  # 2D slicewise
-            compute_msssim_3d=self.log_msssim,  # Volumetric
+            compute_l1=not seg_mode,
+            compute_psnr=not seg_mode,
+            compute_lpips=not seg_mode,
+            compute_msssim=self.log_msssim and not seg_mode,  # 2D slicewise
+            compute_msssim_3d=self.log_msssim and not seg_mode,  # Volumetric
             compute_regional=self.log_regional_losses,
+            seg_mode=seg_mode,
         )
 
-        # Regional tracker factory
+        # Regional tracker factory (use seg-specific tracker for seg_mode)
         regional_factory = None
         if self.log_regional_losses:
-            regional_factory = self._create_regional_tracker
+            if seg_mode and hasattr(self, '_create_seg_regional_tracker'):
+                regional_factory = self._create_seg_regional_tracker
+            else:
+                regional_factory = self._create_regional_tracker
 
         # Worst batch figure callback (3D version)
         def worst_batch_fig_fn(data: Dict[str, Any]) -> Any:
@@ -1730,6 +1822,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             regional_tracker_factory=regional_factory,
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
+            seg_loss_fn=seg_loss_fn if seg_mode else None,
         )
 
     def evaluate_test_set(

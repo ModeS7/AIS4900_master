@@ -74,6 +74,10 @@ class DCAE3DTrainer(BaseCompression3DTrainer):
         self.encoder_out_shortcut = dcae_cfg.get('encoder_out_shortcut', True)
         self.decoder_in_shortcut = dcae_cfg.get('decoder_in_shortcut', True)
 
+        # Initialize unified metrics system
+        self.spatial_dims = 3
+        self._init_unified_metrics('dcae')
+
     def _get_2_5d_perceptual(self, cfg: DictConfig) -> bool:
         """Get 2.5D perceptual loss flag from dcae_3d config."""
         if 'dcae_3d' in cfg:
@@ -347,8 +351,8 @@ class DCAE3DTrainer(BaseCompression3DTrainer):
         if not self.disable_gan and self.discriminator is not None:
             self.discriminator.train()
 
-        # Use 'reg' key for compatibility with base class, but it's always 0 for DC-AE
-        epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'reg': 0, 'adv': 0}
+        # Use unified loss accumulator
+        self._loss_accumulator.reset()
 
         disable_pbar = not self.is_main_process or self.is_cluster
         total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
@@ -357,42 +361,35 @@ class DCAE3DTrainer(BaseCompression3DTrainer):
 
         for step, batch in enumerate(pbar):
             result = self.train_step(batch)
-            # DC-AE uses 'reg' key with value 0 for compatibility
-            losses = result.to_legacy_dict('reg')
+            # DC-AE uses None for reg key (deterministic, no regularization)
+            losses = result.to_legacy_dict(None)
 
             # Step profiler to mark training step boundary
             self._profiler_step()
 
-            for key in epoch_losses:
-                epoch_losses[key] += losses[key]
+            # Accumulate with unified system
+            self._loss_accumulator.update(losses)
 
             if not disable_pbar:
+                avg_so_far = self._loss_accumulator.compute()
                 if not self.disable_gan:
                     pbar.set_postfix(
-                        G=f"{losses['gen']:.4f}",
-                        D=f"{losses['disc']:.4f}",
-                        L1=f"{losses['recon']:.4f}",
+                        G=f"{avg_so_far.get('gen', 0):.4f}",
+                        D=f"{avg_so_far.get('disc', 0):.4f}",
+                        L1=f"{avg_so_far.get('recon', 0):.4f}",
                     )
                 else:
                     pbar.set_postfix(
-                        G=f"{losses['gen']:.4f}",
-                        L1=f"{losses['recon']:.4f}",
-                        P=f"{losses['perc']:.4f}",
+                        G=f"{avg_so_far.get('gen', 0):.4f}",
+                        L1=f"{avg_so_far.get('recon', 0):.4f}",
+                        P=f"{avg_so_far.get('perc', 0):.4f}",
                     )
 
-        # Average losses
-        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-        avg_losses = {key: val / n_batches for key, val in epoch_losses.items()}
+        # Compute average losses using unified system
+        avg_losses = self._loss_accumulator.compute()
 
-        # Log training metrics (single-GPU only)
-        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
-            self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
-            self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
-
-            if not self.disable_gan:
-                self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
-                self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
+        # Log training metrics using unified system
+        self._log_training_metrics_unified(epoch, avg_losses)
 
         return avg_losses
 
@@ -419,11 +416,8 @@ class DCAE3DTrainer(BaseCompression3DTrainer):
         val_metrics: Dict[str, float],
         elapsed_time: float,
     ) -> None:
-        """Log 3D DC-AE epoch summary."""
-        log_compression_epoch_summary(
-            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
-            regularization_key=None,  # DC-AE has no regularization
-        )
+        """Log 3D DC-AE epoch summary using unified system."""
+        self._log_epoch_summary_unified(epoch, avg_losses, val_metrics, elapsed_time)
 
     def _test_forward(
         self,

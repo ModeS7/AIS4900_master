@@ -107,6 +107,12 @@ def log_test_results(
         logger.info(f"  Dice:    {metrics['dice']:.4f}")
     if 'iou' in metrics:
         logger.info(f"  IoU:     {metrics['iou']:.4f}")
+    if 'bce' in metrics:
+        logger.info(f"  BCE:     {metrics['bce']:.4f}")
+    if 'boundary' in metrics:
+        logger.info(f"  Boundary:{metrics['boundary']:.4f}")
+    if 'gen' in metrics and 'dice' in metrics:  # Only show gen for seg_mode
+        logger.info(f"  Gen Loss:{metrics['gen']:.4f}")
     # Image metrics
     if 'l1' in metrics:
         logger.info(f"  L1 Loss: {metrics['l1']:.6f}")
@@ -342,9 +348,12 @@ class BaseTestEvaluator(ABC):
         """Initialize metric accumulators based on config."""
         accumulators = {}
         if self.metrics_config.seg_mode:
-            # Segmentation mode: Dice and IoU
+            # Segmentation mode: Dice, IoU, and loss components
             accumulators['dice'] = 0.0
             accumulators['iou'] = 0.0
+            accumulators['bce'] = 0.0
+            accumulators['boundary'] = 0.0
+            accumulators['gen'] = 0.0
         else:
             # Standard image metrics
             if self.metrics_config.compute_l1:
@@ -534,6 +543,27 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         return result
 
+    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Prepare batch for evaluation, handling extra seg channel in tensor.
+
+        For dual/multi-modality modes, test dataloader may return concatenated
+        tensor [B, C+1, H, W] where last channel is seg mask for regional metrics.
+        This method splits it based on expected image_keys count.
+        """
+        # First use base class logic to extract images and mask
+        images, mask = super()._prepare_batch(batch)
+
+        # If image_keys is set and tensor has extra channel, split out seg
+        if self.image_keys is not None and mask is None:
+            expected_channels = len(self.image_keys)
+            actual_channels = images.shape[1]
+            if actual_channels == expected_channels + 1:
+                # Last channel is seg mask
+                mask = images[:, -1:, :, :]
+                images = images[:, :expected_channels, :, :]
+
+        return images, mask
+
     def _get_batch_size(self, batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> int:
         """Get batch size from prepared batch."""
         images, _ = batch_data
@@ -662,6 +692,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
     """Test evaluator for 3D volumetric compression models (VAE-3D, VQVAE-3D).
 
     Computes: L1, MS-SSIM-3D (volumetric), MS-SSIM (2D slicewise), PSNR, LPIPS-3D.
+    For seg_mode: Dice, IoU instead of image metrics.
     """
 
     def __init__(
@@ -677,6 +708,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         regional_tracker_factory: Optional[Callable[[], Any]] = None,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
         image_keys: Optional[List[str]] = None,
+        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
     ):
         """Initialize 3D compression evaluator.
 
@@ -692,6 +724,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             regional_tracker_factory: Optional factory to create 3D regional tracker.
             worst_batch_figure_fn: Optional callable to create 3D worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics.
+            seg_loss_fn: Optional segmentation loss function for seg_mode.
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
@@ -701,6 +734,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         self.weight_dtype = weight_dtype
         self.regional_tracker_factory = regional_tracker_factory
         self.image_keys = image_keys
+        self.seg_loss_fn = seg_loss_fn
         self._regional_tracker: Optional[Any] = None
         self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
         self._per_channel_count: int = 0
@@ -766,6 +800,8 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             compute_msssim,
             compute_msssim_2d_slicewise,
             compute_psnr,
+            compute_dice,
+            compute_iou,
         )
 
         images, mask = batch_data
@@ -775,57 +811,74 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 
         metrics = {}
 
-        # L1 loss
-        if self.metrics_config.compute_l1:
-            metrics['l1'] = torch.abs(reconstructed - images).mean().item()
+        # Segmentation mode: compute Dice/IoU instead of image metrics
+        if self.metrics_config.seg_mode:
+            metrics['dice'] = compute_dice(reconstructed, images, apply_sigmoid=True)
+            metrics['iou'] = compute_iou(reconstructed, images, apply_sigmoid=True)
+            # Compute seg loss breakdown if available
+            if self.seg_loss_fn is not None:
+                seg_loss, seg_breakdown = self.seg_loss_fn(reconstructed, images)
+                metrics['bce'] = seg_breakdown.get('bce', 0.0)
+                metrics['boundary'] = seg_breakdown.get('boundary', 0.0)
+                metrics['gen'] = seg_loss.item()
+        else:
+            # Standard image metrics
+            # L1 loss
+            if self.metrics_config.compute_l1:
+                metrics['l1'] = torch.abs(reconstructed - images).mean().item()
 
-        # MS-SSIM (2D slicewise for comparison with 2D trainers)
-        if self.metrics_config.compute_msssim:
-            metrics['msssim'] = compute_msssim_2d_slicewise(
-                reconstructed.float(), images.float()
-            )
+            # MS-SSIM (2D slicewise for comparison with 2D trainers)
+            if self.metrics_config.compute_msssim:
+                metrics['msssim'] = compute_msssim_2d_slicewise(
+                    reconstructed.float(), images.float()
+                )
 
-        # MS-SSIM-3D (volumetric)
-        if self.metrics_config.compute_msssim_3d:
-            metrics['msssim_3d'] = compute_msssim(
-                reconstructed.float(), images.float(), spatial_dims=3
-            )
+            # MS-SSIM-3D (volumetric)
+            if self.metrics_config.compute_msssim_3d:
+                metrics['msssim_3d'] = compute_msssim(
+                    reconstructed.float(), images.float(), spatial_dims=3
+                )
 
-        # PSNR
-        if self.metrics_config.compute_psnr:
-            metrics['psnr'] = compute_psnr(reconstructed, images)
+            # PSNR
+            if self.metrics_config.compute_psnr:
+                metrics['psnr'] = compute_psnr(reconstructed, images)
 
-        # LPIPS (3D batched)
-        if self.metrics_config.compute_lpips:
-            metrics['lpips'] = compute_lpips_3d(
-                reconstructed.float(), images.float(), device=self.device
-            )
+            # LPIPS (3D batched)
+            if self.metrics_config.compute_lpips:
+                metrics['lpips'] = compute_lpips_3d(
+                    reconstructed.float(), images.float(), device=self.device
+                )
+
+            # Per-channel metrics for multi-modality mode
+            if self.image_keys is not None and len(self.image_keys) > 1:
+                n_channels = images.shape[1]
+                if n_channels == len(self.image_keys):
+                    for i, key in enumerate(self.image_keys):
+                        img_ch = images[:, i:i+1]
+                        rec_ch = reconstructed[:, i:i+1]
+
+                        if key not in self._per_channel_metrics:
+                            self._per_channel_metrics[key] = {'msssim': 0.0, 'msssim_3d': 0.0, 'psnr': 0.0, 'lpips': 0.0}
+
+                        if self.metrics_config.compute_msssim:
+                            self._per_channel_metrics[key]['msssim'] += compute_msssim_2d_slicewise(rec_ch.float(), img_ch.float())
+                        if self.metrics_config.compute_msssim_3d:
+                            self._per_channel_metrics[key]['msssim_3d'] += compute_msssim(rec_ch.float(), img_ch.float(), spatial_dims=3)
+                        if self.metrics_config.compute_psnr:
+                            self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
+                        if self.metrics_config.compute_lpips:
+                            self._per_channel_metrics[key]['lpips'] += compute_lpips_3d(rec_ch.float(), img_ch.float(), device=self.device)
+
+                    self._per_channel_count += 1
 
         # Regional tracking
-        if self._regional_tracker is not None and mask is not None:
-            self._regional_tracker.update(reconstructed.float(), images.float(), mask)
-
-        # Per-channel metrics for multi-modality mode
-        if self.image_keys is not None and len(self.image_keys) > 1:
-            n_channels = images.shape[1]
-            if n_channels == len(self.image_keys):
-                for i, key in enumerate(self.image_keys):
-                    img_ch = images[:, i:i+1]
-                    rec_ch = reconstructed[:, i:i+1]
-
-                    if key not in self._per_channel_metrics:
-                        self._per_channel_metrics[key] = {'msssim': 0.0, 'msssim_3d': 0.0, 'psnr': 0.0, 'lpips': 0.0}
-
-                    if self.metrics_config.compute_msssim:
-                        self._per_channel_metrics[key]['msssim'] += compute_msssim_2d_slicewise(rec_ch.float(), img_ch.float())
-                    if self.metrics_config.compute_msssim_3d:
-                        self._per_channel_metrics[key]['msssim_3d'] += compute_msssim(rec_ch.float(), img_ch.float(), spatial_dims=3)
-                    if self.metrics_config.compute_psnr:
-                        self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
-                    if self.metrics_config.compute_lpips:
-                        self._per_channel_metrics[key]['lpips'] += compute_lpips_3d(rec_ch.float(), img_ch.float(), device=self.device)
-
-                self._per_channel_count += 1
+        if self._regional_tracker is not None:
+            if self.metrics_config.seg_mode:
+                # Seg mode: images IS the target mask, use 2-arg update
+                self._regional_tracker.update(reconstructed, images, apply_sigmoid=True)
+            elif mask is not None:
+                # Standard mode: separate mask for regional tracking
+                self._regional_tracker.update(reconstructed.float(), images.float(), mask)
 
         # Store for worst batch capture
         self._current_batch = {
@@ -844,8 +897,22 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         if not hasattr(self, '_current_batch'):
             return None
 
+        # Build loss breakdown based on mode
+        if self.metrics_config.seg_mode:
+            loss = 1.0 - batch_metrics.get('dice', 1.0)  # 1-Dice as loss
+            loss_breakdown = {
+                'Dice': batch_metrics.get('dice', 0.0),
+                'IoU': batch_metrics.get('iou', 0.0),
+            }
+        else:
+            loss = batch_metrics.get('l1', 0.0)
+            loss_breakdown = {
+                'L1': batch_metrics.get('l1', 0.0),
+            }
+
         return {
             'original': self._current_batch['images'].cpu(),
             'generated': self._current_batch['reconstructed'].float().cpu(),
-            'loss': batch_metrics.get('l1', 0.0),
+            'loss': loss,
+            'loss_breakdown': loss_breakdown,
         }

@@ -287,11 +287,14 @@ class SegmentationLoss(nn.Module):
     For segmentation mask compression training. All losses are computed
     on logits (BCE) or sigmoid(logits) (Dice, Boundary).
 
+    Supports both 2D and 3D inputs via spatial_dims parameter.
+
     Args:
         bce_weight: Weight for BCE loss (default 1.0).
         dice_weight: Weight for Dice loss (default 1.0).
         boundary_weight: Weight for Boundary loss (default 0.5).
         smooth: Smoothing factor for Dice to avoid division by zero.
+        spatial_dims: Number of spatial dimensions (2 or 3).
 
     Example:
         >>> loss_fn = SegmentationLoss(bce_weight=1.0, dice_weight=1.0)
@@ -305,12 +308,24 @@ class SegmentationLoss(nn.Module):
         dice_weight: float = 1.0,
         boundary_weight: float = 0.5,
         smooth: float = 1.0,
+        spatial_dims: int = 2,
     ) -> None:
         super().__init__()
         self.bce_weight = bce_weight
         self.dice_weight = dice_weight
         self.boundary_weight = boundary_weight
         self.smooth = smooth
+        self.spatial_dims = spatial_dims
+
+        # Set pooling function and sum dimensions based on spatial_dims
+        if spatial_dims == 2:
+            self._max_pool = F.max_pool2d
+            self._spatial_sum_dims = (2, 3)  # [B, C, H, W] -> sum over H, W
+        elif spatial_dims == 3:
+            self._max_pool = F.max_pool3d
+            self._spatial_sum_dims = (2, 3, 4)  # [B, C, D, H, W] -> sum over D, H, W
+        else:
+            raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
 
     def forward(
         self,
@@ -331,8 +346,8 @@ class SegmentationLoss(nn.Module):
 
         # Dice loss (on probabilities)
         probs = torch.sigmoid(logits)
-        intersection = (probs * target).sum(dim=(2, 3))
-        union = probs.sum(dim=(2, 3)) + target.sum(dim=(2, 3))
+        intersection = (probs * target).sum(dim=self._spatial_sum_dims)
+        union = probs.sum(dim=self._spatial_sum_dims) + target.sum(dim=self._spatial_sum_dims)
         dice_score = (2.0 * intersection + self.smooth) / (union + self.smooth)
         dice_loss = 1.0 - dice_score.mean()
 
@@ -362,8 +377,8 @@ class SegmentationLoss(nn.Module):
         with high boundary-to-area ratio.
 
         Args:
-            logits: Model output (before sigmoid) [B, 1, H, W].
-            target: Binary target mask [B, 1, H, W].
+            logits: Model output (before sigmoid) [B, 1, H, W] or [B, 1, D, H, W].
+            target: Binary target mask [B, 1, H, W] or [B, 1, D, H, W].
 
         Returns:
             Boundary-weighted BCE loss tensor.
@@ -372,8 +387,8 @@ class SegmentationLoss(nn.Module):
         kernel_size = 3
         padding = kernel_size // 2
 
-        dilated = F.max_pool2d(target, kernel_size, stride=1, padding=padding)
-        eroded = -F.max_pool2d(-target, kernel_size, stride=1, padding=padding)
+        dilated = self._max_pool(target, kernel_size, stride=1, padding=padding)
+        eroded = -self._max_pool(-target, kernel_size, stride=1, padding=padding)
         boundary = dilated - eroded  # Boundary mask
 
         # Compute BCE only on boundary pixels

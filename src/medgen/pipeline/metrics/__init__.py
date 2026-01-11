@@ -5,6 +5,7 @@ This module provides:
 - MetricsTracker: GPU-efficient epoch-level metric aggregation
 - Quality metrics: PSNR, MS-SSIM (2D/3D), LPIPS (2D only)
 - Regional metrics: RegionalMetricsTracker for masked regions
+- Unified metrics: TrainerMetricsConfig, LossAccumulator, MetricsLogger
 - Visualization: create_reconstruction_figure for figures
 """
 
@@ -27,6 +28,15 @@ from .regional_3d import RegionalMetricsTracker3D
 from .regional_seg import SegRegionalMetricsTracker
 from .figures import create_reconstruction_figure, figure_to_buffer
 from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
+from .unified import (
+    TrainerMode,
+    TrainerMetricsConfig,
+    LossAccumulator,
+    MetricsLogger,
+    LossKey,
+    MetricKey,
+    create_metrics_config,
+)
 
 __all__ = [
     # Main tracker
@@ -47,6 +57,14 @@ __all__ = [
     'RegionalMetricsTracker',
     'RegionalMetricsTracker3D',
     'SegRegionalMetricsTracker',
+    # Unified metrics system
+    'TrainerMode',
+    'TrainerMetricsConfig',
+    'LossAccumulator',
+    'MetricsLogger',
+    'LossKey',
+    'MetricKey',
+    'create_metrics_config',
     # Constants
     'TUMOR_SIZE_THRESHOLDS_MM',
     'TUMOR_SIZE_CATEGORIES',

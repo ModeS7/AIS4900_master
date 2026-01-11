@@ -57,3 +57,16 @@ disc_num_channels: 64            # Base channels
 use_2_5d_perceptual: true        # Use 2.5D perceptual loss (sample slices)
 perceptual_slice_fraction: 0.25  # Fraction of slices for perceptual loss
 disable_gan: false               # Set true for pure VQ-VAE
+
+# ============================================================================
+# Segmentation Mask Compression (seg_mode)
+# ============================================================================
+# When enabled, uses BCE + Dice + Boundary loss instead of L1 + Perceptual.
+# Tracks Dice/IoU metrics instead of PSNR/LPIPS/MS-SSIM.
+# Automatically disables GAN and perceptual loss.
+seg_mode: false
+
+seg_loss_weights:
+  bce: 1.0        # Binary cross-entropy (numerically stable)
+  dice: 1.0       # Dice loss (handles class imbalance)
+  boundary: 0.5   # Boundary-weighted BCE (important for small tumors)

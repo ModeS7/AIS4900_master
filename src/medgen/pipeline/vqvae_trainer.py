@@ -92,6 +92,9 @@ class VQVAETrainer(BaseCompressionTrainer):
         # Codebook tracking (initialized after model setup)
         self._codebook_tracker: Optional[CodebookTracker] = None
 
+        # Initialize unified metrics system
+        self._init_unified_metrics('vqvae')
+
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for VQ-VAE."""
         from datetime import datetime
@@ -279,7 +282,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         if not self.disable_gan and self.discriminator is not None:
             self.discriminator.train()
 
-        epoch_losses = {'gen': 0, 'disc': 0, 'recon': 0, 'perc': 0, 'vq': 0, 'adv': 0}
+        # Use unified loss accumulator
+        self._loss_accumulator.reset()
 
         epoch_iter = create_epoch_iterator(
             data_loader, epoch, self.is_cluster, self.is_main_process,
@@ -293,33 +297,25 @@ class VQVAETrainer(BaseCompressionTrainer):
             # Step profiler to mark training step boundary
             self._profiler_step()
 
-            for key in epoch_losses:
-                epoch_losses[key] += losses[key]
+            # Accumulate with unified system
+            self._loss_accumulator.update(losses)
 
             if hasattr(epoch_iter, 'set_postfix'):
+                avg_so_far = self._loss_accumulator.compute()
                 epoch_iter.set_postfix(
-                    G=f"{epoch_losses['gen'] / (step + 1):.4f}",
-                    VQ=f"{epoch_losses['vq'] / (step + 1):.4f}",
-                    D=f"{epoch_losses['disc'] / (step + 1):.4f}"
+                    G=f"{avg_so_far.get('gen', 0):.4f}",
+                    VQ=f"{avg_so_far.get('vq', 0):.4f}",
+                    D=f"{avg_so_far.get('disc', 0):.4f}"
                 )
 
             if epoch == 1 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
 
-        # Average losses
-        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-        avg_losses = {key: val / n_batches for key, val in epoch_losses.items()}
+        # Compute average losses using unified system
+        avg_losses = self._loss_accumulator.compute()
 
-        # Log training metrics (single-GPU only)
-        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
-            self.writer.add_scalar('Loss/Generator_train', avg_losses['gen'], epoch)
-            self.writer.add_scalar('Loss/L1_train', avg_losses['recon'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_losses['perc'], epoch)
-            self.writer.add_scalar('Loss/VQ_train', avg_losses['vq'], epoch)
-
-            if not self.disable_gan:
-                self.writer.add_scalar('Loss/Discriminator', avg_losses['disc'], epoch)
-                self.writer.add_scalar('Loss/Adversarial', avg_losses['adv'], epoch)
+        # Log training metrics using unified system
+        self._log_training_metrics_unified(epoch, avg_losses)
 
         return avg_losses
 
@@ -366,13 +362,22 @@ class VQVAETrainer(BaseCompressionTrainer):
         if self.writer is None:
             return
 
-        # Call base class method first
-        super()._log_validation_metrics(epoch, metrics, worst_batch_data, regional_tracker, log_figures)
+        # Use unified validation logging for common metrics
+        self._log_validation_metrics_unified(epoch, metrics)
 
-        # Add VQ-VAE-specific VQ loss logging
-        if 'reg' in metrics:
-            # Log as VQ_val (reg is the VQ loss for VQVAE)
-            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
+        # VQ-VAE-specific: log VQ loss (no unweighting needed)
+        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
+            self._metrics_logger.log_regularization(epoch, metrics['reg'], suffix='val')
+
+        # Log worst batch figure (keep existing logic)
+        if log_figures and worst_batch_data is not None:
+            fig = self._create_worst_batch_figure(worst_batch_data)
+            self.writer.add_figure('Validation/worst_batch', fig, epoch)
+            plt.close(fig)
+
+        # Log regional metrics
+        if regional_tracker is not None:
+            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
     def _log_epoch_summary(
         self,
@@ -382,11 +387,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         val_metrics: Dict[str, float],
         elapsed_time: float,
     ) -> None:
-        """Log VQ-VAE epoch summary."""
-        log_compression_epoch_summary(
-            epoch, total_epochs, avg_losses, val_metrics, elapsed_time,
-            regularization_key='vq',
-        )
+        """Log VQ-VAE epoch summary using unified system."""
+        self._log_epoch_summary_unified(epoch, avg_losses, val_metrics, elapsed_time)
 
     def _test_forward(
         self,
@@ -442,26 +444,26 @@ class VQVAETrainer(BaseCompressionTrainer):
 
     def compute_validation_losses(
         self,
-        data_loader: DataLoader,
         epoch: int,
+        log_figures: bool = True,
     ) -> Dict[str, float]:
         """Compute validation losses with codebook tracking.
 
         Extends parent method to also track codebook utilization.
 
         Args:
-            data_loader: Validation data loader.
             epoch: Current epoch number.
+            log_figures: Whether to log figures.
 
         Returns:
             Dictionary of validation metrics.
         """
         # Call parent validation
-        metrics = super().compute_validation_losses(data_loader, epoch)
+        metrics = super().compute_validation_losses(epoch, log_figures)
 
         # Track codebook usage and log
         if self.is_main_process and self._codebook_tracker is not None:
-            self._track_codebook_usage(data_loader, max_batches=50)
+            self._track_codebook_usage(self.val_loader, max_batches=50)
 
             if self.writer is not None:
                 cb_metrics = self._codebook_tracker.log_to_tensorboard(
