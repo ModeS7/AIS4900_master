@@ -87,7 +87,7 @@ def _create_single_reconstruction_figure(
 
     # Create figure with minimal spacing - tight layout
     fig, axes = plt.subplots(
-        3, n_samples, figsize=(1.2 * n_samples, 3.5),
+        3, n_samples, figsize=(2.5 * n_samples, 7),
         gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
     )
     if n_samples == 1:
@@ -117,7 +117,7 @@ def _create_single_reconstruction_figure(
 
     # Add row labels on the left side
     for row, label in enumerate(row_labels):
-        axes[row, 0].text(-0.05, 0.5, label, transform=axes[row, 0].transAxes,
+        axes[row, 0].text(-0.02, 0.5, label, transform=axes[row, 0].transAxes,
                           fontsize=9, va='center', ha='right', rotation=90)
 
     # Build title
@@ -133,7 +133,7 @@ def _create_single_reconstruction_figure(
         fig.suptitle(full_title, fontsize=10, y=0.98)
 
     # Tight margins - minimal whitespace
-    fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.02, hspace=0.02, wspace=0.02)
+    fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.02, hspace=0.02, wspace=0.02)
     return fig
 
 
@@ -172,7 +172,7 @@ def _create_dual_reconstruction_figure(
 
     # Create figure: 6 rows (3 per channel) with minimal spacing
     fig, axes = plt.subplots(
-        6, n_samples, figsize=(1.2 * n_samples, 6.5),
+        6, n_samples, figsize=(2.5 * n_samples, 14),
         gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
     )
     if n_samples == 1:
@@ -218,7 +218,7 @@ def _create_dual_reconstruction_figure(
 
     # Add row labels on the left side
     for row, label in enumerate(row_labels):
-        axes[row, 0].text(-0.05, 0.5, label, transform=axes[row, 0].transAxes,
+        axes[row, 0].text(-0.02, 0.5, label, transform=axes[row, 0].transAxes,
                           fontsize=8, va='center', ha='right', rotation=90)
 
     # Build title
@@ -234,11 +234,11 @@ def _create_dual_reconstruction_figure(
         fig.suptitle(full_title, fontsize=10, y=0.98)
 
     # Tight margins - minimal whitespace
-    fig.subplots_adjust(left=0.10, right=0.98, top=0.94, bottom=0.02, hspace=0.02, wspace=0.02)
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.94, bottom=0.02, hspace=0.02, wspace=0.02)
     return fig
 
 
-def figure_to_buffer(fig: plt.Figure) -> io.BytesIO:
+def figure_to_buffer(fig: plt.Figure, dpi: int = 150) -> io.BytesIO:
     """Convert matplotlib figure to PNG buffer and close figure.
 
     Use this to safely convert figures for TensorBoard logging without
@@ -246,12 +246,13 @@ def figure_to_buffer(fig: plt.Figure) -> io.BytesIO:
 
     Args:
         fig: Matplotlib figure to convert.
+        dpi: Resolution for saved figure. Default 150 for good quality.
 
     Returns:
         BytesIO buffer containing PNG image data.
     """
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
     buf.seek(0)
     plt.close(fig)  # Prevent memory leak
     return buf
