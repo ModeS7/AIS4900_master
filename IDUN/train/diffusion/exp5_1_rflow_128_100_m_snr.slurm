@@ -34,6 +34,6 @@ time python -m medgen.scripts.train \
     training.augment=false \
     training.use_ema=false \
     training.use_min_snr=true \
-    training.name=exp_2_
+    training.name=exp_5_1_
 
 conda deactivate

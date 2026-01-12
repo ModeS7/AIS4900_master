@@ -5,6 +5,7 @@ across different trainers.
 """
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import (
+    ConstantLR,
     CosineAnnealingLR,
     LinearLR,
     SequentialLR,
@@ -56,5 +57,52 @@ def create_warmup_cosine_scheduler(
     return SequentialLR(
         optimizer,
         schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs]
+    )
+
+
+def create_warmup_constant_scheduler(
+    optimizer: Optimizer,
+    warmup_epochs: int,
+    total_epochs: int,
+    start_factor: float = 0.1,
+) -> SequentialLR:
+    """Create a warmup + constant LR scheduler.
+
+    The learning rate starts at start_factor * base_lr, linearly increases
+    to base_lr over warmup_epochs, then stays constant at base_lr.
+
+    Args:
+        optimizer: The optimizer to schedule.
+        warmup_epochs: Number of epochs for linear warmup.
+        total_epochs: Total number of training epochs.
+        start_factor: Starting LR factor for warmup (0.1 = start at 10% of base LR).
+
+    Returns:
+        SequentialLR scheduler combining warmup and constant LR.
+
+    Raises:
+        ValueError: If warmup_epochs >= total_epochs.
+    """
+    if warmup_epochs >= total_epochs:
+        raise ValueError(
+            f"warmup_epochs ({warmup_epochs}) must be less than "
+            f"total_epochs ({total_epochs})"
+        )
+
+    warmup_scheduler = LinearLR(
+        optimizer,
+        start_factor=start_factor,
+        end_factor=1.0,
+        total_iters=warmup_epochs
+    )
+    constant_scheduler = ConstantLR(
+        optimizer,
+        factor=1.0,
+        total_iters=total_epochs - warmup_epochs
+    )
+    return SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, constant_scheduler],
         milestones=[warmup_epochs]
     )

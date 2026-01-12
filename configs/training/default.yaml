@@ -168,7 +168,30 @@ use_multi_gpu: false
 disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)
 
 # Learning rate scheduler
-eta_min: 1.0e-6              # Minimum LR for cosine annealing
+scheduler: cosine            # Options: "cosine" (default), "constant"
+                             # cosine: warmup + cosine annealing to eta_min
+                             # constant: warmup then constant LR (may help with overfitting)
+eta_min: 1.0e-6              # Minimum LR for cosine annealing (only used if scheduler=cosine)
+
+# Gradient Noise Injection
+# Adds Gaussian noise to gradients for implicit regularization
+# Reference: "Adding Gradient Noise Improves Learning" (Neelakantan et al., 2015)
+# Noise decays as: sigma / (1 + step)^decay
+gradient_noise:
+  enabled: false             # Enable gradient noise injection
+  sigma: 0.01                # Initial noise std (0.01-0.1 typical)
+  decay: 0.55                # Noise decay exponent (paper uses 0.55)
+
+# Curriculum Timestep Scheduling
+# Progressively shifts from easy (low noise) to hard (high noise) timesteps
+# Start training on easy samples, gradually introduce harder ones
+curriculum:
+  enabled: false             # Enable curriculum learning
+  warmup_epochs: 50          # Epochs to reach full timestep range
+  min_t_start: 0.0           # Initial minimum timestep (0.0 = start of range)
+  max_t_start: 0.3           # Initial maximum timestep (0.3 = low noise only)
+  min_t_end: 0.0             # Final minimum timestep
+  max_t_end: 1.0             # Final maximum timestep (1.0 = full range)
 
 # Optimizer settings
 optimizer:

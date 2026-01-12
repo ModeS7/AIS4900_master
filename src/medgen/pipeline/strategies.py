@@ -196,11 +196,17 @@ class DiffusionStrategy(ABC):
         pass
 
     @abstractmethod
-    def sample_timesteps(self, images: ImageOrDict) -> torch.Tensor:
+    def sample_timesteps(
+        self,
+        images: ImageOrDict,
+        curriculum_range: Optional[Tuple[float, float]] = None,
+    ) -> torch.Tensor:
         """Sample timesteps for training.
 
         Args:
             images: Image tensor or dict of tensors (for batch size/device).
+            curriculum_range: Optional (min_t, max_t) tuple for curriculum learning.
+                If provided, samples from restricted timestep range.
 
         Returns:
             Sampled timesteps tensor.
@@ -323,7 +329,11 @@ class DDPMStrategy(DiffusionStrategy):
 
         return mse_loss, predicted_clean
 
-    def sample_timesteps(self, images):
+    def sample_timesteps(
+        self,
+        images,
+        curriculum_range: Optional[Tuple[float, float]] = None,
+    ):
         # Extract batch size from images
         if isinstance(images, dict):
             batch_size = list(images.values())[0].shape[0]
@@ -331,6 +341,14 @@ class DDPMStrategy(DiffusionStrategy):
         else:
             batch_size = images.shape[0]
             device = images.device
+
+        if curriculum_range is not None:
+            # Sample from restricted timestep range
+            min_t, max_t = curriculum_range
+            num_steps = self.scheduler.num_train_timesteps
+            min_step = int(min_t * num_steps)
+            max_step = int(max_t * num_steps)
+            return torch.randint(min_step, max_step, (batch_size,), device=device).long()
 
         return torch.randint(
             0, self.scheduler.num_train_timesteps,
@@ -486,13 +504,27 @@ class RFlowStrategy(DiffusionStrategy):
 
         return mse_loss, predicted_clean
 
-    def sample_timesteps(self, images):
-        # RFlow needs actual tensor for logit-normal sampling
+    def sample_timesteps(
+        self,
+        images,
+        curriculum_range: Optional[Tuple[float, float]] = None,
+    ):
+        # Extract batch size and device from images
         if isinstance(images, dict):
-            # Use first image in dict
             sample_tensor = list(images.values())[0]
         else:
             sample_tensor = images
+
+        if curriculum_range is not None:
+            # Sample from restricted timestep range (uniform sampling)
+            min_t, max_t = curriculum_range
+            batch_size = sample_tensor.shape[0]
+            device = sample_tensor.device
+            # RFlow uses continuous timesteps in [0, 1], then scales to [0, num_train_timesteps]
+            t_float = torch.rand(batch_size, device=device) * (max_t - min_t) + min_t
+            return (t_float * self.scheduler.num_train_timesteps).long()
+
+        # Default: logit-normal sampling
         return self.scheduler.sample_timesteps(sample_tensor)
 
     def generate(

@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, wrap_model_for_training
+from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, wrap_model_for_training
 from .base_trainer import BaseTrainer
 from .optimizers import SAM
 from .results import TrainingStepResult
@@ -178,6 +178,10 @@ class DiffusionTrainer(BaseTrainer):
         # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
 
+        # Global step counter (for gradient noise decay, etc.)
+        self._global_step: int = 0
+        self._current_epoch: int = 0  # Set in train_epoch
+
         # ScoreAug initialization (applies transforms to noisy data)
         self.score_aug = None
         self.use_omega_conditioning = False
@@ -313,6 +317,24 @@ class DiffusionTrainer(BaseTrainer):
                     "Augmented Diffusion Training enabled but using pixel space. "
                     "This has no effect - only applies to latent diffusion."
                 )
+
+        # Log gradient noise configuration
+        grad_noise_cfg = cfg.training.get('gradient_noise', {})
+        if grad_noise_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(
+                f"Gradient noise injection enabled: "
+                f"sigma={grad_noise_cfg.get('sigma', 0.01)}, decay={grad_noise_cfg.get('decay', 0.55)}"
+            )
+
+        # Log curriculum timestep configuration
+        curriculum_cfg = cfg.training.get('curriculum', {})
+        if curriculum_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(
+                f"Curriculum timestep scheduling enabled: "
+                f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
+                f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
+                f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
@@ -564,13 +586,23 @@ class DiffusionTrainer(BaseTrainer):
         if self.is_main_process and self.weight_decay > 0:
             logger.info(f"Using weight decay: {self.weight_decay}")
 
-        # Warmup + Cosine scheduler
-        self.lr_scheduler = create_warmup_cosine_scheduler(
-            self.optimizer,
-            warmup_epochs=self.warmup_epochs,
-            total_epochs=self.n_epochs,
-            eta_min=self.eta_min,
-        )
+        # Learning rate scheduler (cosine or constant)
+        scheduler_type = self.cfg.training.get('scheduler', 'cosine')
+        if scheduler_type == 'constant':
+            self.lr_scheduler = create_warmup_constant_scheduler(
+                self.optimizer,
+                warmup_epochs=self.warmup_epochs,
+                total_epochs=self.n_epochs,
+            )
+            if self.is_main_process:
+                logger.info("Using constant LR scheduler (warmup then constant)")
+        else:
+            self.lr_scheduler = create_warmup_cosine_scheduler(
+                self.optimizer,
+                warmup_epochs=self.warmup_epochs,
+                total_epochs=self.n_epochs,
+                eta_min=self.eta_min,
+            )
 
         # Create EMA wrapper if enabled
         self._setup_ema()
@@ -611,6 +643,59 @@ class DiffusionTrainer(BaseTrainer):
         """Update EMA model weights."""
         if self.ema is not None:
             self.ema.update()
+
+    def _add_gradient_noise(self, step: int) -> None:
+        """Add Gaussian noise to gradients for regularization.
+
+        Noise decays over training as: sigma / (1 + step)^decay
+        Reference: "Adding Gradient Noise Improves Learning" (Neelakantan et al., 2015)
+
+        Args:
+            step: Current global training step.
+        """
+        grad_noise_cfg = self.cfg.training.get('gradient_noise', {})
+        if not grad_noise_cfg.get('enabled', False):
+            return
+
+        sigma = grad_noise_cfg.get('sigma', 0.01)
+        decay = grad_noise_cfg.get('decay', 0.55)
+
+        # Decay noise over training
+        noise_std = sigma / (1 + step) ** decay
+
+        for param in self.model_raw.parameters():
+            if param.grad is not None:
+                noise = torch.randn_like(param.grad) * noise_std
+                param.grad.add_(noise)
+
+    def _get_curriculum_range(self, epoch: int) -> Optional[Tuple[float, float]]:
+        """Get timestep range for curriculum learning.
+
+        Linearly interpolates from start range to end range over warmup_epochs.
+
+        Args:
+            epoch: Current training epoch.
+
+        Returns:
+            Tuple of (min_t, max_t) or None if curriculum disabled.
+        """
+        curriculum_cfg = self.cfg.training.get('curriculum', {})
+        if not curriculum_cfg.get('enabled', False):
+            return None
+
+        warmup_epochs = curriculum_cfg.get('warmup_epochs', 50)
+        progress = min(1.0, epoch / warmup_epochs)
+
+        # Linear interpolation from start to end range
+        min_t_start = curriculum_cfg.get('min_t_start', 0.0)
+        min_t_end = curriculum_cfg.get('min_t_end', 0.0)
+        max_t_start = curriculum_cfg.get('max_t_start', 0.3)
+        max_t_end = curriculum_cfg.get('max_t_end', 1.0)
+
+        min_t = min_t_start + progress * (min_t_end - min_t_start)
+        max_t = max_t_start + progress * (max_t_end - max_t_start)
+
+        return (min_t, max_t)
 
     def _compute_min_snr_weighted_mse(
         self,
@@ -825,7 +910,9 @@ class DiffusionTrainer(BaseTrainer):
             else:
                 noise = torch.randn_like(images).to(self.device)
 
-            timesteps = self.strategy.sample_timesteps(images)
+            # Sample timesteps (with optional curriculum learning)
+            curriculum_range = self._get_curriculum_range(self._current_epoch)
+            timesteps = self.strategy.sample_timesteps(images, curriculum_range)
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
 
             # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
@@ -1228,7 +1315,12 @@ class DiffusionTrainer(BaseTrainer):
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
             )
+
+            # Add gradient noise (for regularization, decays over training)
+            self._add_gradient_noise(self._global_step)
+
             self.optimizer.step()
+            self._global_step += 1
 
             if self.use_ema:
                 self._update_ema()
@@ -1261,6 +1353,7 @@ class DiffusionTrainer(BaseTrainer):
         Returns:
             Tuple of (avg_loss, avg_mse_loss, avg_perceptual_loss).
         """
+        self._current_epoch = epoch
         self.model.train()
         epoch_loss = 0
         epoch_mse_loss = 0
