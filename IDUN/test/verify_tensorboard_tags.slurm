@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=verify_tb_tags
-#SBATCH --output=/cluster/home/modeeMDL/AIS4900_master/runs/tag_verification/slurm_%j.out
-#SBATCH --error=/cluster/home/modeeMDL/AIS4900_master/runs/tag_verification/slurm_%j.err
+#SBATCH --output=IDUN/output/test/verify_tb_tags_%j.out
+#SBATCH --error=IDUN/output/test/verify_tb_tags_%j.err
 #SBATCH --partition=GPUQ
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
@@ -21,8 +21,8 @@
 
 set -e  # Exit on first error
 
-# Setup
-cd /cluster/home/modeemdl/AIS4900_master
+# Setup - use SLURM_SUBMIT_DIR which is where sbatch was called from
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 source .venv/bin/activate
 
 # Test output directory
