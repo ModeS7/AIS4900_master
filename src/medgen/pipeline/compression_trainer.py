@@ -49,6 +49,7 @@ from .metrics import (
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
+    MetricKey,
 )
 from .tracking import GradientNormTracker, create_worst_batch_figure
 from .utils import save_full_checkpoint
@@ -794,17 +795,18 @@ class BaseCompressionTrainer(BaseTrainer):
 
         model_to_use.train()
 
+        # Compute 3D MS-SSIM on full volumes (2D trainers only, skip for seg_mode)
+        # Must be done BEFORE logging so the metric gets logged with modality suffix
+        if not getattr(self, 'seg_mode', False):
+            msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
+            if msssim_3d is not None:
+                result.metrics['msssim_3d'] = msssim_3d
+
         # Log to TensorBoard
         self._log_validation_metrics(
             epoch, result.metrics, result.worst_batch_data,
             result.regional_tracker, log_figures
         )
-
-        # Compute 3D MS-SSIM on full volumes (2D trainers only, skip for seg_mode)
-        if not getattr(self, 'seg_mode', False):
-            msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
-            if msssim_3d is not None:
-                result.metrics['msssim_3d'] = msssim_3d
 
         return result.metrics
 
@@ -858,6 +860,60 @@ class BaseCompressionTrainer(BaseTrainer):
             },
         }
 
+    def _log_validation_metrics_core(
+        self,
+        epoch: int,
+        metrics: Dict[str, float],
+    ) -> None:
+        """Log validation metrics with modality suffix handling.
+
+        This method handles the core metrics logging with proper modality suffixes.
+        Subclasses should call this for metrics logging, then add their own
+        worst batch and regional tracker handling.
+
+        Args:
+            epoch: Current epoch number.
+            metrics: Dictionary of validation metrics.
+        """
+        if self.writer is None or not hasattr(self, '_metrics_logger'):
+            return
+
+        # Get mode name for modality suffix
+        mode_name = self.cfg.mode.get('name', 'bravo')
+        n_channels = self.cfg.mode.get('in_channels', 1)
+        is_multi_modality = mode_name == 'multi_modality'
+        is_dual = n_channels == 2 and mode_name == 'dual'
+
+        # For single-modality modes (not multi_modality or dual), use modality suffix
+        # Multi-modality and dual modes are handled by their respective per-modality loops
+        if not is_multi_modality and not is_dual:
+            # Build metrics dict with MetricKey for unified logging
+            modality_metrics = {}
+            # Image quality metrics
+            if metrics.get('psnr') is not None:
+                modality_metrics[MetricKey.PSNR] = metrics['psnr']
+            if metrics.get('msssim') is not None:
+                modality_metrics[MetricKey.MSSSIM] = metrics['msssim']
+            if metrics.get('lpips') is not None:
+                modality_metrics[MetricKey.LPIPS] = metrics['lpips']
+            if metrics.get('msssim_3d') is not None:
+                modality_metrics[MetricKey.MSSSIM_3D] = metrics['msssim_3d']
+            # Seg mode metrics
+            if metrics.get('dice_score') is not None:
+                modality_metrics[MetricKey.DICE_SCORE] = metrics['dice_score']
+            if metrics.get('iou') is not None:
+                modality_metrics[MetricKey.IOU] = metrics['iou']
+            # Log with modality suffix (e.g., Validation/PSNR_bravo, Validation/Dice_seg)
+            self._metrics_logger.log_validation_per_modality(epoch, mode_name, modality_metrics)
+            # Also log losses without suffix (gen, l1, perc, reg)
+            loss_metrics = {k: v for k, v in metrics.items()
+                          if k in ('gen', 'l1', 'perc', 'reg', 'bce', 'dice', 'boundary')}
+            if loss_metrics:
+                self._log_validation_metrics_unified(epoch, loss_metrics)
+        else:
+            # Multi-modality/dual: log aggregate metrics, per-modality handled separately
+            self._log_validation_metrics_unified(epoch, metrics)
+
     def _log_validation_metrics(
         self,
         epoch: int,
@@ -866,7 +922,7 @@ class BaseCompressionTrainer(BaseTrainer):
         regional_tracker: Optional[RegionalMetricsTracker],
         log_figures: bool,
     ) -> None:
-        """Log validation metrics to TensorBoard.
+        """Log validation metrics to TensorBoard using unified system.
 
         Args:
             epoch: Current epoch number.
@@ -878,19 +934,8 @@ class BaseCompressionTrainer(BaseTrainer):
         if self.writer is None:
             return
 
-        # Log scalar metrics
-        self.writer.add_scalar('Loss/L1_val', metrics['l1'], epoch)
-        self.writer.add_scalar('Loss/Perceptual_val', metrics['perc'], epoch)
-        self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
-
-        if 'psnr' in metrics:
-            self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
-        if 'lpips' in metrics:
-            self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
-        if 'msssim' in metrics:
-            self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
-        if 'msssim_3d' in metrics:
-            self.writer.add_scalar('Validation/MS-SSIM-3D', metrics['msssim_3d'], epoch)
+        # Log metrics with modality suffix handling
+        self._log_validation_metrics_core(epoch, metrics)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:
@@ -898,9 +943,15 @@ class BaseCompressionTrainer(BaseTrainer):
             self.writer.add_figure('Validation/worst_batch', fig, epoch)
             plt.close(fig)
 
-        # Log regional metrics
+        # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:
-            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            is_multi_modality = mode_name == 'multi_modality'
+            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            if not is_multi_modality and not is_dual:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{mode_name}')
+            else:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
     def _compute_per_modality_validation(self, epoch: int) -> None:
         """Compute per-modality validation metrics.
@@ -946,14 +997,27 @@ class BaseCompressionTrainer(BaseTrainer):
 
                     n_batches += 1
 
-            # Log metrics
-            if n_batches > 0 and self.writer is not None:
+            # Log metrics using unified system
+            if n_batches > 0 and hasattr(self, '_metrics_logger'):
+                modality_metrics = {}
                 if self.log_psnr:
-                    self.writer.add_scalar(f'Validation/PSNR_{modality}', total_psnr / n_batches, epoch)
+                    modality_metrics[MetricKey.PSNR] = total_psnr / n_batches
                 if self.log_lpips:
-                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', total_lpips / n_batches, epoch)
+                    modality_metrics[MetricKey.LPIPS] = total_lpips / n_batches
                 if self.log_msssim:
-                    self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', total_msssim / n_batches, epoch)
+                    modality_metrics[MetricKey.MSSSIM] = total_msssim / n_batches
+
+                # Compute 3D MS-SSIM for this modality
+                if self.log_msssim and not getattr(self, 'seg_mode', False):
+                    msssim_3d = self._compute_volume_3d_msssim(
+                        epoch, data_split='val', modality_override=modality
+                    )
+                    if msssim_3d is not None:
+                        modality_metrics[MetricKey.MSSSIM_3D] = msssim_3d
+
+                self._metrics_logger.log_validation_per_modality(
+                    epoch, modality, modality_metrics
+                )
 
                 if regional_tracker is not None:
                     regional_tracker.log_to_tensorboard(
@@ -1006,17 +1070,33 @@ class BaseCompressionTrainer(BaseTrainer):
 
         model_to_use.train()
 
-        # Log per-channel metrics
-        if n_batches > 0 and self.writer is not None:
+        # Log per-channel metrics using unified system
+        if n_batches > 0 and hasattr(self, '_metrics_logger'):
             for key in image_keys:
+                ch_metrics = {}
                 if self.log_psnr:
-                    self.writer.add_scalar(f'Validation/PSNR_{key}', channel_metrics[key]['psnr'] / n_batches, epoch)
+                    ch_metrics[MetricKey.PSNR] = channel_metrics[key]['psnr'] / n_batches
                 if self.log_lpips:
-                    self.writer.add_scalar(f'Validation/LPIPS_{key}', channel_metrics[key]['lpips'] / n_batches, epoch)
+                    ch_metrics[MetricKey.LPIPS] = channel_metrics[key]['lpips'] / n_batches
                 if self.log_msssim:
-                    self.writer.add_scalar(f'Validation/MS-SSIM_{key}', channel_metrics[key]['msssim'] / n_batches, epoch)
+                    ch_metrics[MetricKey.MSSSIM] = channel_metrics[key]['msssim'] / n_batches
 
-    def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
+                # Compute 3D MS-SSIM for this channel
+                if self.log_msssim and not getattr(self, 'seg_mode', False):
+                    msssim_3d = self._compute_volume_3d_msssim(
+                        epoch, data_split='val', modality_override=key
+                    )
+                    if msssim_3d is not None:
+                        ch_metrics[MetricKey.MSSSIM_3D] = msssim_3d
+
+                self._metrics_logger.log_validation_per_modality(epoch, key, ch_metrics)
+
+    def _compute_volume_3d_msssim(
+        self,
+        epoch: int,
+        data_split: str = 'val',
+        modality_override: Optional[str] = None,
+    ) -> Optional[float]:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
 
         For 2D trainers, this loads full 3D volumes, processes each slice through
@@ -1032,6 +1112,8 @@ class BaseCompressionTrainer(BaseTrainer):
         Args:
             epoch: Current epoch number.
             data_split: Which data split to use ('val' or 'test_new').
+            modality_override: Optional specific modality to compute for
+                (e.g., 'bravo', 't1_pre'). If None, uses mode from config.
 
         Returns:
             Average 3D MS-SSIM across all volumes, or None if unavailable.
@@ -1042,10 +1124,13 @@ class BaseCompressionTrainer(BaseTrainer):
         # Import here to avoid circular imports
         from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
 
-        # Determine modality from config
-        mode_name = self.cfg.mode.get('name', 'bravo')
-        n_channels = self.cfg.mode.get('in_channels', 1)
-        modality = 'dual' if n_channels > 1 else mode_name
+        # Determine modality - use override if provided, else from config
+        if modality_override is not None:
+            modality = modality_override
+        else:
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            n_channels = self.cfg.mode.get('in_channels', 1)
+            modality = 'dual' if n_channels > 1 else mode_name
 
         # Create volume dataloader
         result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
@@ -1108,10 +1193,8 @@ class BaseCompressionTrainer(BaseTrainer):
 
         avg_msssim_3d = total_msssim_3d / n_volumes
 
-        # Log to TensorBoard (only for validation - test is logged by evaluator)
-        if self.writer is not None and data_split == 'val':
-            self.writer.add_scalar('Validation/MS-SSIM-3D', avg_msssim_3d, epoch)
-
+        # Note: Logging is handled by caller through _log_validation_metrics_core
+        # which applies proper modality suffix for single-modality modes
         return avg_msssim_3d
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1390,6 +1473,9 @@ class BaseCompressionTrainer(BaseTrainer):
         if n_channels > 1:
             image_keys = self.cfg.mode.get('image_keys', None)
 
+        # Get modality name for single-modality suffix
+        mode_name = self.cfg.mode.get('name', 'bravo')
+
         return CompressionTestEvaluator(
             model=self.model_raw,
             device=self.device,
@@ -1403,6 +1489,7 @@ class BaseCompressionTrainer(BaseTrainer):
             volume_3d_msssim_fn=volume_3d_msssim,
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
+            modality_name=mode_name,
         )
 
     def evaluate_test_set(
@@ -1744,15 +1831,20 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
 
                     n_batches += 1
 
-            # Log metrics
-            if n_batches > 0 and self.writer is not None:
+            # Log metrics using unified system
+            if n_batches > 0 and hasattr(self, '_metrics_logger'):
+                modality_metrics = {}
                 if self.log_psnr:
-                    self.writer.add_scalar(f'Validation/PSNR_{modality}', total_psnr / n_batches, epoch)
+                    modality_metrics['psnr'] = total_psnr / n_batches
                 if self.log_lpips:
-                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', total_lpips / n_batches, epoch)
+                    modality_metrics['lpips'] = total_lpips / n_batches
                 if self.log_msssim:
-                    self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', total_msssim_2d / n_batches, epoch)
-                    self.writer.add_scalar(f'Validation/MS-SSIM-3D_{modality}', total_msssim_3d / n_batches, epoch)
+                    modality_metrics['msssim'] = total_msssim_2d / n_batches
+                    modality_metrics['msssim_3d'] = total_msssim_3d / n_batches
+
+                self._metrics_logger.log_validation_per_modality(
+                    epoch, modality, modality_metrics
+                )
 
                 if regional_tracker is not None:
                     regional_tracker.log_to_tensorboard(
@@ -1810,6 +1902,9 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         if n_channels > 1:
             image_keys = self.cfg.mode.get('image_keys', None)
 
+        # Get modality name for single-modality suffix
+        mode_name = self.cfg.mode.get('name', 'bravo')
+
         return Compression3DTestEvaluator(
             model=self.model_raw,
             device=self.device,
@@ -1823,6 +1918,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
             seg_loss_fn=seg_loss_fn if seg_mode else None,
+            modality_name=mode_name,
         )
 
     def evaluate_test_set(

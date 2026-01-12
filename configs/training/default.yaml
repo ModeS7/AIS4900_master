@@ -105,6 +105,35 @@ sam:
   rho: 0.05                  # Perturbation radius (0.01-0.1 typical)
   adaptive: false            # Use ASAM (adaptive, weight-scale invariant)
 
+# DC-AE 1.5: Augmented Diffusion Training
+# Applies channel masking to latent diffusion training to accelerate convergence.
+# MUST be used together with structured latent space autoencoder (dcae.structured_latent.enabled=true).
+# Using one without the other can hurt results (per paper ablation).
+#
+# Reference: "DC-AE 1.5: Accelerating Diffusion Model Convergence with Structured Latent Space"
+# https://arxiv.org/abs/2508.00413
+#
+# Algorithm (Eq. 2):
+#   1. Sample random channel count c' from [min_channels, ..., latent_channels]
+#   2. Create mask: [1,...,1 (c' times), 0,...,0]
+#   3. Apply mask to noisy latent AND noise target
+#   4. Compute loss only on masked channels
+#
+# Results: 6x faster convergence on UViT-H, DiT-XL gFID 26.44 -> 17.31
+#
+# Usage:
+#   python -m medgen.scripts.train mode=bravo strategy=rflow \
+#       vae_checkpoint=path/to/dcae_1_5.pt \
+#       training.augmented_diffusion.enabled=true
+augmented_diffusion:
+  enabled: false             # Enable augmented diffusion training
+  # Channel steps: [min_channels, min+step, ..., latent_channels]
+  # Should match the structured latent space config used for autoencoder training
+  min_channels: 16           # Minimum channels to keep (paper uses 16)
+  channel_step: 4            # Step size between options (paper uses 4)
+  # Only applies to latent diffusion (scale_factor > 1)
+  # Has no effect on pixel-space diffusion
+
 # Perceptual loss (SqueezeNet features)
 perceptual_weight: 0.001   # Weight for perceptual loss term
 

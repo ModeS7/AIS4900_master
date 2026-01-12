@@ -1,7 +1,7 @@
 """
-Unified metrics system for compression trainers.
+Unified metrics system for ALL trainers (compression + diffusion).
 
-Eliminates duplicated code across VAE, VQ-VAE, DC-AE (2D and 3D) trainers
+Eliminates duplicated code across VAE, VQ-VAE, DC-AE, and Diffusion trainers
 by providing:
 
 1. TrainerMetricsConfig: Defines what metrics each trainer mode uses
@@ -10,15 +10,20 @@ by providing:
 
 Usage:
     # In trainer __init__
-    self._init_unified_metrics('vae')  # Uses helper in BaseCompressionTrainer
+    self._init_unified_metrics('vae')       # Compression trainers
+    self._init_unified_metrics('diffusion') # Diffusion trainer
 
     # In train_epoch
     self._loss_accumulator.reset()
     for batch in loader:
-        result = self.train_step(batch)
-        self._loss_accumulator.update(result.to_dict_with_key('kl'))
+        result = train_step(batch)
+        self._loss_accumulator.update(result.to_dict())
     avg = self._loss_accumulator.compute()
     self._metrics_logger.log_training(epoch, avg)
+
+    # Validation with per-modality support
+    self._metrics_logger.log_validation(epoch, metrics)
+    self._metrics_logger.log_validation_per_modality(epoch, 't1_pre', modality_metrics)
 
     # Epoch summary
     self._metrics_logger.log_epoch_summary(epoch, epochs, avg, val_metrics, elapsed)
@@ -27,7 +32,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -43,8 +48,9 @@ class TrainerMode(Enum):
     """Defines trainer type for metrics configuration."""
     VAE = auto()       # KL regularization
     VQVAE = auto()     # VQ loss
-    DCAE = auto()       # No regularization (deterministic)
+    DCAE = auto()      # No regularization (deterministic)
     SEG = auto()       # Segmentation mode (BCE + Dice + Boundary)
+    DIFFUSION = auto() # Diffusion model (MSE noise prediction)
 
 
 # =============================================================================
@@ -74,6 +80,10 @@ class LossKey:
     BCE = 'bce'        # Binary cross entropy
     DICE = 'dice'      # Dice loss (1 - dice_score)
     BOUNDARY = 'boundary'  # Boundary loss
+
+    # Diffusion-specific
+    MSE = 'mse'        # Mean squared error (noise prediction)
+    TOTAL = 'total'    # Alias for total loss (diffusion naming convention)
 
 
 class MetricKey:
@@ -106,12 +116,13 @@ class TrainerMetricsConfig:
     Use factory methods for common configurations.
 
     Attributes:
-        mode: Trainer mode (VAE, VQVAE, DCAE, SEG).
+        mode: Trainer mode (VAE, VQVAE, DCAE, SEG, DIFFUSION).
         loss_keys: Set of loss keys to track during training.
         regularization_key: Key for regularization loss (KL, VQ, or None).
         validation_metrics: Set of validation metric keys to log.
         has_gan: Whether GAN training is enabled.
         spatial_dims: 2 or 3 for 2D or 3D models.
+        modality_keys: List of modality names for per-modality logging.
 
     Example:
         # VAE trainer
@@ -122,6 +133,9 @@ class TrainerMetricsConfig:
 
         # DC-AE without GAN
         config = TrainerMetricsConfig.for_dcae(has_gan=False)
+
+        # Diffusion with per-modality logging
+        config = TrainerMetricsConfig.for_diffusion(modality_keys=['t1_pre', 'bravo'])
     """
     mode: TrainerMode
     loss_keys: Set[str] = field(default_factory=set)
@@ -129,6 +143,7 @@ class TrainerMetricsConfig:
     validation_metrics: Set[str] = field(default_factory=set)
     has_gan: bool = True
     spatial_dims: int = 2
+    modality_keys: Optional[List[str]] = None
 
     @classmethod
     def for_vae(
@@ -307,10 +322,62 @@ class TrainerMetricsConfig:
             spatial_dims=spatial_dims,
         )
 
+    @classmethod
+    def for_diffusion(
+        cls,
+        spatial_dims: int = 2,
+        log_msssim: bool = True,
+        log_lpips: bool = False,
+        log_psnr: bool = True,
+        modality_keys: Optional[List[str]] = None,
+    ) -> 'TrainerMetricsConfig':
+        """Create config for diffusion trainer.
+
+        Diffusion models use MSE loss for noise prediction, plus optional
+        perceptual loss. Validation metrics are computed on denoised samples.
+
+        Args:
+            spatial_dims: 2 or 3 for 2D or 3D models.
+            log_msssim: Whether to log MS-SSIM metrics.
+            log_lpips: Whether to log LPIPS metrics (slower).
+            log_psnr: Whether to log PSNR metrics.
+            modality_keys: List of modality names for per-modality logging.
+
+        Returns:
+            TrainerMetricsConfig for diffusion.
+        """
+        # Diffusion: MSE + optional perceptual, no GAN
+        loss_keys = {LossKey.TOTAL, LossKey.MSE, LossKey.PERC}
+
+        val_metrics: Set[str] = set()
+        if log_psnr:
+            val_metrics.add(MetricKey.PSNR)
+        if log_msssim:
+            val_metrics.add(MetricKey.MSSSIM)
+            if spatial_dims == 3:
+                val_metrics.add(MetricKey.MSSSIM_3D)
+        if log_lpips:
+            val_metrics.add(MetricKey.LPIPS)
+
+        return cls(
+            mode=TrainerMode.DIFFUSION,
+            loss_keys=loss_keys,
+            regularization_key=None,
+            validation_metrics=val_metrics,
+            has_gan=False,
+            spatial_dims=spatial_dims,
+            modality_keys=modality_keys,
+        )
+
     @property
     def is_seg_mode(self) -> bool:
         """Check if this is segmentation mode."""
         return self.mode == TrainerMode.SEG
+
+    @property
+    def is_diffusion_mode(self) -> bool:
+        """Check if this is diffusion mode."""
+        return self.mode == TrainerMode.DIFFUSION
 
     @property
     def uses_image_quality_metrics(self) -> bool:
@@ -390,19 +457,27 @@ class LossAccumulator:
 # =============================================================================
 
 class MetricsLogger:
-    """Unified TensorBoard and console logging for compression trainers.
+    """Unified TensorBoard and console logging for ALL trainers.
 
     Eliminates duplicated logging code by providing consistent
-    metric naming and logging patterns.
+    metric naming and logging patterns across compression and diffusion trainers.
 
     Usage:
         logger = MetricsLogger(writer, config)
 
         # After train epoch
         logger.log_training(epoch, avg_losses)
+        logger.log_learning_rate(epoch, lr)
 
         # After validation
         logger.log_validation(epoch, val_metrics)
+        logger.log_validation_per_modality(epoch, 't1_pre', modality_metrics)
+
+        # Timestep losses (diffusion)
+        logger.log_timestep_losses(epoch, timestep_bins)
+
+        # Test evaluation
+        logger.log_test(metrics, prefix='test_best')
 
         # Epoch summary
         logger.log_epoch_summary(epoch, total_epochs, avg_losses, val_metrics, elapsed)
@@ -420,6 +495,9 @@ class MetricsLogger:
         LossKey.BCE: 'Loss/BCE_train',
         LossKey.DICE: 'Loss/Dice_train',
         LossKey.BOUNDARY: 'Loss/Boundary_train',
+        # Diffusion-specific
+        LossKey.MSE: 'Loss/MSE_train',
+        LossKey.TOTAL: 'Loss/Total_train',
     }
 
     # TensorBoard tag mappings for validation losses
@@ -432,6 +510,9 @@ class MetricsLogger:
         LossKey.BCE: 'Loss/BCE_val',
         LossKey.DICE: 'Loss/Dice_val',
         LossKey.BOUNDARY: 'Loss/Boundary_val',
+        # Diffusion-specific
+        LossKey.MSE: 'Loss/MSE_val',
+        LossKey.TOTAL: 'Loss/Total_val',
     }
 
     # TensorBoard tag mappings for validation metrics
@@ -540,6 +621,107 @@ class MetricsLogger:
 
         self.writer.add_scalar(tag, display_value, epoch)
 
+    def log_learning_rate(
+        self,
+        epoch: int,
+        lr: float,
+        name: str = 'Generator',
+    ) -> None:
+        """Log learning rate to TensorBoard.
+
+        Args:
+            epoch: Current epoch number.
+            lr: Learning rate value.
+            name: Name for the learning rate (e.g., 'Generator', 'Discriminator').
+        """
+        if self.writer is None or self.use_multi_gpu:
+            return
+        self.writer.add_scalar(f'LR/{name}', lr, epoch)
+
+    def log_validation_per_modality(
+        self,
+        epoch: int,
+        modality: str,
+        metrics: Dict[str, float],
+    ) -> None:
+        """Log validation metrics for a specific modality.
+
+        Tags are formatted as: Validation/{MetricName}_{modality}
+        e.g., Validation/PSNR_t1_pre, Validation/MS-SSIM_bravo
+
+        Args:
+            epoch: Current epoch number.
+            modality: Modality name (e.g., 't1_pre', 'bravo', 'flair').
+            metrics: Dictionary of validation metrics for this modality.
+        """
+        if self.writer is None:
+            return
+
+        for key, value in metrics.items():
+            if key in self._VAL_METRIC_TAGS:
+                base_tag = self._VAL_METRIC_TAGS[key]
+                # e.g., Validation/PSNR -> Validation/PSNR_t1_pre
+                tag = f'{base_tag}_{modality}'
+                self.writer.add_scalar(tag, value, epoch)
+
+    def log_timestep_losses(
+        self,
+        epoch: int,
+        timestep_bins: Dict[str, float],
+    ) -> None:
+        """Log per-timestep loss distribution (diffusion trainer).
+
+        Args:
+            epoch: Current epoch number.
+            timestep_bins: Dictionary mapping bin names to average losses.
+                Keys should be formatted as '{start:04d}-{end:04d}'.
+                e.g., {'0000-0099': 0.5, '0100-0199': 0.3, ...}
+        """
+        if self.writer is None or self.use_multi_gpu:
+            return
+
+        for bin_name, loss in timestep_bins.items():
+            tag = f'Timestep/{bin_name}'
+            self.writer.add_scalar(tag, loss, epoch)
+
+    def log_test(
+        self,
+        metrics: Dict[str, float],
+        prefix: str = 'test_best',
+        modality: Optional[str] = None,
+    ) -> None:
+        """Log test evaluation metrics to TensorBoard.
+
+        Args:
+            epoch: Epoch number (usually 0 for test).
+            metrics: Dictionary of test metrics.
+            prefix: Prefix for tags (e.g., 'test_best', 'test_latest').
+            modality: Optional modality name for per-modality test metrics.
+        """
+        if self.writer is None:
+            return
+
+        for key, value in metrics.items():
+            # Get display name from validation metric tags
+            if key in self._VAL_METRIC_TAGS:
+                base_tag = self._VAL_METRIC_TAGS[key]
+                # Extract metric name (e.g., 'Validation/PSNR' -> 'PSNR')
+                metric_name = base_tag.split('/')[-1]
+            elif key in self._VAL_LOSS_TAGS:
+                base_tag = self._VAL_LOSS_TAGS[key]
+                metric_name = base_tag.split('/')[-1]
+            else:
+                # Use key as-is for unknown metrics
+                metric_name = key
+
+            # Build tag with optional modality suffix
+            if modality:
+                tag = f'{prefix}/{metric_name}_{modality}'
+            else:
+                tag = f'{prefix}/{metric_name}'
+
+            self.writer.add_scalar(tag, value, 0)
+
     def log_epoch_summary(
         self,
         epoch: int,
@@ -563,10 +745,20 @@ class MetricsLogger:
         epoch_pct = ((epoch + 1) / total_epochs) * 100
 
         # Build validation suffix for losses
-        val_gen = f"(v:{val_metrics.get('gen', 0):.4f})" if val_metrics else ""
+        if val_metrics:
+            # Handle different key names for total loss
+            val_total = val_metrics.get('gen') or val_metrics.get('total', 0)
+            val_gen = f"(v:{val_total:.4f})"
+        else:
+            val_gen = ""
 
         if self.config.is_seg_mode:
             self._log_seg_epoch_summary(
+                timestamp, epoch, total_epochs, epoch_pct,
+                avg_losses, val_metrics, val_gen, elapsed_time
+            )
+        elif self.config.is_diffusion_mode:
+            self._log_diffusion_epoch_summary(
                 timestamp, epoch, total_epochs, epoch_pct,
                 avg_losses, val_metrics, val_gen, elapsed_time
             )
@@ -660,6 +852,46 @@ class MetricsLogger:
             f"Time: {elapsed_time:.1f}s"
         )
 
+    def _log_diffusion_epoch_summary(
+        self,
+        timestamp: str,
+        epoch: int,
+        total_epochs: int,
+        epoch_pct: float,
+        avg_losses: Dict[str, float],
+        val_metrics: Optional[Dict[str, float]],
+        val_gen: str,
+        elapsed_time: float,
+    ) -> None:
+        """Log epoch summary for diffusion trainer."""
+        # Get MSE and perceptual losses
+        mse_loss = avg_losses.get(LossKey.MSE, 0)
+        perc_loss = avg_losses.get(LossKey.PERC, 0)
+        total_loss = avg_losses.get(LossKey.TOTAL, 0) or avg_losses.get(LossKey.GEN, 0)
+
+        # Build validation metrics string
+        metrics_parts = []
+        if val_metrics:
+            if val_metrics.get(MetricKey.MSSSIM):
+                metrics_parts.append(f"MS-SSIM: {val_metrics[MetricKey.MSSSIM]:.3f}")
+            if val_metrics.get(MetricKey.MSSSIM_3D):
+                metrics_parts.append(f"MS-SSIM-3D: {val_metrics[MetricKey.MSSSIM_3D]:.3f}")
+            if val_metrics.get(MetricKey.PSNR):
+                metrics_parts.append(f"PSNR: {val_metrics[MetricKey.PSNR]:.2f}")
+            if val_metrics.get(MetricKey.LPIPS):
+                metrics_parts.append(f"LPIPS: {val_metrics[MetricKey.LPIPS]:.3f}")
+        metric_str = " | ".join(metrics_parts) if metrics_parts else ""
+
+        # Format: Loss: 0.1234(v:0.0987) | MSE: 0.0567 | Perc: 0.0654 | MS-SSIM: 0.95 | PSNR: 25.3
+        logger.info(
+            f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
+            f"Loss: {total_loss:.4f}{val_gen} | "
+            f"MSE: {mse_loss:.4f} | "
+            f"Perc: {perc_loss:.4f} | "
+            f"{metric_str} | "
+            f"Time: {elapsed_time:.1f}s"
+        )
+
 
 # =============================================================================
 # Helper Functions
@@ -672,16 +904,20 @@ def create_metrics_config(
     seg_mode: bool = False,
     log_msssim: bool = True,
     log_lpips: bool = True,
+    log_psnr: bool = True,
+    modality_keys: Optional[List[str]] = None,
 ) -> TrainerMetricsConfig:
     """Factory function to create metrics config from string trainer type.
 
     Args:
-        trainer_type: One of 'vae', 'vqvae', 'dcae'.
+        trainer_type: One of 'vae', 'vqvae', 'dcae', 'diffusion'.
         has_gan: Whether GAN training is enabled.
         spatial_dims: 2 or 3 for 2D or 3D models.
         seg_mode: Whether segmentation mode is enabled.
         log_msssim: Whether to log MS-SSIM metrics.
         log_lpips: Whether to log LPIPS metrics.
+        log_psnr: Whether to log PSNR metrics.
+        modality_keys: List of modality names for per-modality logging.
 
     Returns:
         TrainerMetricsConfig for the specified trainer type.
@@ -714,8 +950,16 @@ def create_metrics_config(
             log_msssim=log_msssim,
             log_lpips=log_lpips,
         )
+    elif trainer_type == 'diffusion':
+        return TrainerMetricsConfig.for_diffusion(
+            spatial_dims=spatial_dims,
+            log_msssim=log_msssim,
+            log_lpips=log_lpips,
+            log_psnr=log_psnr,
+            modality_keys=modality_keys,
+        )
     else:
         raise ValueError(
             f"Unknown trainer type: {trainer_type}. "
-            "Expected 'vae', 'vqvae', or 'dcae'."
+            "Expected 'vae', 'vqvae', 'dcae', or 'diffusion'."
         )

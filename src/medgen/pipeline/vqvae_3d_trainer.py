@@ -442,12 +442,15 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Log training metrics using unified system
         self._log_training_metrics_unified(epoch, avg_losses)
 
-        # Log seg breakdown if in seg_mode (not handled by unified system)
-        if self.seg_mode and self.writer is not None and self.is_main_process and not self.use_multi_gpu:
+        # Log seg breakdown if in seg_mode (supplement unified logging with breakdown)
+        if self.seg_mode and hasattr(self, '_metrics_logger') and self.is_main_process:
             n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-            self.writer.add_scalar('Loss/BCE_train', self._epoch_seg_breakdown['bce'] / n_batches, epoch)
-            self.writer.add_scalar('Loss/Dice_train', self._epoch_seg_breakdown['dice'] / n_batches, epoch)
-            self.writer.add_scalar('Loss/Boundary_train', self._epoch_seg_breakdown['boundary'] / n_batches, epoch)
+            seg_breakdown = {
+                'bce': self._epoch_seg_breakdown['bce'] / n_batches,
+                'dice': self._epoch_seg_breakdown['dice'] / n_batches,
+                'boundary': self._epoch_seg_breakdown['boundary'] / n_batches,
+            }
+            self._metrics_logger.log_training(epoch, seg_breakdown)
 
         return avg_losses
 
@@ -554,14 +557,14 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         if self.writer is None:
             return
 
-        # Use unified validation logging for common metrics
-        self._log_validation_metrics_unified(epoch, metrics)
+        # Log metrics with modality suffix handling
+        self._log_validation_metrics_core(epoch, metrics)
 
         # VQ-VAE-specific: log VQ loss (no unweighting needed)
         if 'reg' in metrics and hasattr(self, '_metrics_logger'):
             self._metrics_logger.log_regularization(epoch, metrics['reg'], suffix='val')
 
-        # Log worst batch figure if available (for seg_mode)
+        # Log worst batch figure if available (3D-specific)
         if log_figures and worst_batch_data is not None and 'original' in worst_batch_data:
             fig = create_worst_batch_figure_3d(
                 worst_batch_data['original'],
@@ -573,9 +576,15 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
                 self.writer.add_figure('Validation/WorstBatch_3D', fig, epoch)
                 plt.close(fig)
 
-        # Log regional metrics
+        # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:
-            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            is_multi_modality = mode_name == 'multi_modality'
+            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            if not is_multi_modality and not is_dual:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{mode_name}')
+            else:
+                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
     def _log_epoch_summary(
         self,

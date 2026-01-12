@@ -24,6 +24,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from .metrics.unified import MetricKey
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,6 +169,51 @@ def log_metrics_to_tensorboard(
             writer.add_scalar(f'{prefix}/{key}', value, step)
 
 
+def log_test_per_modality(
+    writer: Optional[SummaryWriter],
+    metrics: Dict[str, float],
+    prefix: str,
+    modality: str,
+    step: int = 0,
+) -> None:
+    """Log per-modality test metrics to TensorBoard.
+
+    Uses unified tag naming: {prefix}/{MetricName}_{modality}
+    e.g., test_best/MS-SSIM_t1_pre
+
+    Args:
+        writer: TensorBoard SummaryWriter (can be None).
+        metrics: Dictionary of metric key -> value.
+        prefix: Prefix for metric names (e.g., "test_best").
+        modality: Modality name (e.g., "t1_pre", "bravo").
+        step: Global step for TensorBoard.
+    """
+    if writer is None:
+        return
+
+    # Map metric keys to display names (consistent with unified system)
+    name_map = {
+        MetricKey.MSSSIM: 'MS-SSIM',
+        MetricKey.MSSSIM_3D: 'MS-SSIM-3D',
+        MetricKey.PSNR: 'PSNR',
+        MetricKey.LPIPS: 'LPIPS',
+        MetricKey.DICE_SCORE: 'Dice',
+        MetricKey.IOU: 'IoU',
+        # Also support string keys for backward compatibility
+        'msssim': 'MS-SSIM',
+        'msssim_3d': 'MS-SSIM-3D',
+        'psnr': 'PSNR',
+        'lpips': 'LPIPS',
+        'dice': 'Dice',
+        'iou': 'IoU',
+    }
+
+    for key, value in metrics.items():
+        display_name = name_map.get(key)
+        if display_name:
+            writer.add_scalar(f'{prefix}/{display_name}_{modality}', value, step)
+
+
 # =============================================================================
 # Metrics Configuration
 # =============================================================================
@@ -211,6 +258,7 @@ class BaseTestEvaluator(ABC):
         metrics_config: Optional[MetricsConfig] = None,
         is_cluster: bool = False,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        modality_name: Optional[str] = None,
     ):
         """Initialize test evaluator.
 
@@ -222,6 +270,9 @@ class BaseTestEvaluator(ABC):
             metrics_config: Which metrics to compute.
             is_cluster: If True, disable tqdm progress bar.
             worst_batch_figure_fn: Optional callable to create worst batch figure.
+            modality_name: Optional modality name for single-modality suffix
+                (e.g., 'bravo', 'seg'). If set and not 'multi_modality' or 'dual',
+                metrics are logged with this suffix.
         """
         self.model = model
         self.device = device
@@ -230,6 +281,7 @@ class BaseTestEvaluator(ABC):
         self.metrics_config = metrics_config or MetricsConfig()
         self.is_cluster = is_cluster
         self.worst_batch_figure_fn = worst_batch_figure_fn
+        self.modality_name = modality_name
 
     def evaluate(
         self,
@@ -268,7 +320,18 @@ class BaseTestEvaluator(ABC):
         # Log results
         log_test_results(metrics, label, metrics.get('n_samples', 0))
         save_test_results(metrics, label, self.save_dir)
-        log_metrics_to_tensorboard(self.writer, metrics, f'test_{label}')
+
+        # Log to TensorBoard with modality suffix for single-modality modes
+        is_single_modality = (
+            self.modality_name is not None
+            and self.modality_name not in ('multi_modality', 'dual')
+        )
+        if is_single_modality:
+            # Use per-modality logging for single-modality modes (e.g., test_best/PSNR_bravo)
+            log_test_per_modality(self.writer, metrics, f'test_{label}', self.modality_name)
+        else:
+            # Aggregate logging for multi-modality/dual (e.g., test_best/PSNR)
+            log_metrics_to_tensorboard(self.writer, metrics, f'test_{label}')
 
         # Log worst batch figure
         if worst_batch_data is not None and self.writer is not None:
@@ -472,6 +535,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
         image_keys: Optional[List[str]] = None,
         seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
+        modality_name: Optional[str] = None,
     ):
         """Initialize 2D compression evaluator.
 
@@ -490,10 +554,12 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             worst_batch_figure_fn: Optional callable to create worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics (e.g., ['t1_pre', 't1_gd']).
             seg_loss_fn: Optional segmentation loss function for seg_mode (returns total, breakdown).
+            modality_name: Optional modality name for single-modality suffix (e.g., 'bravo', 'seg').
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
-            worst_batch_figure_fn=worst_batch_figure_fn
+            worst_batch_figure_fn=worst_batch_figure_fn,
+            modality_name=modality_name,
         )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
@@ -525,21 +591,31 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         label = checkpoint_name or "current"
 
-        # Log regional metrics to TensorBoard
+        # Log regional metrics to TensorBoard with modality suffix for single-modality
         if self._regional_tracker is not None and self.writer is not None:
+            is_single_modality = (
+                self.modality_name is not None
+                and self.modality_name not in ('multi_modality', 'dual')
+            )
+            if is_single_modality:
+                regional_prefix = f'test_{label}_regional_{self.modality_name}'
+            else:
+                regional_prefix = f'test_{label}_regional'
             self._regional_tracker.log_to_tensorboard(
-                self.writer, 0, prefix=f'test_{label}_regional'
+                self.writer, 0, prefix=regional_prefix
             )
 
-        # Log per-channel metrics to TensorBoard
+        # Log per-channel metrics to TensorBoard using unified helper
         if self._per_channel_count > 0 and self.writer is not None:
-            for key, metrics in self._per_channel_metrics.items():
+            for key, channel_metrics in self._per_channel_metrics.items():
+                modality_metrics = {}
                 if self.metrics_config.compute_msssim:
-                    self.writer.add_scalar(f'test_{label}/MS-SSIM_{key}', metrics['msssim'] / self._per_channel_count, 0)
+                    modality_metrics['msssim'] = channel_metrics['msssim'] / self._per_channel_count
                 if self.metrics_config.compute_psnr:
-                    self.writer.add_scalar(f'test_{label}/PSNR_{key}', metrics['psnr'] / self._per_channel_count, 0)
+                    modality_metrics['psnr'] = channel_metrics['psnr'] / self._per_channel_count
                 if self.metrics_config.compute_lpips:
-                    self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
+                    modality_metrics['lpips'] = channel_metrics['lpips'] / self._per_channel_count
+                log_test_per_modality(self.writer, modality_metrics, f'test_{label}', key)
 
         return result
 
@@ -709,6 +785,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
         image_keys: Optional[List[str]] = None,
         seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
+        modality_name: Optional[str] = None,
     ):
         """Initialize 3D compression evaluator.
 
@@ -725,10 +802,12 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             worst_batch_figure_fn: Optional callable to create 3D worst batch figure.
             image_keys: Optional list of channel names for per-channel metrics.
             seg_loss_fn: Optional segmentation loss function for seg_mode.
+            modality_name: Optional modality name for single-modality suffix (e.g., 'bravo', 'seg').
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
-            worst_batch_figure_fn=worst_batch_figure_fn
+            worst_batch_figure_fn=worst_batch_figure_fn,
+            modality_name=modality_name,
         )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
@@ -764,22 +843,33 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 
         label = checkpoint_name or "current"
 
+        # Log regional metrics with modality suffix for single-modality modes
         if self._regional_tracker is not None and self.writer is not None:
+            is_single_modality = (
+                self.modality_name is not None
+                and self.modality_name not in ('multi_modality', 'dual')
+            )
+            if is_single_modality:
+                regional_prefix = f'test_{label}_regional_{self.modality_name}'
+            else:
+                regional_prefix = f'test_{label}_regional'
             self._regional_tracker.log_to_tensorboard(
-                self.writer, 0, prefix=f'test_{label}_regional'
+                self.writer, 0, prefix=regional_prefix
             )
 
-        # Log per-channel metrics to TensorBoard
+        # Log per-channel metrics to TensorBoard using unified helper
         if self._per_channel_count > 0 and self.writer is not None:
-            for key, metrics in self._per_channel_metrics.items():
+            for key, channel_metrics in self._per_channel_metrics.items():
+                modality_metrics = {}
                 if self.metrics_config.compute_msssim:
-                    self.writer.add_scalar(f'test_{label}/MS-SSIM_{key}', metrics['msssim'] / self._per_channel_count, 0)
+                    modality_metrics['msssim'] = channel_metrics['msssim'] / self._per_channel_count
                 if self.metrics_config.compute_msssim_3d:
-                    self.writer.add_scalar(f'test_{label}/MS-SSIM-3D_{key}', metrics['msssim_3d'] / self._per_channel_count, 0)
+                    modality_metrics['msssim_3d'] = channel_metrics['msssim_3d'] / self._per_channel_count
                 if self.metrics_config.compute_psnr:
-                    self.writer.add_scalar(f'test_{label}/PSNR_{key}', metrics['psnr'] / self._per_channel_count, 0)
+                    modality_metrics['psnr'] = channel_metrics['psnr'] / self._per_channel_count
                 if self.metrics_config.compute_lpips:
-                    self.writer.add_scalar(f'test_{label}/LPIPS_{key}', metrics['lpips'] / self._per_channel_count, 0)
+                    modality_metrics['lpips'] = channel_metrics['lpips'] / self._per_channel_count
+                log_test_per_modality(self.writer, modality_metrics, f'test_{label}', key)
 
         return result
 

@@ -11,8 +11,9 @@ and implements DC-AE-specific functionality:
 import json
 import logging
 import os
+import random
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use('Agg')
@@ -120,6 +121,21 @@ class DCAETrainer(BaseCompressionTrainer):
             if self.is_main_process:
                 logger.info("Seg mode enabled: BCE + Dice + Boundary loss")
 
+        # ─────────────────────────────────────────────────────────────────────
+        # DC-AE 1.5: Structured Latent Space
+        # ─────────────────────────────────────────────────────────────────────
+        structured_cfg = cfg.dcae.get('structured_latent', {})
+        self.structured_latent_enabled: bool = structured_cfg.get('enabled', False)
+        self.structured_latent_min: int = structured_cfg.get('min_channels', 16)
+        self.structured_latent_step: int = structured_cfg.get('channel_step', 4)
+
+        if self.structured_latent_enabled and self.is_main_process:
+            steps = self._get_channel_steps()
+            logger.info(
+                f"DC-AE 1.5 Structured Latent Space enabled: "
+                f"channel_steps={steps}"
+            )
+
         # Initialize unified metrics system (after seg_mode is set)
         self._init_unified_metrics('dcae')
 
@@ -140,6 +156,60 @@ class DCAETrainer(BaseCompressionTrainer):
         training_phase = cfg.training.get('phase', 1)
         adv_weight = cfg.dcae.get('adv_weight', 0.0)
         return (adv_weight == 0.0) or (training_phase == 1)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # DC-AE 1.5: Structured Latent Space Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _get_channel_steps(self) -> List[int]:
+        """Get list of channel counts for structured latent masking.
+
+        Returns list [min_channels, min+step, min+2*step, ..., latent_channels].
+        Paper uses [16, 20, 24, ..., c] with step=4, min=16.
+
+        Returns:
+            List of valid channel counts to sample from during training.
+        """
+        steps = list(range(
+            self.structured_latent_min,
+            self.latent_channels + 1,
+            self.structured_latent_step
+        ))
+        # Ensure max channels is always included
+        if not steps or steps[-1] != self.latent_channels:
+            steps.append(self.latent_channels)
+        return steps
+
+    def _apply_structured_latent_mask(self, latent: torch.Tensor) -> torch.Tensor:
+        """Apply random channel masking for structured latent space training.
+
+        From DC-AE 1.5 paper (Eq. 1):
+        - Sample random channel count c' from [min_channels, ..., latent_channels]
+        - Create mask: [1,...,1 (c' times), 0,...,0]
+        - Apply mask to latent: z_masked = z * mask
+
+        This forces front channels to capture object structure while
+        later channels capture image details.
+
+        Args:
+            latent: Encoded latent tensor [B, C, H, W].
+
+        Returns:
+            Masked latent with channels c' to C zeroed out.
+        """
+        if not self.structured_latent_enabled:
+            return latent
+
+        # Sample random channel count from valid steps
+        channel_steps = self._get_channel_steps()
+        c_prime = random.choice(channel_steps)
+
+        # Create mask [1, C, 1, 1] for broadcasting
+        C = latent.shape[1]
+        mask = torch.zeros(1, C, 1, 1, device=latent.device, dtype=latent.dtype)
+        mask[:, :c_prime, :, :] = 1.0
+
+        return latent * mask
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for DC-AE."""
@@ -466,6 +536,10 @@ class DCAETrainer(BaseCompressionTrainer):
         with autocast('cuda', enabled=True, dtype=self.weight_dtype):
             # DC-AE forward: deterministic encoding
             latent = self.model.encode(images, return_dict=False)[0]
+
+            # DC-AE 1.5: Apply structured latent space masking (training only)
+            latent = self._apply_structured_latent_mask(latent)
+
             reconstruction = self.model.decode(latent, return_dict=False)[0]
 
             if self.seg_mode and self.seg_loss_fn is not None:
@@ -660,8 +734,8 @@ class DCAETrainer(BaseCompressionTrainer):
         if self.writer is None:
             return
 
-        # Use unified validation logging (handles seg_mode automatically)
-        self._log_validation_metrics_unified(epoch, metrics)
+        # Log metrics with modality suffix handling
+        self._log_validation_metrics_core(epoch, metrics)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:
@@ -669,9 +743,19 @@ class DCAETrainer(BaseCompressionTrainer):
             self.writer.add_figure('Validation/worst_batch', fig, epoch)
             plt.close(fig)
 
-        # Log regional metrics (different prefix for seg vs image mode)
+        # Log regional metrics with modality suffix
         if regional_tracker is not None:
-            prefix = 'regional_seg' if self.seg_mode else 'regional'
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            is_multi_modality = mode_name == 'multi_modality'
+            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            # For seg_mode, use 'regional_seg' prefix
+            # For single-modality, add modality suffix
+            if self.seg_mode:
+                prefix = f'regional_seg_{mode_name}'
+            elif not is_multi_modality and not is_dual:
+                prefix = f'regional_{mode_name}'
+            else:
+                prefix = 'regional'
             regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
 
     def _create_test_evaluator(self) -> 'CompressionTestEvaluator':
@@ -715,6 +799,9 @@ class DCAETrainer(BaseCompressionTrainer):
         if n_channels > 1 and not self.seg_mode:
             image_keys = self.cfg.mode.get('image_keys', None)
 
+        # Get modality name for single-modality suffix
+        mode_name = self.cfg.mode.get('name', 'bravo')
+
         return CompressionTestEvaluator(
             model=self.model_raw,
             device=self.device,
@@ -729,6 +816,7 @@ class DCAETrainer(BaseCompressionTrainer):
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
             seg_loss_fn=self.seg_loss_fn if self.seg_mode else None,
+            modality_name=mode_name,
         )
 
     def _get_model_config(self) -> Dict[str, Any]:

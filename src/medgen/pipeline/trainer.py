@@ -12,9 +12,10 @@ and implements diffusion-specific functionality:
 import json
 import logging
 import os
+import random
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib
 matplotlib.use('Agg')
@@ -57,6 +58,12 @@ from .metrics import (
     compute_msssim,
     compute_psnr,
     compute_lpips,
+    # Unified metrics system
+    TrainerMetricsConfig,
+    LossAccumulator,
+    MetricsLogger,
+    LossKey,
+    MetricKey,
 )
 from .tracking import FLOPsTracker
 
@@ -140,6 +147,27 @@ class DiffusionTrainer(BaseTrainer):
             is_conditional=self.mode.is_conditional,
         )
         self.metrics.set_scheduler(self.scheduler)
+
+        # Initialize unified metrics system for consistent logging
+        # Determine modality keys for per-modality logging (multi mode)
+        modality_keys = None
+        if self.mode_name == 'multi':
+            modality_keys = ['t1_pre', 'bravo', 'flair', 't1_gd']
+        self._metrics_config = TrainerMetricsConfig.for_diffusion(
+            spatial_dims=2,  # Diffusion trainer is 2D (slice-based)
+            log_msssim=self.metrics.log_msssim,
+            log_lpips=self.metrics.log_lpips,
+            log_psnr=True,
+            modality_keys=modality_keys,
+        )
+        self._loss_accumulator = LossAccumulator(self._metrics_config)
+        # Don't pass use_multi_gpu - diffusion trainer handles main_process guards explicitly
+        # This differs from compression trainers which use use_multi_gpu to skip rank!=0 logging
+        self._metrics_logger = MetricsLogger(
+            self.writer,
+            self._metrics_config,
+            use_multi_gpu=False,  # Guard with is_main_process in logging calls
+        )
 
         # Initialize model components (set during setup_model)
         self.perceptual_loss_fn: Optional[nn.Module] = None
@@ -228,6 +256,75 @@ class DiffusionTrainer(BaseTrainer):
                 f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
                 f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
             )
+
+        # DC-AE 1.5: Augmented Diffusion Training (channel masking for latent diffusion)
+        aug_diff_cfg = cfg.training.get('augmented_diffusion', {})
+        self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
+        self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
+        self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
+        self._aug_diff_channel_steps: Optional[List[int]] = None  # Computed lazily
+
+        if self.augmented_diffusion_enabled and self.is_main_process:
+            # Only effective for latent diffusion
+            if self.space.scale_factor > 1:
+                logger.info(
+                    f"DC-AE 1.5 Augmented Diffusion Training enabled: "
+                    f"min_channels={self.aug_diff_min_channels}, step={self.aug_diff_channel_step}"
+                )
+            else:
+                logger.warning(
+                    "Augmented Diffusion Training enabled but using pixel space. "
+                    "This has no effect - only applies to latent diffusion."
+                )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # DC-AE 1.5: Augmented Diffusion Training Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _get_aug_diff_channel_steps(self, num_channels: int) -> List[int]:
+        """Get list of channel counts for augmented diffusion masking.
+
+        Returns [min_channels, min+step, min+2*step, ..., num_channels].
+        Paper uses [16, 20, 24, ..., c] with step=4, min=16.
+
+        Args:
+            num_channels: Total number of latent channels.
+
+        Returns:
+            List of valid channel counts to sample from during training.
+        """
+        if self._aug_diff_channel_steps is None:
+            steps = list(range(
+                self.aug_diff_min_channels,
+                num_channels + 1,
+                self.aug_diff_channel_step
+            ))
+            # Ensure max channels is always included
+            if not steps or steps[-1] != num_channels:
+                steps.append(num_channels)
+            self._aug_diff_channel_steps = steps
+        return self._aug_diff_channel_steps
+
+    def _create_aug_diff_mask(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Create channel mask for augmented diffusion training.
+
+        From DC-AE 1.5 paper (Eq. 2):
+        - Sample random channel count c' from [min_channels, ..., num_channels]
+        - Create mask: [1,...,1 (c' times), 0,...,0]
+
+        Args:
+            tensor: Input tensor [B, C, H, W] to get shape from.
+
+        Returns:
+            Mask tensor [1, C, 1, 1] for broadcasting.
+        """
+        C = tensor.shape[1]
+        steps = self._get_aug_diff_channel_steps(C)
+        c_prime = random.choice(steps)
+
+        mask = torch.zeros(1, C, 1, 1, device=tensor.device, dtype=tensor.dtype)
+        mask[:, :c_prime, :, :] = 1.0
+        return mask
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for diffusion trainer."""
@@ -402,6 +499,8 @@ class DiffusionTrainer(BaseTrainer):
         elif self.use_mode_embedding:
             compile_fused = False
         elif self.use_omega_conditioning:
+            compile_fused = False
+        elif self.augmented_diffusion_enabled:
             compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
@@ -691,6 +790,22 @@ class DiffusionTrainer(BaseTrainer):
 
             timesteps = self.strategy.sample_timesteps(images)
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
+
+            # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
+            # Only active for latent diffusion (scale_factor > 1)
+            aug_diff_mask = None
+            if self.augmented_diffusion_enabled and self.space.scale_factor > 1:
+                if isinstance(noise, dict):
+                    # Dual mode: apply same mask to both modalities
+                    keys = list(noise.keys())
+                    aug_diff_mask = self._create_aug_diff_mask(noise[keys[0]])
+                    noise = {k: v * aug_diff_mask for k, v in noise.items()}
+                    noisy_images = {k: v * aug_diff_mask for k, v in noisy_images.items()}
+                else:
+                    aug_diff_mask = self._create_aug_diff_mask(noise)
+                    noise = noise * aug_diff_mask
+                    noisy_images = noisy_images * aug_diff_mask
+
             model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
             if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
@@ -846,6 +961,15 @@ class DiffusionTrainer(BaseTrainer):
                         prediction = self.model(model_input, timesteps, mode_id=mode_id)
                     else:
                         prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
+
+                    # DC-AE 1.5: Mask prediction for augmented diffusion training
+                    # Paper Eq. 2: ||ε·mask - ε_θ(x_t·mask, t)·mask||²
+                    if aug_diff_mask is not None:
+                        if isinstance(prediction, dict):
+                            prediction = {k: v * aug_diff_mask for k, v in prediction.items()}
+                        else:
+                            prediction = prediction * aug_diff_mask
+
                     mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                     if self.use_min_snr:
@@ -1038,11 +1162,15 @@ class DiffusionTrainer(BaseTrainer):
         avg_mse = epoch_mse_loss / n_batches
         avg_perceptual = epoch_perceptual_loss / n_batches
 
-        if self.writer is not None and self.is_main_process and not self.use_multi_gpu:
-            self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
-            self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
-            self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-            self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+        # Log training losses using unified system
+        if self.is_main_process and not self.use_multi_gpu:
+            avg_losses = {
+                LossKey.TOTAL: avg_loss,
+                LossKey.MSE: avg_mse,
+                LossKey.PERC: avg_perceptual,
+            }
+            self._metrics_logger.log_training(epoch, avg_losses)
+            self._metrics_logger.log_learning_rate(epoch, self.lr_scheduler.get_last_lr()[0])
 
         return avg_loss, avg_mse, avg_perceptual
 
@@ -1246,35 +1374,62 @@ class DiffusionTrainer(BaseTrainer):
         if self.metrics.log_lpips:
             metrics['lpips'] = total_lpips / n_batches
 
-        # Log to TensorBoard
+        # Log to TensorBoard using unified system
         if self.writer is not None:
-            self.writer.add_scalar('Loss/MSE_val', metrics['mse'], epoch)
-            self.writer.add_scalar('Loss/Perceptual_val', metrics['perceptual'], epoch)
-            self.writer.add_scalar('Loss/Total_val', metrics['total'], epoch)
-            self.writer.add_scalar('Validation/MS-SSIM', metrics['msssim'], epoch)
-            self.writer.add_scalar('Validation/PSNR', metrics['psnr'], epoch)
-            if 'lpips' in metrics:
-                self.writer.add_scalar('Validation/LPIPS', metrics['lpips'], epoch)
+            # Log validation losses (always without suffix)
+            val_losses = {
+                LossKey.MSE: metrics['mse'],
+                LossKey.PERC: metrics['perceptual'],
+                LossKey.TOTAL: metrics['total'],
+            }
+            self._metrics_logger.log_validation(epoch, val_losses)
 
-            # Log per-channel metrics for dual/multi modes
-            for channel_key, channel_data in per_channel_metrics.items():
-                count = channel_data['count']
-                if count > 0:
-                    self.writer.add_scalar(f'Validation/MS-SSIM_{channel_key}', channel_data['msssim'] / count, epoch)
-                    self.writer.add_scalar(f'Validation/PSNR_{channel_key}', channel_data['psnr'] / count, epoch)
-                    if self.metrics.log_lpips:
-                        self.writer.add_scalar(f'Validation/LPIPS_{channel_key}', channel_data['lpips'] / count, epoch)
+            # Determine if single-modality mode (not multi, not dual)
+            is_single_modality = self.mode_name not in ('multi', 'dual')
 
-            # Log regional metrics (tumor vs background)
-            if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
-
-            # Compute and log volume 3D MS-SSIM
+            # Compute 3D MS-SSIM first so we can include it in modality metrics
+            msssim_3d = None
             if self.log_msssim:
                 msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
-                    self.writer.add_scalar('Validation/MS-SSIM-3D', msssim_3d, epoch)
+
+            # Log validation quality metrics
+            val_metrics = {
+                MetricKey.MSSSIM: metrics['msssim'],
+                MetricKey.PSNR: metrics['psnr'],
+            }
+            if 'lpips' in metrics:
+                val_metrics[MetricKey.LPIPS] = metrics['lpips']
+            if msssim_3d is not None:
+                val_metrics[MetricKey.MSSSIM_3D] = msssim_3d
+
+            if is_single_modality:
+                # Single-modality: use mode_name as suffix (e.g., Validation/PSNR_bravo)
+                self._metrics_logger.log_validation_per_modality(epoch, self.mode_name, val_metrics)
+            else:
+                # Multi/dual: log aggregate, per-channel handles modality suffix
+                self._metrics_logger.log_validation(epoch, val_metrics)
+
+            # Log per-channel metrics for dual/multi modes using unified system
+            for channel_key, channel_data in per_channel_metrics.items():
+                count = channel_data['count']
+                if count > 0:
+                    modality_metrics = {
+                        MetricKey.MSSSIM: channel_data['msssim'] / count,
+                        MetricKey.PSNR: channel_data['psnr'] / count,
+                    }
+                    if self.metrics.log_lpips:
+                        modality_metrics[MetricKey.LPIPS] = channel_data['lpips'] / count
+                    self._metrics_logger.log_validation_per_modality(epoch, channel_key, modality_metrics)
+
+            # Log regional metrics (tumor vs background) with modality suffix
+            if regional_tracker is not None:
+                is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
+                if is_single_modality:
+                    regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{self.mode_name}')
+                else:
+                    regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
         # Restore random state to not affect subsequent training epochs
         torch.set_rng_state(rng_state)
@@ -1342,11 +1497,15 @@ class DiffusionTrainer(BaseTrainer):
                 if self.is_main_process:
                     log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time)
 
-                    if self.writer is not None and self.use_multi_gpu:
-                        self.writer.add_scalar('Loss/Total_train', avg_loss, epoch)
-                        self.writer.add_scalar('Loss/MSE_train', avg_mse, epoch)
-                        self.writer.add_scalar('Loss/Perceptual_train', avg_perceptual, epoch)
-                        self.writer.add_scalar('LR', self.lr_scheduler.get_last_lr()[0], epoch)
+                    # Log training losses using unified system (DDP path)
+                    if self.use_multi_gpu:
+                        avg_losses = {
+                            LossKey.TOTAL: avg_loss,
+                            LossKey.MSE: avg_mse,
+                            LossKey.PERC: avg_perceptual,
+                        }
+                        self._metrics_logger.log_training(epoch, avg_losses)
+                        self._metrics_logger.log_learning_rate(epoch, self.lr_scheduler.get_last_lr()[0])
 
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
@@ -1484,15 +1643,26 @@ class DiffusionTrainer(BaseTrainer):
 
                     n_batches += 1
 
-            # Compute averages and log
+            # Compute averages and log using unified system
             if n_batches > 0 and self.writer is not None:
                 avg_psnr = total_psnr / n_batches
                 avg_msssim = total_msssim / n_batches
-                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
-                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+                modality_metrics = {
+                    MetricKey.PSNR: avg_psnr,
+                    MetricKey.MSSSIM: avg_msssim,
+                }
                 if self.metrics.log_lpips:
-                    avg_lpips = total_lpips / n_batches
-                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+                    modality_metrics[MetricKey.LPIPS] = total_lpips / n_batches
+
+                # Compute 3D MS-SSIM for this modality
+                if self.log_msssim:
+                    msssim_3d = self._compute_volume_3d_msssim(
+                        epoch, data_split='val', modality_override=modality
+                    )
+                    if msssim_3d is not None:
+                        modality_metrics[MetricKey.MSSSIM_3D] = msssim_3d
+
+                self._metrics_logger.log_validation_per_modality(epoch, modality, modality_metrics)
 
                 # Log regional metrics for this modality
                 if regional_tracker is not None:
@@ -1500,7 +1670,12 @@ class DiffusionTrainer(BaseTrainer):
                         self.writer, epoch, prefix=f'regional_{modality}'
                     )
 
-    def _compute_volume_3d_msssim(self, epoch: int, data_split: str = 'val') -> Optional[float]:
+    def _compute_volume_3d_msssim(
+        self,
+        epoch: int,
+        data_split: str = 'val',
+        modality_override: Optional[str] = None,
+    ) -> Optional[float]:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
 
         For diffusion models, this:
@@ -1514,6 +1689,8 @@ class DiffusionTrainer(BaseTrainer):
         Args:
             epoch: Current epoch number.
             data_split: Which data split to use ('val' or 'test_new').
+            modality_override: Optional specific modality to compute for
+                (e.g., 'bravo', 't1_pre'). If None, uses mode from config.
 
         Returns:
             Average 3D MS-SSIM across all volumes, or None if unavailable.
@@ -1524,11 +1701,14 @@ class DiffusionTrainer(BaseTrainer):
         # Import here to avoid circular imports
         from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
 
-        # Determine modality from mode
-        # Use out_channels to determine volume channels (excludes conditioning)
-        mode_name = self.cfg.mode.get('name', 'bravo')
-        out_channels = self.cfg.mode.get('out_channels', 1)
-        modality = 'dual' if out_channels > 1 else mode_name
+        # Determine modality - use override if provided, else from config
+        if modality_override is not None:
+            modality = modality_override
+        else:
+            # Use out_channels to determine volume channels (excludes conditioning)
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            out_channels = self.cfg.mode.get('out_channels', 1)
+            modality = 'dual' if out_channels > 1 else mode_name
 
         # Skip for multi_modality mode - volume loader doesn't support mixed modalities
         # and computing volume metrics on mixed slices doesn't make sense
@@ -1875,37 +2055,54 @@ class DiffusionTrainer(BaseTrainer):
             json.dump(metrics, f, indent=2)
         logger.info(f"Test results saved to: {results_path}")
 
-        # Log to TensorBoard
+        # Log to TensorBoard using unified system
         tb_prefix = f'test_{label}'
         if self.writer is not None:
-            self.writer.add_scalar(f'{tb_prefix}/MSE', metrics['mse'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/MS-SSIM', metrics['msssim'], 0)
-            self.writer.add_scalar(f'{tb_prefix}/PSNR', metrics['psnr'], 0)
-            if 'lpips' in metrics:
-                self.writer.add_scalar(f'{tb_prefix}/LPIPS', metrics['lpips'], 0)
+            # Determine modality for single-modality modes (e.g., bravo, seg)
+            # Multi-modality/dual modes log aggregate without suffix
+            is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
+            modality = self.mode_name if is_single_modality else None
 
-            # Log timestep bin losses
+            # Map metrics to unified keys for log_test
+            test_metrics = {
+                MetricKey.PSNR: metrics['psnr'],
+                MetricKey.MSSSIM: metrics['msssim'],
+            }
+            if 'lpips' in metrics:
+                test_metrics[MetricKey.LPIPS] = metrics['lpips']
+            # Also log MSE as a loss metric (with modality suffix)
+            mse_tag = f'{tb_prefix}/MSE_{self.mode_name}' if is_single_modality else f'{tb_prefix}/MSE'
+            self.writer.add_scalar(mse_tag, metrics['mse'], 0)
+            self._metrics_logger.log_test(test_metrics, prefix=tb_prefix, modality=modality)
+
+            # Log timestep bin losses using unified system
             bin_size = self.num_timesteps // num_timestep_bins
             counts = timestep_loss_count.cpu()
             sums = timestep_loss_sum.cpu()
+            timestep_bins = {}
             for bin_idx in range(num_timestep_bins):
                 bin_start = bin_idx * bin_size
                 bin_end = (bin_idx + 1) * bin_size - 1
                 count = counts[bin_idx].item()
                 if count > 0:
                     avg_loss = (sums[bin_idx] / count).item()
-                    self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_start}-{bin_end}', avg_loss, 0)
+                    timestep_bins[f'{bin_start:04d}-{bin_end:04d}'] = avg_loss
+            if timestep_bins:
+                # Log timestep losses directly since log_test doesn't handle this prefix
+                for bin_name, loss in timestep_bins.items():
+                    self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_name}', loss, 0)
 
-            # Log regional metrics
+            # Log regional metrics with modality suffix for single-modality modes
             if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
+                regional_prefix = f'{tb_prefix}_regional_{self.mode_name}' if is_single_modality else f'{tb_prefix}_regional'
+                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=regional_prefix)
 
-            # Compute and log volume 3D MS-SSIM
+            # Compute and log volume 3D MS-SSIM using unified system
             if self.log_msssim:
                 msssim_3d = self._compute_volume_3d_msssim(0, data_split='test_new')
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
-                    self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D', msssim_3d, 0)
+                    self._metrics_logger.log_test({MetricKey.MSSSIM_3D: msssim_3d}, prefix=tb_prefix, modality=modality)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:

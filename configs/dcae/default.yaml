@@ -83,3 +83,34 @@ decoder_in_shortcut: true
 latent_channels: 32
 compression_ratio: 32
 scaling_factor: 0.3189
+
+# ============================================================================
+# DC-AE 1.5: Structured Latent Space (ICCV 2025)
+# ============================================================================
+# Paper: "DC-AE 1.5: Accelerating Diffusion Model Convergence with Structured Latent Space"
+# https://arxiv.org/abs/2508.00413
+#
+# Key idea: Train autoencoder with random channel masking so that:
+# - Front channels capture object structure/semantics
+# - Later channels capture image details
+#
+# During training:
+# 1. Sample random channel count c' from [min_channels, min+step, ..., latent_channels]
+# 2. Create mask: [1,...,1 (c' times), 0,...,0]
+# 3. Apply mask to latent: z_masked = z * mask
+# 4. Decode masked latent and compute reconstruction loss
+#
+# IMPORTANT: Paper shows DC-AE 1.5 is NOT recommended for small channel counts (c=32).
+# Use only for large latent channels (c=64, c=128). For c=32, standard DC-AE is better.
+#
+# Usage:
+#   python -m medgen.scripts.train_dcae dcae=f64 dcae.structured_latent.enabled=true
+structured_latent:
+  enabled: false
+  # Channel steps: [min_channels, min+step, min+2*step, ..., latent_channels]
+  # Paper uses: [16, 20, 24, ..., c] with step=4, min=16
+  min_channels: 16
+  channel_step: 4
+  # Computed at runtime:
+  #   c=32:  [16, 20, 24, 28, 32]
+  #   c=128: [16, 20, 24, 28, ..., 128]
