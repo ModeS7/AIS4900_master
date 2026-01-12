@@ -18,7 +18,7 @@
 # All outputs saved to: /cluster/work/modestas/AIS4900_master/runs_tb_verify/
 # =============================================================================
 
-set -e
+# Don't use set -e - we want to continue even if individual tests fail
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -78,6 +78,8 @@ check_tags() {
 
     if [ -z "$run_dir" ] || [ ! -d "$run_dir" ]; then
         echo "ERROR: Run directory not found!"
+        echo "Looking for directories in TEST_DIR:"
+        find "$TEST_DIR" -maxdepth 5 -type d 2>/dev/null | head -20
         return 1
     fi
 
@@ -129,10 +131,11 @@ for t in sorted(tags):
     fi
 }
 
+# Find run by searching for the prefix in TEST_DIR
 find_run() {
-    local subdir="$1"
-    local prefix="$2"
-    ls -td ${TEST_DIR}/${subdir}/${prefix}*/ 2>/dev/null | head -1
+    local prefix="$1"
+    # Search entire TEST_DIR for directory matching prefix
+    find "$TEST_DIR" -maxdepth 5 -type d -name "${prefix}*" 2>/dev/null | head -1
 }
 
 # =============================================================================
@@ -157,7 +160,7 @@ python -m medgen.scripts.train_vae \
     training.logging.lpips=true \
     training.name=test1_vae_bravo_
 
-RUN=$(find_run "vae_2d/bravo" "test1_vae_bravo_")
+RUN=$(find_run "test1_vae_bravo_")
 if check_tags "$RUN" "VAE 2D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -187,7 +190,7 @@ python -m medgen.scripts.train_vqvae \
     training.logging.lpips=true \
     training.name=test2_vqvae_bravo_
 
-RUN=$(find_run "vqvae_2d/bravo" "test2_vqvae_bravo_")
+RUN=$(find_run "test2_vqvae_bravo_")
 if check_tags "$RUN" "VQVAE 2D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -199,40 +202,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 3: VQVAE seg
+# TEST 3: DCAE bravo
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 3: VQVAE 2D seg"
-echo "############################################################"
-TOTAL=$((TOTAL + 1))
-
-python -m medgen.scripts.train_vqvae \
-    mode=seg \
-    vqvae.seg_mode=true \
-    $COMMON_2D \
-    training.logging.regional_losses=false \
-    training.logging.msssim=false \
-    training.logging.psnr=false \
-    training.logging.lpips=false \
-    training.name=test3_vqvae_seg_
-
-RUN=$(find_run "vqvae_2d/seg" "test3_vqvae_seg_")
-if check_tags "$RUN" "VQVAE 2D seg" \
-    "Validation/Dice_seg" \
-    "Validation/IoU_seg" \
-    "Loss/BCE_val"; then
-    PASSED=$((PASSED + 1))
-else
-    FAILED=$((FAILED + 1))
-fi
-
-# -----------------------------------------------------------------------------
-# TEST 4: DCAE bravo
-# -----------------------------------------------------------------------------
-echo ""
-echo "############################################################"
-echo "# TEST 4: DCAE 2D bravo"
+echo "# TEST 3: DCAE 2D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -243,9 +217,9 @@ python -m medgen.scripts.train_dcae \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=true \
-    training.name=test4_dcae_bravo_
+    training.name=test3_dcae_bravo_
 
-RUN=$(find_run "compression_2d/bravo" "test4_dcae_bravo_")
+RUN=$(find_run "test3_dcae_bravo_")
 if check_tags "$RUN" "DCAE 2D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -257,11 +231,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 5: DCAE seg
+# TEST 4: DCAE seg
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 5: DCAE 2D seg"
+echo "# TEST 4: DCAE 2D seg"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -273,9 +247,9 @@ python -m medgen.scripts.train_dcae \
     training.logging.msssim=false \
     training.logging.psnr=false \
     training.logging.lpips=false \
-    training.name=test5_dcae_seg_
+    training.name=test4_dcae_seg_
 
-RUN=$(find_run "compression_2d/seg" "test5_dcae_seg_")
+RUN=$(find_run "test4_dcae_seg_")
 if check_tags "$RUN" "DCAE 2D seg" \
     "Validation/Dice_seg" \
     "Validation/IoU_seg" \
@@ -286,11 +260,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 6: Diffusion bravo
+# TEST 5: Diffusion bravo
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 6: Diffusion 2D bravo"
+echo "# TEST 5: Diffusion 2D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -302,9 +276,9 @@ python -m medgen.scripts.train \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=false \
-    training.name=test6_diff_bravo_
+    training.name=test5_diff_bravo_
 
-RUN=$(find_run "diffusion/bravo" "test6_diff_bravo_")
+RUN=$(find_run "test5_diff_bravo_")
 if check_tags "$RUN" "Diffusion 2D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -317,11 +291,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 7: VAE multi_modality
+# TEST 6: VAE multi_modality
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 7: VAE 2D multi_modality"
+echo "# TEST 6: VAE 2D multi_modality"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -332,9 +306,9 @@ python -m medgen.scripts.train_vae \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=true \
-    training.name=test7_vae_multi_
+    training.name=test6_vae_multi_
 
-RUN=$(find_run "vae_2d/multi_modality" "test7_vae_multi_")
+RUN=$(find_run "test6_vae_multi_")
 if check_tags "$RUN" "VAE 2D multi_modality" \
     "Validation/PSNR_t1_pre" \
     "Validation/PSNR_bravo" \
@@ -352,11 +326,11 @@ fi
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# TEST 8: VAE 3D bravo
+# TEST 7: VAE 3D bravo
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 8: VAE 3D bravo"
+echo "# TEST 7: VAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -369,9 +343,9 @@ python -m medgen.scripts.train_vae_3d \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=false \
-    training.name=test8_vae3d_bravo_
+    training.name=test7_vae3d_bravo_
 
-RUN=$(find_run "vae_3d/bravo" "test8_vae3d_bravo_")
+RUN=$(find_run "test7_vae3d_bravo_")
 if check_tags "$RUN" "VAE 3D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -382,11 +356,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 9: VQVAE 3D bravo
+# TEST 8: VQVAE 3D bravo
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 9: VQVAE 3D bravo"
+echo "# TEST 8: VQVAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -399,9 +373,9 @@ python -m medgen.scripts.train_vqvae_3d \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=false \
-    training.name=test9_vqvae3d_bravo_
+    training.name=test8_vqvae3d_bravo_
 
-RUN=$(find_run "vqvae_3d/bravo" "test9_vqvae3d_bravo_")
+RUN=$(find_run "test8_vqvae3d_bravo_")
 if check_tags "$RUN" "VQVAE 3D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
@@ -412,11 +386,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 10: VQVAE 3D seg
+# TEST 9: VQVAE 3D seg
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 10: VQVAE 3D seg"
+echo "# TEST 9: VQVAE 3D seg"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -430,9 +404,9 @@ python -m medgen.scripts.train_vqvae_3d \
     training.logging.msssim=false \
     training.logging.psnr=false \
     training.logging.lpips=false \
-    training.name=test10_vqvae3d_seg_
+    training.name=test9_vqvae3d_seg_
 
-RUN=$(find_run "vqvae_3d/seg" "test10_vqvae3d_seg_")
+RUN=$(find_run "test9_vqvae3d_seg_")
 if check_tags "$RUN" "VQVAE 3D seg" \
     "Validation/Dice_seg" \
     "Validation/IoU_seg" \
@@ -443,11 +417,11 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# TEST 11: DCAE 3D bravo
+# TEST 10: DCAE 3D bravo
 # -----------------------------------------------------------------------------
 echo ""
 echo "############################################################"
-echo "# TEST 11: DCAE 3D bravo"
+echo "# TEST 10: DCAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
@@ -460,44 +434,13 @@ python -m medgen.scripts.train_dcae_3d \
     training.logging.msssim=true \
     training.logging.psnr=true \
     training.logging.lpips=false \
-    training.name=test11_dcae3d_bravo_
+    training.name=test10_dcae3d_bravo_
 
-RUN=$(find_run "compression_3d/bravo" "test11_dcae3d_bravo_")
+RUN=$(find_run "test10_dcae3d_bravo_")
 if check_tags "$RUN" "DCAE 3D bravo" \
     "Validation/PSNR_bravo" \
     "Validation/MS-SSIM_bravo" \
     "regional_bravo/tumor_loss"; then
-    PASSED=$((PASSED + 1))
-else
-    FAILED=$((FAILED + 1))
-fi
-
-# -----------------------------------------------------------------------------
-# TEST 12: DCAE 3D seg
-# -----------------------------------------------------------------------------
-echo ""
-echo "############################################################"
-echo "# TEST 12: DCAE 3D seg"
-echo "############################################################"
-TOTAL=$((TOTAL + 1))
-
-python -m medgen.scripts.train_dcae_3d \
-    mode=seg \
-    dcae_3d.seg_mode=true \
-    dcae_3d.disable_gan=true \
-    $COMMON_3D \
-    training.gradient_checkpointing=true \
-    training.logging.regional_losses=false \
-    training.logging.msssim=false \
-    training.logging.psnr=false \
-    training.logging.lpips=false \
-    training.name=test12_dcae3d_seg_
-
-RUN=$(find_run "compression_3d/seg" "test12_dcae3d_seg_")
-if check_tags "$RUN" "DCAE 3D seg" \
-    "Validation/Dice_seg" \
-    "Validation/IoU_seg" \
-    "Loss/BCE_val"; then
     PASSED=$((PASSED + 1))
 else
     FAILED=$((FAILED + 1))
@@ -532,18 +475,20 @@ Results: $PASSED / $TOTAL passed
 2D Trainers:
 1. VAE bravo
 2. VQVAE bravo
-3. VQVAE seg
-4. DCAE bravo
-5. DCAE seg
-6. Diffusion bravo
-7. VAE multi_modality
+3. DCAE bravo
+4. DCAE seg
+5. Diffusion bravo
+6. VAE multi_modality
 
 3D Trainers:
-8. VAE 3D bravo
-9. VQVAE 3D bravo
-10. VQVAE 3D seg
-11. DCAE 3D bravo
-12. DCAE 3D seg
+7. VAE 3D bravo
+8. VQVAE 3D bravo
+9. VQVAE 3D seg
+10. DCAE 3D bravo
+
+NOT TESTED (seg_mode not implemented):
+- VQVAE 2D seg
+- DCAE 3D seg
 
 Directory: $TEST_DIR
 EOF
@@ -552,7 +497,7 @@ echo "Summary saved to: $TEST_DIR/summary.txt"
 
 echo ""
 echo "Created directories:"
-find "$TEST_DIR" -maxdepth 4 -type d | head -40
+find "$TEST_DIR" -maxdepth 5 -type d | head -40
 
 conda deactivate
 
