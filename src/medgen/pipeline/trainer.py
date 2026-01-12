@@ -336,6 +336,32 @@ class DiffusionTrainer(BaseTrainer):
                 f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
             )
 
+        # Generation quality metrics (KID, CMMD) for overfitting detection
+        self._gen_metrics: Optional['GenerationMetrics'] = None
+        gen_cfg = cfg.training.get('generation_metrics', {})
+        if gen_cfg.get('enabled', False):
+            from medgen.pipeline.metrics.generation import GenerationMetricsConfig, GenerationMetrics
+            self._gen_metrics_config = GenerationMetricsConfig(
+                enabled=True,
+                samples_per_epoch=gen_cfg.get('samples_per_epoch', 100),
+                samples_extended=gen_cfg.get('samples_extended', 500),
+                samples_test=gen_cfg.get('samples_test', 1000),
+                steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
+                steps_extended=gen_cfg.get('steps_extended', 25),
+                steps_test=gen_cfg.get('steps_test', 50),
+                cache_dir=gen_cfg.get('cache_dir', '.cache/generation_features'),
+                feature_batch_size=gen_cfg.get('feature_batch_size', 32),
+            )
+            if self.is_main_process:
+                logger.info(
+                    f"Generation metrics enabled: {self._gen_metrics_config.samples_per_epoch} samples/epoch "
+                    f"({self._gen_metrics_config.steps_per_epoch} steps), "
+                    f"{self._gen_metrics_config.samples_extended} samples/extended "
+                    f"({self._gen_metrics_config.steps_extended} steps)"
+                )
+        else:
+            self._gen_metrics_config = None
+
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -553,6 +579,8 @@ class DiffusionTrainer(BaseTrainer):
             compile_fused = False
         elif self.score_aug is not None:
             compile_fused = False
+        elif self.sda is not None:
+            compile_fused = False
         elif self.use_sam:
             compile_fused = False
         elif self.use_mode_embedding:
@@ -619,6 +647,17 @@ class DiffusionTrainer(BaseTrainer):
             is_main_process=self.is_main_process,
             space=self.space,
         )
+
+        # Initialize generation metrics if enabled
+        if self._gen_metrics_config is not None and self._gen_metrics_config.enabled:
+            from medgen.pipeline.metrics.generation import GenerationMetrics
+            self._gen_metrics = GenerationMetrics(
+                self._gen_metrics_config,
+                self.device,
+                self.save_dir,
+            )
+            if self.is_main_process:
+                logger.info("Generation metrics initialized (caching happens at training start)")
 
         # Save metadata
         if self.is_main_process:
@@ -1654,6 +1693,31 @@ class DiffusionTrainer(BaseTrainer):
                 else:
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
+            # Compute generation quality metrics (KID, CMMD)
+            if self._gen_metrics is not None:
+                try:
+                    model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+                    model_to_use.eval()
+
+                    # Quick metrics every epoch
+                    gen_results = self._gen_metrics.compute_epoch_metrics(
+                        model_to_use, self.strategy, self.mode
+                    )
+                    for key, value in gen_results.items():
+                        self.writer.add_scalar(f"Generation/{key}", value, epoch)
+
+                    # Extended metrics at figure_interval
+                    if (epoch + 1) % self.figure_interval == 0:
+                        extended_results = self._gen_metrics.compute_extended_metrics(
+                            model_to_use, self.strategy, self.mode
+                        )
+                        for key, value in extended_results.items():
+                            self.writer.add_scalar(f"Generation/{key}", value, epoch)
+
+                    model_to_use.train()
+                except Exception as e:
+                    logger.warning(f"Generation metrics computation failed: {e}")
+
         # Restore random state to not affect subsequent training epochs
         torch.set_rng_state(rng_state)
         if cuda_rng_state is not None:
@@ -1696,6 +1760,23 @@ class DiffusionTrainer(BaseTrainer):
 
         if self.is_main_process and self.mode_name == 'seg':
             logger.info("Seg mode: perceptual loss disabled")
+
+        # Initialize generation metrics (cache reference features)
+        if self._gen_metrics is not None and self.is_main_process:
+            # Determine seg channel index based on mode
+            seg_channel_idx = 1 if self.mode_name in ('bravo', 'multi', 'multi_modality') else 2
+            self._gen_metrics.set_fixed_conditioning(
+                train_dataset,
+                num_masks=self._gen_metrics_config.samples_extended,  # Use extended count for conditioning
+                seg_channel_idx=seg_channel_idx,
+            )
+            # Cache reference features from train and val loaders
+            if val_loader is not None:
+                self._gen_metrics.cache_reference_features(
+                    train_loader,
+                    val_loader,
+                    experiment_id=str(self.save_dir.name) if hasattr(self.save_dir, 'name') else str(self.save_dir),
+                )
 
         avg_loss = float('inf')
         avg_mse = float('inf')
@@ -2351,6 +2432,27 @@ class DiffusionTrainer(BaseTrainer):
                 fig.savefig(fig_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
                 logger.info(f"Test worst batch saved to: {fig_path}")
+
+            # Compute generation quality metrics (FID, KID, CMMD) if enabled
+            if self._gen_metrics is not None:
+                try:
+                    logger.info("Computing generation metrics (FID, KID, CMMD)...")
+                    test_gen_results = self._gen_metrics.compute_test_metrics(
+                        model_to_use, self.strategy, self.mode, test_loader
+                    )
+                    # Log to TensorBoard
+                    for key, value in test_gen_results.items():
+                        self.writer.add_scalar(f'{tb_prefix}/{key}', value, 0)
+                        metrics[f'gen_{key.lower()}'] = value
+                    # Log to console
+                    if 'FID' in test_gen_results:
+                        logger.info(f"  FID:     {test_gen_results['FID']:.4f}")
+                    if 'KID_mean' in test_gen_results:
+                        logger.info(f"  KID:     {test_gen_results['KID_mean']:.4f} +/- {test_gen_results.get('KID_std', 0):.4f}")
+                    if 'CMMD' in test_gen_results:
+                        logger.info(f"  CMMD:    {test_gen_results['CMMD']:.4f}")
+                except Exception as e:
+                    logger.warning(f"Generation metrics computation failed: {e}")
 
         return metrics
 
