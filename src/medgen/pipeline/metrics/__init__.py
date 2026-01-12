@@ -37,6 +37,13 @@ from .unified import (
     MetricKey,
     create_metrics_config,
 )
+from .generation import (
+    GenerationMetricsConfig,
+    GenerationMetrics,
+    compute_kid,
+    compute_cmmd,
+    compute_fid,
+)
 
 __all__ = [
     # Main tracker
@@ -71,4 +78,10 @@ __all__ = [
     # Visualization
     'create_reconstruction_figure',
     'figure_to_buffer',
+    # Generation metrics
+    'GenerationMetricsConfig',
+    'GenerationMetrics',
+    'compute_kid',
+    'compute_cmmd',
+    'compute_fid',
 ]

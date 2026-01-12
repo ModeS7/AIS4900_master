@@ -253,3 +253,18 @@ profiling:
   profile_memory: true        # Track memory allocations
   with_stack: false           # Include Python call stacks (slower)
   with_flops: true            # Estimate FLOPs per operation
+
+# Generation Quality Metrics (Diffusion only)
+# Tracks KID, CMMD, FID to detect overfitting by comparing generated samples
+# against train/val distributions. Uses InceptionV3 for KID/FID, BiomedCLIP for CMMD.
+# Reference features cached at training start for efficiency.
+generation_metrics:
+  enabled: false              # Disabled by default (adds ~30s/epoch overhead)
+  samples_per_epoch: 100      # Samples for quick metrics (every epoch)
+  samples_extended: 500       # Samples for extended metrics (every figure_interval)
+  samples_test: 1000          # Samples for final test evaluation
+  steps_per_epoch: 10         # Denoising steps for quick metrics
+  steps_extended: 25          # Denoising steps for extended metrics
+  steps_test: 50              # Denoising steps for test evaluation
+  cache_dir: ".cache/generation_features"  # Feature cache location
+  feature_batch_size: 32      # Batch size for feature extraction
