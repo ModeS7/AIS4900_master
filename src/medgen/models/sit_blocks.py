@@ -13,6 +13,76 @@ import torch.nn.functional as F
 from typing import Optional
 
 
+# =============================================================================
+# DropPath (Stochastic Depth)
+# =============================================================================
+
+def drop_path(
+    x: torch.Tensor,
+    drop_prob: float = 0.0,
+    training: bool = False,
+) -> torch.Tensor:
+    """Drop paths (Stochastic Depth) per sample.
+
+    Randomly drops entire residual branches during training, forcing
+    the network to not rely on any single path.
+
+    Reference: https://arxiv.org/abs/1603.09382 (Deep Networks with Stochastic Depth)
+
+    Args:
+        x: Input tensor of any shape.
+        drop_prob: Probability of dropping the path (0 = no drop, 1 = always drop).
+        training: Whether in training mode.
+
+    Returns:
+        Tensor of same shape, with paths randomly zeroed and surviving paths scaled.
+    """
+    if drop_prob == 0.0 or not training:
+        return x
+
+    keep_prob = 1 - drop_prob
+    # Create random tensor: shape (batch_size, 1, 1, ...) for broadcasting
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
+
+    # Scale to maintain expected value: E[x] = keep_prob * (x / keep_prob) = x
+    return x.div(keep_prob) * random_tensor
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample.
+
+    Wrapper module for drop_path function. Applies stochastic depth
+    regularization by randomly dropping residual paths during training.
+
+    Typical usage in transformers:
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+    Args:
+        drop_prob: Probability of dropping the path. Default: 0.0 (no drop).
+
+    Example:
+        >>> drop_path = DropPath(0.1)
+        >>> x = torch.randn(4, 196, 768)
+        >>> out = drop_path(x)  # During training, randomly drops ~10% of samples
+    """
+
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return f"drop_prob={self.drop_prob:.3f}"
+
+
+# =============================================================================
+# Modulation Helper
+# =============================================================================
+
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """Apply adaptive layer norm modulation.
 
@@ -189,6 +259,7 @@ class SiTBlock(nn.Module):
         mlp_ratio: MLP expansion ratio.
         use_cross_attn: Whether to include cross-attention for conditioning.
         drop: Dropout rate.
+        drop_path: Stochastic depth rate. Default: 0.0 (no drop).
     """
 
     def __init__(
@@ -198,6 +269,7 @@ class SiTBlock(nn.Module):
         mlp_ratio: float = 4.0,
         use_cross_attn: bool = False,
         drop: float = 0.0,
+        drop_path: float = 0.0,
     ):
         super().__init__()
         self.use_cross_attn = use_cross_attn
@@ -215,6 +287,9 @@ class SiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden = int(hidden_size * mlp_ratio)
         self.mlp = Mlp(hidden_size, hidden_features=mlp_hidden, drop=drop)
+
+        # DropPath (Stochastic Depth) for regularization
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
         # adaLN-Zero modulation: 6 parameters (shift/scale/gate for attn and mlp)
         self.adaLN_modulation = nn.Sequential(
@@ -241,12 +316,15 @@ class SiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = \
             self.adaLN_modulation(c).chunk(6, dim=1)
 
-        # Self-attention with adaLN modulation
-        x = x + gate_msa.unsqueeze(1) * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa)
+        # Self-attention with adaLN modulation + DropPath
+        x = x + self.drop_path(
+            gate_msa.unsqueeze(1) * self.attn(
+                modulate(self.norm1(x), shift_msa, scale_msa)
+            )
         )
 
         # Cross-attention (required if use_cross_attn=True)
+        # Note: No DropPath on cross-attention - conditioning is critical
         if self.use_cross_attn:
             if context is None:
                 raise ValueError(
@@ -255,9 +333,11 @@ class SiTBlock(nn.Module):
                 )
             x = x + self.cross_attn(self.norm_cross(x), context)
 
-        # MLP with adaLN modulation
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(
-            modulate(self.norm2(x), shift_mlp, scale_mlp)
+        # MLP with adaLN modulation + DropPath
+        x = x + self.drop_path(
+            gate_mlp.unsqueeze(1) * self.mlp(
+                modulate(self.norm2(x), shift_mlp, scale_mlp)
+            )
         )
 
         return x

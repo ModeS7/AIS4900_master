@@ -11,6 +11,7 @@ from .augmentation import (
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .base_embed import create_zero_init_mlp
 from .score_aug import ScoreAugTransform
+from .sda import SDATransform, create_sda_transform
 from .mode_embed import (
     ModeEmbedModelWrapper,
     ModeEmbedDropoutModelWrapper,
@@ -89,6 +90,9 @@ __all__ = [
     'cutmix',
     # Score Augmentation
     'ScoreAugTransform',
+    # Shifted Data Augmentation
+    'SDATransform',
+    'create_sda_transform',
     # Base embedding helper
     'create_zero_init_mlp',
     # Slice extraction utilities

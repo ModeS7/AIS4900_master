@@ -13,7 +13,7 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer
+from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer, DropPath
 from .autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
 
 __all__ = [
@@ -41,6 +41,7 @@ __all__ = [
     "CrossAttention",
     "Mlp",
     "FinalLayer",
+    "DropPath",
     # 3D Autoencoders
     "AutoencoderDC3D",
     "CheckpointedAutoencoderDC3D",

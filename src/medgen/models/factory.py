@@ -101,6 +101,7 @@ def _create_sit(
     conditioning = cfg.model.get('conditioning', 'concat')
     mlp_ratio = cfg.model.get('mlp_ratio', 4.0)
     drop_rate = cfg.model.get('drop_rate', 0.0)
+    drop_path_rate = cfg.model.get('drop_path_rate', 0.0)
 
     # Validate SiT-specific fields
     valid_variants = ('S', 'B', 'L', 'XL')
@@ -152,16 +153,18 @@ def _create_sit(
         depth_size=depth_size,
         mlp_ratio=mlp_ratio,
         drop_rate=drop_rate,
+        drop_path_rate=drop_path_rate,
     )
 
     variant_info = SIT_VARIANTS[variant]
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
 
+    drop_path_str = f", drop_path={drop_path_rate}" if drop_path_rate > 0 else ""
     logger.info(
         f"Created SiT-{variant}: spatial_dims={spatial_dims}, input_size={input_size}, "
         f"patch_size={patch_size}, hidden_size={variant_info['hidden_size']}, "
         f"depth={variant_info['depth']}, heads={variant_info['num_heads']}, "
-        f"conditioning={conditioning}, params={num_params:.1f}M"
+        f"conditioning={conditioning}, params={num_params:.1f}M{drop_path_str}"
     )
 
     return model.to(device)

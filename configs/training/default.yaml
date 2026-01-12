@@ -76,6 +76,32 @@ score_aug:
     coarse_dropout: true     # 2-4 large holes at corners/edges (IDs 8-11)
     patch_dropout: true      # MAE-style 25%/50% patches dropped (IDs 12-15)
 
+# ============================================================================
+# Shifted Data Augmentation (SDA)
+# ============================================================================
+# Reference: IEEE Access 2025 - "Regularization for Unconditional Image
+# Diffusion Models via Shifted Data Augmentation"
+#
+# Key difference from ScoreAug:
+# - ScoreAug: transforms NOISY data (after noise addition), requires omega
+# - SDA: transforms CLEAN data (before noise addition), uses noise shift
+#
+# SDA uses dual-path training:
+# 1. Standard path: x -> add_noise(t) -> denoise -> x
+# 2. Augmented path: T(x) -> add_noise(t + delta) -> denoise -> T(x)
+#
+# The shifted noise level prevents leakage by giving augmented samples
+# different SNR characteristics.
+#
+# Note: Do not use SDA and ScoreAug together (they do similar things differently)
+sda:
+  enabled: false             # Disabled by default
+  rotation: true             # 90, 180, 270 degree rotations
+  flip: true                 # Horizontal + vertical flip
+  noise_shift: 0.1           # Amount to shift timesteps (0.05-0.2 typical)
+  prob: 0.5                  # Probability of using augmented path
+  weight: 1.0                # Weight for augmented path loss
+
 # DataLoader optimization for CPU augmentation
 dataloader:
   num_workers: 8           # Parallel data loading workers

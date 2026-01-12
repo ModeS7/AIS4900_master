@@ -52,6 +52,8 @@ class SiT(nn.Module):
         cond_channels: Number of conditioning channels (e.g., segmentation mask).
         learn_sigma: Whether to predict variance (doubles output channels).
         drop_rate: Dropout rate.
+        drop_path_rate: Stochastic depth rate. Linearly increases from 0 to this
+            value across transformer blocks. Default: 0.0 (disabled).
         depth_size: Depth size for 3D (if different from input_size).
 
     Example:
@@ -76,6 +78,7 @@ class SiT(nn.Module):
         cond_channels: int = 1,
         learn_sigma: bool = False,
         drop_rate: float = 0.0,
+        drop_path_rate: float = 0.0,
         depth_size: Optional[int] = None,
     ):
         super().__init__()
@@ -136,6 +139,10 @@ class SiT(nn.Module):
         # Positional embedding (learnable, initialized from sincos)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_size))
 
+        # Stochastic depth: linearly increasing drop rate from 0 to drop_path_rate
+        # First block has 0 drop rate, last block has drop_path_rate
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+
         # Transformer blocks
         self.blocks = nn.ModuleList([
             SiTBlock(
@@ -144,8 +151,9 @@ class SiT(nn.Module):
                 mlp_ratio=mlp_ratio,
                 use_cross_attn=self.use_cross_attn,
                 drop=drop_rate,
+                drop_path=dpr[i],
             )
-            for _ in range(depth)
+            for i in range(depth)
         ])
 
         # Final layer
@@ -297,6 +305,8 @@ def create_sit(
     conditioning: str = "concat",
     cond_channels: int = 1,
     learn_sigma: bool = False,
+    drop_rate: float = 0.0,
+    drop_path_rate: float = 0.0,
     depth_size: Optional[int] = None,
     **kwargs,
 ) -> SiT:
@@ -311,6 +321,8 @@ def create_sit(
         conditioning: "concat" or "cross_attn"
         cond_channels: Conditioning channels
         learn_sigma: Predict variance
+        drop_rate: Dropout rate
+        drop_path_rate: Stochastic depth rate (0.0 = disabled, 0.1-0.2 typical)
         depth_size: Depth for 3D (if different from input_size)
         **kwargs: Additional arguments passed to SiT
 
@@ -333,6 +345,8 @@ def create_sit(
         conditioning=conditioning,
         cond_channels=cond_channels,
         learn_sigma=learn_sigma,
+        drop_rate=drop_rate,
+        drop_path_rate=drop_path_rate,
         depth_size=depth_size,
         **kwargs,
     )
