@@ -1,16 +1,15 @@
-#!/bin/bash
+#!/bin/sh
 #SBATCH --job-name=verify_tb_tags
 #SBATCH --output=IDUN/output/test/verify_tb_tags_%j.out
 #SBATCH --error=IDUN/output/test/verify_tb_tags_%j.err
 #SBATCH --partition=GPUQ
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g"
+#SBATCH --constraint="a100|h100"
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --account=ie-idi
+#SBATCH --account=share-ie-idi
 
 # =============================================================================
 # TensorBoard Tag Verification Script
@@ -19,11 +18,17 @@
 # TensorBoard tags are logged correctly with modality suffixes.
 # =============================================================================
 
-set -e  # Exit on first error
+cd ${SLURM_SUBMIT_DIR}
 
-# Setup - use SLURM_SUBMIT_DIR which is where sbatch was called from
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
-source .venv/bin/activate
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node:   $SLURM_JOB_NODELIST"
+nvidia-smi
+
+module purge
+module load Anaconda3/2024.02-1
+conda activate AIS4900
+
+python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 # Test output directory
 TEST_DIR="runs/tag_verification/$(date +%Y%m%d-%H%M%S)"
@@ -351,6 +356,9 @@ Run directories tested:
 EOF
 
 echo "Summary saved to: $TEST_DIR/summary.txt"
+
+# Cleanup
+conda deactivate
 
 # Exit with error if any tests failed
 if [ $FAILED -gt 0 ]; then
