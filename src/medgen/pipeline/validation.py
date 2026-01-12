@@ -307,7 +307,7 @@ class ValidationRunner:
         # Compute averages based on mode
         if is_seg_mode:
             metrics = {
-                'dice': total_dice / n_batches if n_batches > 0 else 0.0,
+                'dice_score': total_dice / n_batches if n_batches > 0 else 0.0,
                 'iou': total_iou / n_batches if n_batches > 0 else 0.0,
                 'bce': total_bce / n_batches if n_batches > 0 else 0.0,
                 'boundary': total_boundary / n_batches if n_batches > 0 else 0.0,
