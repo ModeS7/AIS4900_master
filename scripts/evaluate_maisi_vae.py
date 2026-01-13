@@ -73,7 +73,7 @@ def main():
                         help="Path to MAISI bundle")
     parser.add_argument("--data_dir", type=str, default=None,
                         help="Data directory (default: from config)")
-    parser.add_argument("--split", type=str, default="test1", choices=["train", "val", "test1", "test_new"],
+    parser.add_argument("--split", type=str, default="test_new", choices=["train", "val", "test_new"],
                         help="Dataset split to evaluate")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Maximum samples to evaluate (default: all)")
@@ -157,12 +157,16 @@ def main():
         if pad_d > 0:
             volume_tensor = F.pad(volume_tensor, (0, pad_d))
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=False):
+            # MAISI uses norm_float16=True which can cause dtype mismatches
+            # Ensure float32 for inference
+            volume_tensor = volume_tensor.float()
+
             if inferer:
                 def encode_fn(x):
-                    return model.encode(x)[0]
+                    return model.encode(x.float())[0]
                 def decode_fn(z):
-                    return model.decode(z)
+                    return model.decode(z.float())
 
                 z = inferer(volume_tensor, encode_fn)
                 reconstructed = inferer(z, decode_fn)

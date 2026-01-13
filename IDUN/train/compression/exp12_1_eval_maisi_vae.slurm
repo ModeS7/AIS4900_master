@@ -61,12 +61,12 @@ if [ ! -d "bundles/maisi_ct_generative" ]; then
 fi
 
 echo ""
-echo "=== Evaluating on TEST1 set ==="
+echo "=== Evaluating on TEST_NEW set ==="
 time python scripts/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
     --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
-    --split test1 \
-    --output $OUTPUT_DIR/maisi_test1_results.json
+    --split test_new \
+    --output $OUTPUT_DIR/maisi_test_new_results.json
 
 echo ""
 echo "=== Evaluating on VAL set ==="
@@ -87,8 +87,8 @@ time python scripts/evaluate_maisi_vae.py \
 
 echo ""
 echo "=== All Results ==="
-echo "Test1:"
-cat $OUTPUT_DIR/maisi_test1_results.json
+echo "Test_new:"
+cat $OUTPUT_DIR/maisi_test_new_results.json
 echo ""
 echo "Val:"
 cat $OUTPUT_DIR/maisi_val_results.json
