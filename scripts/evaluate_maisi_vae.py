@@ -8,7 +8,7 @@ MAISI (Medical AI for Synthetic Imaging) VAE from NVIDIA:
 - Total compression: 16x
 
 Usage:
-    python scripts/evaluate_maisi_vae.py --split test
+    python scripts/evaluate_maisi_vae.py --split test_new
     python scripts/evaluate_maisi_vae.py --split val
     python scripts/evaluate_maisi_vae.py --split train --max_samples 100
 """
@@ -20,7 +20,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 
@@ -36,6 +35,8 @@ from medgen.pipeline.metrics.quality import compute_psnr, compute_msssim, comput
 
 def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi:
     """Load pretrained MAISI VAE from bundle."""
+    # CRITICAL: norm_float16=False to avoid dtype mismatch bug in MaisiGroupNorm3D
+    # The bug: norm_float16=True converts output to float16 but keeps weights in float32
     model = AutoencoderKlMaisi(
         spatial_dims=3,
         in_channels=1,  # MAISI trained on single-channel CT
@@ -48,17 +49,17 @@ def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi
         attention_levels=[False, False, False],
         with_encoder_nonlocal_attn=False,
         with_decoder_nonlocal_attn=False,
-        use_checkpointing=True,  # Memory efficiency
+        use_checkpointing=False,  # Disable for inference
         use_convtranspose=False,
-        norm_float16=True,
-        num_splits=2,
+        norm_float16=False,  # CRITICAL: Must be False to avoid dtype mismatch
+        num_splits=1,  # Simpler inference without tensor splitting
         dim_split=1,
     )
 
     checkpoint_path = Path(bundle_path) / "models" / "autoencoder.pt"
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model.load_state_dict(checkpoint)
-    model = model.to(device)
+    model = model.to(device).float()  # Ensure float32
     model.eval()
 
     print(f"Loaded MAISI VAE from {checkpoint_path}")
@@ -77,8 +78,6 @@ def main():
                         help="Dataset split to evaluate")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Maximum samples to evaluate (default: all)")
-    parser.add_argument("--no_sliding_window", action="store_true",
-                        help="Disable sliding window inference")
     parser.add_argument("--output", type=str, default=None,
                         help="Output JSON file for results")
 
@@ -109,13 +108,13 @@ def main():
     # Evaluation metrics
     all_metrics = {"psnr": [], "msssim": [], "lpips": [], "l1": []}
 
-    # Sliding window inferer for memory efficiency
-    inferer = SlidingWindowInferer(
-        roi_size=(80, 80, 80),
+    # Sliding window inferer for decode only (encode is cheap, decode is expensive)
+    decode_inferer = SlidingWindowInferer(
+        roi_size=(64, 64, 64),  # Smaller ROI for latent space (4x compressed)
         sw_batch_size=1,
-        overlap=0.4,
+        overlap=0.25,
         mode="gaussian",
-    ) if not args.no_sliding_window else None
+    )
 
     import nibabel as nib
 
@@ -149,37 +148,42 @@ def main():
         volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
 
         # Convert to tensor [1, 1, H, W, D]
-        volume_tensor = torch.from_numpy(volume).unsqueeze(0).unsqueeze(0).to(device)
+        volume_tensor = torch.from_numpy(volume).unsqueeze(0).unsqueeze(0).to(device).float()
 
-        # Pad depth to multiple of 4 (MAISI requirement)
-        D = volume_tensor.shape[-1]
+        # Pad all dimensions to multiple of 4 (MAISI 4x compression requirement)
+        H, W, D = volume_tensor.shape[2], volume_tensor.shape[3], volume_tensor.shape[4]
+        pad_h = (4 - H % 4) % 4
+        pad_w = (4 - W % 4) % 4
         pad_d = (4 - D % 4) % 4
-        if pad_d > 0:
-            volume_tensor = F.pad(volume_tensor, (0, pad_d))
+        if pad_h > 0 or pad_w > 0 or pad_d > 0:
+            # F.pad format: (left, right, top, bottom, front, back) for 3D
+            volume_tensor = F.pad(volume_tensor, (0, pad_d, 0, pad_w, 0, pad_h))
 
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=False):
-            # MAISI uses norm_float16=True which can cause dtype mismatches
-            # Ensure float32 for inference
-            volume_tensor = volume_tensor.float()
+        with torch.no_grad():
+            # Encode (simple forward pass, no sliding window needed)
+            z = model.encode(volume_tensor)
+            # z is a tuple (z_mu, z_sigma) for VAE, take the mean
+            if isinstance(z, (list, tuple)):
+                z = z[0]
 
-            if inferer:
-                def encode_fn(x):
-                    return model.encode(x.float())[0]
-                def decode_fn(z):
-                    return model.decode(z.float())
+            # Decode with sliding window for memory efficiency
+            # Use the latent directly (no scale_factor for reconstruction eval)
+            def decode_fn(latent):
+                return model.decode(latent)
 
-                z = inferer(volume_tensor, encode_fn)
-                reconstructed = inferer(z, decode_fn)
+            # For smaller volumes, direct decode; for larger, use sliding window
+            latent_size = z.shape[2] * z.shape[3] * z.shape[4]
+            if latent_size > 64 * 64 * 64:  # Large volume, use SWI
+                reconstructed = decode_inferer(z, decode_fn)
             else:
-                z = model.encode(volume_tensor)[0]
                 reconstructed = model.decode(z)
 
-        reconstructed = torch.clamp(reconstructed, 0, 1)
+        reconstructed = torch.clamp(reconstructed, 0, 1).float()
 
         # Remove padding
-        if pad_d > 0:
-            reconstructed = reconstructed[..., :-pad_d]
-            volume_tensor = volume_tensor[..., :-pad_d]
+        if pad_h > 0 or pad_w > 0 or pad_d > 0:
+            reconstructed = reconstructed[:, :, :H, :W, :D]
+            volume_tensor = volume_tensor[:, :, :H, :W, :D]
 
         # Compute metrics using project's existing functions
         psnr_val = compute_psnr(reconstructed, volume_tensor)
@@ -188,7 +192,6 @@ def main():
 
         # LPIPS (2D metric applied slice-by-slice)
         # compute_lpips_3d expects [B, C, D, H, W] but we have [B, C, H, W, D]
-        # Permute to match expected format
         try:
             recon_for_lpips = reconstructed.permute(0, 1, 4, 2, 3)  # [B,C,H,W,D] -> [B,C,D,H,W]
             vol_for_lpips = volume_tensor.permute(0, 1, 4, 2, 3)
@@ -206,10 +209,10 @@ def main():
     print(f"MAISI VAE Evaluation Results ({args.split} split)")
     print("=" * 60)
     print(f"Samples evaluated: {len(all_metrics['psnr'])}")
-    print(f"PSNR:    {np.mean(all_metrics['psnr']):.4f} ± {np.std(all_metrics['psnr']):.4f}")
-    print(f"MS-SSIM: {np.mean(all_metrics['msssim']):.4f} ± {np.std(all_metrics['msssim']):.4f}")
-    print(f"LPIPS:   {np.mean(all_metrics['lpips']):.4f} ± {np.std(all_metrics['lpips']):.4f}")
-    print(f"L1:      {np.mean(all_metrics['l1']):.6f} ± {np.std(all_metrics['l1']):.6f}")
+    print(f"PSNR:    {np.mean(all_metrics['psnr']):.4f} +/- {np.std(all_metrics['psnr']):.4f}")
+    print(f"MS-SSIM: {np.mean(all_metrics['msssim']):.4f} +/- {np.std(all_metrics['msssim']):.4f}")
+    print(f"LPIPS:   {np.mean(all_metrics['lpips']):.4f} +/- {np.std(all_metrics['lpips']):.4f}")
+    print(f"L1:      {np.mean(all_metrics['l1']):.6f} +/- {np.std(all_metrics['l1']):.6f}")
     print("=" * 60)
 
     # Save results
