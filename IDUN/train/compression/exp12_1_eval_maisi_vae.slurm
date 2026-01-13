@@ -64,7 +64,7 @@ echo ""
 echo "=== Evaluating on TEST set ==="
 time python scripts/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/home/modlrwtn/data/brainmetshare-3 \
+    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
     --split test \
     --output $OUTPUT_DIR/maisi_test_results.json
 
@@ -72,7 +72,7 @@ echo ""
 echo "=== Evaluating on VAL set ==="
 time python scripts/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/home/modlrwtn/data/brainmetshare-3 \
+    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
     --split val \
     --output $OUTPUT_DIR/maisi_val_results.json
 
@@ -80,7 +80,7 @@ echo ""
 echo "=== Evaluating on TRAIN set (100 samples) ==="
 time python scripts/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/home/modlrwtn/data/brainmetshare-3 \
+    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
     --split train \
     --max_samples 100 \
     --output $OUTPUT_DIR/maisi_train_results.json

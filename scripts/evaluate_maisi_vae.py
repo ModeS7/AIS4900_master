@@ -93,7 +93,7 @@ def main():
     # Load data
     if args.data_dir is None:
         # Use cluster paths as default
-        args.data_dir = "/cluster/home/modlrwtn/data/brainmetshare-3"
+        args.data_dir = "/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 
     print(f"Evaluating on {args.split} split from {args.data_dir}")
 
