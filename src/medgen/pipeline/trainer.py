@@ -25,6 +25,7 @@ import torch.distributed as dist
 from ema_pytorch import EMA
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
+from torch.nn import functional as F
 from torch.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler
@@ -336,11 +337,35 @@ class DiffusionTrainer(BaseTrainer):
                 f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
             )
 
+        # Log "clean" regularization techniques
+        jitter_cfg = cfg.training.get('timestep_jitter', {})
+        if jitter_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
+
+        self_cond_cfg = cfg.training.get('self_conditioning', {})
+        if self_cond_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
+
+        feat_cfg = cfg.training.get('feature_perturbation', {})
+        if feat_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(
+                f"Feature perturbation enabled: std={feat_cfg.get('std', 0.1)}, "
+                f"layers={feat_cfg.get('layers', ['mid'])}"
+            )
+
+        noise_aug_cfg = cfg.training.get('noise_augmentation', {})
+        if noise_aug_cfg.get('enabled', False) and self.is_main_process:
+            logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
+
         # Generation quality metrics (KID, CMMD) for overfitting detection
         self._gen_metrics: Optional['GenerationMetrics'] = None
         gen_cfg = cfg.training.get('generation_metrics', {})
         if gen_cfg.get('enabled', False):
             from medgen.pipeline.metrics.generation import GenerationMetricsConfig, GenerationMetrics
+            # Use training batch_size by default for torch.compile consistency
+            feature_batch_size = gen_cfg.get('feature_batch_size', None)
+            if feature_batch_size is None:
+                feature_batch_size = cfg.training.batch_size
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
                 samples_per_epoch=gen_cfg.get('samples_per_epoch', 100),
@@ -350,7 +375,7 @@ class DiffusionTrainer(BaseTrainer):
                 steps_extended=gen_cfg.get('steps_extended', 25),
                 steps_test=gen_cfg.get('steps_test', 50),
                 cache_dir=gen_cfg.get('cache_dir', '.cache/generation_features'),
-                feature_batch_size=gen_cfg.get('feature_batch_size', 32),
+                feature_batch_size=feature_batch_size,
             )
             if self.is_main_process:
                 logger.info(
@@ -666,6 +691,9 @@ class DiffusionTrainer(BaseTrainer):
         # Initialize metrics accumulators
         self.metrics.init_accumulators()
 
+        # Setup feature perturbation hooks if enabled
+        self._setup_feature_perturbation()
+
     def _setup_ema(self) -> None:
         """Setup EMA wrapper if enabled."""
         if self.use_ema:
@@ -735,6 +763,146 @@ class DiffusionTrainer(BaseTrainer):
         max_t = max_t_start + progress * (max_t_end - max_t_start)
 
         return (min_t, max_t)
+
+    def _apply_timestep_jitter(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Add Gaussian noise to timesteps for regularization.
+
+        Increases noise-level diversity without changing output distribution.
+
+        Args:
+            timesteps: Original timesteps tensor.
+
+        Returns:
+            Jittered timesteps (clamped to valid range).
+        """
+        jitter_cfg = self.cfg.training.get('timestep_jitter', {})
+        if not jitter_cfg.get('enabled', False):
+            return timesteps
+
+        std = jitter_cfg.get('std', 0.05)
+        # Convert to float, add jitter, convert back
+        t_float = timesteps.float() / self.num_timesteps
+        jitter = torch.randn_like(t_float) * std
+        t_jittered = (t_float + jitter).clamp(0.0, 1.0)
+        return (t_jittered * self.num_timesteps).long()
+
+    def _apply_noise_augmentation(
+        self,
+        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Add perturbation to noise vector for regularization.
+
+        Increases noise diversity without affecting what model learns to output.
+
+        Args:
+            noise: Original noise tensor or dict of tensors.
+
+        Returns:
+            Perturbed noise (renormalized to maintain variance).
+        """
+        noise_aug_cfg = self.cfg.training.get('noise_augmentation', {})
+        if not noise_aug_cfg.get('enabled', False):
+            return noise
+
+        std = noise_aug_cfg.get('std', 0.1)
+
+        if isinstance(noise, dict):
+            perturbed = {}
+            for k, v in noise.items():
+                perturbation = torch.randn_like(v) * std
+                # Add perturbation and renormalize to maintain unit variance
+                perturbed_v = v + perturbation
+                perturbed[k] = perturbed_v / perturbed_v.std() * v.std()
+            return perturbed
+        else:
+            perturbation = torch.randn_like(noise) * std
+            perturbed = noise + perturbation
+            return perturbed / perturbed.std() * noise.std()
+
+    def _setup_feature_perturbation(self) -> None:
+        """Setup forward hooks for feature perturbation."""
+        self._feature_hooks = []
+        feat_cfg = self.cfg.training.get('feature_perturbation', {})
+
+        if not feat_cfg.get('enabled', False):
+            return
+
+        std = feat_cfg.get('std', 0.1)
+        layers = feat_cfg.get('layers', ['mid'])
+
+        def make_hook(noise_std):
+            def hook(module, input, output):
+                if self.model.training:
+                    noise = torch.randn_like(output) * noise_std
+                    return output + noise
+                return output
+            return hook
+
+        # Register hooks on specified layers
+        # UNet structure: down_blocks, mid_block, up_blocks
+        if hasattr(self.model_raw, 'mid_block') and 'mid' in layers:
+            handle = self.model_raw.mid_block.register_forward_hook(make_hook(std))
+            self._feature_hooks.append(handle)
+
+        if hasattr(self.model_raw, 'down_blocks') and 'encoder' in layers:
+            for block in self.model_raw.down_blocks:
+                handle = block.register_forward_hook(make_hook(std))
+                self._feature_hooks.append(handle)
+
+        if hasattr(self.model_raw, 'up_blocks') and 'decoder' in layers:
+            for block in self.model_raw.up_blocks:
+                handle = block.register_forward_hook(make_hook(std))
+                self._feature_hooks.append(handle)
+
+    def _remove_feature_perturbation_hooks(self) -> None:
+        """Remove feature perturbation hooks."""
+        for handle in getattr(self, '_feature_hooks', []):
+            handle.remove()
+        self._feature_hooks = []
+
+    def _compute_self_conditioning_loss(
+        self,
+        model_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        prediction: torch.Tensor,
+        mode_id: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute self-conditioning consistency loss.
+
+        With probability `prob`, runs model a second time and computes
+        consistency loss between the two predictions.
+
+        Args:
+            model_input: Current model input tensor.
+            timesteps: Current timesteps.
+            prediction: Current prediction from main forward pass.
+            mode_id: Optional mode ID for multi-modality.
+
+        Returns:
+            Consistency loss (0 if disabled or skipped this batch).
+        """
+        self_cond_cfg = self.cfg.training.get('self_conditioning', {})
+        if not self_cond_cfg.get('enabled', False):
+            return torch.tensor(0.0, device=model_input.device)
+
+        prob = self_cond_cfg.get('prob', 0.5)
+
+        # With probability (1-prob), skip self-conditioning
+        if random.random() >= prob:
+            return torch.tensor(0.0, device=model_input.device)
+
+        # Get second prediction (detached first prediction as reference)
+        with torch.no_grad():
+            if self.use_mode_embedding:
+                prediction_ref = self.model(model_input, timesteps, mode_id=mode_id)
+            else:
+                prediction_ref = self.model(x=model_input, timesteps=timesteps)
+            prediction_ref = prediction_ref.detach()
+
+        # Consistency loss: predictions should be similar
+        consistency_loss = F.mse_loss(prediction.float(), prediction_ref.float())
+
+        return consistency_loss
 
     def _compute_min_snr_weighted_mse(
         self,
@@ -949,9 +1117,16 @@ class DiffusionTrainer(BaseTrainer):
             else:
                 noise = torch.randn_like(images).to(self.device)
 
+            # Apply noise augmentation (perturb noise vector for diversity)
+            noise = self._apply_noise_augmentation(noise)
+
             # Sample timesteps (with optional curriculum learning)
             curriculum_range = self._get_curriculum_range(self._current_epoch)
             timesteps = self.strategy.sample_timesteps(images, curriculum_range)
+
+            # Apply timestep jitter (adds noise-level diversity)
+            timesteps = self._apply_timestep_jitter(timesteps)
+
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
 
             # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
@@ -1157,6 +1332,15 @@ class DiffusionTrainer(BaseTrainer):
                         p_loss = torch.tensor(0.0, device=self.device)
 
                     total_loss = mse_loss + self.perceptual_weight * p_loss
+
+                    # Self-conditioning consistency loss
+                    self_cond_cfg = self.cfg.training.get('self_conditioning', {})
+                    if self_cond_cfg.get('enabled', False):
+                        consistency_weight = self_cond_cfg.get('consistency_weight', 0.1)
+                        consistency_loss = self._compute_self_conditioning_loss(
+                            model_input, timesteps, prediction, mode_id
+                        )
+                        total_loss = total_loss + consistency_weight * consistency_loss
 
             # SDA (Shifted Data Augmentation) path
             # Unlike ScoreAug, SDA transforms CLEAN data before noise addition

@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp5_1_rflow_100_m_snr"
-#SBATCH --output=IDUN/output/train/diffusion/exp5_rflow_100+a+ema+m_snr_%j.out
-#SBATCH --error=IDUN/output/train/diffusion/exp5_rflow_100+a+ema+m_snr_%j.err
+#SBATCH --output=IDUN/output/train/diffusion/exp5_1_rflow_100+a+ema+m_snr_%j.out
+#SBATCH --error=IDUN/output/train/diffusion/exp5_1_rflow_100+a+ema+m_snr_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 

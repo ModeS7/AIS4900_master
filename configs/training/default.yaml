@@ -193,6 +193,40 @@ curriculum:
   min_t_end: 0.0             # Final minimum timestep
   max_t_end: 1.0             # Final maximum timestep (1.0 = full range)
 
+# ============================================================================
+# "Clean" Regularization Techniques
+# ============================================================================
+# These provide regularization benefits WITHOUT leaking augmentation patterns
+# into generated samples (unlike standard data augmentation).
+
+# Timestep Jitter - adds small noise to sampled timesteps
+# Increases noise-level diversity without changing output distribution
+timestep_jitter:
+  enabled: false             # Enable timestep jitter
+  std: 0.05                  # Std of Gaussian noise added to timesteps (in [0,1] range)
+
+# Self-Conditioning via Consistency
+# Runs model twice: first pass (no grad), second pass uses first prediction for consistency
+# Adds consistency loss to encourage stable predictions
+# This variant works without model architecture changes
+self_conditioning:
+  enabled: false             # Enable self-conditioning
+  prob: 0.5                  # Probability of using self-conditioning per batch
+  consistency_weight: 0.1    # Weight for consistency loss term
+
+# Feature Perturbation - adds Gaussian noise to intermediate features
+# Like continuous dropout, regularizes without augmentation leakage
+feature_perturbation:
+  enabled: false             # Enable feature perturbation
+  std: 0.1                   # Std of noise added to features
+  layers: ["mid"]            # Which layers to perturb: "encoder", "mid", "decoder", or list
+
+# Input Noise Augmentation - perturbs the noise vector before adding to image
+# Increases noise diversity without changing what model learns to output
+noise_augmentation:
+  enabled: false             # Enable noise augmentation
+  std: 0.1                   # Std of perturbation added to noise vector
+
 # Optimizer settings
 optimizer:
   betas: [0.9, 0.999]        # AdamW momentum parameters (beta1, beta2)
@@ -256,7 +290,7 @@ profiling:
 
 # Generation Quality Metrics (Diffusion only)
 # Tracks KID, CMMD, FID to detect overfitting by comparing generated samples
-# against train/val distributions. Uses InceptionV3 for KID/FID, BiomedCLIP for CMMD.
+# against train/val distributions. Uses ResNet50 for KID/FID, BiomedCLIP for CMMD.
 # Reference features cached at training start for efficiency.
 generation_metrics:
   enabled: false              # Disabled by default (adds ~30s/epoch overhead)
@@ -267,4 +301,4 @@ generation_metrics:
   steps_extended: 25          # Denoising steps for extended metrics
   steps_test: 50              # Denoising steps for test evaluation
   cache_dir: ".cache/generation_features"  # Feature cache location
-  feature_batch_size: 32      # Batch size for feature extraction
+  # feature_batch_size: null   # Defaults to training.batch_size for torch.compile consistency
