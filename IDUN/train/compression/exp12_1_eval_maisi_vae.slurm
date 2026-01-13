@@ -17,12 +17,27 @@
 # =============================================================================
 # exp12_1: Evaluate Pretrained MAISI VAE Compression
 # =============================================================================
-# MAISI VAE from NVIDIA (pretrained on 39K CT + 19K MRI volumes)
+# MAISI VAE from NVIDIA (pretrained on 39K CT + 18.8K MRI volumes)
 # Architecture:
 #   - 4x spatial compression per dimension (not 8x like standard VAE)
 #   - 4 latent channels
 #   - Total compression: 16x
 #   - Uses sliding window inference for memory efficiency
+#
+# MAISI VAE MRI training data (from paper Table S1):
+#   - TCIA Upenn GBM Brain MR (skull-stripped): 2,550 volumes
+#   - Aomic Brain MR: 2,630 volumes
+#   - QTIM Brain MR: 1,275 volumes
+#   - Plus chest MR and prostate MR
+#
+# Preprocessing (from paper page 16):
+#   "For MR images, intensities were normalized such that the 0th to 99.5th
+#    percentile values were scaled to the range [0,1]."
+#
+# Potential domain gaps with brainmetshare-3:
+#   - MAISI brain MRI is mostly skull-stripped
+#   - Different MRI sequences (GBM vs brain metastases)
+#   - Different scanner protocols
 #
 # This evaluates reconstruction quality (PSNR, SSIM, L1) on:
 #   - Test set (full evaluation)

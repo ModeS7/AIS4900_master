@@ -144,8 +144,13 @@ def main():
         nifti = nib.load(target_file)
         volume = nifti.get_fdata().astype(np.float32)
 
-        # Normalize to [0, 1]
-        volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-8)
+        # Normalize to [0, 1] using MAISI's MRI preprocessing:
+        # "For MR images, intensities were normalized such that the 0th to 99.5th
+        # percentile values were scaled to the range [0,1]."
+        p0 = np.percentile(volume, 0)
+        p99_5 = np.percentile(volume, 99.5)
+        volume = np.clip(volume, p0, p99_5)
+        volume = (volume - p0) / (p99_5 - p0 + 1e-8)
 
         # Convert to tensor [1, 1, H, W, D]
         volume_tensor = torch.from_numpy(volume).unsqueeze(0).unsqueeze(0).to(device).float()
