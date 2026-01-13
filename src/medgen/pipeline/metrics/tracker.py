@@ -492,12 +492,13 @@ class MetricsTracker:
         self._tr_bg_sum.scatter_add_(0, bin_indices, masked_bg_loss)
         self._tr_bg_count.scatter_add_(0, bin_indices, has_tumor_long)
 
-    def log_epoch(self, epoch: int, log_all: bool = False) -> None:
+    def log_epoch(self, epoch: int, log_all: bool = False, is_figure_epoch: bool = False) -> None:
         """Log all accumulated metrics for the epoch.
 
         Args:
             epoch: Current epoch number.
             log_all: If True, log all metrics. If False, only log grad norms.
+            is_figure_epoch: If True, log expensive visualizations (timestep-region heatmap).
         """
         if not self.is_main_process:
             return
@@ -512,8 +513,10 @@ class MetricsTracker:
                 self._log_timestep_losses(epoch)
             if self.log_regional_losses:
                 self._log_regional_losses(epoch)
-            if self.log_timestep_region:
-                self._log_timestep_region_losses(epoch)
+
+        # Timestep-region heatmap only at figure_interval (expensive)
+        if is_figure_epoch and self.log_timestep_region:
+            self._log_timestep_region_losses(epoch)
 
     def _log_grad_norms(self, epoch: int) -> None:
         """Log gradient norm statistics to TensorBoard."""

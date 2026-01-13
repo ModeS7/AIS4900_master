@@ -1998,7 +1998,7 @@ class DiffusionTrainer(BaseTrainer):
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
 
-                    self.metrics.log_epoch(epoch, log_all=True)
+                    self.metrics.log_epoch(epoch, log_all=True, is_figure_epoch=log_figures)
                     self._flops_tracker.log_epoch(self.writer, epoch)
                     log_vram_to_tensorboard(self.writer, self.device, epoch)
 
