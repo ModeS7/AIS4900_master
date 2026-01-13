@@ -73,7 +73,7 @@ def main():
                         help="Path to MAISI bundle")
     parser.add_argument("--data_dir", type=str, default=None,
                         help="Data directory (default: from config)")
-    parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"],
+    parser.add_argument("--split", type=str, default="test1", choices=["train", "val", "test1", "test_new"],
                         help="Dataset split to evaluate")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Maximum samples to evaluate (default: all)")
@@ -182,9 +182,13 @@ def main():
         msssim_val = compute_msssim(reconstructed, volume_tensor, spatial_dims=3)
         l1_val = F.l1_loss(reconstructed, volume_tensor).item()
 
-        # LPIPS (2.5D - samples slices)
+        # LPIPS (2D metric applied slice-by-slice)
+        # compute_lpips_3d expects [B, C, D, H, W] but we have [B, C, H, W, D]
+        # Permute to match expected format
         try:
-            lpips_val = compute_lpips_3d(reconstructed, volume_tensor, slice_fraction=0.25)
+            recon_for_lpips = reconstructed.permute(0, 1, 4, 2, 3)  # [B,C,H,W,D] -> [B,C,D,H,W]
+            vol_for_lpips = volume_tensor.permute(0, 1, 4, 2, 3)
+            lpips_val = compute_lpips_3d(recon_for_lpips, vol_for_lpips, device=device)
         except Exception:
             lpips_val = 0.0
 
