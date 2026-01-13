@@ -293,7 +293,7 @@ profiling:
 # against train/val distributions. Uses ResNet50 for KID/FID, BiomedCLIP for CMMD.
 # Reference features cached at training start for efficiency.
 generation_metrics:
-  enabled: false              # Disabled by default (adds ~30s/epoch overhead)
+  enabled: true               # Enabled by default for overfitting detection
   samples_per_epoch: 100      # Samples for quick metrics (every epoch)
   samples_extended: 500       # Samples for extended metrics (every figure_interval)
   samples_test: 1000          # Samples for final test evaluation

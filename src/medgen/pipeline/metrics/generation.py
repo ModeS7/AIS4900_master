@@ -66,7 +66,7 @@ class GenerationMetricsConfig:
         cache_dir: Directory for caching reference features.
         feature_batch_size: Batch size for feature extraction.
     """
-    enabled: bool = False
+    enabled: bool = True
     samples_per_epoch: int = 100
     samples_extended: int = 500
     samples_test: int = 1000
