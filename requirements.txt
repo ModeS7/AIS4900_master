@@ -3,6 +3,9 @@ monai>=1.4.0
 ema-pytorch>=0.7.0
 diffusers>=0.32.0  # For DC-AE (AutoencoderDC)
 
+# Generation metrics (KID, CMMD, FID)
+open_clip_torch>=2.24.0  # For BiomedCLIP (CMMD metric)
+
 # Configuration
 hydra-core>=1.3.0
 omegaconf>=2.3.0
