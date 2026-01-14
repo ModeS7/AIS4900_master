@@ -67,6 +67,7 @@ from .metrics import (
     MetricKey,
 )
 from .tracking import FLOPsTracker
+from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,28 @@ class DiffusionTrainer(BaseTrainer):
         if noise_aug_cfg.get('enabled', False) and self.is_main_process:
             logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
 
+        # Region-weighted loss (per-pixel weighting by tumor size)
+        # Only applies to conditional modes (bravo, dual, multi) where seg mask is available
+        self.regional_weight_computer: Optional[RegionalWeightComputer] = None
+        rw_cfg = cfg.training.get('regional_weighting', {})
+        if rw_cfg.get('enabled', False):
+            if self.mode.is_conditional:
+                self.regional_weight_computer = create_regional_weight_computer(cfg)
+                if self.is_main_process:
+                    weights = rw_cfg.get('weights', {})
+                    logger.info(
+                        f"Region-weighted loss enabled: "
+                        f"tiny={weights.get('tiny', 2.5)}, small={weights.get('small', 1.8)}, "
+                        f"medium={weights.get('medium', 1.4)}, large={weights.get('large', 1.2)}, "
+                        f"bg={rw_cfg.get('background_weight', 1.0)}"
+                    )
+            else:
+                if self.is_main_process:
+                    logger.warning(
+                        "Regional weighting enabled but mode is not conditional (seg mode). "
+                        "Skipping - regional weighting requires segmentation mask as conditioning."
+                    )
+
         # Generation quality metrics (KID, CMMD) for overfitting detection
         self._gen_metrics: Optional['GenerationMetrics'] = None
         gen_cfg = cfg.training.get('generation_metrics', {})
@@ -601,6 +624,8 @@ class DiffusionTrainer(BaseTrainer):
         elif self.space.scale_factor > 1:
             compile_fused = False
         elif self.use_min_snr:
+            compile_fused = False
+        elif self.regional_weight_computer is not None:
             compile_fused = False
         elif self.score_aug is not None:
             compile_fused = False
@@ -944,6 +969,56 @@ class DiffusionTrainer(BaseTrainer):
             mse_per_sample = ((prediction.float() - target.float()) ** 2).mean(dim=(1, 2, 3))
 
         return (mse_per_sample * snr_weights).mean()
+
+    def _compute_region_weighted_mse(
+        self,
+        prediction: torch.Tensor,
+        images: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        seg_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute MSE loss with per-pixel regional weighting.
+
+        Applies higher weights to small tumor regions based on RANO-BM
+        size classification using Feret diameter.
+
+        Args:
+            prediction: Model prediction (noise or velocity).
+            images: Original clean images.
+            noise: Added noise.
+            seg_mask: Binary segmentation mask [B, 1, H, W].
+
+        Returns:
+            Region-weighted MSE loss scalar.
+        """
+        # Compute weight map from segmentation mask
+        weight_map = self.regional_weight_computer(seg_mask)  # [B, 1, H, W]
+
+        # Compute per-pixel MSE
+        if isinstance(images, dict):
+            keys = list(images.keys())
+            if self.strategy_name == 'rflow':
+                target_0 = images[keys[0]] - noise[keys[0]]
+                target_1 = images[keys[1]] - noise[keys[1]]
+            else:
+                target_0, target_1 = noise[keys[0]], noise[keys[1]]
+            pred_0, pred_1 = prediction[:, 0:1, :, :], prediction[:, 1:2, :, :]
+
+            # Per-pixel MSE with weights
+            mse_0 = (pred_0.float() - target_0.float()) ** 2  # [B, 1, H, W]
+            mse_1 = (pred_1.float() - target_1.float()) ** 2  # [B, 1, H, W]
+
+            # Apply regional weights
+            weighted_mse_0 = (mse_0 * weight_map).mean()
+            weighted_mse_1 = (mse_1 * weight_map).mean()
+            return (weighted_mse_0 + weighted_mse_1) / 2
+        else:
+            target = images - noise if self.strategy_name == 'rflow' else noise
+            mse = (prediction.float() - target.float()) ** 2  # [B, C, H, W]
+
+            # Apply regional weights (broadcast over channels)
+            weighted_mse = (mse * weight_map).mean()
+            return weighted_mse
 
     def _setup_compiled_forward(self, enabled: bool) -> None:
         """Setup compiled forward functions for fused model + loss computation."""
@@ -1315,6 +1390,12 @@ class DiffusionTrainer(BaseTrainer):
                             prediction, images, noise, timesteps
                         )
 
+                    # Apply regional weighting (per-pixel weights by tumor size)
+                    if self.regional_weight_computer is not None and labels is not None:
+                        mse_loss = self._compute_region_weighted_mse(
+                            prediction, images, noise, labels
+                        )
+
                     # Compute perceptual loss (decode for latent space)
                     if self.perceptual_weight > 0:
                         if self.space.scale_factor > 1:
@@ -1668,6 +1749,11 @@ class DiffusionTrainer(BaseTrainer):
                 device=self.device,
             )
 
+        # Initialize timestep loss tracking for validation
+        num_timestep_bins = 10
+        timestep_loss_sum = torch.zeros(num_timestep_bins, device=self.device)
+        timestep_loss_count = torch.zeros(num_timestep_bins, device=self.device, dtype=torch.long)
+
         # Mark CUDA graph step boundary to prevent tensor caching issues
         torch.compiler.cudagraph_mark_step_begin()
 
@@ -1803,6 +1889,19 @@ class DiffusionTrainer(BaseTrainer):
                 if regional_tracker is not None and labels is not None:
                     regional_tracker.update(predicted_clean, images, labels)
 
+                # Timestep loss tracking (per-bin reconstruction MSE)
+                if self.metrics.log_timestep_losses:
+                    if isinstance(predicted_clean, dict):
+                        pred = torch.cat(list(predicted_clean.values()), dim=1)
+                        img = torch.cat(list(images.values()), dim=1)
+                    else:
+                        pred, img = predicted_clean, images
+                    mse_per_sample = ((pred - img) ** 2).mean(dim=(1, 2, 3))
+                    bin_size = self.num_timesteps // num_timestep_bins
+                    bin_indices = (timesteps // bin_size).clamp(max=num_timestep_bins - 1).long()
+                    timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
+                    timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
+
         model_to_use.train()
 
         # Handle empty validation set
@@ -1876,6 +1975,18 @@ class DiffusionTrainer(BaseTrainer):
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{self.mode_name}')
                 else:
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+
+            # Log per-timestep validation losses
+            if self.metrics.log_timestep_losses:
+                counts = timestep_loss_count.cpu()
+                sums = timestep_loss_sum.cpu()
+                bin_size = self.num_timesteps // num_timestep_bins
+                for i in range(num_timestep_bins):
+                    if counts[i] > 0:
+                        avg_loss = (sums[i] / counts[i]).item()
+                        bin_start = i * bin_size
+                        bin_end = (i + 1) * bin_size
+                        self.writer.add_scalar(f'Timestep/{bin_start:04d}-{bin_end:04d}', avg_loss, epoch)
 
             # Compute generation quality metrics (KID, CMMD)
             if self._gen_metrics is not None:

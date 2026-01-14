@@ -412,33 +412,8 @@ class ValidationVisualizer:
                     self.writer.add_images('Generated_T1_Pre', samples_pre_rgb, epoch)
                     self.writer.add_images('Generated_T1_Gd', samples_gd_rgb, epoch)
 
-                    if gt_images is not None:
-                        gt_pre = gt_images[:, 0:1, :, :]
-                        gt_gd = gt_images[:, 1:2, :, :]
-
-                        if self.log_msssim:
-                            msssim_pre = self.metrics.compute_msssim(samples_pre_norm, gt_pre)
-                            msssim_gd = self.metrics.compute_msssim(samples_gd_norm, gt_gd)
-                            self.writer.add_scalar('metrics/msssim_t1_pre', msssim_pre, epoch)
-                            self.writer.add_scalar('metrics/msssim_t1_gd', msssim_gd, epoch)
-
-                        if self.log_psnr:
-                            psnr_pre = self.metrics.compute_psnr(samples_pre_norm, gt_pre)
-                            psnr_gd = self.metrics.compute_psnr(samples_gd_norm, gt_gd)
-                            self.writer.add_scalar('metrics/psnr_t1_pre', psnr_pre, epoch)
-                            self.writer.add_scalar('metrics/psnr_t1_gd', psnr_gd, epoch)
-
-                        if self.log_lpips:
-                            lpips_pre = self.metrics.compute_lpips(samples_pre_norm, gt_pre)
-                            lpips_gd = self.metrics.compute_lpips(samples_gd_norm, gt_gd)
-                            self.writer.add_scalar('metrics/lpips_t1_pre', lpips_pre, epoch)
-                            self.writer.add_scalar('metrics/lpips_t1_gd', lpips_gd, epoch)
-
-                    if self.log_boundary_sharpness and seg_masks is not None:
-                        sharpness_pre = self.metrics.compute_boundary_sharpness(samples_pre_norm, seg_masks)
-                        sharpness_gd = self.metrics.compute_boundary_sharpness(samples_gd_norm, seg_masks)
-                        self.writer.add_scalar('metrics/boundary_sharpness_t1_pre', sharpness_pre, epoch)
-                        self.writer.add_scalar('metrics/boundary_sharpness_t1_gd', sharpness_gd, epoch)
+                    # Note: Validation metrics (MS-SSIM, PSNR, LPIPS) are logged via
+                    # the unified metrics system in trainer.py using Validation/ prefix
                 else:
                     samples_float = samples.float()
                     samples_normalized = torch.clamp(samples_float, 0, 1)
@@ -449,22 +424,8 @@ class ValidationVisualizer:
                     samples_rgb = samples_normalized.repeat(1, 3, 1, 1)
                     self.writer.add_images('Generated_Images', samples_rgb, epoch)
 
-                    if gt_images is not None and self.mode_name == ModeType.BRAVO:
-                        if self.log_msssim:
-                            msssim_val = self.metrics.compute_msssim(samples_normalized, gt_images)
-                            self.writer.add_scalar('metrics/msssim', msssim_val, epoch)
-
-                        if self.log_psnr:
-                            psnr_val = self.metrics.compute_psnr(samples_normalized, gt_images)
-                            self.writer.add_scalar('metrics/psnr', psnr_val, epoch)
-
-                        if self.log_lpips:
-                            lpips_val = self.metrics.compute_lpips(samples_normalized, gt_images)
-                            self.writer.add_scalar('metrics/lpips', lpips_val, epoch)
-
-                    if self.log_boundary_sharpness and seg_masks is not None and self.mode_name == ModeType.BRAVO:
-                        sharpness = self.metrics.compute_boundary_sharpness(samples_normalized, seg_masks)
-                        self.writer.add_scalar('metrics/boundary_sharpness', sharpness, epoch)
+                    # Note: Validation metrics (MS-SSIM, PSNR, LPIPS) are logged via
+                    # the unified metrics system in trainer.py using Validation/ prefix
 
         except Exception as e:
             if self.is_main_process:

@@ -190,6 +190,13 @@ def main():
             else:
                 reconstructed = model.decode(z)
 
+        # Check raw output range before clamping (for first sample)
+        if len(all_metrics["psnr"]) == 0:
+            print(f"\nMAISI raw output range: [{reconstructed.min():.4f}, {reconstructed.max():.4f}]")
+            out_of_range = (reconstructed < 0).sum() + (reconstructed > 1).sum()
+            total_voxels = reconstructed.numel()
+            print(f"Voxels outside [0,1]: {out_of_range}/{total_voxels} ({100*out_of_range/total_voxels:.2f}%)")
+
         reconstructed = torch.clamp(reconstructed, 0, 1).float()
 
         # Remove padding
@@ -208,7 +215,37 @@ def main():
             recon_for_lpips = reconstructed.permute(0, 1, 4, 2, 3)  # [B,C,H,W,D] -> [B,C,D,H,W]
             vol_for_lpips = volume_tensor.permute(0, 1, 4, 2, 3)
             lpips_val = compute_lpips_3d(recon_for_lpips, vol_for_lpips, device=device)
-        except Exception:
+
+            # Detailed diagnostics for first sample
+            if len(all_metrics["lpips"]) == 0:
+                print("\n=== LPIPS Diagnostics (first sample) ===")
+                # Sanity check: LPIPS of original vs itself should be ~0
+                lpips_sanity = compute_lpips_3d(vol_for_lpips, vol_for_lpips, device=device)
+                print(f"LPIPS sanity check (orig vs orig): {lpips_sanity:.6f} (should be ~0)")
+                print(f"Original range: [{volume_tensor.min():.4f}, {volume_tensor.max():.4f}]")
+                print(f"Reconstructed range: [{reconstructed.min():.4f}, {reconstructed.max():.4f}]")
+                diff = (reconstructed - volume_tensor).abs()
+                print(f"Absolute diff: min={diff.min():.6f}, max={diff.max():.4f}, mean={diff.mean():.6f}")
+
+                # Per-slice LPIPS analysis (sample 10 slices)
+                D = vol_for_lpips.shape[2]
+                slice_indices = np.linspace(0, D-1, min(10, D), dtype=int)
+                slice_lpips = []
+                for i in slice_indices:
+                    from medgen.pipeline.metrics.quality import compute_lpips
+                    gen_slice = recon_for_lpips[:, :, i:i+1, :, :].squeeze(2)  # [B, C, H, W]
+                    ref_slice = vol_for_lpips[:, :, i:i+1, :, :].squeeze(2)
+                    slice_lpips_val = compute_lpips(gen_slice, ref_slice, device=device)
+                    slice_lpips.append((i, slice_lpips_val))
+                    print(f"  Slice {i:3d}: LPIPS={slice_lpips_val:.4f}, "
+                          f"mean_orig={ref_slice.mean():.4f}, mean_recon={gen_slice.mean():.4f}")
+
+                print(f"Overall LPIPS for this volume: {lpips_val:.4f}")
+                print("=" * 45)
+        except Exception as e:
+            print(f"LPIPS computation error: {e}")
+            import traceback
+            traceback.print_exc()
             lpips_val = 0.0
 
         all_metrics["psnr"].append(psnr_val)

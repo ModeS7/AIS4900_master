@@ -302,3 +302,23 @@ generation_metrics:
   steps_test: 50              # Denoising steps for test evaluation
   cache_dir: ".cache/generation_features"  # Feature cache location
   # feature_batch_size: null   # Defaults to training.batch_size for torch.compile consistency
+
+# Region-Weighted Loss (Diffusion only - conditional modes)
+# Applies per-pixel loss weighting based on tumor size using RANO-BM thresholds.
+# Smaller tumors receive higher weights to improve reconstruction of clinically
+# important small lesions.
+#
+# Only applies to conditional modes (bravo, dual, multi) where segmentation
+# mask is available. Has no effect on unconditional (seg) training.
+#
+# Weight assignment by Feret diameter (longest edge-to-edge distance):
+#   tiny (<10mm): 2.5, small (10-20mm): 1.8, medium (20-30mm): 1.4, large (>=30mm): 1.2
+regional_weighting:
+  enabled: false              # Enable region-weighted loss
+  weights:
+    tiny: 2.5                 # <10mm Feret diameter
+    small: 1.8                # 10-20mm
+    medium: 1.4               # 20-30mm
+    large: 1.2                # >=30mm
+  background_weight: 1.0      # Weight for non-tumor pixels
+  fov_mm: 240.0               # Field of view in mm (for pixel->mm conversion)

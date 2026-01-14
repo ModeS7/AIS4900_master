@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Literal, Optional, Tuple
 
+import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
@@ -176,10 +177,15 @@ def create_validation_dataloader(
     # Get DataLoader settings from config
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
+    # Validation loader: shuffle with fixed seed for reproducibility + diverse batches
+    # Fixed generator ensures same batch composition across epochs/runs
+    val_generator = torch.Generator().manual_seed(42)
     dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,  # Validation must be deterministic for reproducible metrics
+        shuffle=True,  # Shuffle for diverse worst_batch visualization
+        drop_last=True,  # Ensure consistent batch sizes
+        generator=val_generator,  # Fixed seed for reproducibility
         pin_memory=dl_cfg.pin_memory,
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
