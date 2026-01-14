@@ -22,6 +22,9 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -29,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from monai.apps.generation.maisi.networks.autoencoderkl_maisi import AutoencoderKlMaisi
 from monai.inferers import SlidingWindowInferer
 
-# Use existing project metrics (no new dependencies)
+# Use existing project utilities
 from medgen.pipeline.metrics.quality import compute_psnr, compute_msssim, compute_lpips_3d
+from medgen.pipeline.tracking.worst_batch import create_worst_batch_figure_3d
 
 
 def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi:
@@ -107,6 +111,10 @@ def main():
 
     # Evaluation metrics
     all_metrics = {"psnr": [], "msssim": [], "lpips": [], "l1": []}
+
+    # Track worst sample (by LPIPS - higher is worse)
+    worst_lpips = -1.0
+    worst_sample_data = None
 
     # Sliding window inferer for decode only (encode is cheap, decode is expensive)
     decode_inferer = SlidingWindowInferer(
@@ -209,6 +217,17 @@ def main():
         all_metrics["lpips"].append(lpips_val)
         all_metrics["l1"].append(l1_val)
 
+        # Track worst sample (highest LPIPS = worst perceptual quality)
+        if lpips_val > worst_lpips:
+            worst_lpips = lpips_val
+            # Store data for visualization - permute to [1, C, D, H, W] for create_worst_batch_figure_3d
+            worst_sample_data = {
+                "original": volume_tensor.permute(0, 1, 4, 2, 3).cpu(),  # [1,1,H,W,D] -> [1,1,D,H,W]
+                "generated": reconstructed.permute(0, 1, 4, 2, 3).cpu(),
+                "patient": patient_dir.name,
+                "metrics": {"psnr": psnr_val, "msssim": msssim_val, "lpips": lpips_val, "l1": l1_val},
+            }
+
     # Print results
     print("\n" + "=" * 60)
     print(f"MAISI VAE Evaluation Results ({args.split} split)")
@@ -233,6 +252,30 @@ def main():
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2)
         print(f"Results saved to {args.output}")
+
+    # Save worst sample visualization
+    if worst_sample_data is not None:
+        output_dir = Path(args.output).parent if args.output else Path("runs/compression_3d/maisi_eval")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        m = worst_sample_data["metrics"]
+        fig = create_worst_batch_figure_3d(
+            original=worst_sample_data["original"],
+            generated=worst_sample_data["generated"],
+            loss=m["lpips"],
+            loss_breakdown={"PSNR": m["psnr"], "MS-SSIM": m["msssim"], "LPIPS": m["lpips"], "L1": m["l1"]},
+            num_slices=8,
+        )
+        fig.suptitle(
+            f"MAISI VAE Worst Sample - {args.split}/{worst_sample_data['patient']}\n"
+            f"PSNR: {m['psnr']:.2f} | MS-SSIM: {m['msssim']:.4f} | LPIPS: {m['lpips']:.4f} | L1: {m['l1']:.6f}",
+            fontsize=10, y=1.02
+        )
+
+        fig_path = output_dir / f"maisi_worst_{args.split}_{worst_sample_data['patient']}.png"
+        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Worst sample visualization saved to {fig_path}")
 
 
 if __name__ == "__main__":
