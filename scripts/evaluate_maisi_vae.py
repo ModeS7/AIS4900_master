@@ -34,7 +34,6 @@ from monai.inferers import SlidingWindowInferer
 
 # Use existing project utilities
 from medgen.pipeline.metrics.quality import compute_psnr, compute_msssim, compute_lpips_3d
-from medgen.pipeline.tracking.worst_batch import create_worst_batch_figure_3d
 
 
 def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi:
@@ -220,10 +219,10 @@ def main():
         # Track worst sample (highest LPIPS = worst perceptual quality)
         if lpips_val > worst_lpips:
             worst_lpips = lpips_val
-            # Store data for visualization - permute to [1, C, D, H, W] for create_worst_batch_figure_3d
+            # Store data for visualization in original [1, 1, H, W, D] format
             worst_sample_data = {
-                "original": volume_tensor.permute(0, 1, 4, 2, 3).cpu(),  # [1,1,H,W,D] -> [1,1,D,H,W]
-                "generated": reconstructed.permute(0, 1, 4, 2, 3).cpu(),
+                "original_hwk": volume_tensor.cpu(),  # [1, 1, H, W, D]
+                "generated_hwk": reconstructed.cpu(),
                 "patient": patient_dir.name,
                 "metrics": {"psnr": psnr_val, "msssim": msssim_val, "lpips": lpips_val, "l1": l1_val},
             }
@@ -253,24 +252,62 @@ def main():
             json.dump(results, f, indent=2)
         print(f"Results saved to {args.output}")
 
-    # Save worst sample visualization
+    # Save worst sample visualization - custom 3-view layout (axial, coronal, sagittal)
     if worst_sample_data is not None:
         output_dir = Path(args.output).parent if args.output else Path("runs/compression_3d/maisi_eval")
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Get data in original format [1, 1, H, W, D]
+        orig = worst_sample_data["original_hwk"][0, 0].numpy()  # [H, W, D]
+        recon = worst_sample_data["generated_hwk"][0, 0].numpy()
+        diff = np.abs(orig - recon)
+
+        H, W, D = orig.shape
         m = worst_sample_data["metrics"]
-        fig = create_worst_batch_figure_3d(
-            original=worst_sample_data["original"],
-            generated=worst_sample_data["generated"],
-            loss=m["lpips"],
-            loss_breakdown={"PSNR": m["psnr"], "MS-SSIM": m["msssim"], "LPIPS": m["lpips"], "L1": m["l1"]},
-            num_slices=8,
-        )
+
+        print(f"Worst sample volume shape: H={H}, W={W}, D={D}")
+        print(f"  Original range: [{orig.min():.3f}, {orig.max():.3f}]")
+        print(f"  Recon range: [{recon.min():.3f}, {recon.max():.3f}]")
+
+        # Create 3x3 figure: rows = (axial, coronal, sagittal), cols = (orig, recon, diff)
+        fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+
+        # Axial view (slice along D - depth)
+        d_idx = D // 2
+        axes[0, 0].imshow(orig[:, :, d_idx].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[0, 0].set_title(f'Original - Axial (z={d_idx})')
+        axes[0, 1].imshow(recon[:, :, d_idx].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[0, 1].set_title(f'Reconstructed - Axial (z={d_idx})')
+        axes[0, 2].imshow(diff[:, :, d_idx].T, cmap='hot', vmin=0, vmax=diff.max(), origin='lower')
+        axes[0, 2].set_title(f'|Difference| - Axial (z={d_idx})')
+
+        # Coronal view (slice along W - width/y)
+        w_idx = W // 2
+        axes[1, 0].imshow(orig[:, w_idx, :].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[1, 0].set_title(f'Original - Coronal (y={w_idx})')
+        axes[1, 1].imshow(recon[:, w_idx, :].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[1, 1].set_title(f'Reconstructed - Coronal (y={w_idx})')
+        axes[1, 2].imshow(diff[:, w_idx, :].T, cmap='hot', vmin=0, vmax=diff.max(), origin='lower')
+        axes[1, 2].set_title(f'|Difference| - Coronal (y={w_idx})')
+
+        # Sagittal view (slice along H - height/x)
+        h_idx = H // 2
+        axes[2, 0].imshow(orig[h_idx, :, :].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[2, 0].set_title(f'Original - Sagittal (x={h_idx})')
+        axes[2, 1].imshow(recon[h_idx, :, :].T, cmap='gray', vmin=0, vmax=1, origin='lower')
+        axes[2, 1].set_title(f'Reconstructed - Sagittal (x={h_idx})')
+        axes[2, 2].imshow(diff[h_idx, :, :].T, cmap='hot', vmin=0, vmax=diff.max(), origin='lower')
+        axes[2, 2].set_title(f'|Difference| - Sagittal (x={h_idx})')
+
+        for ax in axes.flat:
+            ax.axis('off')
+
         fig.suptitle(
             f"MAISI VAE Worst Sample - {args.split}/{worst_sample_data['patient']}\n"
-            f"PSNR: {m['psnr']:.2f} | MS-SSIM: {m['msssim']:.4f} | LPIPS: {m['lpips']:.4f} | L1: {m['l1']:.6f}",
-            fontsize=10, y=1.02
+            f"PSNR: {m['psnr']:.2f} dB | MS-SSIM: {m['msssim']:.4f} | LPIPS: {m['lpips']:.4f} | L1: {m['l1']:.6f}",
+            fontsize=12
         )
+        plt.tight_layout()
 
         fig_path = output_dir / f"maisi_worst_{args.split}_{worst_sample_data['patient']}.png"
         fig.savefig(fig_path, dpi=150, bbox_inches='tight')
