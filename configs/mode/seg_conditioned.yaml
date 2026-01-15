@@ -1,0 +1,35 @@
+# Segmentation Conditioned Mode - Size bin conditioned mask generation
+#
+# Generates segmentation masks conditioned on tumor size distribution.
+# Uses a 9-dimensional vector where each element is the count of tumors
+# in that size bin (Feret diameter, log-scale binning).
+#
+# Size bins (mm): [0-2, 2-4, 4-6, 6-9, 9-13, 13-18, 18-25, 25-35, 35-50]
+# Example: [0, 0, 2, 0, 0, 0, 1, 0, 0] = 2 tumors 4-6mm + 1 tumor 18-25mm
+#
+# For DIFFUSION training:
+#   in_channels: 1 = noisy_seg
+#   out_channels: 1 = predicted seg
+#   conditioning: 9-dim size bin vector (embedded and added to timestep)
+#   Dataloader: create_seg_conditioned_dataloader()
+
+name: seg_conditioned
+is_conditional: true
+in_channels: 1   # noisy_seg only (conditioning via embedding, not concat)
+out_channels: 1  # predicted noise/velocity for seg
+image_keys: [seg]
+description: "Segmentation mask generation conditioned on tumor size distribution"
+
+# Size bin configuration
+# Bins aligned with RANO-BM thresholds: 10mm, 20mm, 30mm
+# Last bin is 30+mm (no upper bound)
+size_bins:
+  edges: [0, 3, 6, 10, 15, 20, 30]  # mm boundaries (7 bins, last is explicit 30+)
+  num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
+  max_count_per_bin: 10  # Cap embedding vocabulary at 0-10
+  embedding_dim: 32  # Embedding dimension per bin
+  fov_mm: 240.0  # Field of view for pixel-to-mm conversion
+  image_size: 256  # Image size in pixels
+
+# Classifier-free guidance (CFG) training
+cfg_dropout_prob: 0.1  # Probability of dropping conditioning (10% = unconditional)

@@ -21,6 +21,7 @@ class ModeType(str, Enum):
       modality they are. Use this for VAE, VQ-VAE, and DC-AE training.
     """
     SEG = "seg"               # Segmentation mask only
+    SEG_CONDITIONED = "seg_conditioned"  # Seg mask generation conditioned on size bins
     BRAVO = "bravo"           # Single MRI modality (BRAVO/FLAIR)
     DUAL = "dual"             # Two MRI modalities (t1_pre + t1_gd)
     MULTI = "multi"           # Multi-modality diffusion with mode embedding

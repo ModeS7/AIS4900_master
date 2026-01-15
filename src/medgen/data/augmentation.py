@@ -427,7 +427,142 @@ def apply_augmentation(
 
 
 # =============================================================================
-# Segmentation Mask Augmentation (Hardcore Spatial)
+# Segmentation Diffusion Augmentation (Conservative for Size-Conditioned)
+# =============================================================================
+
+def build_seg_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+    """Build augmentation for segmentation mask diffusion training.
+
+    Conservative spatial transforms suitable for size-conditioned diffusion
+    where we condition on tumor size distribution. Augmentations must preserve
+    reasonable tumor shapes while adding variety.
+
+    Transforms:
+        - HorizontalFlip, VerticalFlip (p=0.5 each) - lossless
+        - Rotate ±15° (p=0.5) - mild rotation
+        - Scale 0.9-1.1x (p=0.5) - mild zoom in/out
+        - Translate ±5% (p=0.5) - small shifts
+        - ElasticTransform (mild, p=0.2) - subtle anatomical variation
+
+    IMPORTANT: After using this augmentation, apply binarize_mask() with
+    threshold=0.5 to restore binary values (interpolation creates non-binary).
+
+    Args:
+        enabled: Whether to enable augmentation.
+
+    Returns:
+        Albumentations Compose object, or None if disabled.
+    """
+    if not enabled:
+        return None
+
+    return A.Compose([
+        # Flips (lossless, very effective for brain symmetry)
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+
+        # Rotation ±15 degrees (mild, preserves tumor shapes)
+        A.Rotate(
+            limit=15,
+            border_mode=0,  # Zero padding
+            p=0.5,
+        ),
+
+        # Scale (zoom in/out) and Translation
+        A.Affine(
+            translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},  # Max ±5%
+            scale=(0.9, 1.1),  # ±10% zoom
+            rotate=0,  # Rotation handled separately above
+            border_mode=0,  # Zero padding
+            p=0.5,
+        ),
+
+        # Mild elastic deformation (simulates anatomical variation)
+        # Lower alpha than seg_augmentation for subtler effect
+        A.ElasticTransform(
+            alpha=30,  # Mild (seg_augmentation uses 120)
+            sigma=8,
+            border_mode=0,
+            p=0.2,
+        ),
+    ])
+
+
+class BinarizeTransform(ImageOnlyTransform):
+    """Binarize mask after augmentation to restore 0/1 values.
+
+    CRITICAL: Must be applied after any augmentation using interpolation
+    (rotation, scaling, elastic) to restore binary mask values.
+
+    Args:
+        threshold: Binarization threshold (default 0.5).
+        p: Always 1.0 - this should always be applied.
+    """
+
+    def __init__(self, threshold: float = 0.5, always_apply: bool = True, p: float = 1.0):
+        super().__init__(p=p)
+        self.threshold = threshold
+        self.always_apply = always_apply
+
+    def apply(self, img: np.ndarray, **params) -> np.ndarray:
+        return (img > self.threshold).astype(np.float32)
+
+    def get_transform_init_args_names(self) -> Tuple[str, ...]:
+        return ("threshold",)
+
+
+def build_seg_diffusion_augmentation_with_binarize(enabled: bool = True) -> Optional[A.Compose]:
+    """Build seg diffusion augmentation with automatic binarization.
+
+    Same as build_seg_diffusion_augmentation but includes final
+    binarization step. Use this for convenience when you don't need
+    to manually control binarization.
+
+    Args:
+        enabled: Whether to enable augmentation.
+
+    Returns:
+        Albumentations Compose object with binarization, or None if disabled.
+    """
+    if not enabled:
+        return None
+
+    return A.Compose([
+        # Flips (lossless)
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+
+        # Rotation ±15 degrees
+        A.Rotate(
+            limit=15,
+            border_mode=0,
+            p=0.5,
+        ),
+
+        # Scale and Translation
+        A.Affine(
+            translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
+            scale=(0.9, 1.1),
+            rotate=0,
+            border_mode=0,
+            p=0.5,
+        ),
+
+        # Mild elastic deformation
+        A.ElasticTransform(
+            alpha=30,
+            sigma=8,
+            border_mode=0,
+            p=0.2,
+        ),
+
+        # CRITICAL: Binarize after all spatial transforms
+        BinarizeTransform(threshold=0.5, p=1.0),
+    ])
+
+
+# =============================================================================
+# Segmentation Mask Augmentation (Hardcore Spatial for Compression)
 # =============================================================================
 
 def build_seg_augmentation(enabled: bool = True) -> Optional[A.Compose]:

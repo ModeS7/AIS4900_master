@@ -472,3 +472,109 @@ class MultiModalityMode(TrainingMode):
             [B, 2, H, W] - [noisy_image, seg_mask] concatenated.
         """
         return torch.cat([noisy_images, labels_dict['labels']], dim=1)
+
+
+class SegmentationConditionedMode(TrainingMode):
+    """Segmentation mask generation conditioned on tumor size distribution.
+
+    Mode for generating segmentation masks with size bin conditioning.
+    Uses a 6-dimensional vector where each element is the count of tumors
+    in that size bin (Feret diameter, RANO-BM aligned).
+
+    Size bins (mm): [0-3, 3-6, 6-10, 10-15, 15-20, 20-30, 30+]
+
+    Input: tuple (seg [B,1,H,W], size_bins [B,6])
+    Model: [B, 1, H, W] -> [B, 1, H, W]
+    Extra: size_bins embedding for conditioning
+
+    Conditioning is done via embedding (added to timestep), NOT concatenation.
+    """
+
+    def __init__(self, size_bin_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize segmentation conditioned mode.
+
+        Args:
+            size_bin_config: Configuration for size bins. Defaults:
+                - edges: [0, 2, 4, 6, 9, 13, 18, 25, 35, 50]
+                - num_bins: 9
+                - max_count_per_bin: 10
+                - embedding_dim: 32
+        """
+        self.size_bin_config = size_bin_config or {
+            'edges': [0, 3, 6, 10, 15, 20, 30],
+            'num_bins': 6,
+            'max_count_per_bin': 10,
+            'embedding_dim': 32,
+        }
+
+    @property
+    def is_conditional(self) -> bool:
+        """Segmentation conditioned mode uses size bin conditioning."""
+        return True
+
+    def prepare_batch(
+        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
+    ) -> Dict[str, Any]:
+        """Prepare segmentation conditioned batch with size_bins.
+
+        Args:
+            batch: Tuple (seg, size_bins) where:
+                - seg: [B, 1, H, W] segmentation mask
+                - size_bins: [B, 9] tumor count per size bin
+            device: Target device.
+
+        Returns:
+            Dictionary with images (seg), labels (None), and size_bins.
+        """
+        if _is_latent_batch(batch):
+            result = _prepare_latent_batch(batch, device, is_conditional=False)
+            result['size_bins'] = batch.get('size_bins')
+            if result['size_bins'] is not None:
+                result['size_bins'] = result['size_bins'].to(device)
+            return result
+
+        if isinstance(batch, (tuple, list)):
+            seg, size_bins = batch
+            seg = _to_device(seg, device)
+            size_bins = size_bins.to(device)
+        else:
+            # Fallback for tensor format
+            batch = _to_device(batch, device)
+            seg = batch
+            size_bins = None
+
+        return {
+            'images': seg,
+            'labels': None,  # No label concatenation, conditioning via embedding
+            'size_bins': size_bins,
+        }
+
+    def get_model_config(self) -> Dict[str, int]:
+        """Get model channel configuration.
+
+        Model takes: [noisy_seg] = 1 input channel (conditioning via embedding)
+        Model outputs: [noise_pred] or [velocity_pred] = 1 output channel
+
+        Returns:
+            Channel configuration dictionary.
+        """
+        return {
+            'in_channels': 1,
+            'out_channels': 1
+        }
+
+    def format_model_input(
+        self,
+        noisy_images: torch.Tensor,
+        labels_dict: Dict[str, Optional[torch.Tensor]]
+    ) -> torch.Tensor:
+        """Format model input (no concatenation, conditioning via embedding).
+
+        Args:
+            noisy_images: [B, 1, H, W] noisy segmentation masks.
+            labels_dict: Not used for concatenation (size_bins used via embedding).
+
+        Returns:
+            [B, 1, H, W] - same as input.
+        """
+        return noisy_images

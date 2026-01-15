@@ -3,10 +3,14 @@
 from .augmentation import (
     apply_augmentation,
     build_diffusion_augmentation,
+    build_seg_diffusion_augmentation,
+    build_seg_diffusion_augmentation_with_binarize,
     build_vae_augmentation,
     create_vae_collate_fn,
     cutmix,
     mixup,
+    binarize_mask,
+    BinarizeTransform,
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .base_embed import create_zero_init_mlp
@@ -22,6 +26,14 @@ from .mode_embed import (
     encode_mode_id,
 )
 from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed, create_conditioning_wrapper
+from .size_bin_embed import (
+    SizeBinModelWrapper,
+    SizeBinTimeEmbed,
+    encode_size_bins,
+    DEFAULT_BIN_EDGES as SIZE_BIN_EDGES,
+    DEFAULT_NUM_BINS as SIZE_NUM_BINS,
+    format_size_bins,
+)
 from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
 from .lossless_mask_codec import (
     encode_mask_lossless,
@@ -73,6 +85,12 @@ from .loaders import (
     DualVolume3DDataset,
     MultiModality3DDataset,
     SingleModality3DDatasetWithSeg,
+    # Seg conditioned loaders
+    create_seg_conditioned_dataloader,
+    create_seg_conditioned_validation_dataloader,
+    create_seg_conditioned_test_dataloader,
+    SegConditionedDataset,
+    compute_size_bins,
 )
 
 __all__ = [
@@ -84,10 +102,14 @@ __all__ = [
     # Augmentation
     'apply_augmentation',
     'build_diffusion_augmentation',
+    'build_seg_diffusion_augmentation',
+    'build_seg_diffusion_augmentation_with_binarize',
     'build_vae_augmentation',
     'create_vae_collate_fn',
     'mixup',
     'cutmix',
+    'binarize_mask',
+    'BinarizeTransform',
     # Score Augmentation
     'ScoreAugTransform',
     # Shifted Data Augmentation
@@ -136,6 +158,12 @@ __all__ = [
     'DualVolume3DDataset',
     'MultiModality3DDataset',
     'SingleModality3DDatasetWithSeg',
+    # Seg conditioned loaders
+    'create_seg_conditioned_dataloader',
+    'create_seg_conditioned_validation_dataloader',
+    'create_seg_conditioned_test_dataloader',
+    'SegConditionedDataset',
+    'compute_size_bins',
     # Mode embedding
     'ModeEmbedModelWrapper',
     'ModeEmbedDropoutModelWrapper',
@@ -147,6 +175,13 @@ __all__ = [
     'CombinedModelWrapper',
     'CombinedTimeEmbed',
     'create_conditioning_wrapper',
+    # Size bin embedding
+    'SizeBinModelWrapper',
+    'SizeBinTimeEmbed',
+    'encode_size_bins',
+    'SIZE_BIN_EDGES',
+    'SIZE_NUM_BINS',
+    'format_size_bins',
     # Lossless mask codec
     'encode_mask_lossless',
     'decode_mask_lossless',

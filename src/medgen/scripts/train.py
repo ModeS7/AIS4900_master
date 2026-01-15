@@ -44,6 +44,9 @@ from medgen.data import (
     create_multi_diffusion_validation_dataloader,
     create_multi_diffusion_test_dataloader,
     create_single_modality_diffusion_val_loader,
+    create_seg_conditioned_dataloader,
+    create_seg_conditioned_validation_dataloader,
+    create_seg_conditioned_test_dataloader,
 )
 from medgen.data.loaders.latent import (
     LatentCacheBuilder,
@@ -257,6 +260,15 @@ def main(cfg: DictConfig) -> None:
                 world_size=trainer.world_size if use_multi_gpu else 1,
                 augment=augment
             )
+        elif mode == ModeType.SEG_CONDITIONED:
+            # Seg conditioned mode - returns (seg, size_bins) tuples
+            dataloader, train_dataset = create_seg_conditioned_dataloader(
+                cfg=cfg,
+                use_distributed=use_multi_gpu,
+                rank=trainer.rank if use_multi_gpu else 0,
+                world_size=trainer.world_size if use_multi_gpu else 1,
+                augment=augment
+            )
         else:
             # seg or bravo
             image_type = 'seg' if mode == ModeType.SEG else 'bravo'
@@ -306,6 +318,11 @@ def main(cfg: DictConfig) -> None:
             conditioning='seg',
             world_size=world_size,
         )
+    elif mode == ModeType.SEG_CONDITIONED:
+        val_result = create_seg_conditioned_validation_dataloader(
+            cfg=cfg,
+            world_size=world_size,
+        )
     else:
         val_result = create_validation_dataloader(
             cfg=cfg,
@@ -343,6 +360,8 @@ def main(cfg: DictConfig) -> None:
             image_keys=image_keys,
             conditioning='seg',
         )
+    elif mode == ModeType.SEG_CONDITIONED:
+        test_result = create_seg_conditioned_test_dataloader(cfg=cfg)
     else:
         test_result = create_test_dataloader(
             cfg=cfg,

@@ -72,6 +72,15 @@ from .seg_compression import (
     create_seg_compression_test_dataloader,
 )
 
+# Segmentation conditioned dataloaders (seg + size bins)
+from .seg_conditioned import (
+    create_seg_conditioned_dataloader,
+    create_seg_conditioned_validation_dataloader,
+    create_seg_conditioned_test_dataloader,
+    SegConditionedDataset,
+    compute_size_bins,
+)
+
 # Latent diffusion dataloaders (pre-encoded latents)
 from .latent import (
     LatentDataset,
@@ -132,6 +141,12 @@ __all__ = [
     'create_seg_compression_dataloader',
     'create_seg_compression_validation_dataloader',
     'create_seg_compression_test_dataloader',
+    # Segmentation conditioned
+    'create_seg_conditioned_dataloader',
+    'create_seg_conditioned_validation_dataloader',
+    'create_seg_conditioned_test_dataloader',
+    'SegConditionedDataset',
+    'compute_size_bins',
     # Latent diffusion
     'LatentDataset',
     'LatentCacheBuilder',

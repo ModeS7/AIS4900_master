@@ -131,6 +131,7 @@ class DiffusionStrategy(ABC):
         timesteps: torch.Tensor,
         omega: Optional[torch.Tensor],
         mode_id: Optional[torch.Tensor],
+        size_bins: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Call model with appropriate arguments based on conditioning.
 
@@ -140,12 +141,16 @@ class DiffusionStrategy(ABC):
             timesteps: Current timesteps.
             omega: Optional ScoreAug omega conditioning.
             mode_id: Optional mode ID for multi-modality.
+            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
 
         Returns:
             Model prediction (noise or velocity).
         """
         with torch.no_grad():
-            if omega is not None or mode_id is not None:
+            # Check if model is SizeBinModelWrapper (has size_bins parameter)
+            if size_bins is not None and hasattr(model, 'size_bin_time_embed'):
+                return model(model_input, timesteps=timesteps, size_bins=size_bins)
+            elif omega is not None or mode_id is not None:
                 return model(model_input, timesteps=timesteps, omega=omega, mode_id=mode_id)
             else:
                 return model(x=model_input, timesteps=timesteps)
@@ -398,6 +403,8 @@ class DDPMStrategy(DiffusionStrategy):
         use_progress_bars=False,
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
+        size_bins: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1.0,
     ):
         """
         Generate using DDPM sampling
@@ -415,8 +422,11 @@ class DDPMStrategy(DiffusionStrategy):
             use_progress_bars: Whether to show progress bars.
             omega: Optional ScoreAug omega conditioning tensor [B, 5].
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
+            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
+            cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
         """
         batch_size = model_input.shape[0]
+        use_cfg = cfg_scale > 1.0 and size_bins is not None
 
         # Set timesteps for inference
         self.scheduler.set_timesteps(num_inference_steps=num_steps)
@@ -428,6 +438,10 @@ class DDPMStrategy(DiffusionStrategy):
         noisy_gd = parsed.noisy_gd
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
+
+        # Prepare unconditional size_bins for CFG (zeros)
+        if use_cfg:
+            uncond_size_bins = torch.zeros_like(size_bins)
 
         # Sampling loop
         timesteps = self.scheduler.timesteps
@@ -442,7 +456,7 @@ class DDPMStrategy(DiffusionStrategy):
             if is_dual:
                 # Dual-image: process each channel through model together
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
-                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
+                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
                 # Split predictions for each channel
                 noise_pred_pre = noise_pred[:, 0:1, :, :]
@@ -459,7 +473,22 @@ class DDPMStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
+                if use_cfg:
+                    # Classifier-free guidance: combine conditional and unconditional predictions
+                    # pred_cond = model(x, t, size_bins=condition)
+                    # pred_uncond = model(x, t, size_bins=zeros)
+                    # pred_guided = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                    noise_pred_cond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    noise_pred_uncond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
+                    )
+                    noise_pred = noise_pred_uncond + cfg_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    noise_pred = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
 
                 noisy_images, _ = self.scheduler.step(noise_pred, t, noisy_images)
 
@@ -598,6 +627,8 @@ class RFlowStrategy(DiffusionStrategy):
         use_progress_bars=False,
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
+        size_bins: Optional[torch.Tensor] = None,
+        cfg_scale: float = 1.0,
     ):
         """
         Generate using RFlow sampling
@@ -619,8 +650,11 @@ class RFlowStrategy(DiffusionStrategy):
             use_progress_bars: Whether to show progress bars.
             omega: Optional ScoreAug omega conditioning tensor [B, 5].
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
+            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
+            cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
         """
         batch_size = model_input.shape[0]
+        use_cfg = cfg_scale > 1.0 and size_bins is not None
 
         # Calculate numel based on spatial dimensions
         if model_input.dim() == 5:
@@ -637,6 +671,10 @@ class RFlowStrategy(DiffusionStrategy):
         noisy_gd = parsed.noisy_gd
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
+
+        # Prepare unconditional size_bins for CFG (zeros)
+        if use_cfg:
+            uncond_size_bins = torch.zeros_like(size_bins)
 
         # Setup scheduler
         self.scheduler.set_timesteps(
@@ -663,7 +701,7 @@ class RFlowStrategy(DiffusionStrategy):
             if is_dual:
                 # Dual-image: process each channel through model together
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
-                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
+                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
                 # Split predictions for each channel
                 velocity_pred_pre = velocity_pred[:, 0:1, :, :]
@@ -680,7 +718,23 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id)
+                if use_cfg:
+                    # Classifier-free guidance: combine conditional and unconditional predictions
+                    # pred_cond = model(x, t, size_bins=condition)
+                    # pred_uncond = model(x, t, size_bins=zeros)
+                    # pred_guided = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                    velocity_pred_cond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    velocity_pred_uncond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
+                    )
+                    velocity_pred = velocity_pred_uncond + cfg_scale * (velocity_pred_cond - velocity_pred_uncond)
+                else:
+                    velocity_pred = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+
                 noisy_images, _ = self.scheduler.step(velocity_pred, t, noisy_images, next_timestep)
 
         # Return final denoised images

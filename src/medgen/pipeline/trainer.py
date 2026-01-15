@@ -41,7 +41,14 @@ from .optimizers import SAM
 from .results import TrainingStepResult
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from .losses import PerceptualLoss
-from .modes import ConditionalDualMode, ConditionalSingleMode, MultiModalityMode, SegmentationMode, TrainingMode
+from .modes import (
+    ConditionalDualMode,
+    ConditionalSingleMode,
+    MultiModalityMode,
+    SegmentationConditionedMode,
+    SegmentationMode,
+    TrainingMode,
+)
 from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .visualization import ValidationVisualizer
 from .spaces import DiffusionSpace, PixelSpace
@@ -59,6 +66,8 @@ from .metrics import (
     compute_msssim,
     compute_psnr,
     compute_lpips,
+    compute_dice,
+    compute_iou,
     # Unified metrics system
     TrainerMetricsConfig,
     LossAccumulator,
@@ -114,8 +123,9 @@ class DiffusionTrainer(BaseTrainer):
         self.num_timesteps: int = cfg.strategy.num_train_timesteps
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
 
-        # Perceptual weight (disabled for seg mode - binary masks)
-        self.perceptual_weight: float = 0.0 if self.mode_name == 'seg' else cfg.training.perceptual_weight
+        # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
+        is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
+        self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.perceptual_weight
 
         # Min-SNR weighting
         self.use_min_snr: bool = cfg.training.use_min_snr
@@ -155,6 +165,10 @@ class DiffusionTrainer(BaseTrainer):
             is_conditional=self.mode.is_conditional,
         )
         self.metrics.set_scheduler(self.scheduler)
+
+        # Disable LPIPS for seg modes (binary masks don't work with VGG features)
+        if is_seg_mode:
+            self.metrics.log_lpips = False
 
         # Initialize unified metrics system for consistent logging
         # Determine modality keys for per-modality logging (multi mode)
@@ -305,6 +319,19 @@ class DiffusionTrainer(BaseTrainer):
                 f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
                 f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
             )
+
+        # Size bin embedding for seg_conditioned mode
+        self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned')
+        if self.use_size_bin_embedding:
+            size_bin_cfg = cfg.mode.get('size_bins', {})
+            self.size_bin_num_bins = size_bin_cfg.get('num_bins', 6)
+            self.size_bin_max_count = size_bin_cfg.get('max_count_per_bin', 10)
+            self.size_bin_embed_dim = size_bin_cfg.get('embedding_dim', 32)
+            if self.is_main_process:
+                logger.info(
+                    f"Size bin embedding enabled: num_bins={self.size_bin_num_bins}, "
+                    f"max_count={self.size_bin_max_count}, embed_dim={self.size_bin_embed_dim}"
+                )
 
         # DC-AE 1.5: Augmented Diffusion Training (channel masking for latent diffusion)
         aug_diff_cfg = cfg.training.get('augmented_diffusion', {})
@@ -503,6 +530,7 @@ class DiffusionTrainer(BaseTrainer):
         """Create a training mode instance."""
         modes: Dict[str, type] = {
             'seg': SegmentationMode,
+            'seg_conditioned': SegmentationConditionedMode,
             'bravo': ConditionalSingleMode,
             'dual': ConditionalDualMode,
             'multi': MultiModalityMode,
@@ -517,6 +545,10 @@ class DiffusionTrainer(BaseTrainer):
         if mode == 'multi':
             image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
             return MultiModalityMode(image_keys)
+
+        if mode == 'seg_conditioned':
+            size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
+            return SegmentationConditionedMode(size_bin_config)
 
         return modes[mode]()
 
@@ -630,6 +662,47 @@ class DiffusionTrainer(BaseTrainer):
                 "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
             )
 
+        # Handle size bin embedding for seg_conditioned mode
+        if self.use_size_bin_embedding:
+            from medgen.data import SizeBinModelWrapper
+
+            if self.is_transformer:
+                raise ValueError(
+                    "Size bin embedding is not supported with transformer models. "
+                    "Use model=default (UNet) for seg_conditioned mode."
+                )
+
+            # Get time_embed_dim from model
+            if time_embed_dim is None:
+                channels = tuple(self.cfg.model.channels)
+                time_embed_dim = 4 * channels[0]
+
+            # Wrap with size bin embedding
+            size_bin_wrapper = SizeBinModelWrapper(
+                model=self.model_raw,
+                embed_dim=time_embed_dim,
+                num_bins=self.size_bin_num_bins,
+                max_count=self.size_bin_max_count,
+                per_bin_embed_dim=self.size_bin_embed_dim,
+            ).to(self.device)
+
+            if self.is_main_process:
+                logger.info(
+                    f"Size bin embedding: wrapper applied (num_bins={self.size_bin_num_bins}, "
+                    f"embed_dim={time_embed_dim})"
+                )
+
+            self.model = size_bin_wrapper
+            self.model_raw = size_bin_wrapper
+
+            # Block DDP with size bin embedding
+            if self.use_multi_gpu:
+                raise ValueError(
+                    "DDP is not compatible with size bin embedding. "
+                    "Embeddings would NOT be synchronized across GPUs. "
+                    "Use single GPU for seg_conditioned mode."
+                )
+
         # Setup ControlNet for pixel-resolution conditioning in latent diffusion
         if self.use_controlnet:
             if self.is_transformer:
@@ -706,6 +779,8 @@ class DiffusionTrainer(BaseTrainer):
         elif self.augmented_diffusion_enabled:
             compile_fused = False
         elif self.use_controlnet:
+            compile_fused = False
+        elif self.use_size_bin_embedding:
             compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
@@ -1267,6 +1342,7 @@ class DiffusionTrainer(BaseTrainer):
             images = prepared['images']
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
+            size_bins = prepared.get('size_bins')  # For seg_conditioned mode
 
             # Store pixel-space labels for ControlNet (before any encoding)
             controlnet_cond = labels if self.use_controlnet else None
@@ -1477,6 +1553,9 @@ class DiffusionTrainer(BaseTrainer):
                     elif self.use_mode_embedding:
                         # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
                         prediction = self.model(model_input, timesteps, mode_id=mode_id)
+                    elif self.use_size_bin_embedding:
+                        # Model is SizeBinModelWrapper, pass size_bins for conditioning
+                        prediction = self.model(model_input, timesteps, size_bins=size_bins)
                     else:
                         prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
 
@@ -1834,7 +1913,12 @@ class DiffusionTrainer(BaseTrainer):
         total_msssim = 0.0
         total_psnr = 0.0
         total_lpips = 0.0
+        total_dice = 0.0
+        total_iou = 0.0
         n_batches = 0
+
+        # Check if seg mode (use Dice/IoU instead of perceptual metrics)
+        is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
 
         # Per-channel metrics for dual/multi modes
         per_channel_metrics: Dict[str, Dict[str, float]] = {}
@@ -1988,6 +2072,15 @@ class DiffusionTrainer(BaseTrainer):
                 total_msssim += msssim_val
                 total_psnr += psnr_val
                 total_lpips += lpips_val
+
+                # Compute Dice/IoU for seg modes
+                # For diffusion output: predicted_clean is already in [0, 1] range (not logits)
+                if is_seg_mode:
+                    dice_val = compute_dice(metrics_pred, metrics_gt, apply_sigmoid=False)
+                    iou_val = compute_iou(metrics_pred, metrics_gt, apply_sigmoid=False)
+                    total_dice += dice_val
+                    total_iou += iou_val
+
                 n_batches += 1
 
                 # Regional tracking (tumor vs background)
@@ -2024,6 +2117,11 @@ class DiffusionTrainer(BaseTrainer):
         if self.metrics.log_lpips:
             metrics['lpips'] = total_lpips / n_batches
 
+        # Add Dice/IoU for seg modes
+        if is_seg_mode:
+            metrics['dice'] = total_dice / n_batches
+            metrics['iou'] = total_iou / n_batches
+
         # Log to TensorBoard using unified system
         if self.writer is not None:
             # Log validation losses (always without suffix)
@@ -2053,6 +2151,11 @@ class DiffusionTrainer(BaseTrainer):
                 val_metrics[MetricKey.LPIPS] = metrics['lpips']
             if msssim_3d is not None:
                 val_metrics[MetricKey.MSSSIM_3D] = msssim_3d
+            # Add Dice/IoU for seg modes
+            if 'dice' in metrics:
+                val_metrics[MetricKey.DICE_SCORE] = metrics['dice']
+            if 'iou' in metrics:
+                val_metrics[MetricKey.IOU] = metrics['iou']
 
             if is_single_modality:
                 # Single-modality: use mode_name as suffix (e.g., Validation/PSNR_bravo)
@@ -2158,8 +2261,8 @@ class DiffusionTrainer(BaseTrainer):
         # Measure FLOPs
         self._measure_model_flops(train_loader)
 
-        if self.is_main_process and self.mode_name == 'seg':
-            logger.info("Seg mode: perceptual loss disabled")
+        if self.is_main_process and self.mode_name in ('seg', 'seg_conditioned'):
+            logger.info(f"{self.mode_name} mode: perceptual loss and LPIPS disabled (binary masks)")
 
         # Initialize generation metrics (cache reference features)
         if self._gen_metrics is not None and self.is_main_process:
