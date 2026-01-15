@@ -24,6 +24,7 @@ from .modes import TrainingMode
 from .strategies import DiffusionStrategy
 from .metrics import MetricsTracker, create_reconstruction_figure
 from .spaces import DiffusionSpace, PixelSpace
+from .controlnet import ControlNetConditionedUNet, ControlNetGenerationWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ class ValidationVisualizer:
         device: torch.device,
         is_main_process: bool = True,
         space: Optional[DiffusionSpace] = None,
+        use_controlnet: bool = False,
+        controlnet: Optional[nn.Module] = None,
     ) -> None:
         self.cfg = cfg
         self.strategy = strategy
@@ -67,6 +70,10 @@ class ValidationVisualizer:
         self.device = device
         self.is_main_process = is_main_process
         self.space = space if space is not None else PixelSpace()
+
+        # ControlNet support
+        self.use_controlnet = use_controlnet
+        self.controlnet = controlnet
 
         self.mode_name: str = cfg.mode.name
         self.strategy_name: str = cfg.strategy.name
@@ -97,11 +104,18 @@ class ValidationVisualizer:
         timesteps = data.get('timesteps')
         avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
 
+        # Decode from latent space to pixel space for visualization
+        original = data['original']
+        generated = data['generated']
+        if self.space.scale_factor > 1:
+            original = self.space.decode(original)
+            generated = self.space.decode(generated)
+
         title = f'Worst Validation Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}'
 
         fig = create_reconstruction_figure(
-            original=data['original'],
-            generated=data['generated'],
+            original=original,
+            generated=generated,
             title=title,
             timesteps=timesteps,
             mask=data.get('mask'),
@@ -346,8 +360,16 @@ class ValidationVisualizer:
                         )
                     else:
                         seg_masks = self._sample_positive_masks(train_dataset, num_samples, seg_channel_idx=1)
-                    noise = torch.randn_like(seg_masks, device=self.device)
-                    model_input = torch.cat([noise, seg_masks], dim=1)
+
+                    if self.use_controlnet and self.space.scale_factor > 1:
+                        # ControlNet + latent: noise directly in latent space, seg_masks in pixel space
+                        latent_channels = self.space.latent_channels
+                        latent_size = self.image_size // self.space.scale_factor
+                        noise = torch.randn((num_samples, latent_channels, latent_size, latent_size), device=self.device)
+                        model_input = noise
+                    else:
+                        noise = torch.randn_like(seg_masks, device=self.device)
+                        model_input = torch.cat([noise, seg_masks], dim=1)
 
                 elif self.mode_name == ModeType.DUAL:
                     need_gt = self.log_msssim or self.log_psnr or self.log_lpips
@@ -357,9 +379,17 @@ class ValidationVisualizer:
                         )
                     else:
                         seg_masks = self._sample_positive_masks(train_dataset, num_samples, seg_channel_idx=2)
-                    noise_pre = torch.randn_like(seg_masks, device=self.device)
-                    noise_gd = torch.randn_like(seg_masks, device=self.device)
-                    model_input = torch.cat([noise_pre, noise_gd, seg_masks], dim=1)
+
+                    if self.use_controlnet and self.space.scale_factor > 1:
+                        # ControlNet + latent: noise directly in latent space (2 modalities)
+                        latent_channels = self.space.latent_channels * 2  # 2 modalities
+                        latent_size = self.image_size // self.space.scale_factor
+                        noise = torch.randn((num_samples, latent_channels, latent_size, latent_size), device=self.device)
+                        model_input = noise
+                    else:
+                        noise_pre = torch.randn_like(seg_masks, device=self.device)
+                        noise_gd = torch.randn_like(seg_masks, device=self.device)
+                        model_input = torch.cat([noise_pre, noise_gd, seg_masks], dim=1)
 
                 elif self.mode_name in (ModeType.MULTI, ModeType.MULTI_MODALITY):
                     # Multi-modality mode: single channel output with mode_id conditioning
@@ -371,22 +401,35 @@ class ValidationVisualizer:
                         )
                     else:
                         seg_masks = self._sample_positive_masks(train_dataset, num_samples, seg_channel_idx=1)
-                    noise = torch.randn_like(seg_masks, device=self.device)
-                    model_input = torch.cat([noise, seg_masks], dim=1)
+
+                    if self.use_controlnet and self.space.scale_factor > 1:
+                        # ControlNet + latent: noise directly in latent space
+                        latent_channels = self.space.latent_channels
+                        latent_size = self.image_size // self.space.scale_factor
+                        noise = torch.randn((num_samples, latent_channels, latent_size, latent_size), device=self.device)
+                        model_input = noise
+                    else:
+                        noise = torch.randn_like(seg_masks, device=self.device)
+                        model_input = torch.cat([noise, seg_masks], dim=1)
                     # Use bravo modality (mode_id=0) for visualization
                     mode_id = torch.zeros(num_samples, dtype=torch.long, device=self.device)
 
                 else:
                     raise ValueError(f"Unknown mode: {self.mode_name}")
 
+                # For ControlNet, wrap model to bind conditioning
+                gen_model = model
+                if self.use_controlnet and seg_masks is not None:
+                    gen_model = ControlNetGenerationWrapper(model, seg_masks)
+
                 with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                     if self.log_intermediate_steps and self.mode_name != ModeType.SEG:
                         samples, intermediates = self._generate_with_intermediate_steps(
-                            model, model_input, self.num_timesteps, mode_id=mode_id
+                            gen_model, model_input, self.num_timesteps, mode_id=mode_id
                         )
                     else:
                         samples = self.strategy.generate(
-                            model, model_input, num_steps=self.num_timesteps, device=self.device,
+                            gen_model, model_input, num_steps=self.num_timesteps, device=self.device,
                             mode_id=mode_id
                         )
 

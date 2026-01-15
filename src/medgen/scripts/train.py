@@ -45,8 +45,15 @@ from medgen.data import (
     create_multi_diffusion_test_dataloader,
     create_single_modality_diffusion_val_loader,
 )
+from medgen.data.loaders.latent import (
+    LatentCacheBuilder,
+    create_latent_dataloader,
+    create_latent_validation_dataloader,
+    create_latent_test_dataloader,
+    load_compression_model,
+)
 from medgen.pipeline import DiffusionTrainer
-from medgen.pipeline.spaces import PixelSpace, load_vae_for_latent_space
+from medgen.pipeline.spaces import PixelSpace, LatentSpace
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -90,18 +97,40 @@ def main(cfg: DictConfig) -> None:
     # Create space based on config (latent or pixel)
     latent_cfg = cfg.get('latent', {})
     use_latent = latent_cfg.get('enabled', False)
+    compression_model = None
+    compression_type = None
+    cache_dir = None
 
     if use_latent:
-        vae_checkpoint = latent_cfg.get('vae_checkpoint')
-        if not vae_checkpoint:
-            raise ValueError("latent.vae_checkpoint must be specified when latent.enabled=true")
-        if not os.path.exists(vae_checkpoint):
-            raise ValueError(f"VAE checkpoint not found: {vae_checkpoint}")
+        compression_checkpoint = latent_cfg.get('compression_checkpoint')
+        if not compression_checkpoint:
+            raise ValueError(
+                "latent.compression_checkpoint must be specified when latent.enabled=true"
+            )
+        if not os.path.exists(compression_checkpoint):
+            raise ValueError(f"Compression checkpoint not found: {compression_checkpoint}")
 
         device = torch.device("cuda")
-        space = load_vae_for_latent_space(vae_checkpoint, device)
-        space_name = "latent"
-        log.info(f"Loaded VAE from {vae_checkpoint}")
+
+        # Load compression model
+        compression_type_config = latent_cfg.get('compression_type', 'auto')
+        compression_model, compression_type = load_compression_model(
+            compression_checkpoint,
+            compression_type_config,
+            device,
+        )
+
+        # Create LatentSpace wrapper
+        space = LatentSpace(compression_model, device, deterministic=True)
+        space_name = f"latent ({compression_type})"
+
+        # Determine cache directory
+        cache_dir = latent_cfg.get('cache_dir')
+        if cache_dir is None:
+            cache_dir = f"{cfg.paths.data_dir}-latents-{compression_type}"
+
+        log.info(f"Loaded {compression_type} compression model from {compression_checkpoint}")
+        log.info(f"Latent cache directory: {cache_dir}")
     else:
         space = PixelSpace()
         space_name = "pixel"
@@ -123,48 +152,139 @@ def main(cfg: DictConfig) -> None:
     augment = cfg.training.get('augment', True)
     image_keys = None  # Will be set for multi and dual modes
 
-    if mode == 'multi':
-        # Multi-modality diffusion with mode embedding
-        image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
-        dataloader, train_dataset = create_multi_diffusion_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-            use_distributed=use_multi_gpu,
-            rank=trainer.rank if use_multi_gpu else 0,
-            world_size=trainer.world_size if use_multi_gpu else 1,
-            augment=augment
-        )
-    elif mode == ModeType.DUAL:
-        image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
-        dataloader, train_dataset = create_dual_image_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-            conditioning='seg',
-            use_distributed=use_multi_gpu,
-            rank=trainer.rank if use_multi_gpu else 0,
-            world_size=trainer.world_size if use_multi_gpu else 1,
-            augment=augment
-        )
-    else:
-        # seg or bravo
-        image_type = 'seg' if mode == ModeType.SEG else 'bravo'
-        dataloader, train_dataset = create_dataloader(
-            cfg=cfg,
-            image_type=image_type,
-            use_distributed=use_multi_gpu,
-            rank=trainer.rank if use_multi_gpu else 0,
-            world_size=trainer.world_size if use_multi_gpu else 1,
-            augment=augment
+    # Latent diffusion: build cache and use latent dataloaders
+    if use_latent:
+        # Build cache if needed
+        cache_builder = LatentCacheBuilder(
+            compression_model=compression_model,
+            device=torch.device("cuda"),
+            mode=mode,
+            image_size=cfg.model.image_size,
+            compression_type=compression_type,
         )
 
-    log.info(f"Training dataset: {len(train_dataset)} slices")
+        compression_checkpoint = latent_cfg.get('compression_checkpoint')
+        auto_encode = latent_cfg.get('auto_encode', True)
+
+        # Check and build cache for train split
+        train_cache_dir = os.path.join(cache_dir, 'train')
+        if not cache_builder.validate_cache(train_cache_dir, compression_checkpoint):
+            if auto_encode:
+                log.info("Train cache invalid/missing, encoding dataset...")
+                # Create pixel dataloader temporarily for encoding
+                if mode == 'multi':
+                    image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
+                    _, pixel_dataset = create_multi_diffusion_dataloader(
+                        cfg=cfg, image_keys=image_keys, augment=False
+                    )
+                elif mode == ModeType.DUAL:
+                    image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
+                    _, pixel_dataset = create_dual_image_dataloader(
+                        cfg=cfg, image_keys=image_keys, conditioning='seg', augment=False
+                    )
+                else:
+                    image_type = 'seg' if mode == ModeType.SEG else 'bravo'
+                    _, pixel_dataset = create_dataloader(
+                        cfg=cfg, image_type=image_type, augment=False
+                    )
+                cache_builder.build_cache(
+                    pixel_dataset, train_cache_dir, compression_checkpoint,
+                    batch_size=latent_cfg.get('batch_size', 32),
+                    num_workers=latent_cfg.get('num_workers', 4),
+                )
+            else:
+                raise ValueError(f"Train cache invalid and auto_encode=false: {train_cache_dir}")
+
+        # Check and build cache for val split
+        val_cache_dir = os.path.join(cache_dir, 'val')
+        val_pixel_dir = os.path.join(cfg.paths.data_dir, 'val')
+        if os.path.exists(val_pixel_dir):
+            if not cache_builder.validate_cache(val_cache_dir, compression_checkpoint):
+                if auto_encode:
+                    log.info("Val cache invalid/missing, encoding dataset...")
+                    if mode == 'multi':
+                        val_result = create_multi_diffusion_validation_dataloader(cfg=cfg, image_keys=image_keys)
+                    elif mode == ModeType.DUAL:
+                        val_result = create_dual_image_validation_dataloader(
+                            cfg=cfg, image_keys=image_keys, conditioning='seg'
+                        )
+                    else:
+                        val_result = create_validation_dataloader(cfg=cfg, image_type=image_type)
+                    if val_result:
+                        _, val_pixel_dataset = val_result
+                        cache_builder.build_cache(
+                            val_pixel_dataset, val_cache_dir, compression_checkpoint,
+                            batch_size=latent_cfg.get('batch_size', 32),
+                            num_workers=latent_cfg.get('num_workers', 4),
+                        )
+                else:
+                    log.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
+
+        # Create latent dataloaders
+        dataloader, train_dataset = create_latent_dataloader(
+            cfg=cfg,
+            cache_dir=cache_dir,
+            split='train',
+            mode=mode,
+            shuffle=True,
+            use_distributed=use_multi_gpu,
+            rank=trainer.rank if use_multi_gpu else 0,
+            world_size=trainer.world_size if use_multi_gpu else 1,
+        )
+        log.info(f"Training dataset (latent): {len(train_dataset)} samples")
+
+    else:
+        # Standard pixel-space dataloaders
+        if mode == 'multi':
+            # Multi-modality diffusion with mode embedding
+            image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
+            dataloader, train_dataset = create_multi_diffusion_dataloader(
+                cfg=cfg,
+                image_keys=image_keys,
+                use_distributed=use_multi_gpu,
+                rank=trainer.rank if use_multi_gpu else 0,
+                world_size=trainer.world_size if use_multi_gpu else 1,
+                augment=augment
+            )
+        elif mode == ModeType.DUAL:
+            image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
+            dataloader, train_dataset = create_dual_image_dataloader(
+                cfg=cfg,
+                image_keys=image_keys,
+                conditioning='seg',
+                use_distributed=use_multi_gpu,
+                rank=trainer.rank if use_multi_gpu else 0,
+                world_size=trainer.world_size if use_multi_gpu else 1,
+                augment=augment
+            )
+        else:
+            # seg or bravo
+            image_type = 'seg' if mode == ModeType.SEG else 'bravo'
+            dataloader, train_dataset = create_dataloader(
+                cfg=cfg,
+                image_type=image_type,
+                use_distributed=use_multi_gpu,
+                rank=trainer.rank if use_multi_gpu else 0,
+                world_size=trainer.world_size if use_multi_gpu else 1,
+                augment=augment
+            )
+
+        log.info(f"Training dataset: {len(train_dataset)} slices")
 
     # Create validation dataloader (if val/ directory exists)
     # Pass world_size to reduce batch size for DDP (avoids OOM on single GPU)
     val_loader = None
     world_size = trainer.world_size if use_multi_gpu else 1
 
-    if mode == 'multi':
+    if use_latent:
+        # Latent validation dataloader
+        val_result = create_latent_validation_dataloader(
+            cfg=cfg,
+            cache_dir=cache_dir,
+            mode=mode,
+            world_size=world_size,
+        )
+    elif mode == 'multi':
         val_result = create_multi_diffusion_validation_dataloader(
             cfg=cfg,
             image_keys=image_keys,
@@ -195,7 +315,7 @@ def main(cfg: DictConfig) -> None:
 
     if val_result is not None:
         val_loader, val_dataset = val_result
-        log.info(f"Validation dataset: {len(val_dataset)} slices")
+        log.info(f"Validation dataset: {len(val_dataset)} samples")
     else:
         log.info("No val/ directory found - using train loss for best model selection")
 
@@ -206,7 +326,13 @@ def main(cfg: DictConfig) -> None:
     trainer.train(dataloader, train_dataset, val_loader=val_loader)
 
     # Create test dataloader and evaluate (if test_new/ directory exists)
-    if mode == 'multi':
+    if use_latent:
+        test_result = create_latent_test_dataloader(
+            cfg=cfg,
+            cache_dir=cache_dir,
+            mode=mode,
+        )
+    elif mode == 'multi':
         test_result = create_multi_diffusion_test_dataloader(
             cfg=cfg,
             image_keys=image_keys,

@@ -1,0 +1,21 @@
+# 3D DiffusionModelUNet Architecture Configuration
+#
+# MONAI's DiffusionModelUNet for 3D volumetric data.
+# Memory-optimized settings for training on single GPU.
+#
+# Architecture overview:
+#   - 3D convolutions throughout
+#   - Smaller channel counts for memory
+#   - Attention only at deepest level
+#   - Single ResBlock per level
+
+type: unet                           # Model type: unet
+spatial_dims: 3                      # 3D volumetric data
+image_size: 256                      # H, W dimensions
+depth_size: 160                      # D dimension
+
+# Smaller architecture for 3D memory constraints
+channels: [64, 128, 256]             # Fewer channels than 2D
+attention_levels: [false, false, true]  # Attention only at bottleneck
+num_res_blocks: 1                    # Single ResBlock per level
+num_head_channels: 32                # Smaller attention heads

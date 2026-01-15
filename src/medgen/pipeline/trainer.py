@@ -68,6 +68,12 @@ from .metrics import (
 )
 from .tracking import FLOPsTracker
 from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
+from .controlnet import (
+    create_controlnet_for_unet,
+    freeze_unet_for_controlnet,
+    ControlNetConditionedUNet,
+    ControlNetGenerationWrapper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +416,19 @@ class DiffusionTrainer(BaseTrainer):
         else:
             self._gen_metrics_config = None
 
+        # ControlNet configuration (for pixel-resolution conditioning in latent diffusion)
+        controlnet_cfg = cfg.get('controlnet', {})
+        self.use_controlnet: bool = controlnet_cfg.get('enabled', False)
+        self.controlnet_freeze_unet: bool = controlnet_cfg.get('freeze_unet', True)
+        self.controlnet_scale: float = controlnet_cfg.get('conditioning_scale', 1.0)
+        self.controlnet: Optional[nn.Module] = None
+
+        if self.use_controlnet and self.is_main_process:
+            logger.info(
+                f"ControlNet enabled: freeze_unet={self.controlnet_freeze_unet}, "
+                f"conditioning_scale={self.controlnet_scale}"
+            )
+
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -513,6 +532,13 @@ class DiffusionTrainer(BaseTrainer):
         in_channels = self.space.get_latent_channels(model_cfg['in_channels'])
         out_channels = self.space.get_latent_channels(model_cfg['out_channels'])
 
+        # For ControlNet: conditioning goes through ControlNet, not concatenation
+        # UNet in_channels = out_channels (no +1 for conditioning)
+        if self.use_controlnet:
+            in_channels = out_channels
+            if self.is_main_process:
+                logger.info(f"ControlNet mode: UNet in_channels={in_channels} (no conditioning concatenation)")
+
         if self.is_main_process and self.space.scale_factor > 1:
             logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
                        f"scale factor {self.space.scale_factor}x")
@@ -604,6 +630,46 @@ class DiffusionTrainer(BaseTrainer):
                 "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
             )
 
+        # Setup ControlNet for pixel-resolution conditioning in latent diffusion
+        if self.use_controlnet:
+            if self.is_transformer:
+                raise ValueError("ControlNet is not supported with transformer models. Use model=default (UNet).")
+
+            # Determine latent channels for ControlNet
+            latent_channels = out_channels  # Same as UNet in_channels after ControlNet adjustment
+
+            # Create ControlNet matching UNet architecture
+            self.controlnet = create_controlnet_for_unet(
+                unet=self.model_raw,
+                cfg=self.cfg,
+                device=self.device,
+                spatial_dims=2,
+                latent_channels=latent_channels,
+            )
+
+            # Enable gradient checkpointing if requested
+            controlnet_cfg = self.cfg.get('controlnet', {})
+            if controlnet_cfg.get('gradient_checkpointing', False):
+                if hasattr(self.controlnet, 'enable_gradient_checkpointing'):
+                    self.controlnet.enable_gradient_checkpointing()
+                    if self.is_main_process:
+                        logger.info("ControlNet gradient checkpointing enabled")
+
+            # Freeze UNet if configured (Stage 2 training)
+            if self.controlnet_freeze_unet:
+                freeze_unet_for_controlnet(self.model_raw)
+
+            # Create combined model wrapper
+            self.model = ControlNetConditionedUNet(
+                unet=self.model_raw,
+                controlnet=self.controlnet,
+                conditioning_scale=self.controlnet_scale,
+            )
+
+            if self.is_main_process:
+                num_params = sum(p.numel() for p in self.controlnet.parameters())
+                logger.info(f"ControlNet created: {num_params:,} parameters")
+
         # Setup perceptual loss
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
         self.perceptual_loss_fn = PerceptualLoss(
@@ -639,13 +705,32 @@ class DiffusionTrainer(BaseTrainer):
             compile_fused = False
         elif self.augmented_diffusion_enabled:
             compile_fused = False
+        elif self.use_controlnet:
+            compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
 
         # Setup optimizer (with optional SAM wrapper)
+        # Determine which parameters to train
+        if self.use_controlnet:
+            if self.controlnet_freeze_unet:
+                # Stage 2: Only train ControlNet
+                train_params = list(self.controlnet.parameters())
+                if self.is_main_process:
+                    trainable = sum(p.numel() for p in train_params if p.requires_grad)
+                    logger.info(f"Training only ControlNet ({trainable:,} trainable params, UNet frozen)")
+            else:
+                # Joint training: Both UNet and ControlNet
+                train_params = list(self.model_raw.parameters()) + list(self.controlnet.parameters())
+                if self.is_main_process:
+                    trainable = sum(p.numel() for p in train_params if p.requires_grad)
+                    logger.info(f"Joint training: UNet + ControlNet ({trainable:,} trainable params)")
+        else:
+            train_params = self.model_raw.parameters()
+
         if self.use_sam:
             self.optimizer = SAM(
-                self.model_raw.parameters(),
+                train_params,
                 base_optimizer=AdamW,
                 rho=self.sam_rho,
                 adaptive=self.sam_adaptive,
@@ -656,7 +741,7 @@ class DiffusionTrainer(BaseTrainer):
                 logger.info(f"Using SAM optimizer (rho={self.sam_rho}, adaptive={self.sam_adaptive})")
         else:
             self.optimizer = AdamW(
-                self.model_raw.parameters(),
+                train_params,
                 lr=self.learning_rate,
                 weight_decay=self.weight_decay,
             )
@@ -696,6 +781,8 @@ class DiffusionTrainer(BaseTrainer):
             device=self.device,
             is_main_process=self.is_main_process,
             space=self.space,
+            use_controlnet=self.use_controlnet,
+            controlnet=self.controlnet,
         )
 
         # Initialize generation metrics if enabled
@@ -705,6 +792,7 @@ class DiffusionTrainer(BaseTrainer):
                 self._gen_metrics_config,
                 self.device,
                 self.save_dir,
+                space=self.space,
             )
             if self.is_main_process:
                 logger.info("Generation metrics initialized (caching happens at training start)")
@@ -1180,9 +1268,14 @@ class DiffusionTrainer(BaseTrainer):
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
 
+            # Store pixel-space labels for ControlNet (before any encoding)
+            controlnet_cond = labels if self.use_controlnet else None
+
             # Encode to diffusion space (identity for PixelSpace)
             images = self.space.encode_batch(images)
-            if labels is not None:
+            # For ControlNet: keep labels in pixel space (conditioning through ControlNet)
+            # For concatenation: encode labels to latent space
+            if labels is not None and not self.use_controlnet:
                 labels = self.space.encode(labels)
 
             labels_dict = {'labels': labels}
@@ -1219,7 +1312,12 @@ class DiffusionTrainer(BaseTrainer):
                     noise = noise * aug_diff_mask
                     noisy_images = noisy_images * aug_diff_mask
 
-            model_input = self.mode.format_model_input(noisy_images, labels_dict)
+            # For ControlNet: use only noisy images (no concatenation)
+            # For standard: concatenate noisy images with labels
+            if self.use_controlnet:
+                model_input = noisy_images  # Labels passed via controlnet_cond
+            else:
+                model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
             if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
                 # Note: compiled forward is disabled when use_min_snr=True
@@ -1369,7 +1467,14 @@ class DiffusionTrainer(BaseTrainer):
 
                 else:
                     # Standard path (no ScoreAug)
-                    if self.use_mode_embedding:
+                    if self.use_controlnet and controlnet_cond is not None:
+                        # ControlNet path: pass pixel-space conditioning
+                        prediction = self.model(
+                            x=model_input,
+                            timesteps=timesteps,
+                            controlnet_cond=controlnet_cond,
+                        )
+                    elif self.use_mode_embedding:
                         # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
                         prediction = self.model(model_input, timesteps, mode_id=mode_id)
                     else:

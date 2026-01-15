@@ -22,6 +22,8 @@ defaults:
   - strategy: ddpm    # ddpm.yaml or rflow.yaml
   - mode: bravo       # seg.yaml, bravo.yaml, or dual.yaml
   - training: default # Training hyperparameters
+  - optional latent: default      # Latent diffusion settings (disabled by default)
+  - optional controlnet: default  # ControlNet conditioning (disabled by default)
   - _self_
 
 # Hydra configuration

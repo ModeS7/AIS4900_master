@@ -44,12 +44,44 @@ class DiffusionStrategy(ABC):
 
     Attributes:
         scheduler: The noise scheduler for the diffusion process.
+        spatial_dims: Number of spatial dimensions (2 for images, 3 for volumes).
     """
 
     scheduler: Any
+    spatial_dims: int = 2  # Default to 2D
+
+    def _expand_to_broadcast(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Expand timestep tensor to broadcast with image tensor.
+
+        Args:
+            t: Timestep tensor [B] or scalar values.
+            x: Image tensor [B, C, H, W] or [B, C, D, H, W].
+
+        Returns:
+            Expanded tensor that broadcasts with x.
+        """
+        # Expand to [B, 1, 1, 1] for 4D or [B, 1, 1, 1, 1] for 5D
+        num_spatial = x.dim() - 2  # Subtract batch and channel dims
+        shape = [-1] + [1] * (num_spatial + 1)  # +1 for channel dim
+        return t.view(*shape)
+
+    def _slice_channel(self, tensor: torch.Tensor, start: int, end: int) -> torch.Tensor:
+        """Slice tensor along channel dimension (dim 1), works for 4D or 5D.
+
+        Args:
+            tensor: Input tensor [B, C, ...] with any spatial dims.
+            start: Start index for channel slice.
+            end: End index for channel slice.
+
+        Returns:
+            Sliced tensor.
+        """
+        return tensor[:, start:end]
 
     def _parse_model_input(self, model_input: torch.Tensor) -> ParsedModelInput:
         """Parse model input into components based on channel count.
+
+        Works for both 4D (2D images) and 5D (3D volumes).
 
         Args:
             model_input: Input tensor with noise and optional conditioning.
@@ -74,19 +106,19 @@ class DiffusionStrategy(ABC):
         elif num_channels == 2:
             # Conditional single: [noise, conditioning]
             return ParsedModelInput(
-                noisy_images=model_input[:, 0:1, :, :],
+                noisy_images=self._slice_channel(model_input, 0, 1),
                 noisy_pre=None,
                 noisy_gd=None,
-                conditioning=model_input[:, 1:2, :, :],
+                conditioning=self._slice_channel(model_input, 1, 2),
                 is_dual=False,
             )
         elif num_channels == 3:
             # Conditional dual: [noise_pre, noise_gd, conditioning]
             return ParsedModelInput(
                 noisy_images=None,
-                noisy_pre=model_input[:, 0:1, :, :],
-                noisy_gd=model_input[:, 1:2, :, :],
-                conditioning=model_input[:, 2:3, :, :],
+                noisy_pre=self._slice_channel(model_input, 0, 1),
+                noisy_gd=self._slice_channel(model_input, 1, 2),
+                conditioning=self._slice_channel(model_input, 2, 3),
                 is_dual=True,
             )
         else:
@@ -272,8 +304,10 @@ class DDPMStrategy(DiffusionStrategy):
         """
         Compute DDPM loss
 
+        Works for both 2D (4D tensors) and 3D (5D tensors).
+
         Args:
-            prediction: Model output [B, C, H, W] where C=1 (single) or C=2 (dual)
+            prediction: Model output [B, C, H, W] or [B, C, D, H, W] where C=1 (single) or C=2 (dual)
             target_images: Clean images (tensor or dict)
             noise: Noise added (tensor or dict)
             noisy_images: Noisy images at timestep t (tensor or dict)
@@ -288,8 +322,8 @@ class DDPMStrategy(DiffusionStrategy):
         if isinstance(target_images, dict):
             # prediction has 2 channels: [noise_pred_pre, noise_pred_post]
             keys = list(target_images.keys())
-            noise_pred_pre = prediction[:, 0:1, :, :]
-            noise_pred_post = prediction[:, 1:2, :, :]
+            noise_pred_pre = self._slice_channel(prediction, 0, 1)
+            noise_pred_post = self._slice_channel(prediction, 1, 2)
 
             # Compute loss for each image
             mse_loss_pre = F.mse_loss(noise_pred_pre.float(), noise[keys[0]].float())
@@ -298,7 +332,7 @@ class DDPMStrategy(DiffusionStrategy):
 
             # Reconstruct clean images using passed noisy_images
             alphas_cumprod = self.scheduler.alphas_cumprod.to(device)
-            alpha_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
             sqrt_alpha_t = torch.sqrt(alpha_t)
             sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
 
@@ -318,7 +352,7 @@ class DDPMStrategy(DiffusionStrategy):
             mse_loss = F.mse_loss(prediction.float(), noise.float())
 
             alphas_cumprod = self.scheduler.alphas_cumprod.to(device)
-            alpha_t = alphas_cumprod[timesteps].view(-1, 1, 1, 1)
+            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
             sqrt_alpha_t = torch.sqrt(alpha_t)
             sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
 
@@ -437,16 +471,42 @@ class DDPMStrategy(DiffusionStrategy):
 
 
 class RFlowStrategy(DiffusionStrategy):
-    """Rectified Flow algorithm"""
+    """Rectified Flow algorithm.
 
-    def setup_scheduler(self, num_timesteps=1000, image_size=128):
+    Supports both 2D (images) and 3D (volumes).
+    """
+
+    def setup_scheduler(
+        self,
+        num_timesteps: int = 1000,
+        image_size: int = 128,
+        depth_size: Optional[int] = None,
+        spatial_dims: int = 2,
+    ):
+        """Setup RFlow scheduler.
+
+        Args:
+            num_timesteps: Number of diffusion timesteps.
+            image_size: Height/width of input.
+            depth_size: Depth for 3D volumes (required if spatial_dims=3).
+            spatial_dims: Number of spatial dimensions (2 or 3).
+        """
+        self.spatial_dims = spatial_dims
+
+        if spatial_dims == 3:
+            if depth_size is None:
+                raise ValueError("depth_size required for 3D RFlowStrategy")
+            base_numel = image_size * image_size * depth_size
+        else:
+            base_numel = image_size * image_size
+
         self.scheduler = RFlowScheduler(
             num_train_timesteps=num_timesteps,
             use_discrete_timesteps=True,
             sample_method='logit-normal',
             use_timestep_transform=True,
-            base_img_size_numel=image_size * image_size,
-            spatial_dim=2
+            base_img_size_numel=base_numel,
+            spatial_dim=spatial_dims
         )
         return self.scheduler
 
@@ -458,6 +518,8 @@ class RFlowStrategy(DiffusionStrategy):
         """
         Compute RFlow loss (velocity prediction)
 
+        Works for both 2D (4D tensors) and 3D (5D tensors).
+
         Args:
             prediction: Model velocity prediction
             target_images: Clean images (x_0)
@@ -468,15 +530,15 @@ class RFlowStrategy(DiffusionStrategy):
         Returns:
             (mse_loss, predicted_clean_images)
         """
-        # Get normalized timestep t in [0, 1]
+        # Get normalized timestep t in [0, 1] and expand for broadcasting
         t = timesteps.float() / self.scheduler.num_train_timesteps
-        t = t.view(-1, 1, 1, 1)
+        t = self._expand_to_broadcast(t, prediction)
 
         # Handle dual-image case
         if isinstance(target_images, dict):
             keys = list(target_images.keys())
-            velocity_pred_pre = prediction[:, 0:1, :, :]
-            velocity_pred_post = prediction[:, 1:2, :, :]
+            velocity_pred_pre = self._slice_channel(prediction, 0, 1)
+            velocity_pred_post = self._slice_channel(prediction, 1, 2)
 
             # Target velocity is (clean - noise) = (x_0 - x_1)
             # This matches MONAI RFlowScheduler convention
@@ -540,10 +602,14 @@ class RFlowStrategy(DiffusionStrategy):
         """
         Generate using RFlow sampling
 
+        Works for both 2D and 3D:
+        - 2D: model_input is [B, C, H, W]
+        - 3D: model_input is [B, C, D, H, W]
+
         Handles both unconditional and conditional generation:
-        - Unconditional: model_input is [B, 1, H, W]
-        - Conditional single: model_input is [B, 2, H, W]
-        - Conditional dual: model_input is [B, 3, H, W]
+        - Unconditional: C=1 (just noise)
+        - Conditional single: C=2 (noise + conditioning)
+        - Conditional dual: C=3 (noise_pre + noise_gd + conditioning)
 
         Args:
             model: Trained diffusion model (may be wrapped with ScoreAug/ModeEmbed).
@@ -555,7 +621,14 @@ class RFlowStrategy(DiffusionStrategy):
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
         """
         batch_size = model_input.shape[0]
-        image_size = model_input.shape[-1]
+
+        # Calculate numel based on spatial dimensions
+        if model_input.dim() == 5:
+            # 3D: [B, C, D, H, W]
+            input_img_size_numel = model_input.shape[2] * model_input.shape[3] * model_input.shape[4]
+        else:
+            # 2D: [B, C, H, W]
+            input_img_size_numel = model_input.shape[2] * model_input.shape[3]
 
         # Parse model input into components
         parsed = self._parse_model_input(model_input)
@@ -566,7 +639,6 @@ class RFlowStrategy(DiffusionStrategy):
         is_dual = parsed.is_dual
 
         # Setup scheduler
-        input_img_size_numel = image_size * image_size
         self.scheduler.set_timesteps(
             num_inference_steps=num_steps,
             device=device,

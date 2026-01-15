@@ -1,0 +1,55 @@
+# 3D Diffusion Training Configuration
+#
+# Main config for training 3D volumetric diffusion models.
+# Supports both pixel-space and latent-space diffusion.
+#
+# Usage:
+#   # Default: RFlow, bravo mode, 256x256x160 volumes
+#   python -m medgen.scripts.train_diffusion_3d
+#
+#   # With latent diffusion (requires 3D compression checkpoint)
+#   python -m medgen.scripts.train_diffusion_3d \
+#       latent.enabled=true \
+#       latent.compression_checkpoint=runs/compression_3d/.../checkpoint_best.pt
+#
+#   # With ControlNet for pixel-resolution conditioning (Stage 2)
+#   python -m medgen.scripts.train_diffusion_3d \
+#       latent.enabled=true \
+#       latent.compression_checkpoint=runs/compression_3d/.../checkpoint_best.pt \
+#       controlnet.enabled=true \
+#       controlnet.freeze_unet=true \
+#       pretrained_checkpoint=runs/diffusion_3d/.../checkpoint_best.pt
+#
+#   # View resolved config
+#   python -m medgen.scripts.train_diffusion_3d --cfg job
+
+defaults:
+  - paths: local          # local.yaml or cluster.yaml
+  - model: default_3d     # 3D UNet architecture
+  - strategy: rflow       # ddpm.yaml or rflow.yaml
+  - mode: bravo           # seg.yaml, bravo.yaml, dual.yaml, multi.yaml
+  - training: default     # Training hyperparameters
+  - volume: default       # 3D volume dimensions
+  - optional latent: default     # Latent diffusion settings
+  - optional controlnet: default # ControlNet conditioning
+  - _self_
+
+# 3D-specific training overrides
+training:
+  batch_size: 1                    # 3D volumes need small batch
+  gradient_checkpointing: true     # Required for 3D memory
+  use_compile: false               # Incompatible with gradient checkpointing
+  perceptual_weight: 0.0           # Disable perceptual loss for 3D
+  logging:
+    msssim: true                   # MONAI 3D MS-SSIM
+    psnr: true
+    lpips: true                    # 2.5D slice-wise
+
+# Hydra configuration
+# Output structure: runs/diffusion_3d/{mode}/{exp_name}{strategy}_{size}_{timestamp}
+hydra:
+  run:
+    dir: ${paths.model_dir}/diffusion_3d/${mode.name}/${oc.select:training.name,""}${strategy.name}_${volume.height}x${volume.depth}_${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/diffusion_3d/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}

@@ -126,12 +126,13 @@ class LatentSpace(DiffusionSpace):
     """Latent space using AutoencoderKL for encoding/decoding.
 
     Wraps a trained VAE to provide encode/decode operations for
-    latent diffusion model training.
+    latent diffusion model training. Supports both 2D and 3D.
 
     Args:
         vae: Trained AutoencoderKL model.
         device: Device for computations.
         deterministic: If True, use mean only (no sampling). Default False.
+        spatial_dims: Spatial dimensions (2 for images, 3 for volumes).
     """
 
     def __init__(
@@ -139,10 +140,12 @@ class LatentSpace(DiffusionSpace):
         vae: torch.nn.Module,
         device: torch.device,
         deterministic: bool = False,
+        spatial_dims: int = 2,
     ) -> None:
         self.vae = vae.eval()
         self.device = device
         self.deterministic = deterministic
+        self.spatial_dims = spatial_dims
 
         # Freeze VAE parameters
         for param in self.vae.parameters():
@@ -150,6 +153,9 @@ class LatentSpace(DiffusionSpace):
 
         # Get latent channels from VAE config
         self._latent_channels = vae.latent_channels
+
+        # Expected tensor dimensions: batch + channels + spatial
+        self._expected_dims = 2 + spatial_dims  # 4 for 2D, 5 for 3D
 
     @torch.no_grad()
     def encode(self, x: Tensor) -> Tensor:
@@ -159,17 +165,20 @@ class LatentSpace(DiffusionSpace):
         unless deterministic mode is enabled.
 
         Args:
-            x: Images [B, C, H, W] in pixel space.
+            x: Images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
 
         Returns:
-            Latent representation [B, latent_channels, H/8, W/8].
+            Latent representation [B, latent_channels, H/8, W/8] (2D)
+            or [B, latent_channels, D/8, H/8, W/8] (3D).
 
         Raises:
-            ValueError: If input tensor doesn't have 4 dimensions.
+            ValueError: If input tensor doesn't have expected dimensions.
         """
-        if x.dim() != 4:
+        if x.dim() != self._expected_dims:
+            shape_desc = "[B, C, H, W]" if self.spatial_dims == 2 else "[B, C, D, H, W]"
             raise ValueError(
-                f"LatentSpace.encode expects 4D input [B, C, H, W], got {x.dim()}D tensor with shape {x.shape}"
+                f"LatentSpace.encode expects {self._expected_dims}D input {shape_desc}, "
+                f"got {x.dim()}D tensor with shape {x.shape}"
             )
         z_mu, z_logvar = self.vae.encode(x)
 
@@ -188,10 +197,11 @@ class LatentSpace(DiffusionSpace):
         """Decode latent representation to pixel space.
 
         Args:
-            z: Latent representation [B, latent_channels, H/8, W/8].
+            z: Latent representation [B, latent_channels, H/8, W/8] (2D)
+               or [B, latent_channels, D/8, H/8, W/8] (3D).
 
         Returns:
-            Decoded images [B, C, H, W] in pixel space.
+            Decoded images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
         """
         return self.vae.decode(z)
 
@@ -223,6 +233,7 @@ def load_vae_for_latent_space(
     checkpoint_path: str,
     device: torch.device,
     vae_config: dict = None,
+    spatial_dims: int = 2,
 ) -> LatentSpace:
     """Load a trained VAE and create a LatentSpace wrapper.
 
@@ -231,6 +242,7 @@ def load_vae_for_latent_space(
         device: Device to load model to.
         vae_config: Optional VAE configuration dict. If None, will try to
             load from checkpoint metadata.
+        spatial_dims: Spatial dimensions (2 for images, 3 for volumes).
 
     Returns:
         LatentSpace instance wrapping the loaded VAE.
@@ -249,9 +261,13 @@ def load_vae_for_latent_space(
                 "Please provide vae_config dict."
             )
 
+    # Auto-detect spatial_dims from config if available
+    if 'spatial_dims' in vae_config:
+        spatial_dims = vae_config['spatial_dims']
+
     # Create VAE model
     vae = AutoencoderKL(
-        spatial_dims=2,
+        spatial_dims=spatial_dims,
         in_channels=vae_config.get('in_channels', 1),
         out_channels=vae_config.get('out_channels', 1),
         channels=tuple(vae_config['channels']),
@@ -272,4 +288,4 @@ def load_vae_for_latent_space(
         # Assume checkpoint is just the state dict
         vae.load_state_dict(checkpoint)
 
-    return LatentSpace(vae, device)
+    return LatentSpace(vae, device, spatial_dims=spatial_dims)

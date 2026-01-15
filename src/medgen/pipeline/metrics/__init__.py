@@ -43,6 +43,14 @@ from .generation import (
     compute_kid,
     compute_cmmd,
     compute_fid,
+    # 3D slice-wise (2.5D) generation metrics
+    volumes_to_slices,
+    extract_features_3d,
+    compute_kid_3d,
+    compute_cmmd_3d,
+    compute_fid_3d,
+    ResNet50Features,
+    BiomedCLIPFeatures,
 )
 
 __all__ = [
@@ -84,4 +92,12 @@ __all__ = [
     'compute_kid',
     'compute_cmmd',
     'compute_fid',
+    # 3D slice-wise (2.5D) generation metrics
+    'volumes_to_slices',
+    'extract_features_3d',
+    'compute_kid_3d',
+    'compute_cmmd_3d',
+    'compute_fid_3d',
+    'ResNet50Features',
+    'BiomedCLIPFeatures',
 ]

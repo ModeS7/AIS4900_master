@@ -31,6 +31,54 @@ def _to_device(batch: torch.Tensor, device: torch.device) -> torch.Tensor:
     return batch.to(device)
 
 
+def _is_latent_batch(batch: Any) -> bool:
+    """Check if batch is from a latent dataloader.
+
+    Latent batches are dicts with 'latent' key containing pre-encoded data.
+
+    Args:
+        batch: Batch from dataloader.
+
+    Returns:
+        True if this is a latent batch format.
+    """
+    return isinstance(batch, dict) and 'latent' in batch
+
+
+def _prepare_latent_batch(
+    batch: Dict[str, Any],
+    device: torch.device,
+    is_conditional: bool = True
+) -> Dict[str, Any]:
+    """Prepare latent batch for training.
+
+    Latent batches have format:
+    - 'latent': Tensor [B, C_latent, H_latent, W_latent]
+    - 'seg_mask': Optional Tensor [1, H, W] (pixel-space for conditioning)
+
+    Args:
+        batch: Dict from LatentDataset.
+        device: Target device.
+        is_conditional: Whether mode uses conditioning.
+
+    Returns:
+        Prepared batch dictionary.
+    """
+    latent = batch['latent'].to(device, non_blocking=True)
+    seg_mask = batch.get('seg_mask')
+
+    if seg_mask is not None and is_conditional:
+        seg_mask = seg_mask.to(device, non_blocking=True)
+    else:
+        seg_mask = None
+
+    return {
+        'images': latent,
+        'labels': seg_mask,
+        'is_latent': True,  # Flag for downstream processing
+    }
+
+
 class TrainingMode(ABC):
     """Abstract base class for different training modes.
 
@@ -107,17 +155,20 @@ class SegmentationMode(TrainingMode):
         return False
 
     def prepare_batch(
-        self, batch: torch.Tensor, device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare segmentation batch.
 
         Args:
-            batch: Tensor [B, 1, H, W] - segmentation masks.
+            batch: Tensor [B, 1, H, W] or latent dict with 'latent' key.
             device: Target device.
 
         Returns:
             Dictionary with images and None labels.
         """
+        if _is_latent_batch(batch):
+            return _prepare_latent_batch(batch, device, is_conditional=False)
+
         batch = _to_device(batch, device)
         return {
             'images': batch,
@@ -172,12 +223,12 @@ class ConditionalSingleMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: torch.Tensor, device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare conditional single batch.
 
         Args:
-            batch: Tensor [B, 2, H, W] where:
+            batch: Tensor [B, 2, H, W] or latent dict where:
                 - Channel 0: BRAVO image
                 - Channel 1: Segmentation mask
             device: Target device.
@@ -185,6 +236,9 @@ class ConditionalSingleMode(TrainingMode):
         Returns:
             Dictionary with separated images and labels.
         """
+        if _is_latent_batch(batch):
+            return _prepare_latent_batch(batch, device, is_conditional=True)
+
         batch = _to_device(batch, device)
         bravo_images = batch[:, 0:1, :, :]
         seg_masks = batch[:, 1:2, :, :]
@@ -256,12 +310,12 @@ class ConditionalDualMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: torch.Tensor, device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare conditional dual batch.
 
         Args:
-            batch: Tensor [B, 3, H, W] where:
+            batch: Tensor [B, 3, H, W] or latent dict where:
                 - Channel 0: T1 pre-contrast
                 - Channel 1: T1 gadolinium (post-contrast)
                 - Channel 2: Segmentation mask
@@ -270,6 +324,9 @@ class ConditionalDualMode(TrainingMode):
         Returns:
             Dictionary with image dict and labels.
         """
+        if _is_latent_batch(batch):
+            return _prepare_latent_batch(batch, device, is_conditional=True)
+
         batch = _to_device(batch, device)
         images: Dict[str, torch.Tensor] = {
             self.image_keys[0]: batch[:, 0:1, :, :],
@@ -346,12 +403,12 @@ class MultiModalityMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, tuple], device: torch.device
+        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare multi-modality batch with mode_id.
 
         Args:
-            batch: Tuple (image, seg, mode_id) where:
+            batch: Tuple (image, seg, mode_id) or latent dict where:
                 - image: [B, 1, H, W] single modality image
                 - seg: [B, 1, H, W] segmentation mask
                 - mode_id: [B] integer tensor (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
@@ -360,6 +417,14 @@ class MultiModalityMode(TrainingMode):
         Returns:
             Dictionary with images, labels (seg), and mode_id.
         """
+        if _is_latent_batch(batch):
+            result = _prepare_latent_batch(batch, device, is_conditional=True)
+            # For multi-modality, we might have mode_id in the batch
+            result['mode_id'] = batch.get('mode_id')
+            if result['mode_id'] is not None:
+                result['mode_id'] = result['mode_id'].to(device)
+            return result
+
         if isinstance(batch, (tuple, list)):
             image, seg, mode_id = batch
             image = _to_device(image, device)

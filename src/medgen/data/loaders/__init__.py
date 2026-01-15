@@ -72,6 +72,17 @@ from .seg_compression import (
     create_seg_compression_test_dataloader,
 )
 
+# Latent diffusion dataloaders (pre-encoded latents)
+from .latent import (
+    LatentDataset,
+    LatentCacheBuilder,
+    create_latent_dataloader,
+    create_latent_validation_dataloader,
+    create_latent_test_dataloader,
+    load_compression_model,
+    detect_compression_type,
+)
+
 __all__ = [
     # Common utilities
     'DataLoaderConfig',
@@ -121,4 +132,12 @@ __all__ = [
     'create_seg_compression_dataloader',
     'create_seg_compression_validation_dataloader',
     'create_seg_compression_test_dataloader',
+    # Latent diffusion
+    'LatentDataset',
+    'LatentCacheBuilder',
+    'create_latent_dataloader',
+    'create_latent_validation_dataloader',
+    'create_latent_test_dataloader',
+    'load_compression_model',
+    'detect_compression_type',
 ]
