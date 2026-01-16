@@ -45,6 +45,8 @@ from .lossless_mask_codec import (
     decode_f64,
     encode_f128,
     decode_f128,
+    encode_k8x8,
+    decode_k8x8,
     FORMATS as LOSSLESS_FORMATS,
 )
 
@@ -192,5 +194,7 @@ __all__ = [
     'decode_f64',
     'encode_f128',
     'decode_f128',
+    'encode_k8x8',
+    'decode_k8x8',
     'LOSSLESS_FORMATS',
 ]

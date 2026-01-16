@@ -799,20 +799,26 @@ class GenerationMetrics:
             # Handle tuple (images, seg) format
             if isinstance(data, tuple):
                 images, seg_arr = data
-                if hasattr(images, '__array__'):
+                if isinstance(images, torch.Tensor):
+                    images = images.float()
+                elif isinstance(images, np.ndarray):
                     images = torch.from_numpy(images).float()
                 else:
-                    images = images.float() if isinstance(images, torch.Tensor) else torch.tensor(images).float()
-                if hasattr(seg_arr, '__array__'):
+                    images = torch.tensor(images).float()
+                if isinstance(seg_arr, torch.Tensor):
+                    seg_arr = seg_arr.float()
+                elif isinstance(seg_arr, np.ndarray):
                     seg_arr = torch.from_numpy(seg_arr).float()
                 else:
-                    seg_arr = seg_arr.float() if isinstance(seg_arr, torch.Tensor) else torch.tensor(seg_arr).float()
+                    seg_arr = torch.tensor(seg_arr).float()
                 tensor = torch.cat([images, seg_arr], dim=0)
             else:
-                if hasattr(data, '__array__'):
+                if isinstance(data, torch.Tensor):
+                    tensor = data.float()
+                elif isinstance(data, np.ndarray):
                     tensor = torch.from_numpy(data).float()
                 else:
-                    tensor = data.float() if isinstance(data, torch.Tensor) else torch.tensor(data).float()
+                    tensor = torch.tensor(data).float()
 
             seg = tensor[seg_channel_idx:seg_channel_idx + 1, :, :]
 

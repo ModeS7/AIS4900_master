@@ -6,16 +6,21 @@ Supports multiple spatial resolutions matching DC-AE compression levels.
 Key insight: 256x256 binary mask = 65,536 bits = 2,048 float32 values = DC-AE latent size
 
 Supported formats:
-    - f32:  8x8 spatial,  32 channels (32x compression)
-    - f64:  4x4 spatial, 128 channels (64x compression)
-    - f128: 2x2 spatial, 512 channels (128x compression)
+    - f32:  8x8 spatial,  32 channels, 32x32 blocks (DC-AE f32 compatible)
+    - f64:  4x4 spatial, 128 channels, 64x64 blocks (DC-AE f64 compatible)
+    - f128: 2x2 spatial, 512 channels, 128x128 blocks (DC-AE f128 compatible)
+    - k8x8: 32x32 spatial, 2 channels, 8x8 blocks (spatially coherent)
+
+The k8x8 format is spatially coherent: each latent position (y, x) corresponds
+directly to an 8x8 image patch at (y*8, x*8). This preserves local structure
+better than the fXX formats which scatter bits across many channels.
 
 Example usage:
     from medgen.data import encode_mask_lossless, decode_mask_lossless
 
     mask = torch.rand(256, 256) > 0.5
-    latent = encode_mask_lossless(mask, 'f32')  # [32, 8, 8]
-    reconstructed = decode_mask_lossless(latent, 'f32')  # [256, 256]
+    latent = encode_mask_lossless(mask, 'k8x8')  # [2, 32, 32] - spatially coherent
+    reconstructed = decode_mask_lossless(latent, 'k8x8')  # [256, 256]
     assert torch.equal(mask.float(), reconstructed)  # Always True (lossless)
 """
 
@@ -24,13 +29,16 @@ from torch import Tensor
 from typing import Tuple, Literal
 
 # Format configs: (spatial_size, channels, block_size)
+# block_size = 256 / spatial_size (size of image patch per latent position)
+# channels = (block_size^2) / 32 (number of float32s needed to store block_size^2 bits)
 FORMATS = {
     'f32': (8, 32, 32),     # 8x8 spatial, 32 channels, 32x32 blocks
     'f64': (4, 128, 64),    # 4x4 spatial, 128 channels, 64x64 blocks
     'f128': (2, 512, 128),  # 2x2 spatial, 512 channels, 128x128 blocks
+    'k8x8': (32, 2, 8),     # 32x32 spatial, 2 channels, 8x8 blocks (spatially coherent)
 }
 
-FormatType = Literal['f32', 'f64', 'f128']
+FormatType = Literal['f32', 'f64', 'f128', 'k8x8']
 
 
 def encode_mask_lossless(mask: Tensor, format: FormatType = 'f32') -> Tensor:
@@ -157,3 +165,17 @@ def encode_f128(mask: Tensor) -> Tensor:
 def decode_f128(latent: Tensor) -> Tensor:
     """Decode f128 format latent to mask."""
     return decode_mask_lossless(latent, 'f128')
+
+
+def encode_k8x8(mask: Tensor) -> Tensor:
+    """Encode mask to k8x8 format (spatially coherent, 32x32x2 latent).
+
+    Each 8x8 image patch maps to 2 float32 values at the corresponding
+    latent position. Preserves spatial locality better than fXX formats.
+    """
+    return encode_mask_lossless(mask, 'k8x8')
+
+
+def decode_k8x8(latent: Tensor) -> Tensor:
+    """Decode k8x8 format latent to mask."""
+    return decode_mask_lossless(latent, 'k8x8')

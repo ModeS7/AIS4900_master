@@ -66,6 +66,8 @@ time python -m medgen.scripts.train_diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
+    latent=default \
+    controlnet=default \
     training.batch_size=1 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
