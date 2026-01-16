@@ -743,16 +743,22 @@ class DiffusionTrainer(BaseTrainer):
                 num_params = sum(p.numel() for p in self.controlnet.parameters())
                 logger.info(f"ControlNet created: {num_params:,} parameters")
 
-        # Setup perceptual loss
+        # Setup perceptual loss (skip for seg modes where perceptual_weight=0)
+        # This saves ~200MB GPU memory from loading ResNet50
         cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
-        self.perceptual_loss_fn = PerceptualLoss(
-            spatial_dims=2,
-            network_type="radimagenet_resnet50",
-            cache_dir=cache_dir,
-            pretrained=True,
-            device=self.device,
-            use_compile=use_compile,
-        )
+        if self.perceptual_weight > 0:
+            self.perceptual_loss_fn = PerceptualLoss(
+                spatial_dims=2,
+                network_type="radimagenet_resnet50",
+                cache_dir=cache_dir,
+                pretrained=True,
+                device=self.device,
+                use_compile=use_compile,
+            )
+        else:
+            self.perceptual_loss_fn = None
+            if self.is_main_process:
+                logger.info("Perceptual loss disabled (perceptual_weight=0), skipping ResNet50 loading")
 
         # Compile fused forward pass setup
         # Compiled forward doesn't support mode_id parameter, so disable when using
@@ -2360,7 +2366,7 @@ class DiffusionTrainer(BaseTrainer):
                     logger.warning(f"Error destroying process group: {e}")
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
-        """Measure model FLOPs using the first batch."""
+        """Measure model FLOPs using batch_size=1 to avoid OOM during torch.compile."""
         if not self.metrics.log_flops:
             return
 
@@ -2368,12 +2374,21 @@ class DiffusionTrainer(BaseTrainer):
             batch = next(iter(train_loader))
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
-            labels_dict = {'labels': prepared.get('labels')}
+            labels = prepared.get('labels')
 
+            # Slice to batch_size=1 to avoid OOM during torch.compile tracing
+            # torch.compile compiles for specific shapes; using full batch can cause
+            # excessive memory during the compilation graph creation
             if isinstance(images, dict):
+                images = {key: img[:1] for key, img in images.items()}
                 noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
             else:
+                images = images[:1]
                 noise = torch.randn_like(images).to(self.device)
+
+            if labels is not None:
+                labels = labels[:1]
+            labels_dict = {'labels': labels}
 
             timesteps = self.strategy.sample_timesteps(images)
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
@@ -2381,9 +2396,9 @@ class DiffusionTrainer(BaseTrainer):
 
             self._flops_tracker.measure(
                 self.model_raw,
-                model_input,
+                model_input[:1] if isinstance(model_input, torch.Tensor) else model_input,
                 steps_per_epoch=len(train_loader),
-                timesteps=timesteps,
+                timesteps=timesteps[:1] if isinstance(timesteps, torch.Tensor) else timesteps,
                 is_main_process=self.is_main_process,
             )
         except Exception as e:
