@@ -796,22 +796,35 @@ class GenerationMetrics:
             idx = int(torch.randint(0, len(train_dataset), (1,), generator=rng).item())
             data = train_dataset[idx]
 
-            # Handle tuple (images, seg) format
+            # Handle tuple (images, seg) or (seg, size_bins) format
             if isinstance(data, tuple):
-                images, seg_arr = data
-                if isinstance(images, torch.Tensor):
-                    images = images.float()
-                elif isinstance(images, np.ndarray):
-                    images = torch.from_numpy(images).float()
+                first, second = data
+                # Convert first element to tensor
+                if isinstance(first, torch.Tensor):
+                    first = first.float()
+                elif isinstance(first, np.ndarray):
+                    first = torch.from_numpy(first).float()
                 else:
-                    images = torch.tensor(images).float()
-                if isinstance(seg_arr, torch.Tensor):
-                    seg_arr = seg_arr.float()
-                elif isinstance(seg_arr, np.ndarray):
-                    seg_arr = torch.from_numpy(seg_arr).float()
+                    first = torch.tensor(first).float()
+                # Convert second element to tensor
+                if isinstance(second, torch.Tensor):
+                    second = second.float()
+                elif isinstance(second, np.ndarray):
+                    second = torch.from_numpy(second).float()
                 else:
-                    seg_arr = torch.tensor(seg_arr).float()
-                tensor = torch.cat([images, seg_arr], dim=0)
+                    second = torch.tensor(second).float()
+
+                # Check if this is seg_conditioned mode: (seg, size_bins)
+                # size_bins is 1D, seg is 3D [C, H, W]
+                if second.dim() == 1 and first.dim() == 3:
+                    # seg_conditioned mode: first element is the seg mask
+                    tensor = first
+                    # Override seg_channel_idx for this mode
+                    local_seg_idx = 0
+                else:
+                    # Standard mode: (images, seg) - concatenate
+                    tensor = torch.cat([first, second], dim=0)
+                    local_seg_idx = seg_channel_idx
             else:
                 if isinstance(data, torch.Tensor):
                     tensor = data.float()
@@ -819,13 +832,14 @@ class GenerationMetrics:
                     tensor = torch.from_numpy(data).float()
                 else:
                     tensor = torch.tensor(data).float()
+                local_seg_idx = seg_channel_idx
 
-            seg = tensor[seg_channel_idx:seg_channel_idx + 1, :, :]
+            seg = tensor[local_seg_idx:local_seg_idx + 1, :, :]
 
             if seg.sum() > 0:  # Has positive mask
                 masks.append(seg)
-                if seg_channel_idx > 0:
-                    gt_images.append(tensor[0:seg_channel_idx, :, :])
+                if local_seg_idx > 0:
+                    gt_images.append(tensor[0:local_seg_idx, :, :])
             attempts += 1
 
         if len(masks) < num_masks:

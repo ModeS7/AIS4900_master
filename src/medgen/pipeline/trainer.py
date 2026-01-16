@@ -861,16 +861,23 @@ class DiffusionTrainer(BaseTrainer):
         )
 
         # Initialize generation metrics if enabled
+        # Skip for seg/seg_conditioned modes - generation metrics use image feature extractors
+        # which don't make sense for binary masks, and seg_conditioned uses size_bins conditioning
         if self._gen_metrics_config is not None and self._gen_metrics_config.enabled:
-            from medgen.pipeline.metrics.generation import GenerationMetrics
-            self._gen_metrics = GenerationMetrics(
-                self._gen_metrics_config,
-                self.device,
-                self.save_dir,
-                space=self.space,
-            )
-            if self.is_main_process:
-                logger.info("Generation metrics initialized (caching happens at training start)")
+            if self.mode_name in ('seg', 'seg_conditioned'):
+                if self.is_main_process:
+                    logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
+                self._gen_metrics = None
+            else:
+                from medgen.pipeline.metrics.generation import GenerationMetrics
+                self._gen_metrics = GenerationMetrics(
+                    self._gen_metrics_config,
+                    self.device,
+                    self.save_dir,
+                    space=self.space,
+                )
+                if self.is_main_process:
+                    logger.info("Generation metrics initialized (caching happens at training start)")
 
         # Save metadata
         if self.is_main_process:
