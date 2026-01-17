@@ -42,8 +42,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #   - in_channels: 2 = [noisy_bravo, seg_mask]
 #   - out_channels: 1 = predicted noise/velocity for bravo
 #
-# Resolution: 128x128x160 (train), 256x256x160 (val)
-# Memory: ~20GB (fits 24GB GPU with headroom)
+# Resolution: 128x128x160
 # ============================================================================
 
 time python -m medgen.scripts.train_diffusion_3d \
@@ -51,10 +50,8 @@ time python -m medgen.scripts.train_diffusion_3d \
     strategy=rflow \
     mode=bravo \
     model=default_3d \
-    volume.train_height=128 \
-    volume.train_width=128 \
-    volume.height=256 \
-    volume.width=256 \
+    volume.height=128 \
+    volume.width=128 \
     volume.pad_depth_to=160 \
     training.batch_size=1 \
     training.epochs=500 \
