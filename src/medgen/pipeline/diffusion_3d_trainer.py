@@ -198,7 +198,7 @@ class Diffusion3DTrainer(BaseTrainer):
                 logger.info("UNet will be frozen (Stage 2 ControlNet training)")
 
         # Seg mode detection (use Dice/IoU instead of image quality metrics)
-        self.is_seg_mode = self.mode_name in ('seg', 'seg')
+        self.is_seg_mode = self.mode_name == 'seg'
 
         # Size bin embedding for seg mode
         self.use_size_bin_embedding = (self.mode_name == 'seg')
@@ -1078,7 +1078,7 @@ class Diffusion3DTrainer(BaseTrainer):
             writer=self.writer,
             mode=self.mode_name,
             spatial_dims=3,
-            modality=self.mode_name if self.mode_name not in ('seg', 'seg') else None,
+            modality=self.mode_name if self.mode_name != 'seg' else None,
             device=self.device,
             enable_regional=self.log_regional_losses and not self.is_seg_mode,
             num_timestep_bins=self.num_timestep_bins,

@@ -291,15 +291,23 @@ def main(cfg: DictConfig) -> None:
             elif cfg.mode.name == 'seg':
                 # seg uses same dataloader pattern
                 from medgen.data.loaders.seg import SegDataset
+                size_bin_cfg = cfg.mode.get('size_bins', {})
+                bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+                num_bins = int(size_bin_cfg.get('num_bins', 7))
+                default_spacing = 240.0 / cfg.volume.height
+                voxel_spacing = tuple(size_bin_cfg.get('voxel_spacing', [1.0, default_spacing, default_spacing]))
                 test_dataset = SegDataset(
                     data_dir=test_dir,
+                    bin_edges=bin_edges,
+                    num_bins=num_bins,
+                    voxel_spacing=voxel_spacing,
                     height=cfg.volume.height,
                     width=cfg.volume.width,
                     pad_depth_to=cfg.volume.pad_depth_to,
                     pad_mode=cfg.volume.get('pad_mode', 'replicate'),
                     slice_step=cfg.volume.get('slice_step', 1),
-                    num_size_bins=cfg.mode.get('num_size_bins', 8),
-                    max_tumor_count=cfg.mode.get('max_tumor_count', 10),
+                    positive_only=False,
+                    cfg_dropout_prob=0.0,
                 )
                 test_loader = DataLoader(
                     test_dataset,

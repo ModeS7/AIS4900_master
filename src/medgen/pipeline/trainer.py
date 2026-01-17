@@ -407,7 +407,7 @@ class DiffusionTrainer(BaseTrainer):
         self._gen_metrics: Optional['GenerationMetrics'] = None
         gen_cfg = cfg.training.get('generation_metrics', {})
         if gen_cfg.get('enabled', False):
-            from medgen.pipeline.metrics.generation import GenerationMetricsConfig, GenerationMetrics
+            from medgen.metrics.generation import GenerationMetricsConfig, GenerationMetrics
             # Use training batch_size by default for torch.compile consistency
             feature_batch_size = gen_cfg.get('feature_batch_size', None)
             if feature_batch_size is None:
@@ -865,7 +865,7 @@ class DiffusionTrainer(BaseTrainer):
                     logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
                 self._gen_metrics = None
             else:
-                from medgen.pipeline.metrics.generation import GenerationMetrics
+                from medgen.metrics.generation import GenerationMetrics
                 self._gen_metrics = GenerationMetrics(
                     self._gen_metrics_config,
                     self.device,
