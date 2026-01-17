@@ -772,7 +772,7 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Configured ValidationRunner instance.
         """
-        from .validation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationRunner, ValidationConfig
 
         config = ValidationConfig(
             log_msssim=self.log_msssim,
@@ -1467,7 +1467,7 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Configured CompressionTestEvaluator instance.
         """
-        from .evaluation import CompressionTestEvaluator, MetricsConfig
+        from medgen.evaluation import CompressionTestEvaluator, MetricsConfig
 
         # Create metrics config based on trainer settings
         metrics_config = MetricsConfig(
@@ -1652,7 +1652,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         Returns:
             Configured ValidationRunner instance for 3D volumes.
         """
-        from .validation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationRunner, ValidationConfig
 
         config = ValidationConfig(
             log_msssim=self.log_msssim,
@@ -1882,7 +1882,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         Returns:
             Configured Compression3DTestEvaluator instance.
         """
-        from .evaluation import Compression3DTestEvaluator, MetricsConfig
+        from medgen.evaluation import Compression3DTestEvaluator, MetricsConfig
         from medgen.metrics import create_worst_batch_figure_3d
 
         # Check for seg_mode (added by subclasses like VQVAE3DTrainer)

@@ -12,7 +12,7 @@ import numpy as np
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import build_vae_augmentation, create_vae_collate_fn
+from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
 from medgen.data.loaders.common import create_dataloader, DistributedArgs
 from medgen.data.dataset import (
     NiFTIDataset,

@@ -16,6 +16,17 @@ from .embeddings import (
 from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer, DropPath
 from .autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
 
+# ControlNet utilities
+from .controlnet import (
+    create_controlnet_for_unet,
+    freeze_unet_for_controlnet,
+    unfreeze_unet,
+    ControlNetConditionedUNet,
+    load_controlnet_checkpoint,
+    save_controlnet_checkpoint,
+    ControlNetGenerationWrapper,
+)
+
 __all__ = [
     # Main model classes
     "SiT",
@@ -45,4 +56,12 @@ __all__ = [
     # 3D Autoencoders
     "AutoencoderDC3D",
     "CheckpointedAutoencoderDC3D",
+    # ControlNet
+    "create_controlnet_for_unet",
+    "freeze_unet_for_controlnet",
+    "unfreeze_unet",
+    "ControlNetConditionedUNet",
+    "load_controlnet_checkpoint",
+    "save_controlnet_checkpoint",
+    "ControlNetGenerationWrapper",
 ]

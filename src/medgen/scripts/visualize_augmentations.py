@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import (
+from medgen.augmentation import (
     apply_augmentation,
     build_diffusion_augmentation,
     build_vae_augmentation,

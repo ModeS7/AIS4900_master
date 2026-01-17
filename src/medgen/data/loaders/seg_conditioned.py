@@ -16,7 +16,7 @@ from scipy import ndimage
 from scipy.spatial.distance import pdist
 from torch.utils.data import Dataset as TorchDataset
 
-from medgen.data.augmentation import build_seg_diffusion_augmentation_with_binarize
+from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.utils import extract_slices_single

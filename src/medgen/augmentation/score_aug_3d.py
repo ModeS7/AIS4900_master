@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .base_embed import create_zero_init_mlp
+from medgen.models.wrappers import create_zero_init_mlp
 
 
 class ScoreAugTransform3D:

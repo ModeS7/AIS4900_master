@@ -15,14 +15,14 @@ import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import build_diffusion_augmentation, apply_augmentation
+from medgen.augmentation import build_diffusion_augmentation, apply_augmentation
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.mode_embed import MODE_ID_MAP
+from medgen.models.wrappers import MODE_ID_MAP
 from medgen.core.constants import BINARY_THRESHOLD_GT
 
 logger = logging.getLogger(__name__)

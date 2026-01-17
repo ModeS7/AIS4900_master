@@ -51,7 +51,7 @@ from medgen.diffusion import (
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
     DiffusionSpace, PixelSpace,
 )
-from .visualization import ValidationVisualizer
+from medgen.evaluation import ValidationVisualizer
 from .utils import (
     get_vram_usage,
     log_vram_to_tensorboard,
@@ -73,7 +73,7 @@ from medgen.metrics import (
 )
 from medgen.metrics import FLOPsTracker
 from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
-from .controlnet import (
+from medgen.models import (
     create_controlnet_for_unet,
     freeze_unet_for_controlnet,
     ControlNetConditionedUNet,
@@ -201,7 +201,7 @@ class DiffusionTrainer(BaseTrainer):
         self._apply_mode_intensity_scale = None  # Function reference (lazy import)
         score_aug_cfg = cfg.training.get('score_aug', {})
         if score_aug_cfg.get('enabled', False):
-            from medgen.data.score_aug import ScoreAugTransform
+            from medgen.augmentation import ScoreAugTransform
             self.score_aug = ScoreAugTransform(
                 rotation=score_aug_cfg.get('rotation', True),
                 flip=score_aug_cfg.get('flip', True),
@@ -218,7 +218,7 @@ class DiffusionTrainer(BaseTrainer):
             # Forces model to use mode conditioning (similar to how rotation requires omega)
             self.use_mode_intensity_scaling = score_aug_cfg.get('mode_intensity_scaling', False)
             if self.use_mode_intensity_scaling:
-                from medgen.data.score_aug import apply_mode_intensity_scale
+                from medgen.augmentation import apply_mode_intensity_scale
                 self._apply_mode_intensity_scale = apply_mode_intensity_scale
 
             # Validate: rotation/flip require omega conditioning per ScoreAug paper
@@ -268,7 +268,7 @@ class DiffusionTrainer(BaseTrainer):
         self.sda_weight = 1.0
         sda_cfg = cfg.training.get('sda', {})
         if sda_cfg.get('enabled', False):
-            from medgen.data.sda import SDATransform
+            from medgen.augmentation import SDATransform
             self.sda = SDATransform(
                 rotation=sda_cfg.get('rotation', True),
                 flip=sda_cfg.get('flip', True),

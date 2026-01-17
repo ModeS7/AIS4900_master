@@ -478,7 +478,7 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         Returns:
             Configured ValidationRunner instance.
         """
-        from .validation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationRunner, ValidationConfig
 
         config = ValidationConfig(
             log_msssim=self.log_msssim and not self.seg_mode,

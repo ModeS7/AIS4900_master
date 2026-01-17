@@ -12,7 +12,7 @@ import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import build_diffusion_augmentation, build_vae_augmentation
+from medgen.augmentation import build_diffusion_augmentation, build_vae_augmentation
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,

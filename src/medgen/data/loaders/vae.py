@@ -14,7 +14,7 @@ from typing import Callable, Dict, Optional, Tuple
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
-from medgen.data.augmentation import build_vae_augmentation, create_vae_collate_fn
+from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
 from medgen.data.loaders.common import (
     DataLoaderConfig,
     DistributedArgs,

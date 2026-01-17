@@ -20,7 +20,7 @@ from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.core.constants import BINARY_THRESHOLD_GT
-from medgen.data.augmentation import (
+from medgen.augmentation import (
     apply_augmentation,
     binarize_mask,
     build_seg_augmentation,

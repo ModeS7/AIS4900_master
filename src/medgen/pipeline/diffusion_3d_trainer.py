@@ -79,7 +79,7 @@ from medgen.metrics import (
     # Regional tracking (still needed for conditional init)
     RegionalMetricsTracker3D,
 )
-from .controlnet import (
+from medgen.models import (
     create_controlnet_for_unet,
     freeze_unet_for_controlnet,
     ControlNetConditionedUNet,
@@ -268,7 +268,7 @@ class Diffusion3DTrainer(BaseTrainer):
         self.use_omega_conditioning = False
         score_aug_cfg = cfg.training.get('score_aug', {})
         if score_aug_cfg.get('enabled', False):
-            from medgen.data.score_aug_3d import ScoreAugTransform3D
+            from medgen.augmentation import ScoreAugTransform3D
             self.score_aug = ScoreAugTransform3D(
                 rotation=score_aug_cfg.get('rotation', True),
                 flip=score_aug_cfg.get('flip', True),
@@ -294,7 +294,7 @@ class Diffusion3DTrainer(BaseTrainer):
             if self.score_aug is not None:
                 logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
             else:
-                from medgen.data.sda_3d import SDATransform3D
+                from medgen.augmentation import SDATransform3D
                 self.sda = SDATransform3D(
                     rotation=sda_cfg.get('rotation', True),
                     flip=sda_cfg.get('flip', True),
@@ -760,7 +760,7 @@ class Diffusion3DTrainer(BaseTrainer):
 
         # Wrap with ScoreAug omega conditioning if enabled
         if self.use_omega_conditioning and self.score_aug is not None:
-            from medgen.data.score_aug_3d import ScoreAugModelWrapper3D
+            from medgen.augmentation import ScoreAugModelWrapper3D
             channels = tuple(self.cfg.model.channels)
             time_embed_dim = 4 * channels[0]
             self.model = ScoreAugModelWrapper3D(self.model_raw, embed_dim=time_embed_dim)

@@ -436,7 +436,7 @@ class DCAETrainer(BaseCompressionTrainer):
         Returns:
             Configured ValidationRunner instance.
         """
-        from .validation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationRunner, ValidationConfig
 
         config = ValidationConfig(
             log_msssim=self.log_msssim and not self.seg_mode,  # Disable for seg
@@ -766,7 +766,7 @@ class DCAETrainer(BaseCompressionTrainer):
         Returns:
             Configured CompressionTestEvaluator instance.
         """
-        from .evaluation import CompressionTestEvaluator, MetricsConfig
+        from medgen.evaluation import CompressionTestEvaluator, MetricsConfig
 
         # Create metrics config - use seg metrics when seg_mode enabled
         metrics_config = MetricsConfig(

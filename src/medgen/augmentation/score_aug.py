@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from .base_embed import create_zero_init_mlp
+from medgen.models.wrappers import create_zero_init_mlp
 
 
 # =============================================================================

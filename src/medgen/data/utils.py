@@ -11,7 +11,7 @@ import torch
 from monai.data import Dataset
 
 from medgen.core.constants import BINARY_THRESHOLD_GT
-from medgen.data.augmentation import apply_augmentation
+from medgen.augmentation import apply_augmentation
 from medgen.data.dataset import NiFTIDataset
 
 try:

@@ -1,6 +1,6 @@
 """Data loading and processing utilities."""
 
-from .augmentation import (
+from medgen.augmentation import (
     apply_augmentation,
     build_diffusion_augmentation,
     build_seg_diffusion_augmentation,
@@ -11,14 +11,21 @@ from .augmentation import (
     mixup,
     binarize_mask,
     BinarizeTransform,
+    # Score Augmentation
+    ScoreAugTransform,
+    ScoreAugTransform3D,
+    ScoreAugModelWrapper3D,
+    # Shifted Data Augmentation
+    SDATransform,
+    create_sda_transform,
+    SDATransform3D,
+    create_sda_transform_3d,
 )
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
-from .base_embed import create_zero_init_mlp
-from .score_aug import ScoreAugTransform
-from .score_aug_3d import ScoreAugTransform3D, ScoreAugModelWrapper3D
-from .sda import SDATransform, create_sda_transform
-from .sda_3d import SDATransform3D, create_sda_transform_3d
-from .mode_embed import (
+
+# Model wrappers (re-exported from models.wrappers for backward compatibility)
+from medgen.models.wrappers import (
+    create_zero_init_mlp,
     ModeEmbedModelWrapper,
     ModeEmbedDropoutModelWrapper,
     NoModeModelWrapper,
@@ -26,9 +33,9 @@ from .mode_embed import (
     ModeTimeEmbed,
     MODE_ID_MAP,
     encode_mode_id,
-)
-from .combined_embed import CombinedModelWrapper, CombinedTimeEmbed, create_conditioning_wrapper
-from .size_bin_embed import (
+    CombinedModelWrapper,
+    CombinedTimeEmbed,
+    create_conditioning_wrapper,
     SizeBinModelWrapper,
     SizeBinTimeEmbed,
     encode_size_bins,

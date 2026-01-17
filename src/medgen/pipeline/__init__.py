@@ -13,7 +13,19 @@ from medgen.diffusion import (
     SegmentationMode, ConditionalSingleMode, ConditionalDualMode, TrainingMode,
     DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space,
 )
-from .visualization import ValidationVisualizer
+# Evaluation utilities (from medgen.evaluation package)
+from medgen.evaluation import (
+    ValidationVisualizer,
+    BaseTestEvaluator,
+    CompressionTestEvaluator,
+    Compression3DTestEvaluator,
+    MetricsConfig,
+    load_checkpoint_if_needed,
+    save_test_results,
+    ValidationRunner,
+    ValidationConfig,
+    ValidationResult,
+)
 
 # Metrics (from medgen.metrics package)
 from medgen.metrics import (
@@ -39,19 +51,6 @@ from .optimizers import SAM
 
 # Training step result
 from .results import TrainingStepResult
-
-# Test evaluation utilities
-from .evaluation import (
-    BaseTestEvaluator,
-    CompressionTestEvaluator,
-    Compression3DTestEvaluator,
-    MetricsConfig,
-    load_checkpoint_if_needed,
-    save_test_results,
-)
-
-# Validation utilities
-from .validation import ValidationRunner, ValidationConfig, ValidationResult
 
 # Gradient checkpointing base class
 from .checkpointing import BaseCheckpointedModel

@@ -22,7 +22,29 @@ from .mode_embed import (
     LateModeModelWrapper,
     FiLMModeModelWrapper,
 )
-from .score_aug import OMEGA_ENCODING_DIM, encode_omega, ScoreAugModelWrapper
+
+# Lazy imports to avoid circular dependency (augmentation imports from wrappers)
+# These are imported at runtime when needed
+def _get_omega_encoding_dim():
+    from medgen.augmentation import OMEGA_ENCODING_DIM
+    return OMEGA_ENCODING_DIM
+
+def _get_encode_omega():
+    from medgen.augmentation import encode_omega
+    return encode_omega
+
+def _get_score_aug_wrapper():
+    from medgen.augmentation import ScoreAugModelWrapper
+    return ScoreAugModelWrapper
+
+# Cache for OMEGA_ENCODING_DIM (used frequently)
+_OMEGA_DIM_CACHE = None
+
+def _omega_dim():
+    global _OMEGA_DIM_CACHE
+    if _OMEGA_DIM_CACHE is None:
+        _OMEGA_DIM_CACHE = _get_omega_encoding_dim()
+    return _OMEGA_DIM_CACHE
 
 
 def create_conditioning_wrapper(
@@ -75,7 +97,7 @@ def create_conditioning_wrapper(
     if use_mode and mode_strategy == 'none':
         if use_omega:
             # Omega only, no mode
-            return ScoreAugModelWrapper(model, embed_dim=embed_dim), "omega"
+            return _get_score_aug_wrapper()(model, embed_dim=embed_dim), "omega"
         else:
             # No conditioning at all, but wrap for API compatibility
             return NoModeModelWrapper(model), "no_mode"
@@ -99,7 +121,7 @@ def create_conditioning_wrapper(
 
     # Handle omega only
     if use_omega:
-        return ScoreAugModelWrapper(model, embed_dim=embed_dim), "omega"
+        return _get_score_aug_wrapper()(model, embed_dim=embed_dim), "omega"
 
     # Handle mode only (with strategy)
     if use_mode:
@@ -150,11 +172,11 @@ class CombinedTimeEmbed(nn.Module):
         self.embed_dim = embed_dim
 
         # MLPs for conditioning (zero-init for neutral start)
-        self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
+        self.omega_mlp = create_zero_init_mlp(_omega_dim(), embed_dim)
         self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
         # Omega uses buffer (same for all samples in batch)
-        self.register_buffer('_omega_encoding', torch.zeros(1, OMEGA_ENCODING_DIM))
+        self.register_buffer('_omega_encoding', torch.zeros(1, _omega_dim()))
 
         # Mode uses regular tensor (per-sample, variable batch size)
         self._mode_encoding: Optional[torch.Tensor] = None
@@ -283,7 +305,7 @@ class CombinedModelWrapper(nn.Module):
         # Encode both conditioning signals
         batch_size = x.shape[0]
         # Pass mode_id to encode_omega to include mode intensity scaling info (dims 32-35)
-        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
+        omega_encoding = _get_encode_omega()(omega, x.device, mode_id=mode_id)
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
 
         # Set both encodings
@@ -325,13 +347,13 @@ class CombinedFiLMTimeEmbed(nn.Module):
         from .base_embed import create_film_mlp
 
         # Omega uses additive embedding (zero-init)
-        self.omega_mlp = create_zero_init_mlp(OMEGA_ENCODING_DIM, embed_dim)
+        self.omega_mlp = create_zero_init_mlp(_omega_dim(), embed_dim)
 
         # Mode uses FiLM (gamma/beta initialized to identity)
         self.film_mlp = create_film_mlp(MODE_ENCODING_DIM, embed_dim)
 
         # Omega uses buffer (same for all samples in batch)
-        self.register_buffer('_omega_encoding', torch.zeros(1, OMEGA_ENCODING_DIM))
+        self.register_buffer('_omega_encoding', torch.zeros(1, _omega_dim()))
 
         # Mode uses regular tensor (per-sample, variable batch size)
         self._mode_encoding: Optional[torch.Tensor] = None
@@ -445,7 +467,7 @@ class CombinedFiLMModelWrapper(nn.Module):
             Model prediction [B, C_out, H, W]
         """
         batch_size = x.shape[0]
-        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
+        omega_encoding = _get_encode_omega()(omega, x.device, mode_id=mode_id)
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
 
         self.combined_film_time_embed.set_encodings(omega_encoding, mode_encoding)

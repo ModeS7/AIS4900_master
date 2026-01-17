@@ -22,7 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from medgen.core import ModeType
 from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
 from medgen.metrics import MetricsTracker, create_reconstruction_figure
-from .controlnet import ControlNetConditionedUNet, ControlNetGenerationWrapper
+from medgen.models import ControlNetConditionedUNet, ControlNetGenerationWrapper
 
 logger = logging.getLogger(__name__)
 
