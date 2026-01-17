@@ -38,7 +38,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #   - attention_levels: [false, false, false, false, true, true]
 #   - num_res_blocks: [1, 1, 1, 2, 2, 2]
 #
-# Mode: seg_conditioned_3d
+# Mode: seg (uses seg_diffusion_3d config)
 #   - in_channels: 1 = noisy_seg (conditioning via embedding, not concat)
 #   - out_channels: 1 = predicted noise/velocity for seg
 #   - conditioning: 7-dim size bin vector (embedded and added to timestep)
@@ -54,7 +54,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 time python -m medgen.scripts.train_diffusion_3d \
     paths=cluster \
     strategy=rflow \
-    mode=seg_conditioned_3d \
+    mode=seg_diffusion_3d \
     model=default_3d \
     volume.height=128 \
     volume.width=128 \

@@ -48,11 +48,13 @@ class ResNet50Features(nn.Module):
         device: torch.device,
         network_type: str = "imagenet",
         cache_dir: Optional[Path] = None,
+        compile_model: bool = True,
     ) -> None:
         super().__init__()
         self.device = device
         self.network_type = network_type
         self.cache_dir = cache_dir
+        self.compile_model = compile_model
         self._model: Optional[nn.Module] = None
 
     def _ensure_model(self) -> None:
@@ -99,12 +101,15 @@ class ResNet50Features(nn.Module):
         for param in model.parameters():
             param.requires_grad = False
 
-        # Compile for faster inference
-        try:
-            model = torch.compile(model, mode="reduce-overhead")
-            logger.info("ResNet50 compiled with torch.compile")
-        except Exception as e:
-            logger.warning(f"torch.compile failed for ResNet50: {e}")
+        # Compile for faster inference (skip if compile_model=False for load/unload pattern)
+        if self.compile_model:
+            try:
+                model = torch.compile(model, mode="reduce-overhead")
+                logger.info("ResNet50 compiled with torch.compile")
+            except Exception as e:
+                logger.warning(f"torch.compile failed for ResNet50: {e}")
+        else:
+            logger.info("ResNet50 loaded without torch.compile (load/unload mode)")
 
         self._model = model
 
@@ -166,6 +171,14 @@ class ResNet50Features(nn.Module):
 
         return features.float()  # Return fp32 for metric computation
 
+    def unload(self) -> None:
+        """Unload the model to free GPU memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            torch.cuda.empty_cache()
+            logger.info("ResNet50 unloaded from GPU")
+
 
 class BiomedCLIPFeatures(nn.Module):
     """BiomedCLIP feature extractor for CMMD.
@@ -182,10 +195,12 @@ class BiomedCLIPFeatures(nn.Module):
         self,
         device: torch.device,
         cache_dir: Optional[str] = None,
+        compile_model: bool = True,
     ) -> None:
         super().__init__()
         self.device = device
         self.cache_dir = cache_dir
+        self.compile_model = compile_model
         self._model: Optional[nn.Module] = None
         self._processor = None
 
@@ -218,12 +233,15 @@ class BiomedCLIPFeatures(nn.Module):
         for param in self._model.parameters():
             param.requires_grad = False
 
-        # Compile for faster inference
-        try:
-            self._model = torch.compile(self._model, mode="reduce-overhead")
-            logger.info("BiomedCLIP compiled with torch.compile")
-        except Exception as e:
-            logger.warning(f"torch.compile failed for BiomedCLIP: {e}")
+        # Compile for faster inference (skip if compile_model=False for load/unload pattern)
+        if self.compile_model:
+            try:
+                self._model = torch.compile(self._model, mode="reduce-overhead")
+                logger.info("BiomedCLIP compiled with torch.compile")
+            except Exception as e:
+                logger.warning(f"torch.compile failed for BiomedCLIP: {e}")
+        else:
+            logger.info("BiomedCLIP loaded without torch.compile (load/unload mode)")
 
         logger.info("Loaded BiomedCLIP for feature extraction")
 
@@ -273,3 +291,12 @@ class BiomedCLIPFeatures(nn.Module):
             features = self._model.encode_image(images)
 
         return features.float()  # Return fp32 for metric computation
+
+    def unload(self) -> None:
+        """Unload the model to free GPU memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            self._processor = None
+            torch.cuda.empty_cache()
+            logger.info("BiomedCLIP unloaded from GPU")

@@ -198,10 +198,10 @@ class Diffusion3DTrainer(BaseTrainer):
                 logger.info("UNet will be frozen (Stage 2 ControlNet training)")
 
         # Seg mode detection (use Dice/IoU instead of image quality metrics)
-        self.is_seg_mode = self.mode_name in ('seg', 'seg_conditioned_3d')
+        self.is_seg_mode = self.mode_name in ('seg', 'seg')
 
-        # Size bin embedding for seg_conditioned_3d mode
-        self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned_3d')
+        # Size bin embedding for seg mode
+        self.use_size_bin_embedding = (self.mode_name == 'seg')
         if self.use_size_bin_embedding:
             size_bin_cfg = cfg.mode.get('size_bins', {})
             self.size_bin_num_bins = size_bin_cfg.get('num_bins', 7)
@@ -362,7 +362,7 @@ class Diffusion3DTrainer(BaseTrainer):
             return SegmentationMode()
         elif name == 'bravo':
             return ConditionalSingleMode()
-        elif name == 'seg_conditioned_3d':
+        elif name == 'seg':
             size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
             return SegmentationConditionedMode(size_bin_config)
         else:
@@ -374,11 +374,32 @@ class Diffusion3DTrainer(BaseTrainer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _ensure_feature_extractors(self) -> None:
-        """Lazy-initialize feature extractors."""
+        """Lazy-initialize feature extractors.
+
+        Uses compile_model=False to avoid torch.compile CUDA graph memory overhead.
+        This enables the load/unload pattern to free GPU memory between uses.
+        """
         if self._resnet_extractor is None:
-            self._resnet_extractor = ResNet50Features(self.device)
+            self._resnet_extractor = ResNet50Features(self.device, compile_model=False)
         if self._biomed_extractor is None:
-            self._biomed_extractor = BiomedCLIPFeatures(self.device)
+            self._biomed_extractor = BiomedCLIPFeatures(self.device, compile_model=False)
+
+    def _unload_feature_extractors(self) -> None:
+        """Unload feature extractors to free GPU memory.
+
+        Call this after caching reference features and after computing metrics
+        to reduce peak VRAM usage during training.
+        """
+        if self._resnet_extractor is not None:
+            self._resnet_extractor.unload()
+            del self._resnet_extractor
+            self._resnet_extractor = None
+        if self._biomed_extractor is not None:
+            self._biomed_extractor.unload()
+            del self._biomed_extractor
+            self._biomed_extractor = None
+        torch.cuda.empty_cache()
+        logger.info("Feature extractors unloaded to free GPU memory")
 
     def _cache_reference_features_3d(
         self,
@@ -648,6 +669,10 @@ class Diffusion3DTrainer(BaseTrainer):
             )
             results[f'{prefix}CMMD_val'] = cmmd_val
 
+        # Free generated features and unload extractors to free GPU memory
+        del gen_resnet, gen_biomed
+        self._unload_feature_extractors()
+
         return results
 
     def setup_model(self, train_dataset: Dataset) -> None:
@@ -732,7 +757,7 @@ class Diffusion3DTrainer(BaseTrainer):
         else:
             self.model = self.model_raw
 
-        # Handle size bin embedding for seg_conditioned_3d mode
+        # Handle size bin embedding for seg mode
         if self.use_size_bin_embedding:
             from medgen.data import SizeBinModelWrapper
 
@@ -1053,7 +1078,7 @@ class Diffusion3DTrainer(BaseTrainer):
             writer=self.writer,
             mode=self.mode_name,
             spatial_dims=3,
-            modality=self.mode_name if self.mode_name not in ('seg', 'seg_conditioned_3d') else None,
+            modality=self.mode_name if self.mode_name not in ('seg', 'seg') else None,
             device=self.device,
             enable_regional=self.log_regional_losses and not self.is_seg_mode,
             num_timestep_bins=self.num_timestep_bins,
@@ -1071,6 +1096,9 @@ class Diffusion3DTrainer(BaseTrainer):
             # Use extended count for conditioning (need enough for extended metrics)
             self._set_fixed_conditioning_3d(train_loader, num_volumes=self._gen_metrics_samples_extended)
             self._cache_reference_features_3d(train_loader, val_loader, max_volumes=10)
+            # Unload feature extractors after caching to free GPU memory during training
+            # They will be reloaded on-demand when computing generation metrics
+            self._unload_feature_extractors()
         elif self._gen_metrics_enabled and self.is_seg_mode and self.is_main_process:
             logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
 
@@ -1209,7 +1237,7 @@ class Diffusion3DTrainer(BaseTrainer):
         prepared = self.mode.prepare_batch(batch, self.device)
         images = prepared['images']  # [B, C, D, H, W] - latent or pixel space
         labels = prepared.get('labels')  # [B, 1, D, H, W] - pixel space from cache
-        size_bins = prepared.get('size_bins')  # [B, num_bins] - for seg_conditioned_3d mode
+        size_bins = prepared.get('size_bins')  # [B, num_bins] - for seg mode
 
         # Sample noise (with optional augmentation)
         noise = torch.randn_like(images)
@@ -1401,7 +1429,7 @@ class Diffusion3DTrainer(BaseTrainer):
     def _validate(self, val_loader: DataLoader, epoch: int) -> float:
         """Run validation.
 
-        For seg modes (seg, seg_conditioned_3d): computes Dice/IoU
+        For seg modes (seg, seg): computes Dice/IoU
         For image modes (bravo, etc.): computes PSNR/MS-SSIM
 
         Args:
@@ -1423,7 +1451,7 @@ class Diffusion3DTrainer(BaseTrainer):
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
             labels = prepared.get('labels')
-            size_bins = prepared.get('size_bins')  # For seg_conditioned_3d mode
+            size_bins = prepared.get('size_bins')  # For seg mode
 
             # Sample noise and timesteps
             noise = torch.randn_like(images)
@@ -1562,7 +1590,7 @@ class Diffusion3DTrainer(BaseTrainer):
                                device=self.device)
 
         # Add conditioning if needed
-        # Note: seg_conditioned_3d uses embedding-based conditioning (not concatenation)
+        # Note: seg uses embedding-based conditioning (not concatenation)
         if self.use_size_bin_embedding:
             # Size bin embedding mode: no concatenation, just noise
             model_input = noise

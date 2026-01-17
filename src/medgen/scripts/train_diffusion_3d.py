@@ -51,9 +51,9 @@ def main(cfg: DictConfig) -> None:
         create_vae_3d_dataloader,
         create_vae_3d_validation_dataloader,
     )
-    from medgen.data.loaders.seg_conditioned_3d import (
-        create_seg_conditioned_3d_dataloader,
-        create_seg_conditioned_3d_validation_dataloader,
+    from medgen.data.loaders.seg import (
+        create_seg_dataloader,
+        create_seg_validation_dataloader,
     )
     from medgen.data.loaders.vae_3d import (
         SingleModality3DDatasetWithSeg,
@@ -170,10 +170,10 @@ def main(cfg: DictConfig) -> None:
         logger.info("=== Pixel-Space Mode ===")
 
         # Use mode-specific dataloader
-        if cfg.mode.name == 'seg_conditioned_3d':
-            logger.info("Using 3D seg_conditioned dataloader (3D connected components)")
-            train_loader, train_dataset = create_seg_conditioned_3d_dataloader(cfg)
-            val_result = create_seg_conditioned_3d_validation_dataloader(cfg)
+        if cfg.mode.name == 'seg':
+            logger.info("Using 3D seg dataloader (3D connected components)")
+            train_loader, train_dataset = create_seg_dataloader(cfg)
+            val_result = create_seg_validation_dataloader(cfg)
         elif cfg.mode.name == 'bravo':
             # Bravo mode: needs seg mask for conditioning
             logger.info("Using 3D bravo dataloader with seg mask conditioning")
@@ -288,10 +288,10 @@ def main(cfg: DictConfig) -> None:
                     pin_memory=True,
                 )
                 test_result = (test_loader, test_dataset)
-            elif cfg.mode.name == 'seg_conditioned_3d':
-                # seg_conditioned_3d uses same dataloader pattern
-                from medgen.data.loaders.seg_conditioned_3d import SegConditioned3DDataset
-                test_dataset = SegConditioned3DDataset(
+            elif cfg.mode.name == 'seg':
+                # seg uses same dataloader pattern
+                from medgen.data.loaders.seg import SegDataset
+                test_dataset = SegDataset(
                     data_dir=test_dir,
                     height=cfg.volume.height,
                     width=cfg.volume.width,

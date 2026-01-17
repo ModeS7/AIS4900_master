@@ -102,11 +102,11 @@ from .loaders import (
     create_seg_conditioned_test_dataloader,
     SegConditionedDataset,
     compute_size_bins,
-    # 3D Seg conditioned loaders (3D connected components)
-    create_seg_conditioned_3d_dataloader,
-    create_seg_conditioned_3d_validation_dataloader,
-    create_seg_conditioned_3d_test_dataloader,
-    SegConditioned3DDataset,
+    # 3D Seg loaders (3D connected components, size-bin conditioned)
+    create_seg_dataloader,
+    create_seg_validation_dataloader,
+    create_seg_test_dataloader,
+    SegDataset,
     compute_size_bins_3d,
     compute_feret_diameter_3d,
 )
@@ -186,11 +186,11 @@ __all__ = [
     'create_seg_conditioned_test_dataloader',
     'SegConditionedDataset',
     'compute_size_bins',
-    # 3D Seg conditioned loaders (3D connected components)
-    'create_seg_conditioned_3d_dataloader',
-    'create_seg_conditioned_3d_validation_dataloader',
-    'create_seg_conditioned_3d_test_dataloader',
-    'SegConditioned3DDataset',
+    # 3D Seg loaders (3D connected components, size-bin conditioned)
+    'create_seg_dataloader',
+    'create_seg_validation_dataloader',
+    'create_seg_test_dataloader',
+    'SegDataset',
     'compute_size_bins_3d',
     'compute_feret_diameter_3d',
     # Mode embedding

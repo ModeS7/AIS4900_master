@@ -130,7 +130,7 @@ def compute_size_bins_3d(
     return bin_counts
 
 
-class SegConditioned3DDataset(TorchDataset):
+class SegDataset(TorchDataset):
     """3D Dataset that loads segmentation volumes with size bin conditioning.
 
     Wraps Base3DVolumeDataset to add size bin computation on full 3D volumes.
@@ -301,7 +301,7 @@ class SegConditioned3DDataset(TorchDataset):
         return seg_volume, size_bins
 
 
-def create_seg_conditioned_3d_dataloader(
+def create_seg_dataloader(
     cfg,
     use_distributed: bool = False,
     rank: int = 0,
@@ -339,7 +339,7 @@ def create_seg_conditioned_3d_dataloader(
     augment = getattr(cfg.training, 'augment', False)
     aug = build_3d_augmentation(seg_mode=True) if augment else None
 
-    train_dataset = SegConditioned3DDataset(
+    train_dataset = SegDataset(
         data_dir=data_dir,
         bin_edges=bin_edges,
         num_bins=num_bins,
@@ -355,7 +355,7 @@ def create_seg_conditioned_3d_dataloader(
     )
 
     logger.info(
-        f"Created 3D seg_conditioned dataset: {len(train_dataset)} volumes, "
+        f"Created 3D seg dataset: {len(train_dataset)} volumes, "
         f"{num_bins} bins, voxel_spacing={voxel_spacing}"
     )
 
@@ -367,7 +367,7 @@ def create_seg_conditioned_3d_dataloader(
     return loader, train_dataset
 
 
-def create_seg_conditioned_3d_validation_dataloader(
+def create_seg_validation_dataloader(
     cfg,
 ) -> Optional[Tuple[DataLoader, TorchDataset]]:
     """Create 3D validation dataloader for size-conditioned segmentation.
@@ -393,7 +393,7 @@ def create_seg_conditioned_3d_validation_dataloader(
     voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
     voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
 
-    val_dataset = SegConditioned3DDataset(
+    val_dataset = SegDataset(
         data_dir=val_dir,
         bin_edges=bin_edges,
         num_bins=num_bins,
@@ -412,7 +412,7 @@ def create_seg_conditioned_3d_validation_dataloader(
     return loader, val_dataset
 
 
-def create_seg_conditioned_3d_test_dataloader(
+def create_seg_test_dataloader(
     cfg,
 ) -> Optional[Tuple[DataLoader, TorchDataset]]:
     """Create 3D test dataloader for size-conditioned segmentation.
@@ -438,7 +438,7 @@ def create_seg_conditioned_3d_test_dataloader(
     voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
     voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
 
-    test_dataset = SegConditioned3DDataset(
+    test_dataset = SegDataset(
         data_dir=test_dir,
         bin_edges=bin_edges,
         num_bins=num_bins,

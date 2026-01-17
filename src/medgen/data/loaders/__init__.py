@@ -81,12 +81,12 @@ from .seg_conditioned import (
     compute_size_bins,
 )
 
-# 3D Segmentation conditioned dataloaders (3D connected components)
-from .seg_conditioned_3d import (
-    create_seg_conditioned_3d_dataloader,
-    create_seg_conditioned_3d_validation_dataloader,
-    create_seg_conditioned_3d_test_dataloader,
-    SegConditioned3DDataset,
+# 3D Segmentation dataloaders (3D connected components, size-bin conditioned)
+from .seg import (
+    create_seg_dataloader,
+    create_seg_validation_dataloader,
+    create_seg_test_dataloader,
+    SegDataset,
     compute_size_bins_3d,
     compute_feret_diameter_3d,
 )
@@ -157,11 +157,11 @@ __all__ = [
     'create_seg_conditioned_test_dataloader',
     'SegConditionedDataset',
     'compute_size_bins',
-    # 3D Segmentation conditioned (3D connected components)
-    'create_seg_conditioned_3d_dataloader',
-    'create_seg_conditioned_3d_validation_dataloader',
-    'create_seg_conditioned_3d_test_dataloader',
-    'SegConditioned3DDataset',
+    # 3D Segmentation (3D connected components, size-bin conditioned)
+    'create_seg_dataloader',
+    'create_seg_validation_dataloader',
+    'create_seg_test_dataloader',
+    'SegDataset',
     'compute_size_bins_3d',
     'compute_feret_diameter_3d',
     # Latent diffusion

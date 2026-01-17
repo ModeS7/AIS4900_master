@@ -198,7 +198,7 @@ class UnifiedMetrics:
         self.volume_size = volume_size or (256, 256, 160)
 
         # Mode-aware flags
-        self.is_seg_mode = mode in ('seg', 'seg_compression', 'seg_conditioned_3d')
+        self.is_seg_mode = mode in ('seg', 'seg_compression')
         self.uses_image_quality = not self.is_seg_mode
 
         # Initialize accumulators
