@@ -22,7 +22,7 @@ from medgen.metrics import (
     compute_msssim_2d_slicewise,
     compute_psnr,
 )
-from .tracking import WorstBatchTracker
+from medgen.metrics import WorstBatchTracker
 
 logger = logging.getLogger(__name__)
 

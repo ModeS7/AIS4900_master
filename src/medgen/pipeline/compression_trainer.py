@@ -41,7 +41,7 @@ from monai.networks.nets import PatchDiscriminator
 
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
 from .base_trainer import BaseTrainer
-from .losses import LPIPSLoss, PerceptualLoss
+from medgen.losses import LPIPSLoss, PerceptualLoss
 from medgen.metrics import (
     RegionalMetricsTracker,
     compute_lpips,
@@ -54,7 +54,7 @@ from medgen.metrics import (
     UnifiedMetrics,
     SimpleLossAccumulator,
 )
-from .tracking import GradientNormTracker, create_worst_batch_figure
+from medgen.metrics import GradientNormTracker, create_worst_batch_figure
 from .utils import save_full_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -1635,7 +1635,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         worst_batch_data: Dict[str, Any],
     ) -> plt.Figure:
         """Create 3D worst batch figure."""
-        from .tracking import create_worst_batch_figure_3d
+        from medgen.metrics import create_worst_batch_figure_3d
         return create_worst_batch_figure_3d(
             original=worst_batch_data['original'],
             generated=worst_batch_data['generated'],
@@ -1883,7 +1883,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
             Configured Compression3DTestEvaluator instance.
         """
         from .evaluation import Compression3DTestEvaluator, MetricsConfig
-        from .tracking import create_worst_batch_figure_3d
+        from medgen.metrics import create_worst_batch_figure_3d
 
         # Check for seg_mode (added by subclasses like VQVAE3DTrainer)
         seg_mode = getattr(self, 'seg_mode', False)

@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .compression_trainer import BaseCompressionTrainer
-from .losses import SegmentationLoss
+from medgen.losses import SegmentationLoss
 from .results import TrainingStepResult
 from medgen.metrics import (
     compute_dice,
@@ -38,7 +38,7 @@ from medgen.metrics import (
     create_reconstruction_figure,
     RegionalMetricsTracker,
 )
-from .tracking import create_worst_batch_figure, FLOPsTracker
+from medgen.metrics import create_worst_batch_figure, FLOPsTracker
 from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 
 logger = logging.getLogger(__name__)

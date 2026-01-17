@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import setup_distributed
 from medgen.pipeline.results import TrainingStepResult
-from .tracking import FLOPsTracker, GradientNormTracker
+from medgen.metrics import FLOPsTracker, GradientNormTracker
 from .utils import log_vram_to_tensorboard
 
 logger = logging.getLogger(__name__)

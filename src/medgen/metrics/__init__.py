@@ -56,6 +56,15 @@ from .generation import (
     ResNet50Features,
     BiomedCLIPFeatures,
 )
+from .tracking import (
+    GradientNormTracker,
+    FLOPsTracker,
+    measure_model_flops,
+    WorstBatchTracker,
+    create_worst_batch_figure,
+    create_worst_batch_figure_3d,
+    CodebookTracker,
+)
 
 __all__ = [
     # Core
@@ -97,4 +106,12 @@ __all__ = [
     'compute_fid_3d',
     'ResNet50Features',
     'BiomedCLIPFeatures',
+    # Tracking utilities
+    'GradientNormTracker',
+    'FLOPsTracker',
+    'measure_model_flops',
+    'WorstBatchTracker',
+    'create_worst_batch_figure',
+    'create_worst_batch_figure_3d',
+    'CodebookTracker',
 ]

@@ -29,7 +29,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from medgen.pipeline.spaces import load_vae_for_latent_space
+from medgen.diffusion import load_vae_for_latent_space
 
 
 def parse_args():

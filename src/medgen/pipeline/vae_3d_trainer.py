@@ -39,7 +39,7 @@ from medgen.metrics import (
     compute_psnr,
     RegionalMetricsTracker3D,
 )
-from .tracking import create_worst_batch_figure_3d
+from medgen.metrics import create_worst_batch_figure_3d
 from .results import TrainingStepResult
 from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 

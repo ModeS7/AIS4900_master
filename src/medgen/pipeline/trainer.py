@@ -40,18 +40,18 @@ from .base_trainer import BaseTrainer
 from .optimizers import SAM
 from .results import TrainingStepResult
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
-from .losses import PerceptualLoss
-from .modes import (
+from medgen.losses import PerceptualLoss
+from medgen.diffusion import (
     ConditionalDualMode,
     ConditionalSingleMode,
     MultiModalityMode,
     SegmentationConditionedMode,
     SegmentationMode,
     TrainingMode,
+    DDPMStrategy, RFlowStrategy, DiffusionStrategy,
+    DiffusionSpace, PixelSpace,
 )
-from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
 from .visualization import ValidationVisualizer
-from .spaces import DiffusionSpace, PixelSpace
 from .utils import (
     get_vram_usage,
     log_vram_to_tensorboard,
@@ -71,7 +71,7 @@ from medgen.metrics import (
     # Unified metrics system
     UnifiedMetrics,
 )
-from .tracking import FLOPsTracker
+from medgen.metrics import FLOPsTracker
 from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
 from .controlnet import (
     create_controlnet_for_unet,

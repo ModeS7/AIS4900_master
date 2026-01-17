@@ -40,7 +40,7 @@ def main(cfg: DictConfig) -> None:
 
     # Import training components
     from medgen.pipeline.diffusion_3d_trainer import Diffusion3DTrainer
-    from medgen.pipeline.spaces import LatentSpace, PixelSpace
+    from medgen.diffusion import LatentSpace, PixelSpace
     from medgen.data.loaders.latent import load_compression_model
     from medgen.data.loaders.latent_3d import (
         LatentCacheBuilder3D,

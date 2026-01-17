@@ -34,7 +34,7 @@ from medgen.metrics import (
     create_reconstruction_figure,
     RegionalMetricsTracker,
 )
-from .tracking import create_worst_batch_figure, CodebookTracker
+from medgen.metrics import create_worst_batch_figure, CodebookTracker
 from .utils import create_epoch_iterator, get_vram_usage, log_compression_epoch_summary
 
 logger = logging.getLogger(__name__)

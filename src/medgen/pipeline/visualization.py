@@ -20,10 +20,8 @@ from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import ModeType
-from .modes import TrainingMode
-from .strategies import DiffusionStrategy
+from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
 from medgen.metrics import MetricsTracker, create_reconstruction_figure
-from .spaces import DiffusionSpace, PixelSpace
 from .controlnet import ControlNetConditionedUNet, ControlNetGenerationWrapper
 
 logger = logging.getLogger(__name__)

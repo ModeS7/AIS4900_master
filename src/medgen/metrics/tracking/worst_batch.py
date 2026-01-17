@@ -16,7 +16,7 @@ import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from medgen.metrics import create_reconstruction_figure
+from ..figures import create_reconstruction_figure
 
 logger = logging.getLogger(__name__)
 

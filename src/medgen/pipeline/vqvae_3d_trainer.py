@@ -40,7 +40,7 @@ from medgen.metrics import (
     compute_psnr,
     RegionalMetricsTracker3D,
 )
-from .tracking import create_worst_batch_figure_3d, CodebookTracker
+from medgen.metrics import create_worst_batch_figure_3d, CodebookTracker
 from .results import TrainingStepResult
 from .utils import get_vram_usage, log_compression_epoch_summary
 
@@ -140,7 +140,7 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         self.seg_loss_fn: Optional['SegmentationLoss'] = None
 
         if self.seg_mode:
-            from .losses import SegmentationLoss
+            from medgen.losses import SegmentationLoss
             seg_weights = cfg.vqvae_3d.get('seg_loss_weights', {})
             self.seg_loss_fn = SegmentationLoss(
                 bce_weight=seg_weights.get('bce', 1.0),

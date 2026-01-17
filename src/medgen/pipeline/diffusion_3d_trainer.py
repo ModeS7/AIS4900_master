@@ -49,15 +49,17 @@ from monai.metrics import SSIMMetric
 from medgen.core import setup_distributed, create_warmup_cosine_scheduler
 from .base_trainer import BaseTrainer
 from .results import TrainingStepResult
-from .modes import ConditionalSingleMode, SegmentationMode, SegmentationConditionedMode, TrainingMode
-from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
-from .spaces import DiffusionSpace, PixelSpace, LatentSpace
+from medgen.diffusion import (
+    ConditionalSingleMode, SegmentationMode, SegmentationConditionedMode, TrainingMode,
+    DDPMStrategy, RFlowStrategy, DiffusionStrategy,
+    DiffusionSpace, PixelSpace, LatentSpace,
+)
 from .utils import (
     get_vram_usage,
     log_vram_to_tensorboard,
     save_full_checkpoint,
 )
-from .tracking import FLOPsTracker
+from medgen.metrics import FLOPsTracker
 from medgen.metrics import (
     compute_psnr,
     compute_msssim,

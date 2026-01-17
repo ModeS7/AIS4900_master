@@ -7,9 +7,12 @@ from .vqvae_trainer import VQVAETrainer
 from .vqvae_3d_trainer import VQVAE3DTrainer
 from .dcae_trainer import DCAETrainer
 from .dcae_3d_trainer import DCAE3DTrainer
-from .strategies import DDPMStrategy, RFlowStrategy, DiffusionStrategy
-from .modes import SegmentationMode, ConditionalSingleMode, ConditionalDualMode, TrainingMode
-from .spaces import DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space
+# Diffusion components (from medgen.diffusion package)
+from medgen.diffusion import (
+    DDPMStrategy, RFlowStrategy, DiffusionStrategy,
+    SegmentationMode, ConditionalSingleMode, ConditionalDualMode, TrainingMode,
+    DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space,
+)
 from .visualization import ValidationVisualizer
 
 # Metrics (from medgen.metrics package)
@@ -22,8 +25,8 @@ from medgen.metrics import (
     create_reconstruction_figure,
 )
 
-# Tracking utilities (from tracking/ subdirectory)
-from .tracking import (
+# Tracking utilities (from medgen.metrics package)
+from medgen.metrics import (
     GradientNormTracker,
     FLOPsTracker,
     measure_model_flops,

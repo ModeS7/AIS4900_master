@@ -277,7 +277,7 @@ class UnifiedMetrics:
     def _init_codebook(self, codebook_size: int):
         """Initialize codebook tracker for VQ-VAE."""
         try:
-            from medgen.pipeline.tracking.codebook import CodebookTracker
+            from .tracking import CodebookTracker
             self._codebook_tracker = CodebookTracker(
                 num_embeddings=codebook_size,
                 device=self.device,

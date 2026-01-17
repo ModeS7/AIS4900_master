@@ -56,7 +56,7 @@ from medgen.data.loaders.latent import (
     load_compression_model,
 )
 from medgen.pipeline import DiffusionTrainer
-from medgen.pipeline.spaces import PixelSpace, LatentSpace
+from medgen.diffusion import PixelSpace, LatentSpace
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
