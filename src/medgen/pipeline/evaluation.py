@@ -24,8 +24,6 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from .metrics.unified import MetricKey
-
 logger = logging.getLogger(__name__)
 
 
@@ -191,15 +189,8 @@ def log_test_per_modality(
     if writer is None:
         return
 
-    # Map metric keys to display names (consistent with unified system)
+    # Map metric keys to display names
     name_map = {
-        MetricKey.MSSSIM: 'MS-SSIM',
-        MetricKey.MSSSIM_3D: 'MS-SSIM-3D',
-        MetricKey.PSNR: 'PSNR',
-        MetricKey.LPIPS: 'LPIPS',
-        MetricKey.DICE_SCORE: 'Dice',
-        MetricKey.IOU: 'IoU',
-        # Also support string keys for backward compatibility
         'msssim': 'MS-SSIM',
         'msssim_3d': 'MS-SSIM-3D',
         'psnr': 'PSNR',
