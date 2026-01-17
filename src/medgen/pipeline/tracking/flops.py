@@ -31,10 +31,11 @@ def measure_model_flops(
     """
     try:
         model.eval()
+        torch.cuda.empty_cache()  # Clear cache before profiling
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             with_flops=True,
-            record_shapes=True,
+            record_shapes=False,  # Not needed for FLOPs, reduces memory overhead
         ) as prof:
             with torch.no_grad():
                 if timesteps is not None:
@@ -51,11 +52,12 @@ def measure_model_flops(
 
         if total_flops == 0:
             logger.warning(
-                "FLOPs measurement returned 0 - torch.profiler may not support "
-                "this model type (e.g., compiled models, custom CUDA kernels)"
+                "FLOPs measurement returned 0 - torch.profiler does not support "
+                "Conv3d/3D operations. FLOPs logging will be disabled."
             )
 
         model.train()
+        torch.cuda.empty_cache()  # Clean up after profiling
         return total_flops
 
     except Exception as e:

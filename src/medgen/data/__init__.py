@@ -15,7 +15,9 @@ from .augmentation import (
 from .dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from .base_embed import create_zero_init_mlp
 from .score_aug import ScoreAugTransform
+from .score_aug_3d import ScoreAugTransform3D, ScoreAugModelWrapper3D
 from .sda import SDATransform, create_sda_transform
+from .sda_3d import SDATransform3D, create_sda_transform_3d
 from .mode_embed import (
     ModeEmbedModelWrapper,
     ModeEmbedDropoutModelWrapper,
@@ -87,12 +89,19 @@ from .loaders import (
     DualVolume3DDataset,
     MultiModality3DDataset,
     SingleModality3DDatasetWithSeg,
-    # Seg conditioned loaders
+    # Seg conditioned loaders (2D)
     create_seg_conditioned_dataloader,
     create_seg_conditioned_validation_dataloader,
     create_seg_conditioned_test_dataloader,
     SegConditionedDataset,
     compute_size_bins,
+    # 3D Seg conditioned loaders (3D connected components)
+    create_seg_conditioned_3d_dataloader,
+    create_seg_conditioned_3d_validation_dataloader,
+    create_seg_conditioned_3d_test_dataloader,
+    SegConditioned3DDataset,
+    compute_size_bins_3d,
+    compute_feret_diameter_3d,
 )
 
 __all__ = [
@@ -114,9 +123,13 @@ __all__ = [
     'BinarizeTransform',
     # Score Augmentation
     'ScoreAugTransform',
+    'ScoreAugTransform3D',
+    'ScoreAugModelWrapper3D',
     # Shifted Data Augmentation
     'SDATransform',
     'create_sda_transform',
+    'SDATransform3D',
+    'create_sda_transform_3d',
     # Base embedding helper
     'create_zero_init_mlp',
     # Slice extraction utilities
@@ -160,12 +173,19 @@ __all__ = [
     'DualVolume3DDataset',
     'MultiModality3DDataset',
     'SingleModality3DDatasetWithSeg',
-    # Seg conditioned loaders
+    # Seg conditioned loaders (2D)
     'create_seg_conditioned_dataloader',
     'create_seg_conditioned_validation_dataloader',
     'create_seg_conditioned_test_dataloader',
     'SegConditionedDataset',
     'compute_size_bins',
+    # 3D Seg conditioned loaders (3D connected components)
+    'create_seg_conditioned_3d_dataloader',
+    'create_seg_conditioned_3d_validation_dataloader',
+    'create_seg_conditioned_3d_test_dataloader',
+    'SegConditioned3DDataset',
+    'compute_size_bins_3d',
+    'compute_feret_diameter_3d',
     # Mode embedding
     'ModeEmbedModelWrapper',
     'ModeEmbedDropoutModelWrapper',

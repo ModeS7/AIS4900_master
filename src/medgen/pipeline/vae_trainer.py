@@ -335,10 +335,12 @@ class VAETrainer(BaseCompressionTrainer):
         self._log_validation_metrics_core(epoch, metrics)
 
         # VAE-specific: log unweighted KL
-        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
-            self._metrics_logger.log_regularization(
-                epoch, metrics['reg'], weight=self.kl_weight, suffix='val'
-            )
+        if 'reg' in metrics and self.writer is not None:
+            # Log weighted KL (as used in loss)
+            self.writer.add_scalar('Loss/KL_val', metrics['reg'], epoch)
+            # Log unweighted KL for monitoring
+            if self.kl_weight > 0:
+                self.writer.add_scalar('Loss/KL_unweighted_val', metrics['reg'] / self.kl_weight, epoch)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:

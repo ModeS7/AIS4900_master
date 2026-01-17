@@ -32,7 +32,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -449,6 +449,59 @@ class LossAccumulator:
         """
         if self._count == 0:
             return {key: 0.0 for key in self._accumulators}
+        return {key: val / self._count for key, val in self._accumulators.items()}
+
+
+class SimpleLossAccumulator:
+    """Simple loss accumulator that doesn't require a predefined config.
+
+    Dynamically tracks any loss keys it sees during training.
+    Use this for trainers that don't use TrainerMetricsConfig.
+
+    Usage:
+        accumulator = SimpleLossAccumulator()
+        accumulator.reset()
+
+        for batch in loader:
+            losses = {'l1': 0.5, 'perc': 0.1, 'kl': 0.01}
+            accumulator.update(losses)
+
+        avg_losses = accumulator.compute()
+    """
+
+    def __init__(self) -> None:
+        """Initialize empty accumulator."""
+        self._accumulators: Dict[str, float] = {}
+        self._count: int = 0
+
+    def reset(self) -> None:
+        """Reset accumulators for new epoch."""
+        self._accumulators.clear()
+        self._count = 0
+
+    def update(self, losses: Dict[str, Union[float, torch.Tensor]]) -> None:
+        """Accumulate losses from a single step.
+
+        Args:
+            losses: Dictionary of loss values. All keys are tracked dynamically.
+                   Values can be float or 0-dim tensors.
+        """
+        for key, val in losses.items():
+            if isinstance(val, torch.Tensor):
+                val = val.item()
+            if key not in self._accumulators:
+                self._accumulators[key] = 0.0
+            self._accumulators[key] += val
+        self._count += 1
+
+    def compute(self) -> Dict[str, float]:
+        """Compute average losses over accumulated steps.
+
+        Returns:
+            Dictionary of averaged losses.
+        """
+        if self._count == 0:
+            return {}
         return {key: val / self._count for key, val in self._accumulators.items()}
 
 
@@ -962,4 +1015,885 @@ def create_metrics_config(
         raise ValueError(
             f"Unknown trainer type: {trainer_type}. "
             "Expected 'vae', 'vqvae', 'dcae', or 'diffusion'."
+        )
+
+
+# =============================================================================
+# Unified Metrics (NEW - Single Entry Point for All Trainers)
+# =============================================================================
+
+class UnifiedMetrics:
+    """
+    Single entry point for all metrics across ALL trainers.
+
+    Provides:
+    - Per-metric method calls (update_psnr, update_lpips, etc.)
+    - Mode-aware behavior (auto-skip PSNR for seg mode)
+    - Dimension-aware (3D metrics computed slice-wise if metric is 2D-only)
+    - Modality suffix on all validation metrics (LPIPS_bravo, PSNR_flair)
+    - No manual add_scalar in trainers - all logging through this class
+
+    Usage:
+        metrics = UnifiedMetrics(
+            writer=tensorboard_writer,
+            mode='bravo',           # or 'seg', 'dual', 'multi', etc.
+            spatial_dims=3,         # 2 or 3
+            modality='bravo',       # For TensorBoard suffix
+            device='cuda',
+        )
+
+        # Training loop
+        for batch in train_loader:
+            loss = train_step(batch)
+            metrics.update_loss('MSE', loss.item())
+            metrics.update_grad_norm(grad_norm)
+
+        metrics.update_vram()
+        metrics.log_training(epoch)
+        metrics.reset_training()
+
+        # Validation loop
+        for batch in val_loader:
+            pred, gt = validate_step(batch)
+            metrics.update_psnr(pred, gt)
+            metrics.update_lpips(pred, gt)
+            metrics.update_msssim(pred, gt)
+            metrics.update_regional(pred, gt, mask)
+
+        metrics.log_validation(epoch)
+        metrics.reset_validation()
+
+        # Test evaluation
+        metrics.evaluate_test(test_loader, prefix='test_best')
+    """
+
+    def __init__(
+        self,
+        writer: Optional[SummaryWriter],
+        mode: str,
+        spatial_dims: int = 2,
+        modality: Optional[str] = None,
+        device: Optional[torch.device] = None,
+        # Optional feature flags
+        enable_regional: bool = False,
+        enable_codebook: bool = False,
+        codebook_size: int = 512,
+        num_timestep_bins: int = 10,
+        # Regional tracker params (2D)
+        image_size: int = 256,
+        fov_mm: float = 240.0,
+        # Regional tracker params (3D)
+        volume_size: Optional[Tuple[int, int, int]] = None,
+    ):
+        """Initialize unified metrics.
+
+        Args:
+            writer: TensorBoard SummaryWriter (may be None for DDP non-main).
+            mode: Training mode ('seg', 'bravo', 'dual', 'multi', etc.).
+            spatial_dims: 2 or 3 for 2D or 3D models.
+            modality: Modality name for TensorBoard suffix (e.g., 'bravo', 'flair').
+            device: Device for computation (defaults to cuda if available).
+            enable_regional: Enable regional metrics tracking.
+            enable_codebook: Enable codebook tracking (VQ-VAE).
+            codebook_size: Size of VQ codebook (if enable_codebook=True).
+            num_timestep_bins: Number of bins for timestep loss tracking.
+            image_size: Image size for 2D regional tracker (default 256).
+            fov_mm: Field of view in mm for regional tracker (default 240.0).
+            volume_size: (H, W, D) for 3D regional tracker.
+        """
+        self.writer = writer
+        self.mode = mode
+        self.spatial_dims = spatial_dims
+        self.modality = modality
+        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.num_timestep_bins = num_timestep_bins
+        self.image_size = image_size
+        self.fov_mm = fov_mm
+        self.volume_size = volume_size or (256, 256, 160)
+
+        # Mode-aware flags
+        self.is_seg_mode = mode in ('seg', 'seg_compression', 'seg_conditioned_3d')
+        self.uses_image_quality = not self.is_seg_mode
+
+        # Initialize accumulators
+        self._init_accumulators()
+
+        # Initialize optional components
+        self._regional_tracker = None
+        if enable_regional:
+            self._init_regional()
+
+        self._codebook_tracker = None
+        if enable_codebook:
+            self._init_codebook(codebook_size)
+
+    def _init_accumulators(self):
+        """Initialize all metric accumulators."""
+        # Training accumulators
+        self._train_losses: Dict[str, Dict[str, float]] = {}
+        self._grad_norm_sum = 0.0
+        self._grad_norm_count = 0
+        self._current_lr: Optional[float] = None
+
+        # Validation quality metrics
+        self._val_psnr_sum = 0.0
+        self._val_psnr_count = 0
+        self._val_lpips_sum = 0.0
+        self._val_lpips_count = 0
+        self._val_msssim_sum = 0.0
+        self._val_msssim_count = 0
+        self._val_msssim_3d_sum = 0.0
+        self._val_msssim_3d_count = 0
+
+        # Validation seg metrics
+        self._val_dice_sum = 0.0
+        self._val_dice_count = 0
+        self._val_iou_sum = 0.0
+        self._val_iou_count = 0
+
+        # Validation losses
+        self._val_losses: Dict[str, Dict[str, float]] = {}
+
+        # Timestep losses (validation only)
+        self._val_timesteps = self._create_timestep_storage()
+
+        # Resource metrics
+        self._vram_allocated = 0.0
+        self._vram_reserved = 0.0
+        self._vram_max = 0.0
+        self._flops_epoch = 0.0
+        self._flops_total = 0.0
+
+    def _create_timestep_storage(self) -> Dict[str, Any]:
+        """Create storage for timestep losses."""
+        return {
+            'sums': [0.0] * self.num_timestep_bins,
+            'counts': [0] * self.num_timestep_bins,
+        }
+
+    def _init_regional(self):
+        """Initialize regional metrics tracker."""
+        if self.spatial_dims == 3:
+            from .regional_3d import RegionalMetricsTracker3D
+            self._regional_tracker = RegionalMetricsTracker3D(
+                volume_size=self.volume_size,
+                fov_mm=self.fov_mm,
+                device=self.device,
+            )
+        else:
+            from .regional import RegionalMetricsTracker
+            self._regional_tracker = RegionalMetricsTracker(
+                image_size=self.image_size,
+                fov_mm=self.fov_mm,
+                device=self.device,
+            )
+
+    def _init_codebook(self, codebook_size: int):
+        """Initialize codebook tracker for VQ-VAE."""
+        try:
+            from ..tracking.codebook import CodebookTracker
+            self._codebook_tracker = CodebookTracker(
+                num_embeddings=codebook_size,
+                device=self.device,
+            )
+        except ImportError:
+            logger.warning("CodebookTracker not available, codebook metrics disabled")
+
+    # =========================================================================
+    # Quality Metric Methods
+    # =========================================================================
+
+    def update_psnr(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute and accumulate PSNR.
+
+        Works for both 2D and 3D data.
+        Auto-skips for seg mode.
+
+        Args:
+            pred: Predicted tensor [B, C, (D), H, W].
+            gt: Ground truth tensor [B, C, (D), H, W].
+
+        Returns:
+            Computed PSNR value (0.0 if skipped).
+        """
+        if not self.uses_image_quality:
+            return 0.0
+        from .quality import compute_psnr
+        val = compute_psnr(pred, gt)
+        self._val_psnr_sum += val
+        self._val_psnr_count += 1
+        return val
+
+    def update_lpips(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute and accumulate LPIPS.
+
+        3D data uses slice-wise computation (2.5D approach).
+        Auto-skips for seg mode.
+
+        Args:
+            pred: Predicted tensor [B, C, (D), H, W].
+            gt: Ground truth tensor [B, C, (D), H, W].
+
+        Returns:
+            Computed LPIPS value (0.0 if skipped).
+        """
+        if not self.uses_image_quality:
+            return 0.0
+        from .quality import compute_lpips, compute_lpips_3d
+        if self.spatial_dims == 3:
+            val = compute_lpips_3d(pred, gt, device=self.device)
+        else:
+            val = compute_lpips(pred, gt)
+        self._val_lpips_sum += val
+        self._val_lpips_count += 1
+        return val
+
+    def update_msssim(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute and accumulate MS-SSIM.
+
+        3D data uses 2D slice-wise computation for efficiency.
+        Auto-skips for seg mode.
+
+        Args:
+            pred: Predicted tensor [B, C, (D), H, W].
+            gt: Ground truth tensor [B, C, (D), H, W].
+
+        Returns:
+            Computed MS-SSIM value (0.0 if skipped).
+        """
+        if not self.uses_image_quality:
+            return 0.0
+        from .quality import compute_msssim, compute_msssim_2d_slicewise
+        if self.spatial_dims == 3:
+            val = compute_msssim_2d_slicewise(pred, gt)
+        else:
+            val = compute_msssim(pred, gt, spatial_dims=2)
+        self._val_msssim_sum += val
+        self._val_msssim_count += 1
+        return val
+
+    def update_msssim_3d(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute true 3D MS-SSIM (native, not slice-wise).
+
+        Only works for 3D data. Auto-skips for seg mode or 2D.
+
+        Args:
+            pred: Predicted tensor [B, C, D, H, W].
+            gt: Ground truth tensor [B, C, D, H, W].
+
+        Returns:
+            Computed 3D MS-SSIM value (0.0 if skipped).
+        """
+        if not self.uses_image_quality or self.spatial_dims != 3:
+            return 0.0
+        from .quality import compute_msssim
+        val = compute_msssim(pred, gt, spatial_dims=3)
+        self._val_msssim_3d_sum += val
+        self._val_msssim_3d_count += 1
+        return val
+
+    def update_dice(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute and accumulate Dice coefficient.
+
+        Works for both image and seg modes.
+
+        Args:
+            pred: Predicted tensor [B, C, (D), H, W].
+            gt: Ground truth tensor [B, C, (D), H, W].
+
+        Returns:
+            Computed Dice value.
+        """
+        from .quality import compute_dice
+        val = compute_dice(pred, gt)
+        self._val_dice_sum += val
+        self._val_dice_count += 1
+        return val
+
+    def update_iou(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
+        """Compute and accumulate IoU.
+
+        Works for both image and seg modes.
+
+        Args:
+            pred: Predicted tensor [B, C, (D), H, W].
+            gt: Ground truth tensor [B, C, (D), H, W].
+
+        Returns:
+            Computed IoU value.
+        """
+        from .quality import compute_iou
+        val = compute_iou(pred, gt)
+        self._val_iou_sum += val
+        self._val_iou_count += 1
+        return val
+
+    # =========================================================================
+    # Loss Methods
+    # =========================================================================
+
+    def update_loss(self, key: str, value: float, phase: str = 'train'):
+        """Accumulate a loss value.
+
+        Args:
+            key: Loss key (e.g., 'MSE', 'Total', 'KL', 'Perceptual').
+            value: Loss value to accumulate.
+            phase: 'train' or 'val'.
+        """
+        storage = self._train_losses if phase == 'train' else self._val_losses
+        if key not in storage:
+            storage[key] = {'sum': 0.0, 'count': 0}
+        storage[key]['sum'] += value
+        storage[key]['count'] += 1
+
+    # =========================================================================
+    # Training Diagnostic Methods
+    # =========================================================================
+
+    def update_grad_norm(self, value: float):
+        """Accumulate gradient norm.
+
+        Args:
+            value: Gradient norm value.
+        """
+        self._grad_norm_sum += value
+        self._grad_norm_count += 1
+
+    def update_lr(self, value: float):
+        """Store current learning rate.
+
+        Args:
+            value: Learning rate value.
+        """
+        self._current_lr = value
+
+    def update_vram(self):
+        """Capture current VRAM usage."""
+        if torch.cuda.is_available():
+            self._vram_allocated = torch.cuda.memory_allocated(self.device) / 1e9
+            self._vram_reserved = torch.cuda.memory_reserved(self.device) / 1e9
+            self._vram_max = torch.cuda.max_memory_allocated(self.device) / 1e9
+
+    def update_flops(self, tflops_epoch: float, tflops_total: float):
+        """Store FLOPs values.
+
+        Args:
+            tflops_epoch: TFLOPs for this epoch.
+            tflops_total: Cumulative TFLOPs.
+        """
+        self._flops_epoch = tflops_epoch
+        self._flops_total = tflops_total
+
+    def update_timestep_loss(self, t: float, loss: float):
+        """Accumulate validation loss for timestep bin.
+
+        Args:
+            t: Timestep value (0.0 to 1.0).
+            loss: Loss value at this timestep.
+        """
+        bin_idx = min(int(t * self.num_timestep_bins), self.num_timestep_bins - 1)
+        self._val_timesteps['sums'][bin_idx] += loss
+        self._val_timesteps['counts'][bin_idx] += 1
+
+    # =========================================================================
+    # Regional and Codebook Methods
+    # =========================================================================
+
+    def update_regional(
+        self,
+        pred: torch.Tensor,
+        gt: torch.Tensor,
+        mask: torch.Tensor,
+    ):
+        """Update regional metrics tracker.
+
+        Args:
+            pred: Predicted tensor.
+            gt: Ground truth tensor.
+            mask: Segmentation mask for regional analysis.
+        """
+        if self._regional_tracker is not None:
+            self._regional_tracker.update(pred, gt, mask)
+
+    def update_codebook(self, indices: torch.Tensor):
+        """Update codebook usage tracker.
+
+        Args:
+            indices: Codebook indices from VQ-VAE quantization.
+        """
+        if self._codebook_tracker is not None:
+            self._codebook_tracker.update_fast(indices)
+
+    # =========================================================================
+    # Logging Methods
+    # =========================================================================
+
+    def log_training(self, epoch: int):
+        """Log all training metrics to TensorBoard.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if self.writer is None:
+            return
+
+        # Losses
+        for key, data in self._train_losses.items():
+            if data['count'] > 0:
+                self.writer.add_scalar(
+                    f'Loss/{key}_train',
+                    data['sum'] / data['count'],
+                    epoch,
+                )
+
+        # LR
+        if self._current_lr is not None:
+            self.writer.add_scalar('LR/Generator', self._current_lr, epoch)
+
+        # Grad norm
+        if self._grad_norm_count > 0:
+            self.writer.add_scalar(
+                'training/grad_norm_epoch',
+                self._grad_norm_sum / self._grad_norm_count,
+                epoch,
+            )
+
+        # VRAM
+        if self._vram_allocated > 0:
+            self.writer.add_scalar('VRAM/allocated_GB', self._vram_allocated, epoch)
+            self.writer.add_scalar('VRAM/reserved_GB', self._vram_reserved, epoch)
+            self.writer.add_scalar('VRAM/max_allocated_GB', self._vram_max, epoch)
+
+        # FLOPs
+        if self._flops_epoch > 0:
+            self.writer.add_scalar('FLOPs/TFLOPs_epoch', self._flops_epoch, epoch)
+            self.writer.add_scalar('FLOPs/TFLOPs_total', self._flops_total, epoch)
+
+        # Codebook
+        if self._codebook_tracker is not None:
+            self._codebook_tracker.log_to_tensorboard(self.writer, epoch)
+
+    def log_validation(self, epoch: int):
+        """Log all validation metrics to TensorBoard.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if self.writer is None:
+            return
+
+        suffix = f'_{self.modality}' if self.modality else ''
+
+        # Losses
+        for key, data in self._val_losses.items():
+            if data['count'] > 0:
+                self.writer.add_scalar(
+                    f'Loss/{key}_val',
+                    data['sum'] / data['count'],
+                    epoch,
+                )
+
+        # Quality metrics (image modes)
+        if self.uses_image_quality:
+            if self._val_psnr_count > 0:
+                self.writer.add_scalar(
+                    f'Validation/PSNR{suffix}',
+                    self._val_psnr_sum / self._val_psnr_count,
+                    epoch,
+                )
+            if self._val_msssim_count > 0:
+                self.writer.add_scalar(
+                    f'Validation/MS-SSIM{suffix}',
+                    self._val_msssim_sum / self._val_msssim_count,
+                    epoch,
+                )
+            if self._val_lpips_count > 0:
+                self.writer.add_scalar(
+                    f'Validation/LPIPS{suffix}',
+                    self._val_lpips_sum / self._val_lpips_count,
+                    epoch,
+                )
+            if self._val_msssim_3d_count > 0:
+                self.writer.add_scalar(
+                    f'Validation/MS-SSIM-3D{suffix}',
+                    self._val_msssim_3d_sum / self._val_msssim_3d_count,
+                    epoch,
+                )
+
+        # Seg metrics (always log if computed)
+        if self._val_dice_count > 0:
+            self.writer.add_scalar(
+                f'Validation/Dice{suffix}',
+                self._val_dice_sum / self._val_dice_count,
+                epoch,
+            )
+        if self._val_iou_count > 0:
+            self.writer.add_scalar(
+                f'Validation/IoU{suffix}',
+                self._val_iou_sum / self._val_iou_count,
+                epoch,
+            )
+
+        # Validation timesteps
+        for i in range(self.num_timestep_bins):
+            if self._val_timesteps['counts'][i] > 0:
+                t_start = i / self.num_timestep_bins
+                t_end = (i + 1) / self.num_timestep_bins
+                avg = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
+                self.writer.add_scalar(
+                    f'val_timestep_losses/t_{t_start:.1f}_{t_end:.1f}',
+                    avg,
+                    epoch,
+                )
+
+        # Regional
+        if self._regional_tracker is not None:
+            prefix = f'regional{suffix}' if suffix else 'regional'
+            self._regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+
+    def log_generation(self, epoch: int, results: Dict[str, float]):
+        """Log generation metrics to TensorBoard.
+
+        Args:
+            epoch: Current epoch number.
+            results: Dict of generation metric results (KID, CMMD, etc.).
+        """
+        if self.writer is None:
+            return
+        for key, value in results.items():
+            self.writer.add_scalar(f'Generation/{key}', value, epoch)
+
+    def log_test(self, metrics: Dict[str, float], prefix: str = 'test_best'):
+        """Log test evaluation metrics.
+
+        Args:
+            metrics: Dict of metric name -> value.
+            prefix: 'test_best' or 'test_latest'.
+        """
+        if self.writer is None:
+            return
+        suffix = f'_{self.modality}' if self.modality else ''
+        for key, value in metrics.items():
+            self.writer.add_scalar(f'{prefix}/{key}{suffix}', value, 0)
+
+    # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    def get_validation_metrics(self) -> Dict[str, float]:
+        """Collect current validation metrics as a dict.
+
+        Returns:
+            Dict of metric name -> averaged value.
+        """
+        metrics = {}
+
+        if self.uses_image_quality:
+            if self._val_psnr_count > 0:
+                metrics['PSNR'] = self._val_psnr_sum / self._val_psnr_count
+            if self._val_msssim_count > 0:
+                metrics['MS-SSIM'] = self._val_msssim_sum / self._val_msssim_count
+            if self._val_lpips_count > 0:
+                metrics['LPIPS'] = self._val_lpips_sum / self._val_lpips_count
+            if self._val_msssim_3d_count > 0:
+                metrics['MS-SSIM-3D'] = self._val_msssim_3d_sum / self._val_msssim_3d_count
+
+        if self._val_dice_count > 0:
+            metrics['Dice'] = self._val_dice_sum / self._val_dice_count
+        if self._val_iou_count > 0:
+            metrics['IoU'] = self._val_iou_sum / self._val_iou_count
+
+        # Add losses
+        for key, data in self._val_losses.items():
+            if data['count'] > 0:
+                metrics[key] = data['sum'] / data['count']
+
+        return metrics
+
+    def get_training_losses(self) -> Dict[str, float]:
+        """Collect current training losses as a dict.
+
+        Returns:
+            Dict of loss name -> averaged value.
+        """
+        return {
+            key: data['sum'] / data['count']
+            for key, data in self._train_losses.items()
+            if data['count'] > 0
+        }
+
+    # =========================================================================
+    # Reset Methods
+    # =========================================================================
+
+    def reset_training(self):
+        """Reset training accumulators for next epoch."""
+        self._train_losses.clear()
+        self._grad_norm_sum = 0.0
+        self._grad_norm_count = 0
+        self._current_lr = None
+        self._vram_allocated = 0.0
+        self._vram_reserved = 0.0
+        self._vram_max = 0.0
+        if self._codebook_tracker is not None:
+            self._codebook_tracker.reset()
+
+    def reset_validation(self):
+        """Reset validation accumulators for next epoch."""
+        self._val_losses.clear()
+        self._val_psnr_sum = self._val_psnr_count = 0
+        self._val_lpips_sum = self._val_lpips_count = 0
+        self._val_msssim_sum = self._val_msssim_count = 0
+        self._val_msssim_3d_sum = self._val_msssim_3d_count = 0
+        self._val_dice_sum = self._val_dice_count = 0
+        self._val_iou_sum = self._val_iou_count = 0
+        self._val_timesteps = self._create_timestep_storage()
+        if self._regional_tracker is not None:
+            self._regional_tracker.reset()
+
+    def reset_all(self):
+        """Reset everything."""
+        self.reset_training()
+        self.reset_validation()
+
+    # =========================================================================
+    # Visualization Methods
+    # =========================================================================
+
+    def log_reconstruction_figure(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        epoch: int,
+        mask: Optional[torch.Tensor] = None,
+        timesteps: Optional[torch.Tensor] = None,
+        tag: str = 'Figures/reconstruction',
+        max_samples: int = 8,
+        metrics: Optional[Dict[str, float]] = None,
+    ):
+        """Log reconstruction comparison figure to TensorBoard.
+
+        Args:
+            original: Ground truth tensor [B, C, (D), H, W].
+            reconstructed: Reconstructed tensor [B, C, (D), H, W].
+            epoch: Current epoch number.
+            mask: Optional segmentation mask for contour overlay.
+            timesteps: Optional timesteps for column titles (diffusion).
+            tag: TensorBoard tag for the figure.
+            max_samples: Maximum number of samples to display.
+            metrics: Optional dict of metrics to show in subtitle.
+        """
+        if self.writer is None:
+            return
+
+        from .figures import create_reconstruction_figure
+        import matplotlib.pyplot as plt
+
+        # Handle 3D volumes - take center slice
+        if self.spatial_dims == 3:
+            original = self._extract_center_slice(original)
+            reconstructed = self._extract_center_slice(reconstructed)
+            if mask is not None:
+                mask = self._extract_center_slice(mask)
+
+        fig = create_reconstruction_figure(
+            original=original,
+            generated=reconstructed,
+            timesteps=timesteps,
+            mask=mask,
+            max_samples=max_samples,
+            metrics=metrics,
+        )
+        self.writer.add_figure(tag, fig, epoch)
+        plt.close(fig)
+
+    def log_worst_batch(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        loss: float,
+        epoch: int,
+        phase: str = 'train',
+        mask: Optional[torch.Tensor] = None,
+        timesteps: Optional[torch.Tensor] = None,
+    ):
+        """Log worst batch visualization to TensorBoard.
+
+        Args:
+            original: Ground truth tensor.
+            reconstructed: Reconstructed tensor.
+            loss: Loss value for this batch.
+            epoch: Current epoch number.
+            phase: 'train' or 'val'.
+            mask: Optional segmentation mask.
+            timesteps: Optional timesteps (diffusion).
+        """
+        if self.writer is None:
+            return
+
+        tag = f'worst_batch/{phase}'
+        metrics = {'loss': loss}
+
+        self.log_reconstruction_figure(
+            original=original,
+            reconstructed=reconstructed,
+            epoch=epoch,
+            mask=mask,
+            timesteps=timesteps,
+            tag=tag,
+            metrics=metrics,
+        )
+
+    def log_denoising_trajectory(
+        self,
+        trajectory: list,
+        epoch: int,
+        tag: str = 'denoising_trajectory',
+    ):
+        """Log denoising step visualization to TensorBoard.
+
+        Args:
+            trajectory: List of tensors showing denoising progress.
+            epoch: Current epoch number.
+            tag: TensorBoard tag prefix.
+        """
+        if self.writer is None or not trajectory:
+            return
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Stack trajectory into single tensor
+        steps = len(trajectory)
+        sample = trajectory[0]
+
+        # Handle 3D - take center slice
+        if self.spatial_dims == 3 and sample.dim() == 5:
+            trajectory = [self._extract_center_slice(t) for t in trajectory]
+            sample = trajectory[0]
+
+        # Create figure showing progression
+        fig, axes = plt.subplots(1, steps, figsize=(2.5 * steps, 3))
+        if steps == 1:
+            axes = [axes]
+
+        for i, step_tensor in enumerate(trajectory):
+            # Take first sample, first channel
+            if isinstance(step_tensor, torch.Tensor):
+                img = step_tensor[0, 0].cpu().float().numpy()
+            else:
+                img = step_tensor[0, 0]
+            axes[i].imshow(np.clip(img, 0, 1), cmap='gray', vmin=0, vmax=1)
+            axes[i].set_title(f'Step {i}', fontsize=8)
+            axes[i].axis('off')
+
+        fig.tight_layout()
+        self.writer.add_figure(f'{tag}/progression', fig, epoch)
+        plt.close(fig)
+
+    def log_test_figure(
+        self,
+        original: torch.Tensor,
+        reconstructed: torch.Tensor,
+        prefix: str = 'test_best',
+        mask: Optional[torch.Tensor] = None,
+        metrics: Optional[Dict[str, float]] = None,
+    ):
+        """Log test evaluation figure to TensorBoard.
+
+        Args:
+            original: Ground truth tensor.
+            reconstructed: Reconstructed tensor.
+            prefix: 'test_best' or 'test_latest'.
+            mask: Optional segmentation mask.
+            metrics: Optional dict of metrics for subtitle.
+        """
+        if self.writer is None:
+            return
+
+        self.log_reconstruction_figure(
+            original=original,
+            reconstructed=reconstructed,
+            epoch=0,  # Test uses step 0
+            mask=mask,
+            tag=f'{prefix}/reconstruction',
+            metrics=metrics,
+        )
+
+    def _extract_center_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Extract center slice from 3D volume.
+
+        Args:
+            tensor: 5D tensor [B, C, D, H, W].
+
+        Returns:
+            4D tensor [B, C, H, W] with center depth slice.
+        """
+        if tensor.dim() == 5:
+            depth = tensor.shape[2]
+            center_idx = depth // 2
+            return tensor[:, :, center_idx, :, :]
+        return tensor
+
+    # =========================================================================
+    # Console Logging
+    # =========================================================================
+
+    def log_console_summary(
+        self,
+        epoch: int,
+        total_epochs: int,
+        elapsed_time: float,
+    ):
+        """Log epoch completion summary to console.
+
+        Args:
+            epoch: Current epoch number (0-indexed).
+            total_epochs: Total number of epochs.
+            elapsed_time: Time taken for epoch in seconds.
+        """
+        import time as time_module
+
+        timestamp = time_module.strftime("%H:%M:%S")
+        epoch_pct = ((epoch + 1) / total_epochs) * 100
+
+        train_losses = self.get_training_losses()
+        val_metrics = self.get_validation_metrics()
+
+        # Build loss string
+        loss_parts = []
+        total_loss = train_losses.get('Total') or train_losses.get('MSE') or 0
+        val_total = val_metrics.get('MSE') or val_metrics.get('Total') or 0
+        loss_parts.append(f"Loss: {total_loss:.4f}")
+        if val_total > 0:
+            loss_parts[-1] += f"(v:{val_total:.4f})"
+
+        for key in ['MSE', 'Perceptual', 'KL', 'VQ', 'BCE', 'Dice']:
+            if key in train_losses and key != 'Total':
+                loss_parts.append(f"{key}: {train_losses[key]:.4f}")
+
+        # Build validation metrics string
+        metric_parts = []
+        if self.uses_image_quality:
+            if 'MS-SSIM' in val_metrics:
+                metric_parts.append(f"MS-SSIM: {val_metrics['MS-SSIM']:.3f}")
+            if 'MS-SSIM-3D' in val_metrics:
+                metric_parts.append(f"MS-SSIM-3D: {val_metrics['MS-SSIM-3D']:.3f}")
+            if 'PSNR' in val_metrics:
+                metric_parts.append(f"PSNR: {val_metrics['PSNR']:.2f}")
+            if 'LPIPS' in val_metrics:
+                metric_parts.append(f"LPIPS: {val_metrics['LPIPS']:.3f}")
+        else:
+            if 'Dice' in val_metrics:
+                metric_parts.append(f"Dice: {val_metrics['Dice']:.3f}")
+            if 'IoU' in val_metrics:
+                metric_parts.append(f"IoU: {val_metrics['IoU']:.3f}")
+
+        # Combine all parts
+        all_parts = loss_parts + metric_parts
+        all_parts.append(f"Time: {elapsed_time:.1f}s")
+
+        logger.info(
+            f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
+            + " | ".join(all_parts)
         )

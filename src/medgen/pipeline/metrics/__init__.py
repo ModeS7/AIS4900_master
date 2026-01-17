@@ -32,10 +32,12 @@ from .unified import (
     TrainerMode,
     TrainerMetricsConfig,
     LossAccumulator,
+    SimpleLossAccumulator,
     MetricsLogger,
     LossKey,
     MetricKey,
     create_metrics_config,
+    UnifiedMetrics,
 )
 from .generation import (
     GenerationMetricsConfig,
@@ -76,10 +78,12 @@ __all__ = [
     'TrainerMode',
     'TrainerMetricsConfig',
     'LossAccumulator',
+    'SimpleLossAccumulator',
     'MetricsLogger',
     'LossKey',
     'MetricKey',
     'create_metrics_config',
+    'UnifiedMetrics',
     # Constants
     'TUMOR_SIZE_THRESHOLDS_MM',
     'TUMOR_SIZE_CATEGORIES',

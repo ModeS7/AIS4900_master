@@ -13,22 +13,35 @@ import torch
 from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
 
 
-def _to_device(batch: torch.Tensor, device: torch.device) -> torch.Tensor:
-    """Convert batch tensor to device, handling MONAI MetaTensors.
+def _to_device(batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device) -> Union[torch.Tensor, Dict[str, Any]]:
+    """Convert batch tensor or dict to device, handling MONAI MetaTensors.
 
     MetaTensors from MONAI need to be converted to regular tensors
     before being moved to device to avoid metadata issues.
 
     Args:
-        batch: Input tensor (may be MetaTensor).
+        batch: Input tensor (may be MetaTensor) or dict of tensors.
         device: Target device.
 
     Returns:
-        Tensor on target device.
+        Tensor or dict of tensors on target device.
     """
-    if hasattr(batch, 'as_tensor'):
-        return batch.as_tensor().to(device)
-    return batch.to(device)
+    if isinstance(batch, dict):
+        # Handle dict batch format (e.g., from 3D dataloaders)
+        result = {}
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor):
+                if hasattr(v, 'as_tensor'):
+                    result[k] = v.as_tensor().to(device, non_blocking=True)
+                else:
+                    result[k] = v.to(device, non_blocking=True)
+            else:
+                result[k] = v  # Keep non-tensor values as-is
+        return result
+    else:
+        if hasattr(batch, 'as_tensor'):
+            return batch.as_tensor().to(device)
+        return batch.to(device)
 
 
 def _is_latent_batch(batch: Any) -> bool:
@@ -160,7 +173,10 @@ class SegmentationMode(TrainingMode):
         """Prepare segmentation batch.
 
         Args:
-            batch: Tensor [B, 1, H, W] or latent dict with 'latent' key.
+            batch: One of:
+                - Tensor [B, 1, H, W]: 2D format
+                - Dict with 'image': 3D format from Volume3DDataset
+                - Dict with 'latent': latent space format
             device: Target device.
 
         Returns:
@@ -170,6 +186,22 @@ class SegmentationMode(TrainingMode):
             return _prepare_latent_batch(batch, device, is_conditional=False)
 
         batch = _to_device(batch, device)
+
+        # Handle 3D dict batch format (from Volume3DDataset with modality='seg')
+        if isinstance(batch, dict):
+            images = batch.get('image')
+            if images is None:
+                raise ValueError("Dict batch missing 'image' key")
+
+            # Ensure images have channel dimension
+            if images.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+                images = images.unsqueeze(1)
+
+            return {
+                'images': images,
+                'labels': None,
+            }
+
         return {
             'images': batch,
             'labels': None
@@ -228,9 +260,10 @@ class ConditionalSingleMode(TrainingMode):
         """Prepare conditional single batch.
 
         Args:
-            batch: Tensor [B, 2, H, W] or latent dict where:
-                - Channel 0: BRAVO image
-                - Channel 1: Segmentation mask
+            batch: One of:
+                - Tensor [B, 2, H, W]: 2D format (channel 0: BRAVO, channel 1: seg)
+                - Dict with 'image' and optional 'seg': 3D format from VAE dataloaders
+                - Dict with 'latent': latent space format
             device: Target device.
 
         Returns:
@@ -240,6 +273,28 @@ class ConditionalSingleMode(TrainingMode):
             return _prepare_latent_batch(batch, device, is_conditional=True)
 
         batch = _to_device(batch, device)
+
+        # Handle 3D dict batch format (from SingleModality3DDatasetWithSeg)
+        if isinstance(batch, dict):
+            # Dict format: {'image': [B, C, D, H, W], 'seg': [B, 1, D, H, W], ...}
+            images = batch.get('image')
+            if images is None:
+                raise ValueError("Dict batch missing 'image' key")
+
+            # Ensure images have channel dimension
+            if images.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+                images = images.unsqueeze(1)
+
+            seg_masks = batch.get('seg')
+            if seg_masks is not None and seg_masks.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+                seg_masks = seg_masks.unsqueeze(1)
+
+            return {
+                'images': images,
+                'labels': seg_masks,
+            }
+
+        # Handle 2D tensor format [B, 2, H, W]
         bravo_images = batch[:, 0:1, :, :]
         seg_masks = batch[:, 1:2, :, :]
 

@@ -1,21 +1,33 @@
 # 3D DiffusionModelUNet Architecture Configuration
 #
-# MONAI's DiffusionModelUNet for 3D volumetric data.
-# Memory-optimized settings for training on single GPU.
+# Memory-optimized architecture from 3D diffusion research (2026-01-17).
+# Key insight: First-level channels dominate memory at full spatial resolution.
+# Start narrow (16 channels), go deep (6 levels), stack capacity at deep levels.
 #
-# Architecture overview:
-#   - 3D convolutions throughout
-#   - Smaller channel counts for memory
-#   - Attention only at deepest level
-#   - Single ResBlock per level
+# ACTUAL TRAINING memory at 128x128x160 (measured):
+#   270M params: ~19.4 GB (this config) - DEFAULT
+#   655M params: ~24 GB (max for 24GB GPU, change channels to [16,32,64,256,512,1024])
+#
+# Reference: docs/3d_diffusion_memory_research.md
 
-type: unet                           # Model type: unet
-spatial_dims: 3                      # 3D volumetric data
-image_size: 256                      # H, W dimensions
-depth_size: 160                      # D dimension
+type: unet
+spatial_dims: 3
+image_size: 256
+depth_size: 160
 
-# Smaller architecture for 3D memory constraints
-channels: [64, 128, 256]             # Fewer channels than 2D
-attention_levels: [false, false, true]  # Attention only at bottleneck
-num_res_blocks: 1                    # Single ResBlock per level
-num_head_channels: 32                # Smaller attention heads
+# 6-level architecture (270M params, ~20GB actual training)
+# Reduced deep channels (512 instead of 1024 at L5)
+channels: [16, 32, 64, 256, 512, 512]
+
+# Attention only at L4-5 (spatial 8x8x10 and 4x4x5)
+attention_levels: [false, false, false, false, true, true]
+
+# Moderate res blocks
+# Options:
+#   [1,1,1,2,2,2] = 270M params, ~20GB (this config)
+#   [1,1,1,1,1,1] = 184M params, ~17GB
+num_res_blocks: [1, 1, 1, 2, 2, 2]
+
+# Attention config
+num_head_channels: 16
+norm_num_groups: 16

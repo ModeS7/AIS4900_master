@@ -443,14 +443,16 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         self._log_training_metrics_unified(epoch, avg_losses)
 
         # Log seg breakdown if in seg_mode (supplement unified logging with breakdown)
-        if self.seg_mode and hasattr(self, '_metrics_logger') and self.is_main_process:
+        if self.seg_mode and self.writer is not None and self.is_main_process:
             n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
             seg_breakdown = {
                 'bce': self._epoch_seg_breakdown['bce'] / n_batches,
                 'dice': self._epoch_seg_breakdown['dice'] / n_batches,
                 'boundary': self._epoch_seg_breakdown['boundary'] / n_batches,
             }
-            self._metrics_logger.log_training(epoch, seg_breakdown)
+            # Log seg breakdown components
+            for key, value in seg_breakdown.items():
+                self.writer.add_scalar(f'Loss/{key}_train', value, epoch)
 
         return avg_losses
 
@@ -560,9 +562,9 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # VQ-VAE-specific: log VQ loss (no unweighting needed)
-        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
-            self._metrics_logger.log_regularization(epoch, metrics['reg'], suffix='val')
+        # VQ-VAE-specific: log VQ loss
+        if 'reg' in metrics and self.writer is not None:
+            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
 
         # Log worst batch figure if available (3D-specific)
         if log_figures and worst_batch_data is not None and 'original' in worst_batch_data:

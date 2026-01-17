@@ -69,11 +69,7 @@ from .metrics import (
     compute_dice,
     compute_iou,
     # Unified metrics system
-    TrainerMetricsConfig,
-    LossAccumulator,
-    MetricsLogger,
-    LossKey,
-    MetricKey,
+    UnifiedMetrics,
 )
 from .tracking import FLOPsTracker
 from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
@@ -136,10 +132,21 @@ class DiffusionTrainer(BaseTrainer):
         logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss} (from config override)")
 
         # SAM (Sharpness-Aware Minimization)
+        # DEPRECATED: SAM/ASAM requires 2x compute cost with minimal benefit for diffusion models.
+        # Consider using gradient_noise, curriculum, or timestep_jitter instead.
         sam_cfg = cfg.training.get('sam', {})
         self.use_sam: bool = sam_cfg.get('enabled', False)
         self.sam_rho: float = sam_cfg.get('rho', 0.05)
         self.sam_adaptive: bool = sam_cfg.get('adaptive', False)
+        if self.use_sam:
+            import warnings
+            warnings.warn(
+                "SAM/ASAM optimizer is DEPRECATED and will be removed in a future version. "
+                "SAM requires 2x compute cost with minimal benefit for diffusion models. "
+                "Consider using gradient_noise, curriculum, or timestep_jitter instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         # Optimizer settings
         optimizer_cfg = cfg.training.get('optimizer', {})
@@ -171,25 +178,8 @@ class DiffusionTrainer(BaseTrainer):
             self.metrics.log_lpips = False
 
         # Initialize unified metrics system for consistent logging
-        # Determine modality keys for per-modality logging (multi mode)
-        modality_keys = None
-        if self.mode_name == 'multi':
-            modality_keys = ['t1_pre', 'bravo', 'flair', 't1_gd']
-        self._metrics_config = TrainerMetricsConfig.for_diffusion(
-            spatial_dims=2,  # Diffusion trainer is 2D (slice-based)
-            log_msssim=self.metrics.log_msssim,
-            log_lpips=self.metrics.log_lpips,
-            log_psnr=True,
-            modality_keys=modality_keys,
-        )
-        self._loss_accumulator = LossAccumulator(self._metrics_config)
-        # Don't pass use_multi_gpu - diffusion trainer handles main_process guards explicitly
-        # This differs from compression trainers which use use_multi_gpu to skip rank!=0 logging
-        self._metrics_logger = MetricsLogger(
-            self.writer,
-            self._metrics_config,
-            use_multi_gpu=False,  # Guard with is_main_process in logging calls
-        )
+        # Note: UnifiedMetrics is initialized in train() when writer is fully set up
+        self._unified_metrics: Optional[UnifiedMetrics] = None
 
         # Initialize model components (set during setup_model)
         self.perceptual_loss_fn: Optional[nn.Module] = None
@@ -1888,13 +1878,13 @@ class DiffusionTrainer(BaseTrainer):
 
         # Log training losses using unified system
         if self.is_main_process and not self.use_multi_gpu:
-            avg_losses = {
-                LossKey.TOTAL: avg_loss,
-                LossKey.MSE: avg_mse,
-                LossKey.PERC: avg_perceptual,
-            }
-            self._metrics_logger.log_training(epoch, avg_losses)
-            self._metrics_logger.log_learning_rate(epoch, self.lr_scheduler.get_last_lr()[0])
+            self._unified_metrics.update_loss('Total', avg_loss)
+            self._unified_metrics.update_loss('MSE', avg_mse)
+            self._unified_metrics.update_loss('Perceptual', avg_perceptual)
+            self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
+            self._unified_metrics.update_vram()
+            self._unified_metrics.log_training(epoch)
+            self._unified_metrics.reset_training()
 
         return avg_loss, avg_mse, avg_perceptual
 
@@ -2136,58 +2126,54 @@ class DiffusionTrainer(BaseTrainer):
             metrics['iou'] = total_iou / n_batches
 
         # Log to TensorBoard using unified system
-        if self.writer is not None:
-            # Log validation losses (always without suffix)
-            val_losses = {
-                LossKey.MSE: metrics['mse'],
-                LossKey.PERC: metrics['perceptual'],
-                LossKey.TOTAL: metrics['total'],
-            }
-            self._metrics_logger.log_validation(epoch, val_losses)
+        if self.writer is not None and self._unified_metrics is not None:
+            # Update unified metrics with validation values
+            self._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
+            self._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
+            self._unified_metrics.update_loss('Total', metrics['total'], phase='val')
 
-            # Determine if single-modality mode (not multi, not dual)
-            is_single_modality = self.mode_name not in ('multi', 'dual')
-
-            # Compute 3D MS-SSIM first so we can include it in modality metrics
+            # Compute 3D MS-SSIM first so we can include it in metrics
             msssim_3d = None
             if self.log_msssim:
                 msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
 
-            # Log validation quality metrics
-            val_metrics = {
-                MetricKey.MSSSIM: metrics['msssim'],
-                MetricKey.PSNR: metrics['psnr'],
-            }
+            # Update quality metrics using unified system
+            # Note: For 2D trainer, we manually update with computed values since
+            # the validation loop already computed them batch-wise
+            self._unified_metrics._val_psnr_sum = metrics['psnr']
+            self._unified_metrics._val_psnr_count = 1
+            self._unified_metrics._val_msssim_sum = metrics['msssim']
+            self._unified_metrics._val_msssim_count = 1
             if 'lpips' in metrics:
-                val_metrics[MetricKey.LPIPS] = metrics['lpips']
+                self._unified_metrics._val_lpips_sum = metrics['lpips']
+                self._unified_metrics._val_lpips_count = 1
             if msssim_3d is not None:
-                val_metrics[MetricKey.MSSSIM_3D] = msssim_3d
-            # Add Dice/IoU for seg modes
+                self._unified_metrics._val_msssim_3d_sum = msssim_3d
+                self._unified_metrics._val_msssim_3d_count = 1
             if 'dice' in metrics:
-                val_metrics[MetricKey.DICE_SCORE] = metrics['dice']
+                self._unified_metrics._val_dice_sum = metrics['dice']
+                self._unified_metrics._val_dice_count = 1
             if 'iou' in metrics:
-                val_metrics[MetricKey.IOU] = metrics['iou']
+                self._unified_metrics._val_iou_sum = metrics['iou']
+                self._unified_metrics._val_iou_count = 1
 
-            if is_single_modality:
-                # Single-modality: use mode_name as suffix (e.g., Validation/PSNR_bravo)
-                self._metrics_logger.log_validation_per_modality(epoch, self.mode_name, val_metrics)
-            else:
-                # Multi/dual: log aggregate, per-channel handles modality suffix
-                self._metrics_logger.log_validation(epoch, val_metrics)
+            # Log validation metrics
+            self._unified_metrics.log_validation(epoch)
 
-            # Log per-channel metrics for dual/multi modes using unified system
+            # Log per-channel metrics for dual/multi modes
             for channel_key, channel_data in per_channel_metrics.items():
                 count = channel_data['count']
                 if count > 0:
-                    modality_metrics = {
-                        MetricKey.MSSSIM: channel_data['msssim'] / count,
-                        MetricKey.PSNR: channel_data['psnr'] / count,
-                    }
+                    avg_psnr = channel_data['psnr'] / count
+                    avg_msssim = channel_data['msssim'] / count
+                    suffix = f'_{channel_key}'
+                    self.writer.add_scalar(f'Validation/PSNR{suffix}', avg_psnr, epoch)
+                    self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', avg_msssim, epoch)
                     if self.metrics.log_lpips:
-                        modality_metrics[MetricKey.LPIPS] = channel_data['lpips'] / count
-                    self._metrics_logger.log_validation_per_modality(epoch, channel_key, modality_metrics)
+                        avg_lpips = channel_data['lpips'] / count
+                        self.writer.add_scalar(f'Validation/LPIPS{suffix}', avg_lpips, epoch)
 
             # Log regional metrics (tumor vs background) with modality suffix
             if regional_tracker is not None:
@@ -2197,7 +2183,7 @@ class DiffusionTrainer(BaseTrainer):
                 else:
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
-            # Log per-timestep validation losses
+            # Log per-timestep validation losses using unified system
             if self.metrics.log_timestep_losses:
                 counts = timestep_loss_count.cpu()
                 sums = timestep_loss_sum.cpu()
@@ -2205,9 +2191,8 @@ class DiffusionTrainer(BaseTrainer):
                 for i in range(num_timestep_bins):
                     if counts[i] > 0:
                         avg_loss = (sums[i] / counts[i]).item()
-                        bin_start = i * bin_size
-                        bin_end = (i + 1) * bin_size
-                        self.writer.add_scalar(f'Timestep/{bin_start:04d}-{bin_end:04d}', avg_loss, epoch)
+                        t_normalized = (i + 0.5) / num_timestep_bins  # Center of bin
+                        self._unified_metrics.update_timestep_loss(t_normalized, avg_loss)
 
             # Compute generation quality metrics (KID, CMMD)
             if self._gen_metrics is not None:
@@ -2219,20 +2204,21 @@ class DiffusionTrainer(BaseTrainer):
                     gen_results = self._gen_metrics.compute_epoch_metrics(
                         model_to_use, self.strategy, self.mode
                     )
-                    for key, value in gen_results.items():
-                        self.writer.add_scalar(f"Generation/{key}", value, epoch)
+                    self._unified_metrics.log_generation(epoch, gen_results)
 
                     # Extended metrics at figure_interval
                     if (epoch + 1) % self.figure_interval == 0:
                         extended_results = self._gen_metrics.compute_extended_metrics(
                             model_to_use, self.strategy, self.mode
                         )
-                        for key, value in extended_results.items():
-                            self.writer.add_scalar(f"Generation/{key}", value, epoch)
+                        self._unified_metrics.log_generation(epoch, extended_results)
 
                     model_to_use.train()
                 except Exception as e:
                     logger.warning(f"Generation metrics computation failed: {e}")
+
+            # Reset validation metrics for next epoch
+            self._unified_metrics.reset_validation()
 
         # Restore random state to not affect subsequent training epochs
         torch.set_rng_state(rng_state)
@@ -2270,6 +2256,20 @@ class DiffusionTrainer(BaseTrainer):
         """
         total_start = time.time()
         self.val_loader = val_loader
+
+        # Initialize unified metrics system
+        is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
+        self._unified_metrics = UnifiedMetrics(
+            writer=self.writer,
+            mode=self.mode_name,
+            spatial_dims=2,
+            modality=self.mode_name if self.mode_name not in ('multi', 'dual') else None,
+            device=self.device,
+            enable_regional=self.metrics.log_regional_losses,
+            num_timestep_bins=10,
+            image_size=self.image_size,
+            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+        )
 
         # Measure FLOPs
         self._measure_model_flops(train_loader)
@@ -2319,13 +2319,13 @@ class DiffusionTrainer(BaseTrainer):
 
                     # Log training losses using unified system (DDP path)
                     if self.use_multi_gpu:
-                        avg_losses = {
-                            LossKey.TOTAL: avg_loss,
-                            LossKey.MSE: avg_mse,
-                            LossKey.PERC: avg_perceptual,
-                        }
-                        self._metrics_logger.log_training(epoch, avg_losses)
-                        self._metrics_logger.log_learning_rate(epoch, self.lr_scheduler.get_last_lr()[0])
+                        self._unified_metrics.update_loss('Total', avg_loss)
+                        self._unified_metrics.update_loss('MSE', avg_mse)
+                        self._unified_metrics.update_loss('Perceptual', avg_perceptual)
+                        self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
+                        self._unified_metrics.update_vram()
+                        self._unified_metrics.log_training(epoch)
+                        self._unified_metrics.reset_training()
 
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
@@ -2472,16 +2472,18 @@ class DiffusionTrainer(BaseTrainer):
 
                     n_batches += 1
 
-            # Compute averages and log using unified system
+            # Compute averages and log per-modality metrics
             if n_batches > 0 and self.writer is not None:
                 avg_psnr = total_psnr / n_batches
                 avg_msssim = total_msssim / n_batches
-                modality_metrics = {
-                    MetricKey.PSNR: avg_psnr,
-                    MetricKey.MSSSIM: avg_msssim,
-                }
+
+                # Log per-modality quality metrics
+                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
+                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+
                 if self.metrics.log_lpips:
-                    modality_metrics[MetricKey.LPIPS] = total_lpips / n_batches
+                    avg_lpips = total_lpips / n_batches
+                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
 
                 # Compute 3D MS-SSIM for this modality
                 if self.log_msssim:
@@ -2489,9 +2491,7 @@ class DiffusionTrainer(BaseTrainer):
                         epoch, data_split='val', modality_override=modality
                     )
                     if msssim_3d is not None:
-                        modality_metrics[MetricKey.MSSSIM_3D] = msssim_3d
-
-                self._metrics_logger.log_validation_per_modality(epoch, modality, modality_metrics)
+                        self.writer.add_scalar(f'Validation/MS-SSIM-3D_{modality}', msssim_3d, epoch)
 
                 # Log regional metrics for this modality
                 if regional_tracker is not None:
@@ -2886,23 +2886,17 @@ class DiffusionTrainer(BaseTrainer):
 
         # Log to TensorBoard using unified system
         tb_prefix = f'test_{label}'
-        if self.writer is not None:
-            # Determine modality for single-modality modes (e.g., bravo, seg)
-            # Multi-modality/dual modes log aggregate without suffix
-            is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
-            modality = self.mode_name if is_single_modality else None
-
-            # Map metrics to unified keys for log_test
+        if self.writer is not None and self._unified_metrics is not None:
+            # Build test metrics dict for unified logging
             test_metrics = {
-                MetricKey.PSNR: metrics['psnr'],
-                MetricKey.MSSSIM: metrics['msssim'],
+                'PSNR': metrics['psnr'],
+                'MS-SSIM': metrics['msssim'],
+                'MSE': metrics['mse'],
             }
             if 'lpips' in metrics:
-                test_metrics[MetricKey.LPIPS] = metrics['lpips']
-            # Also log MSE as a loss metric (with modality suffix)
-            mse_tag = f'{tb_prefix}/MSE_{self.mode_name}' if is_single_modality else f'{tb_prefix}/MSE'
-            self.writer.add_scalar(mse_tag, metrics['mse'], 0)
-            self._metrics_logger.log_test(test_metrics, prefix=tb_prefix, modality=modality)
+                test_metrics['LPIPS'] = metrics['lpips']
+
+            self._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
 
             # Log timestep bin losses using unified system
             bin_size = self.num_timesteps // num_timestep_bins
@@ -2922,16 +2916,18 @@ class DiffusionTrainer(BaseTrainer):
                     self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_name}', loss, 0)
 
             # Log regional metrics with modality suffix for single-modality modes
+            is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
             if regional_tracker is not None:
                 regional_prefix = f'{tb_prefix}_regional_{self.mode_name}' if is_single_modality else f'{tb_prefix}_regional'
                 regional_tracker.log_to_tensorboard(self.writer, 0, prefix=regional_prefix)
 
-            # Compute and log volume 3D MS-SSIM using unified system
+            # Compute and log volume 3D MS-SSIM
             if self.log_msssim:
                 msssim_3d = self._compute_volume_3d_msssim(0, data_split='test_new')
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
-                    self._metrics_logger.log_test({MetricKey.MSSSIM_3D: msssim_3d}, prefix=tb_prefix, modality=modality)
+                    suffix = f'_{self.mode_name}' if is_single_modality else ''
+                    self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D{suffix}', msssim_3d, 0)
 
             # Create visualization of worst batch
             if worst_batch_data is not None:

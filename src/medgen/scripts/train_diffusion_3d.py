@@ -22,6 +22,7 @@ import os
 
 import hydra
 import torch
+from torch.utils.data import DataLoader
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,13 @@ def main(cfg: DictConfig) -> None:
     from medgen.data.loaders.vae_3d import (
         create_vae_3d_dataloader,
         create_vae_3d_validation_dataloader,
+    )
+    from medgen.data.loaders.seg_conditioned_3d import (
+        create_seg_conditioned_3d_dataloader,
+        create_seg_conditioned_3d_validation_dataloader,
+    )
+    from medgen.data.loaders.vae_3d import (
+        SingleModality3DDatasetWithSeg,
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -161,10 +169,74 @@ def main(cfg: DictConfig) -> None:
         # Pixel-space training
         logger.info("=== Pixel-Space Mode ===")
 
-        train_loader, train_dataset = create_vae_3d_dataloader(cfg, cfg.mode.name)
+        # Use mode-specific dataloader
+        if cfg.mode.name == 'seg_conditioned_3d':
+            logger.info("Using 3D seg_conditioned dataloader (3D connected components)")
+            train_loader, train_dataset = create_seg_conditioned_3d_dataloader(cfg)
+            val_result = create_seg_conditioned_3d_validation_dataloader(cfg)
+        elif cfg.mode.name == 'bravo':
+            # Bravo mode: needs seg mask for conditioning
+            logger.info("Using 3D bravo dataloader with seg mask conditioning")
+            train_dir = os.path.join(cfg.paths.data_dir, 'train')
+            train_dataset = SingleModality3DDatasetWithSeg(
+                data_dir=train_dir,
+                modality='bravo',
+                height=cfg.volume.height,
+                width=cfg.volume.width,
+                pad_depth_to=cfg.volume.pad_depth_to,
+                pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                slice_step=cfg.volume.get('slice_step', 1),
+            )
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=cfg.training.batch_size,
+                shuffle=True,
+                num_workers=cfg.training.get('num_workers', 4),
+                pin_memory=True,
+                drop_last=True,
+            )
+
+            val_dir = os.path.join(cfg.paths.data_dir, 'val')
+            if os.path.exists(val_dir):
+                val_dataset = SingleModality3DDatasetWithSeg(
+                    data_dir=val_dir,
+                    modality='bravo',
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                )
+                val_loader = DataLoader(
+                    val_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                val_result = (val_loader, val_dataset)
+            else:
+                val_result = None
+        else:
+            # Seg mode and other modes
+            train_loader, train_dataset = create_vae_3d_dataloader(cfg, cfg.mode.name)
+            val_result = create_vae_3d_validation_dataloader(cfg, cfg.mode.name)
+
+            # Override validation loader num_workers if specified (for WSL2 compatibility)
+            if val_result is not None and cfg.training.get('val_num_workers') is not None:
+                val_loader, val_dataset = val_result
+                logger.info(f"Recreating val_loader with num_workers={cfg.training.val_num_workers}")
+                val_loader = DataLoader(
+                    val_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.val_num_workers,
+                    pin_memory=True,
+                )
+                val_result = (val_loader, val_dataset)
+
         logger.info(f"Train dataset: {len(train_dataset)} volumes")
 
-        val_result = create_vae_3d_validation_dataloader(cfg, cfg.mode.name)
         if val_result is not None:
             val_loader, val_dataset = val_result
             logger.info(f"Val dataset: {len(val_dataset)} volumes")
@@ -188,6 +260,72 @@ def main(cfg: DictConfig) -> None:
     # Train
     logger.info("=== Starting Training ===")
     trainer.train(train_loader, train_dataset, val_loader=val_loader)
+
+    # Test evaluation (if test set exists and enabled)
+    run_test = cfg.training.get('test_after_training', True)
+    test_dir = os.path.join(cfg.paths.data_dir, 'test')
+    if run_test and os.path.exists(test_dir):
+        logger.info("=== Test Evaluation ===")
+
+        # Create test dataloader based on mode
+        test_result = None
+        try:
+            if cfg.mode.name == 'bravo':
+                test_dataset = SingleModality3DDatasetWithSeg(
+                    data_dir=test_dir,
+                    modality='bravo',
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                )
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                test_result = (test_loader, test_dataset)
+            elif cfg.mode.name == 'seg_conditioned_3d':
+                # seg_conditioned_3d uses same dataloader pattern
+                from medgen.data.loaders.seg_conditioned_3d import SegConditioned3DDataset
+                test_dataset = SegConditioned3DDataset(
+                    data_dir=test_dir,
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                    num_size_bins=cfg.mode.get('num_size_bins', 8),
+                    max_tumor_count=cfg.mode.get('max_tumor_count', 10),
+                )
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                test_result = (test_loader, test_dataset)
+        except Exception as e:
+            logger.warning(f"Could not create test dataloader: {e}")
+
+        if test_result is not None:
+            test_loader, test_dataset = test_result
+            logger.info(f"Test dataset: {len(test_dataset)} volumes")
+
+            # Evaluate best checkpoint
+            trainer.evaluate_test_set(test_loader, checkpoint_name='best')
+
+            # Evaluate latest checkpoint
+            trainer.evaluate_test_set(test_loader, checkpoint_name='latest')
+        else:
+            logger.warning("No test dataset found or could not create dataloader")
+
+    # Close TensorBoard writer
+    trainer.close_writer()
 
 
 if __name__ == "__main__":

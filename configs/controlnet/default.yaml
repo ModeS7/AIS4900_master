@@ -1,0 +1,47 @@
+# ControlNet Configuration for Conditional Latent Diffusion
+#
+# ControlNet provides pixel-resolution conditioning for latent diffusion models.
+# The conditioning (e.g., segmentation mask) is processed at full resolution
+# and injected into the latent UNet via zero convolutions.
+#
+# Architecture:
+#   - Takes conditioning at pixel space (e.g., 256x256 seg mask)
+#   - Encodes to latent resolution via conditioning embedding
+#   - Mirrors UNet encoder structure
+#   - Injects residuals via zero-initialized convolutions
+#
+# Training (two-stage, original paper approach):
+#   - Stage 1: Train base diffusion model only (controlnet.enabled=false)
+#   - Stage 2: Freeze diffusion, train only ControlNet (controlnet.freeze_unet=true)
+#
+# Usage:
+#   # Stage 2: Train ControlNet with frozen UNet
+#   python -m medgen.scripts.train mode=bravo strategy=rflow \
+#       controlnet.enabled=true \
+#       controlnet.freeze_unet=true \
+#       pretrained_checkpoint=runs/.../checkpoint_best.pt
+
+# Master switch
+enabled: false
+
+# Architecture (must match UNet for compatibility)
+# These are auto-populated from model config when null
+channels: null                      # Auto-match UNet channels
+attention_levels: null              # Auto-match UNet attention_levels
+num_res_blocks: null                # Auto-match UNet num_res_blocks
+num_head_channels: null             # Auto-match UNet num_head_channels
+
+# Conditioning embedding: encodes pixel-space conditioning to latent resolution
+# Default (16, 32, 96, 256) = 3 stride-2 convs = 8x downsampling (matches 8x VAE)
+conditioning_embedding_in_channels: 1       # Seg mask channels
+conditioning_embedding_num_channels: [16, 32, 96, 256]
+
+# Training configuration
+freeze_unet: true                   # Freeze UNet weights (Stage 2 training)
+conditioning_scale: 1.0             # Scale factor for ControlNet output (1.0 = full control)
+
+# Gradient checkpointing for memory efficiency (recommended for 3D)
+gradient_checkpointing: false
+
+# Checkpoint loading
+checkpoint: null                    # Path to pretrained ControlNet checkpoint

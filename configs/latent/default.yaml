@@ -1,0 +1,38 @@
+# Latent diffusion configuration
+# Enables training in compressed latent space using a pretrained VAE/DC-AE/VQ-VAE
+#
+# Note: This file is included via Hydra config group "latent", so keys here
+# are automatically nested under "latent." in the final config.
+
+# Master switch for latent diffusion mode
+enabled: false
+
+# Path to compression model checkpoint (VAE, DC-AE, or VQ-VAE)
+# Required when enabled=true
+compression_checkpoint: null
+
+# Compression model type: auto, vae, dcae, vqvae
+# 'auto' will detect from checkpoint structure
+compression_type: auto
+
+# Spatial dimensions: auto, 2, 3
+# 'auto' will detect from checkpoint (e.g., 3D VAE/VQ-VAE)
+# 2 = 2D slices [B, C, H, W]
+# 3 = 3D volumes [B, C, D, H, W]
+spatial_dims: auto
+
+# Directory to cache pre-encoded latents
+# Default: {data_dir}-latents-{compression_type}-{dims}d
+cache_dir: null
+
+# Automatically encode dataset if cache is missing or invalid
+auto_encode: true
+
+# Validate cache against checkpoint hash before using
+validate_cache: true
+
+# Number of workers for encoding (when building cache)
+num_workers: 4
+
+# Batch size for encoding (when building cache)
+batch_size: 32

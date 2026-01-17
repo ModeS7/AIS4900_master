@@ -365,9 +365,9 @@ class VQVAETrainer(BaseCompressionTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # VQ-VAE-specific: log VQ loss (no unweighting needed)
-        if 'reg' in metrics and hasattr(self, '_metrics_logger'):
-            self._metrics_logger.log_regularization(epoch, metrics['reg'], suffix='val')
+        # VQ-VAE-specific: log VQ loss
+        if 'reg' in metrics and self.writer is not None:
+            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
 
         # Log worst batch figure
         if log_figures and worst_batch_data is not None:
