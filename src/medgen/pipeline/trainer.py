@@ -72,7 +72,7 @@ from medgen.metrics import (
     UnifiedMetrics,
 )
 from medgen.metrics import FLOPsTracker
-from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
+from medgen.losses import RegionalWeightComputer, create_regional_weight_computer
 from medgen.models import (
     create_controlnet_for_unet,
     freeze_unet_for_controlnet,

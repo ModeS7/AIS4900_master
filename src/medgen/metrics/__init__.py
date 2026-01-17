@@ -41,6 +41,7 @@ from .regional import (
 )
 from .figures import create_reconstruction_figure, figure_to_buffer
 from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
+from .feature_extractors import ResNet50Features, BiomedCLIPFeatures
 from .generation import (
     GenerationMetricsConfig,
     GenerationMetrics,
@@ -53,8 +54,6 @@ from .generation import (
     compute_kid_3d,
     compute_cmmd_3d,
     compute_fid_3d,
-    ResNet50Features,
-    BiomedCLIPFeatures,
 )
 from .tracking import (
     GradientNormTracker,

@@ -313,7 +313,7 @@ class Diffusion3DTrainer(BaseTrainer):
         self.regional_weight_computer = None
         rw_cfg = cfg.training.get('regional_weighting', {})
         if rw_cfg.get('enabled', False) and not self.is_seg_mode:
-            from .regional_weighting_3d import RegionalWeightComputer3D
+            from medgen.losses import RegionalWeightComputer3D
             self.regional_weight_computer = RegionalWeightComputer3D(
                 volume_size=(self.volume_height, self.volume_width, self.volume_depth),
                 weights=dict(rw_cfg.get('weights', {})) if rw_cfg.get('weights') else None,
