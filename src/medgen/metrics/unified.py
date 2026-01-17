@@ -260,7 +260,7 @@ class UnifiedMetrics:
     def _init_regional(self):
         """Initialize regional metrics tracker."""
         if self.spatial_dims == 3:
-            from .regional_3d import RegionalMetricsTracker3D
+            from .regional import RegionalMetricsTracker3D
             self._regional_tracker = RegionalMetricsTracker3D(
                 volume_size=self.volume_size,
                 fov_mm=self.fov_mm,
@@ -277,7 +277,7 @@ class UnifiedMetrics:
     def _init_codebook(self, codebook_size: int):
         """Initialize codebook tracker for VQ-VAE."""
         try:
-            from ..tracking.codebook import CodebookTracker
+            from medgen.pipeline.tracking.codebook import CodebookTracker
             self._codebook_tracker = CodebookTracker(
                 num_embeddings=codebook_size,
                 device=self.device,

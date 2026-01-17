@@ -17,7 +17,7 @@ from torch import Tensor
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
 
-from .regional_base import BaseRegionalMetricsTracker
+from .base import BaseRegionalMetricsTracker
 
 logger = logging.getLogger(__name__)
 

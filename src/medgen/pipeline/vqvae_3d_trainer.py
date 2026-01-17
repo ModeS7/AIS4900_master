@@ -34,7 +34,7 @@ from monai.networks.nets import VQVAE
 
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompression3DTrainer
-from .metrics import (
+from medgen.metrics import (
     compute_lpips_3d,
     compute_msssim,
     compute_psnr,
@@ -517,7 +517,7 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         Returns:
             Configured SegRegionalMetricsTracker instance.
         """
-        from .metrics import SegRegionalMetricsTracker
+        from medgen.metrics import SegRegionalMetricsTracker
 
         return SegRegionalMetricsTracker(
             image_size=self.volume_height,  # Use volume dimensions

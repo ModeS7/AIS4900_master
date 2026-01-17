@@ -24,7 +24,7 @@ from torch import Tensor
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
 
-from .metrics.constants import TUMOR_SIZE_THRESHOLDS_MM
+from medgen.metrics import TUMOR_SIZE_THRESHOLDS_MM
 
 logger = logging.getLogger(__name__)
 

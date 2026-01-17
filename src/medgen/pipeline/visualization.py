@@ -22,7 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from medgen.core import ModeType
 from .modes import TrainingMode
 from .strategies import DiffusionStrategy
-from .metrics import MetricsTracker, create_reconstruction_figure
+from medgen.metrics import MetricsTracker, create_reconstruction_figure
 from .spaces import DiffusionSpace, PixelSpace
 from .controlnet import ControlNetConditionedUNet, ControlNetGenerationWrapper
 

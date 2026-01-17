@@ -13,7 +13,7 @@ from torch import nn
 from torch.amp import autocast
 from torch.utils.data import DataLoader
 
-from .metrics import (
+from medgen.metrics import (
     compute_dice,
     compute_iou,
     compute_lpips,

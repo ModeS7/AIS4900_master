@@ -29,7 +29,7 @@ from tqdm import tqdm
 from .compression_trainer import BaseCompressionTrainer
 from .losses import SegmentationLoss
 from .results import TrainingStepResult
-from .metrics import (
+from medgen.metrics import (
     compute_dice,
     compute_iou,
     compute_lpips,
@@ -507,7 +507,7 @@ class DCAETrainer(BaseCompressionTrainer):
         Returns:
             Configured SegRegionalMetricsTracker instance.
         """
-        from .metrics import SegRegionalMetricsTracker
+        from medgen.metrics import SegRegionalMetricsTracker
 
         return SegRegionalMetricsTracker(
             image_size=self.cfg.dcae.image_size,

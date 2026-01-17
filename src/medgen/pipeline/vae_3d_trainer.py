@@ -33,7 +33,7 @@ from monai.networks.nets import AutoencoderKL
 
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompression3DTrainer
-from .metrics import (
+from medgen.metrics import (
     compute_lpips_3d,
     compute_msssim,
     compute_psnr,

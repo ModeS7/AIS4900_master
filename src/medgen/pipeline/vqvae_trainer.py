@@ -27,7 +27,7 @@ from monai.networks.nets import VQVAE
 
 from .compression_trainer import BaseCompressionTrainer
 from .results import TrainingStepResult
-from .metrics import (
+from medgen.metrics import (
     compute_lpips,
     compute_msssim,
     compute_psnr,

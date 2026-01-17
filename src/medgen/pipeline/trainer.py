@@ -59,7 +59,7 @@ from .utils import (
     save_full_checkpoint,
     create_epoch_iterator,
 )
-from .metrics import (
+from medgen.metrics import (
     MetricsTracker,
     create_reconstruction_figure,
     RegionalMetricsTracker,

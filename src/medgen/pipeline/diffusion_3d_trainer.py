@@ -58,7 +58,7 @@ from .utils import (
     save_full_checkpoint,
 )
 from .tracking import FLOPsTracker
-from .metrics import (
+from medgen.metrics import (
     compute_psnr,
     compute_msssim,
     compute_lpips_3d,

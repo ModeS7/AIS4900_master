@@ -12,8 +12,8 @@ from .modes import SegmentationMode, ConditionalSingleMode, ConditionalDualMode,
 from .spaces import DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space
 from .visualization import ValidationVisualizer
 
-# Metrics (from metrics/ subdirectory)
-from .metrics import (
+# Metrics (from medgen.metrics package)
+from medgen.metrics import (
     MetricsTracker,
     compute_msssim,
     compute_psnr,

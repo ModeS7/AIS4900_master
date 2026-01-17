@@ -42,7 +42,7 @@ from monai.networks.nets import PatchDiscriminator
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
 from .base_trainer import BaseTrainer
 from .losses import LPIPSLoss, PerceptualLoss
-from .metrics import (
+from medgen.metrics import (
     RegionalMetricsTracker,
     compute_lpips,
     compute_lpips_3d,
@@ -1622,7 +1622,7 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
 
     def _create_regional_tracker(self):
         """Create 3D regional metrics tracker."""
-        from .metrics import RegionalMetricsTracker3D
+        from medgen.metrics import RegionalMetricsTracker3D
         return RegionalMetricsTracker3D(
             volume_size=(self.volume_height, self.volume_width, self.volume_depth),
             fov_mm=self.cfg.paths.get('fov_mm', 240.0),

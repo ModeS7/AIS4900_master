@@ -643,7 +643,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
     ) -> Dict[str, float]:
         """Compute metrics for a single batch."""
         from torch.amp import autocast
-        from .metrics import compute_lpips, compute_msssim, compute_psnr, compute_dice, compute_iou
+        from medgen.metrics import compute_lpips, compute_msssim, compute_psnr, compute_dice, compute_iou
 
         images, mask = batch_data
 
@@ -876,7 +876,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
     ) -> Dict[str, float]:
         """Compute metrics for a single 3D batch."""
         from torch.amp import autocast
-        from .metrics import (
+        from medgen.metrics import (
             compute_lpips_3d,
             compute_msssim,
             compute_msssim_2d_slicewise,

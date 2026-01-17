@@ -1,14 +1,25 @@
 """
-Metrics tracking and computation utilities.
+Standalone metrics package for medical image generation.
 
-This module provides:
-- MetricsTracker: GPU-efficient epoch-level metric aggregation
-- Quality metrics: PSNR, MS-SSIM (2D/3D), LPIPS (2D only)
-- Regional metrics: RegionalMetricsTracker for masked regions
-- Unified metrics: UnifiedMetrics, SimpleLossAccumulator
-- Visualization: create_reconstruction_figure for figures
+This package provides:
+- UnifiedMetrics: Single entry point for all metric tracking and TensorBoard logging
+- SimpleLossAccumulator: Dynamic loss tracking without predefined config
+- Quality metrics: PSNR, MS-SSIM (2D/3D), LPIPS (2D only), Dice, IoU
+- Regional metrics: Per-tumor loss tracking by RANO-BM size categories
+- Generation metrics: KID, CMMD, FID for evaluating generative models
+- Visualization: Reconstruction figures and error heatmaps
+
+Usage:
+    from medgen.metrics import UnifiedMetrics, SimpleLossAccumulator
+
+    metrics = UnifiedMetrics(
+        writer=tensorboard_writer,
+        mode='bravo',
+        spatial_dims=3,
+    )
 """
 
+from .unified import SimpleLossAccumulator, UnifiedMetrics
 from .tracker import MetricsTracker
 from .quality import (
     compute_dice,
@@ -22,16 +33,14 @@ from .quality import (
     reset_lpips_nan_warning,
     clear_metric_caches,
 )
-from .regional_base import BaseRegionalMetricsTracker
-from .regional import RegionalMetricsTracker
-from .regional_3d import RegionalMetricsTracker3D
-from .regional_seg import SegRegionalMetricsTracker
+from .regional import (
+    BaseRegionalMetricsTracker,
+    RegionalMetricsTracker,
+    RegionalMetricsTracker3D,
+    SegRegionalMetricsTracker,
+)
 from .figures import create_reconstruction_figure, figure_to_buffer
 from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
-from .unified import (
-    SimpleLossAccumulator,
-    UnifiedMetrics,
-)
 from .generation import (
     GenerationMetricsConfig,
     GenerationMetrics,
@@ -49,7 +58,9 @@ from .generation import (
 )
 
 __all__ = [
-    # Main tracker
+    # Core
+    'SimpleLossAccumulator',
+    'UnifiedMetrics',
     'MetricsTracker',
     # Quality metrics
     'compute_dice',
@@ -67,9 +78,6 @@ __all__ = [
     'RegionalMetricsTracker',
     'RegionalMetricsTracker3D',
     'SegRegionalMetricsTracker',
-    # Unified metrics system
-    'SimpleLossAccumulator',
-    'UnifiedMetrics',
     # Constants
     'TUMOR_SIZE_THRESHOLDS_MM',
     'TUMOR_SIZE_CATEGORIES',
@@ -82,7 +90,6 @@ __all__ = [
     'compute_kid',
     'compute_cmmd',
     'compute_fid',
-    # 3D slice-wise (2.5D) generation metrics
     'volumes_to_slices',
     'extract_features_3d',
     'compute_kid_3d',

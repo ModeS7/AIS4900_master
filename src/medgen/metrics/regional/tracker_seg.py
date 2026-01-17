@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
 
-from .constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
+from ..constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
