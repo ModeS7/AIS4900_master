@@ -233,8 +233,20 @@ class Diffusion3DTrainer(BaseTrainer):
             logger.info(f"Limiting training to {self.limit_train_batches} batches per epoch")
 
         # Min-SNR weighting (reduces impact of high-noise timesteps)
+        # NOTE: Min-SNR is DDPM-specific (uses alpha_bar from noise schedule).
+        # For RFlow, the SNR concept doesn't apply - disable with warning.
         self.use_min_snr: bool = cfg.training.get('use_min_snr', False)
         self.min_snr_gamma: float = cfg.training.get('min_snr_gamma', 5.0)
+        if self.use_min_snr and self.strategy_name == 'rflow':
+            import warnings
+            warnings.warn(
+                "Min-SNR weighting is DDPM-specific and has no theoretical basis for RFlow. "
+                "The SNR formula (alpha_bar / (1 - alpha_bar)) is tied to DDPM's noise schedule. "
+                "Disabling Min-SNR for RFlow training.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.use_min_snr = False
         if self.use_min_snr and self.is_main_process:
             logger.info(f"Min-SNR weighting enabled (gamma={self.min_snr_gamma})")
 

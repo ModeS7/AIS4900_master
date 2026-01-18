@@ -124,8 +124,20 @@ class DiffusionTrainer(BaseTrainer):
         self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.perceptual_weight
 
         # Min-SNR weighting
+        # NOTE: Min-SNR is DDPM-specific (uses alpha_bar from noise schedule).
+        # For RFlow, the SNR concept doesn't apply - disable with warning.
         self.use_min_snr: bool = cfg.training.use_min_snr
         self.min_snr_gamma: float = cfg.training.min_snr_gamma
+        if self.use_min_snr and self.strategy_name == 'rflow':
+            import warnings
+            warnings.warn(
+                "Min-SNR weighting is DDPM-specific and has no theoretical basis for RFlow. "
+                "The SNR formula (alpha_bar / (1 - alpha_bar)) is tied to DDPM's noise schedule. "
+                "Disabling Min-SNR for RFlow training.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.use_min_snr = False
 
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)

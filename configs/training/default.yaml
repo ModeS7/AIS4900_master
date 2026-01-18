@@ -117,8 +117,10 @@ ema:
   update_after_step: 100   # Start EMA after this many steps
   update_every: 10         # Update EMA every N steps
 
-# Min-SNR Loss Weighting
-# Reweights per-sample loss by timestep to prevent high-noise step domination
+# Min-SNR Loss Weighting (DDPM ONLY)
+# Reweights per-sample loss by timestep to prevent high-noise step domination.
+# Uses SNR = alpha_bar / (1 - alpha_bar) from DDPM's noise schedule.
+# NOTE: Has no theoretical basis for RFlow - will be auto-disabled with warning.
 # Reference: https://arxiv.org/abs/2303.09556
 use_min_snr: false
 min_snr_gamma: 5.0         # SNR clipping threshold
