@@ -27,13 +27,14 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Memory optimization (updated env var name - old one deprecated)
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # Memory Profiling Run
 # - Same config as exp1_pixel_bravo but with memory_profiling=true
-# - Only 5 epochs (enough to see the memory pattern)
+# - 10 epochs with 2 warmup (enough to see the memory pattern)
+# - Profiling logs VRAM at key points for first 3 epochs
 # ============================================================================
 
 time python -m medgen.scripts.train_diffusion_3d \
@@ -45,7 +46,8 @@ time python -m medgen.scripts.train_diffusion_3d \
     volume.width=128 \
     volume.pad_depth_to=160 \
     training.batch_size=1 \
-    training.epochs=5 \
+    training.epochs=10 \
+    training.warmup_epochs=2 \
     training.learning_rate=1e-4 \
     training.gradient_checkpointing=true \
     training.memory_profiling=true \
