@@ -430,6 +430,11 @@ class DiffusionTrainer(BaseTrainer):
             feature_batch_size = gen_cfg.get('feature_batch_size', None)
             if feature_batch_size is None:
                 feature_batch_size = cfg.training.batch_size
+            # Use absolute cache_dir from paths config, fallback to relative
+            gen_cache_dir = gen_cfg.get('cache_dir', None)
+            if gen_cache_dir is None:
+                base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
+                gen_cache_dir = f"{base_cache}/generation_features"
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
                 samples_per_epoch=gen_cfg.get('samples_per_epoch', 100),
@@ -438,7 +443,7 @@ class DiffusionTrainer(BaseTrainer):
                 steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
                 steps_extended=gen_cfg.get('steps_extended', 25),
                 steps_test=gen_cfg.get('steps_test', 50),
-                cache_dir=gen_cfg.get('cache_dir', '.cache/generation_features'),
+                cache_dir=gen_cache_dir,
                 feature_batch_size=feature_batch_size,
             )
             if self.is_main_process:
@@ -1898,7 +1903,8 @@ class DiffusionTrainer(BaseTrainer):
         if self.is_main_process and not self.use_multi_gpu:
             self._unified_metrics.update_loss('Total', avg_loss)
             self._unified_metrics.update_loss('MSE', avg_mse)
-            self._unified_metrics.update_loss('Perceptual', avg_perceptual)
+            if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Perceptual', avg_perceptual)
             self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
             self._unified_metrics.update_vram()
             self._unified_metrics.log_training(epoch)
@@ -2163,7 +2169,8 @@ class DiffusionTrainer(BaseTrainer):
         if self.writer is not None and self._unified_metrics is not None:
             # Update unified metrics with validation values
             self._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
-            self._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
+            if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
             self._unified_metrics.update_loss('Total', metrics['total'], phase='val')
 
             # Compute 3D MS-SSIM first so we can include it in metrics
@@ -2328,11 +2335,17 @@ class DiffusionTrainer(BaseTrainer):
                 seg_channel_idx=seg_channel_idx,
             )
             # Cache reference features from train and val loaders
+            # Use content-based cache key so all experiments with same data share cache
             if val_loader is not None:
+                import hashlib
+                data_dir = str(self.cfg.paths.data_dir)
+                cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
+                cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+                cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
                 self._gen_metrics.cache_reference_features(
                     train_loader,
                     val_loader,
-                    experiment_id=str(self.save_dir.name) if hasattr(self.save_dir, 'name') else str(self.save_dir),
+                    experiment_id=cache_id,
                 )
 
         avg_loss = float('inf')
@@ -2362,7 +2375,8 @@ class DiffusionTrainer(BaseTrainer):
                     if self.use_multi_gpu:
                         self._unified_metrics.update_loss('Total', avg_loss)
                         self._unified_metrics.update_loss('MSE', avg_mse)
-                        self._unified_metrics.update_loss('Perceptual', avg_perceptual)
+                        if self.perceptual_weight > 0:
+                            self._unified_metrics.update_loss('Perceptual', avg_perceptual)
                         self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
                         self._unified_metrics.update_vram()
                         self._unified_metrics.log_training(epoch)

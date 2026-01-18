@@ -340,6 +340,9 @@ class ReferenceFeatureCache:
     ) -> torch.Tensor:
         """Extract features from a dataloader, filtering for positive masks.
 
+        Handles both 2D [B, C, H, W] and 3D [B, C, D, H, W] inputs.
+        For 3D, extracts features slice-wise using extract_features_3d.
+
         Args:
             dataloader: DataLoader providing batches.
             extractor: Feature extractor module.
@@ -368,25 +371,35 @@ class ReferenceFeatureCache:
                 masks = None
 
             images = images.to(self.device)
+            is_3d = images.ndim == 5  # [B, C, D, H, W]
 
             # Filter for positive masks (has tumor)
             if masks is not None:
                 masks = masks.to(self.device)
                 # Check if mask has any positive pixels per sample
-                positive_mask = masks.sum(dim=(1, 2, 3)) > 0
+                # Handle both 2D (dim 1,2,3) and 3D (dim 1,2,3,4)
+                sum_dims = tuple(range(1, masks.ndim))
+                positive_mask = masks.sum(dim=sum_dims) > 0
                 if positive_mask.sum() == 0:
                     continue
                 images = images[positive_mask]
 
-            # Extract in sub-batches
-            for i in range(0, images.shape[0], self.batch_size):
-                sub_batch = images[i:i + self.batch_size]
-                features = extractor.extract_features(sub_batch)
+            if is_3d:
+                # 3D: extract slice-wise features
+                features = extract_features_3d(images, extractor, chunk_size=self.batch_size)
                 all_features.append(features.cpu())
-                sample_count += sub_batch.shape[0]
+                # For 3D, sample_count is number of slices
+                sample_count += features.shape[0]
+            else:
+                # 2D: extract in sub-batches
+                for i in range(0, images.shape[0], self.batch_size):
+                    sub_batch = images[i:i + self.batch_size]
+                    features = extractor.extract_features(sub_batch)
+                    all_features.append(features.cpu())
+                    sample_count += sub_batch.shape[0]
 
-                if max_samples and sample_count >= max_samples:
-                    break
+                    if max_samples and sample_count >= max_samples:
+                        break
 
             if max_samples and sample_count >= max_samples:
                 break
@@ -910,6 +923,65 @@ class GenerationMetrics:
             # Restore RNG state
             torch.set_rng_state(rng_state)
             torch.cuda.set_rng_state(cuda_rng_state, self.device)
+
+    def compute_metrics_from_samples(
+        self,
+        samples: torch.Tensor,
+        extended: bool = False,
+    ) -> Dict[str, float]:
+        """Compute metrics from pre-generated samples.
+
+        This method is useful when samples are generated externally (e.g., 3D volumes).
+        Handles both 2D [N, C, H, W] and 3D [N, C, D, H, W] samples.
+
+        Args:
+            samples: Generated samples tensor.
+            extended: If True, use "extended_" prefix for metric names.
+
+        Returns:
+            Dictionary with KID/CMMD vs train and val.
+        """
+        if self.cache.train_resnet is None:
+            logger.warning("Reference features not cached, cannot compute metrics")
+            return {}
+
+        prefix = "extended_" if extended else ""
+        is_3d = samples.ndim == 5
+
+        # Extract features
+        if is_3d:
+            gen_resnet = extract_features_3d(samples, self.resnet, chunk_size=self.config.feature_batch_size)
+            gen_biomed = extract_features_3d(samples, self.biomed, chunk_size=self.config.feature_batch_size)
+        else:
+            gen_resnet = self._extract_features_batched(samples, self.resnet)
+            gen_biomed = self._extract_features_batched(samples, self.biomed)
+
+        # Free samples
+        del samples
+        torch.cuda.empty_cache()
+
+        results = {}
+
+        # Metrics vs train
+        train_metrics = self._compute_metrics_against_reference(
+            gen_resnet, gen_biomed,
+            self.cache.train_resnet, self.cache.train_biomed,
+            prefix=prefix,
+        )
+        for key, value in train_metrics.items():
+            results[f'{key}_train'] = value
+
+        # Metrics vs val
+        if self.cache.val_resnet is not None:
+            val_metrics = self._compute_metrics_against_reference(
+                gen_resnet, gen_biomed,
+                self.cache.val_resnet, self.cache.val_biomed,
+                prefix=prefix,
+            )
+            for key, value in val_metrics.items():
+                results[f'{key}_val'] = value
+
+        return results
 
     def compute_test_metrics(
         self,

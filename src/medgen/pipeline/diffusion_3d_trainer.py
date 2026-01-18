@@ -64,14 +64,6 @@ from medgen.metrics import (
     compute_psnr,
     compute_msssim,
     compute_lpips_3d,
-    compute_kid_3d,
-    compute_cmmd_3d,
-    ResNet50Features,
-    BiomedCLIPFeatures,
-    volumes_to_slices,
-    extract_features_3d,
-    compute_kid,
-    compute_cmmd,
     compute_dice,
     compute_iou,
     # Unified metrics system
@@ -164,26 +156,35 @@ class Diffusion3DTrainer(BaseTrainer):
         self._current_epoch: int = 0
         self.best_val_loss: float = float('inf')
 
-        # Generation metrics (KID, CMMD) for overfitting detection
-        # Defaults match 2D: 10 steps quick, 25 steps extended
+        # Generation metrics (KID, CMMD) - uses same GenerationMetrics as 2D trainer
+        # Features are extracted slice-wise (2.5D) and can be shared with 2D
+        self._gen_metrics: Optional['GenerationMetrics'] = None
         gen_cfg = cfg.training.get('generation_metrics', {})
-        self._gen_metrics_enabled = gen_cfg.get('enabled', False)
-        self._gen_metrics_samples_epoch = gen_cfg.get('samples_per_epoch', 1)  # Quick: 1 volume
-        self._gen_metrics_samples_extended = gen_cfg.get('samples_extended', 4)  # Extended: 4 volumes
-        self._gen_metrics_steps_epoch = gen_cfg.get('steps_per_epoch', 10)  # Same as 2D
-        self._gen_metrics_steps_extended = gen_cfg.get('steps_extended', 25)  # Same as 2D
-        self._gen_metrics_chunk_size = gen_cfg.get('chunk_size', 32)
-        self._gen_metrics_interval = cfg.training.get('figure_interval', 10)  # Extended every N epochs
-
-        # Feature extractors (lazy-initialized)
-        self._resnet_extractor: Optional[ResNet50Features] = None
-        self._biomed_extractor: Optional[BiomedCLIPFeatures] = None
-
-        # Cached reference features from train/val
-        self._train_resnet_features: Optional[torch.Tensor] = None
-        self._train_biomed_features: Optional[torch.Tensor] = None
-        self._val_resnet_features: Optional[torch.Tensor] = None
-        self._val_biomed_features: Optional[torch.Tensor] = None
+        if gen_cfg.get('enabled', False):
+            from medgen.metrics.generation import GenerationMetricsConfig
+            # Use training batch_size * depth for 3D slice-wise extraction
+            feature_batch_size = gen_cfg.get('feature_batch_size', None)
+            if feature_batch_size is None:
+                feature_batch_size = max(32, cfg.training.batch_size * 16)  # Reasonable default for slices
+            # Use absolute cache_dir from paths config
+            gen_cache_dir = gen_cfg.get('cache_dir', None)
+            if gen_cache_dir is None:
+                base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
+                gen_cache_dir = f"{base_cache}/generation_features"
+            self._gen_metrics_config = GenerationMetricsConfig(
+                enabled=True,
+                samples_per_epoch=gen_cfg.get('samples_per_epoch', 1),  # 1 volume for 3D
+                samples_extended=gen_cfg.get('samples_extended', 4),  # 4 volumes
+                samples_test=gen_cfg.get('samples_test', 10),
+                steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
+                steps_extended=gen_cfg.get('steps_extended', 25),
+                steps_test=gen_cfg.get('steps_test', 50),
+                cache_dir=gen_cache_dir,
+                feature_batch_size=feature_batch_size,
+            )
+        else:
+            self._gen_metrics_config = None
+        self._gen_metrics_interval = cfg.training.get('figure_interval', 10)
 
         # Fixed conditioning for generation (pixel-space seg masks)
         self._fixed_conditioning_volumes: Optional[torch.Tensor] = None
@@ -354,12 +355,12 @@ class Diffusion3DTrainer(BaseTrainer):
         self._unified_metrics: Optional[UnifiedMetrics] = None
         self._last_val_metrics: Optional[Dict[str, float]] = None
 
-        if self._gen_metrics_enabled and self.is_main_process:
+        if self._gen_metrics_config is not None and self.is_main_process:
             logger.info(
-                f"Generation metrics enabled: {self._gen_metrics_samples_epoch} volumes/epoch "
-                f"({self._gen_metrics_steps_epoch} steps), "
-                f"{self._gen_metrics_samples_extended} volumes/extended "
-                f"({self._gen_metrics_steps_extended} steps)"
+                f"Generation metrics enabled: {self._gen_metrics_config.samples_per_epoch} volumes/epoch "
+                f"({self._gen_metrics_config.steps_per_epoch} steps), "
+                f"{self._gen_metrics_config.samples_extended} volumes/extended "
+                f"({self._gen_metrics_config.steps_extended} steps)"
             )
 
     def _create_strategy(self, name: str) -> DiffusionStrategy:
@@ -385,107 +386,8 @@ class Diffusion3DTrainer(BaseTrainer):
             return ConditionalSingleMode()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Generation Metrics (KID, CMMD) - 2.5D Slice-Wise Approach
+    # Generation Metrics (KID, CMMD) - Uses shared GenerationMetrics from 2D
     # ─────────────────────────────────────────────────────────────────────────
-
-    def _ensure_feature_extractors(self) -> None:
-        """Lazy-initialize feature extractors.
-
-        Uses compile_model=False to avoid torch.compile CUDA graph memory overhead.
-        This enables the load/unload pattern to free GPU memory between uses.
-        """
-        if self._resnet_extractor is None:
-            self._resnet_extractor = ResNet50Features(self.device, compile_model=False)
-        if self._biomed_extractor is None:
-            self._biomed_extractor = BiomedCLIPFeatures(self.device, compile_model=False)
-
-    def _unload_feature_extractors(self) -> None:
-        """Unload feature extractors to free GPU memory.
-
-        Call this after caching reference features and after computing metrics
-        to reduce peak VRAM usage during training.
-        """
-        if self._resnet_extractor is not None:
-            self._resnet_extractor.unload()
-            del self._resnet_extractor
-            self._resnet_extractor = None
-        if self._biomed_extractor is not None:
-            self._biomed_extractor.unload()
-            del self._biomed_extractor
-            self._biomed_extractor = None
-        torch.cuda.empty_cache()
-        logger.info("Feature extractors unloaded to free GPU memory")
-
-    def _cache_reference_features_3d(
-        self,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader],
-        max_volumes: int = 10,
-    ) -> None:
-        """Cache reference features from train/val volumes slice-wise.
-
-        Extracts features from all slices of reference volumes to build
-        the reference distribution for KID/CMMD computation.
-
-        Args:
-            train_loader: Training dataloader.
-            val_loader: Optional validation dataloader.
-            max_volumes: Maximum volumes to use per split.
-        """
-        self._ensure_feature_extractors()
-        logger.info(f"Caching reference features from up to {max_volumes} volumes...")
-
-        # Extract train features
-        train_volumes = []
-        for i, batch in enumerate(train_loader):
-            if i >= max_volumes:
-                break
-            prepared = self.mode.prepare_batch(batch, self.device)
-            images = prepared['images']  # [B, C, D, H, W]
-            # Decode if in latent space
-            if isinstance(self.space, LatentSpace):
-                images = self.space.decode(images)
-            train_volumes.append(images.cpu())
-
-        if train_volumes:
-            train_vols = torch.cat(train_volumes, dim=0)
-            self._train_resnet_features = extract_features_3d(
-                train_vols.to(self.device),
-                self._resnet_extractor,
-                self._gen_metrics_chunk_size,
-            )
-            self._train_biomed_features = extract_features_3d(
-                train_vols.to(self.device),
-                self._biomed_extractor,
-                self._gen_metrics_chunk_size,
-            )
-            logger.info(f"Cached train features: {self._train_resnet_features.shape[0]} slices")
-
-        # Extract val features
-        if val_loader is not None:
-            val_volumes = []
-            for i, batch in enumerate(val_loader):
-                if i >= max_volumes:
-                    break
-                prepared = self.mode.prepare_batch(batch, self.device)
-                images = prepared['images']
-                if isinstance(self.space, LatentSpace):
-                    images = self.space.decode(images)
-                val_volumes.append(images.cpu())
-
-            if val_volumes:
-                val_vols = torch.cat(val_volumes, dim=0)
-                self._val_resnet_features = extract_features_3d(
-                    val_vols.to(self.device),
-                    self._resnet_extractor,
-                    self._gen_metrics_chunk_size,
-                )
-                self._val_biomed_features = extract_features_3d(
-                    val_vols.to(self.device),
-                    self._biomed_extractor,
-                    self._gen_metrics_chunk_size,
-                )
-                logger.info(f"Cached val features: {self._val_resnet_features.shape[0]} slices")
 
     def _set_fixed_conditioning_3d(
         self,
@@ -607,8 +509,8 @@ class Diffusion3DTrainer(BaseTrainer):
     ) -> Dict[str, float]:
         """Compute KID and CMMD using 2.5D slice-wise approach.
 
-        Generates samples, extracts slice features, computes metrics
-        against cached reference features.
+        Generates 3D samples, then uses GenerationMetrics to extract slice
+        features and compute metrics against cached reference features.
 
         Args:
             model: Model to use for generation (can be EMA model).
@@ -618,75 +520,22 @@ class Diffusion3DTrainer(BaseTrainer):
         Returns:
             Dictionary with KID/CMMD metrics (same key format as 2D).
         """
-        if not self._gen_metrics_enabled:
+        if self._gen_metrics is None:
             return {}
-
-        if self._train_resnet_features is None:
-            logger.warning("Reference features not cached, skipping generation metrics")
-            return {}
-
-        self._ensure_feature_extractors()
 
         # Select samples and steps based on mode
         if extended:
-            num_samples = self._gen_metrics_samples_extended
-            num_steps = self._gen_metrics_steps_extended
-            prefix = "extended_"
+            num_samples = self._gen_metrics_config.samples_extended
+            num_steps = self._gen_metrics_config.steps_extended
         else:
-            num_samples = self._gen_metrics_samples_epoch
-            num_steps = self._gen_metrics_steps_epoch
-            prefix = ""
+            num_samples = self._gen_metrics_config.samples_per_epoch
+            num_steps = self._gen_metrics_config.steps_per_epoch
 
-        # Generate samples
+        # Generate 3D samples
         samples = self._generate_samples_3d(model, num_samples, num_steps)
 
-        # Extract features slice-wise
-        gen_resnet = extract_features_3d(
-            samples, self._resnet_extractor, self._gen_metrics_chunk_size
-        )
-        gen_biomed = extract_features_3d(
-            samples, self._biomed_extractor, self._gen_metrics_chunk_size
-        )
-
-        # Free samples
-        del samples
-        torch.cuda.empty_cache()
-
-        results = {}
-
-        # KID vs train (key format matches 2D: {prefix}KID_mean_train)
-        kid_train_mean, kid_train_std = compute_kid(
-            self._train_resnet_features.to(self.device),
-            gen_resnet.to(self.device),
-        )
-        results[f'{prefix}KID_mean_train'] = kid_train_mean
-        results[f'{prefix}KID_std_train'] = kid_train_std
-
-        # CMMD vs train
-        cmmd_train = compute_cmmd(
-            self._train_biomed_features.to(self.device),
-            gen_biomed.to(self.device),
-        )
-        results[f'{prefix}CMMD_train'] = cmmd_train
-
-        # KID vs val (if available)
-        if self._val_resnet_features is not None:
-            kid_val_mean, kid_val_std = compute_kid(
-                self._val_resnet_features.to(self.device),
-                gen_resnet.to(self.device),
-            )
-            results[f'{prefix}KID_mean_val'] = kid_val_mean
-            results[f'{prefix}KID_std_val'] = kid_val_std
-
-            cmmd_val = compute_cmmd(
-                self._val_biomed_features.to(self.device),
-                gen_biomed.to(self.device),
-            )
-            results[f'{prefix}CMMD_val'] = cmmd_val
-
-        # Free generated features and unload extractors to free GPU memory
-        del gen_resnet, gen_biomed
-        self._unload_feature_extractors()
+        # Use GenerationMetrics to compute metrics (handles 3D slice-wise)
+        results = self._gen_metrics.compute_metrics_from_samples(samples, extended=extended)
 
         return results
 
@@ -1105,16 +954,27 @@ class Diffusion3DTrainer(BaseTrainer):
         self._measure_model_flops(train_loader)
 
         # Initialize generation metrics (cache reference features, set conditioning)
-        # Skip for seg modes - feature extractors don't work on binary masks
-        if self._gen_metrics_enabled and self.is_main_process and not self.is_seg_mode:
+        # Uses same GenerationMetrics as 2D - features cached to disk and shared
+        if self._gen_metrics_config is not None and self.is_main_process and not self.is_seg_mode:
             logger.info("Initializing 3D generation metrics...")
-            # Use extended count for conditioning (need enough for extended metrics)
-            self._set_fixed_conditioning_3d(train_loader, num_volumes=self._gen_metrics_samples_extended)
-            self._cache_reference_features_3d(train_loader, val_loader, max_volumes=10)
-            # Unload feature extractors after caching to free GPU memory during training
-            # They will be reloaded on-demand when computing generation metrics
-            self._unload_feature_extractors()
-        elif self._gen_metrics_enabled and self.is_seg_mode and self.is_main_process:
+            from medgen.metrics.generation import GenerationMetrics
+            self._gen_metrics = GenerationMetrics(
+                self._gen_metrics_config,
+                self.device,
+                self.save_dir,
+                space=self.space,
+            )
+            # Set fixed conditioning volumes for generation
+            self._set_fixed_conditioning_3d(train_loader, num_volumes=self._gen_metrics_config.samples_extended)
+            # Cache reference features (shared with 2D, uses content-based key)
+            if val_loader is not None:
+                import hashlib
+                data_dir = str(self.cfg.paths.data_dir)
+                cache_key = f"{data_dir}_{self.mode_name}_{self.volume_height}x{self.volume_depth}_3d"
+                cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+                cache_id = f"{self.mode_name}_{self.volume_height}x{self.volume_depth}_{cache_hash}"
+                self._gen_metrics.cache_reference_features(train_loader, val_loader, experiment_id=cache_id)
+        elif self._gen_metrics_config is not None and self.is_seg_mode and self.is_main_process:
             logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
 
         for epoch in range(self.cfg.training.epochs):
@@ -1149,7 +1009,7 @@ class Diffusion3DTrainer(BaseTrainer):
 
             # Compute generation metrics (KID, CMMD) - matches 2D trainer pattern
             # Skip for seg modes - feature extractors don't work on binary masks
-            if self._gen_metrics_enabled and self.is_main_process and not self.is_seg_mode:
+            if self._gen_metrics is not None and self.is_main_process:
                 try:
                     # Use EMA model if available (matches 2D)
                     model_to_use = self.ema.ema_model if self.ema is not None else self.model
