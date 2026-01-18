@@ -73,6 +73,7 @@ class MetricsTracker:
         self.log_lpips: bool = logging_cfg.get('lpips', False)
         self.log_boundary_sharpness: bool = logging_cfg.get('boundary_sharpness', True)
         self.log_flops: bool = logging_cfg.get('flops', True)
+        self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
 
         # Gradient norm tracking
         self.grad_norm_sum: Optional[torch.Tensor] = None

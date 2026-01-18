@@ -69,13 +69,14 @@ def measure_model_flops(
 class FLOPsTracker:
     """Track FLOPs during training.
 
-    Measures forward pass FLOPs once, then computes TFLOPs per epoch and total.
+    Measures forward pass FLOPs once (with batch_size=1 for memory efficiency),
+    then computes TFLOPs per epoch and total by scaling with batch_size.
     Training step FLOPs ≈ 3x forward (forward + backward + optimizer).
 
     Usage:
         tracker = FLOPsTracker()
         # At start of training:
-        tracker.measure(model, sample_input, timesteps, steps_per_epoch)
+        tracker.measure(model, sample_input, steps_per_epoch, batch_size, timesteps)
         # Each epoch:
         tracker.log_epoch(writer, epoch)
     """
@@ -83,8 +84,9 @@ class FLOPsTracker:
     TRAINING_MULTIPLIER = 3  # forward + backward + optimizer ≈ 3x forward
 
     def __init__(self) -> None:
-        self.forward_flops: int = 0
+        self.forward_flops: int = 0  # FLOPs for batch_size=1
         self.steps_per_epoch: int = 0
+        self.batch_size: int = 1
         self.total_epochs: int = 0
         self._measured: bool = False
 
@@ -93,6 +95,7 @@ class FLOPsTracker:
         model: nn.Module,
         sample_input: torch.Tensor,
         steps_per_epoch: int,
+        batch_size: int = 1,
         timesteps: Optional[torch.Tensor] = None,
         is_main_process: bool = True,
     ) -> None:
@@ -100,8 +103,9 @@ class FLOPsTracker:
 
         Args:
             model: Model to measure (should be raw model, not compiled/DDP).
-            sample_input: Sample input tensor [B, C, H, W].
+            sample_input: Sample input tensor [1, C, H, W] (batch_size=1 for measurement).
             steps_per_epoch: Number of training steps per epoch.
+            batch_size: Actual training batch size (used to scale FLOPs).
             timesteps: Optional timesteps tensor (for diffusion models).
             is_main_process: Whether to log info messages.
         """
@@ -110,15 +114,18 @@ class FLOPsTracker:
 
         self.forward_flops = measure_model_flops(model, sample_input, timesteps)
         self.steps_per_epoch = steps_per_epoch
+        self.batch_size = batch_size
         self._measured = True
 
         if is_main_process:
             if self.forward_flops > 0:
                 gflops_forward = self.forward_flops / 1e9
                 tflops_epoch = self.get_tflops_epoch()
+                tflops_bs1 = self.get_tflops_bs1()
                 logger.info(
-                    f"FLOPs measured: {gflops_forward:.2f} GFLOPs/forward, "
-                    f"{tflops_epoch:.2f} TFLOPs/epoch"
+                    f"FLOPs measured: {gflops_forward:.2f} GFLOPs/forward (bs=1), "
+                    f"{tflops_epoch:.2f} TFLOPs/epoch (bs={batch_size}), "
+                    f"{tflops_bs1:.2f} TFLOPs/epoch (bs=1)"
                 )
             else:
                 logger.warning("FLOPs measurement returned 0 - TensorBoard FLOPs logging disabled")
@@ -128,7 +135,15 @@ class FLOPsTracker:
         self._measured = True
 
     def get_tflops_epoch(self) -> float:
-        """Get TFLOPs per epoch (forward + backward + optimizer)."""
+        """Get TFLOPs per epoch (forward + backward + optimizer), scaled by batch_size."""
+        if self.forward_flops == 0:
+            return 0.0
+        # Scale by batch_size since we measure with bs=1
+        flops_per_step = self.forward_flops * self.batch_size * self.TRAINING_MULTIPLIER
+        return (flops_per_step * self.steps_per_epoch) / 1e12
+
+    def get_tflops_bs1(self) -> float:
+        """Get TFLOPs per epoch for batch_size=1 (raw measurement, unscaled)."""
         if self.forward_flops == 0:
             return 0.0
         flops_per_step = self.forward_flops * self.TRAINING_MULTIPLIER
@@ -155,3 +170,4 @@ class FLOPsTracker:
         completed_epochs = epoch + 1
         writer.add_scalar('FLOPs/TFLOPs_epoch', self.get_tflops_epoch(), epoch)
         writer.add_scalar('FLOPs/TFLOPs_total', self.get_tflops_total(completed_epochs), epoch)
+        writer.add_scalar('FLOPs/TFLOPs_bs1', self.get_tflops_bs1(), epoch)

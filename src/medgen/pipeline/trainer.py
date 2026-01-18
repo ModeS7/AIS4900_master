@@ -2103,6 +2103,22 @@ class DiffusionTrainer(BaseTrainer):
                     timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
                     timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
+                    # Timestep-region tracking (for heatmap) - split by tumor/background
+                    if self.metrics.log_timestep_region_losses and labels is not None:
+                        error_map = ((pred - img) ** 2).mean(dim=1)  # [B, H, W]
+                        mask = labels[:, 0] > 0.5  # [B, H, W]
+                        for i in range(current_batch_size):
+                            t_norm = timesteps[i].item() / self.num_timesteps
+                            sample_error = error_map[i]  # [H, W]
+                            sample_mask = mask[i]  # [H, W]
+                            tumor_px = sample_mask.sum().item()
+                            bg_px = (~sample_mask).sum().item()
+                            tumor_loss = (sample_error * sample_mask.float()).sum().item() if tumor_px > 0 else 0.0
+                            bg_loss = (sample_error * (~sample_mask).float()).sum().item() if bg_px > 0 else 0.0
+                            self._unified_metrics.update_timestep_region_loss(
+                                t_norm, tumor_loss, bg_loss, int(tumor_px), int(bg_px)
+                            )
+
         model_to_use.train()
 
         # Handle empty validation set
@@ -2159,7 +2175,19 @@ class DiffusionTrainer(BaseTrainer):
                 self._unified_metrics._val_iou_sum = metrics['iou']
                 self._unified_metrics._val_iou_count = 1
 
-            # Log validation metrics
+            # Log per-timestep validation losses using unified system
+            # NOTE: Must happen BEFORE log_validation() so timesteps are included
+            if self.metrics.log_timestep_losses:
+                counts = timestep_loss_count.cpu()
+                sums = timestep_loss_sum.cpu()
+                bin_size = self.num_timesteps // num_timestep_bins
+                for i in range(num_timestep_bins):
+                    if counts[i] > 0:
+                        avg_loss = (sums[i] / counts[i]).item()
+                        t_normalized = (i + 0.5) / num_timestep_bins  # Center of bin
+                        self._unified_metrics.update_timestep_loss(t_normalized, avg_loss)
+
+            # Log validation metrics (now includes timesteps)
             self._unified_metrics.log_validation(epoch)
 
             # Log per-channel metrics for dual/multi modes
@@ -2183,16 +2211,9 @@ class DiffusionTrainer(BaseTrainer):
                 else:
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
-            # Log per-timestep validation losses using unified system
-            if self.metrics.log_timestep_losses:
-                counts = timestep_loss_count.cpu()
-                sums = timestep_loss_sum.cpu()
-                bin_size = self.num_timesteps // num_timestep_bins
-                for i in range(num_timestep_bins):
-                    if counts[i] > 0:
-                        avg_loss = (sums[i] / counts[i]).item()
-                        t_normalized = (i + 0.5) / num_timestep_bins  # Center of bin
-                        self._unified_metrics.update_timestep_loss(t_normalized, avg_loss)
+            # Log timestep-region heatmap on figure epochs
+            if (epoch + 1) % self.figure_interval == 0 and self.metrics.log_timestep_region_losses:
+                self._unified_metrics.log_timestep_region_heatmap(epoch)
 
             # Compute generation quality metrics (KID, CMMD)
             if self._gen_metrics is not None:
@@ -2216,6 +2237,9 @@ class DiffusionTrainer(BaseTrainer):
                     model_to_use.train()
                 except Exception as e:
                     logger.warning(f"Generation metrics computation failed: {e}")
+
+            # Record epoch history for JSON export (before reset)
+            self._unified_metrics.record_epoch_history(epoch)
 
             # Reset validation metrics for next epoch
             self._unified_metrics.reset_validation()
@@ -2398,6 +2422,7 @@ class DiffusionTrainer(BaseTrainer):
                 self.model_raw,
                 model_input[:1] if isinstance(model_input, torch.Tensor) else model_input,
                 steps_per_epoch=len(train_loader),
+                batch_size=self.cfg.training.batch_size,
                 timesteps=timesteps[:1] if isinstance(timesteps, torch.Tensor) else timesteps,
                 is_main_process=self.is_main_process,
             )
@@ -2659,6 +2684,9 @@ class DiffusionTrainer(BaseTrainer):
             metadata['total_time_seconds'] = total_time
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
+
+        # Save JSON history files (regional_losses.json, timestep_losses.json, etc.)
+        self._unified_metrics.save_json_histories(self.save_dir)
 
     def evaluate_test_set(
         self,

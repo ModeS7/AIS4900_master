@@ -243,6 +243,17 @@ class UnifiedMetrics:
         # Timestep losses (validation only)
         self._val_timesteps = self._create_timestep_storage()
 
+        # Timestep-region tracking (for heatmap visualization)
+        self._tr_tumor_sum = [0.0] * self.num_timestep_bins
+        self._tr_tumor_count = [0] * self.num_timestep_bins
+        self._tr_bg_sum = [0.0] * self.num_timestep_bins
+        self._tr_bg_count = [0] * self.num_timestep_bins
+
+        # History tracking for JSON export
+        self._regional_history: Dict[str, Any] = {}
+        self._timestep_history: Dict[str, Any] = {}
+        self._timestep_region_history: Dict[str, Any] = {}
+
         # Resource metrics
         self._vram_allocated = 0.0
         self._vram_reserved = 0.0
@@ -481,6 +492,29 @@ class UnifiedMetrics:
         self._val_timesteps['sums'][bin_idx] += loss
         self._val_timesteps['counts'][bin_idx] += 1
 
+    def update_timestep_region_loss(
+        self,
+        t: float,
+        tumor_loss: float,
+        bg_loss: float,
+        tumor_count: int = 1,
+        bg_count: int = 1,
+    ):
+        """Accumulate timestep-region losses for heatmap visualization.
+
+        Args:
+            t: Timestep value (0.0 to 1.0).
+            tumor_loss: Total loss on tumor pixels.
+            bg_loss: Total loss on background pixels.
+            tumor_count: Number of tumor pixels (for averaging).
+            bg_count: Number of background pixels (for averaging).
+        """
+        bin_idx = min(int(t * self.num_timestep_bins), self.num_timestep_bins - 1)
+        self._tr_tumor_sum[bin_idx] += tumor_loss
+        self._tr_tumor_count[bin_idx] += tumor_count
+        self._tr_bg_sum[bin_idx] += bg_loss
+        self._tr_bg_count[bin_idx] += bg_count
+
     # =========================================================================
     # Regional and Codebook Methods
     # =========================================================================
@@ -620,17 +654,14 @@ class UnifiedMetrics:
                 epoch,
             )
 
-        # Validation timesteps
+        # Validation timesteps (format: Timestep/0-9, Timestep/10-19, etc.)
         for i in range(self.num_timestep_bins):
             if self._val_timesteps['counts'][i] > 0:
-                t_start = i / self.num_timestep_bins
-                t_end = (i + 1) / self.num_timestep_bins
+                # Convert bin index to timestep range (assuming 100 timesteps)
+                bin_start = int(i * (100 / self.num_timestep_bins))
+                bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
                 avg = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
-                self.writer.add_scalar(
-                    f'val_timestep_losses/t_{t_start:.1f}_{t_end:.1f}',
-                    avg,
-                    epoch,
-                )
+                self.writer.add_scalar(f'Timestep/{bin_start}-{bin_end}', avg, epoch)
 
         # Regional
         if self._regional_tracker is not None:
@@ -661,6 +692,64 @@ class UnifiedMetrics:
         suffix = f'_{self.modality}' if self.modality else ''
         for key, value in metrics.items():
             self.writer.add_scalar(f'{prefix}/{key}{suffix}', value, 0)
+
+    def log_timestep_region_heatmap(self, epoch: int):
+        """Log 2D heatmap of loss by timestep bin and region.
+
+        Creates a visualization showing how loss varies across timesteps
+        for tumor vs background regions.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        if self.writer is None:
+            return
+
+        # Check if we have any data
+        if not any(self._tr_tumor_count) and not any(self._tr_bg_count):
+            return
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        heatmap_data = np.zeros((self.num_timestep_bins, 2))
+        labels_timestep = []
+
+        for i in range(self.num_timestep_bins):
+            bin_start = int(i * (100 / self.num_timestep_bins))
+            bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
+            labels_timestep.append(f'{bin_start}-{bin_end}')
+
+            # Tumor column
+            if self._tr_tumor_count[i] > 0:
+                heatmap_data[i, 0] = self._tr_tumor_sum[i] / self._tr_tumor_count[i]
+
+            # Background column
+            if self._tr_bg_count[i] > 0:
+                heatmap_data[i, 1] = self._tr_bg_sum[i] / self._tr_bg_count[i]
+
+        fig, ax = plt.subplots(figsize=(6, 10))
+        im = ax.imshow(heatmap_data, aspect='auto', cmap='YlOrRd')
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(['Tumor', 'Background'])
+        ax.set_yticks(range(self.num_timestep_bins))
+        ax.set_yticklabels(labels_timestep)
+        ax.set_xlabel('Region')
+        ax.set_ylabel('Timestep Range')
+        ax.set_title(f'Loss by Timestep & Region (Epoch {epoch})')
+        plt.colorbar(im, ax=ax, label='MSE Loss')
+
+        # Add text annotations
+        for i in range(self.num_timestep_bins):
+            for j in range(2):
+                ax.text(j, i, f'{heatmap_data[i, j]:.4f}',
+                        ha='center', va='center', color='black', fontsize=8)
+
+        plt.tight_layout()
+        self.writer.add_figure('loss/timestep_region_heatmap', fig, epoch)
+        plt.close(fig)
 
     # =========================================================================
     # Helper Methods
@@ -734,6 +823,11 @@ class UnifiedMetrics:
         self._val_dice_sum = self._val_dice_count = 0
         self._val_iou_sum = self._val_iou_count = 0
         self._val_timesteps = self._create_timestep_storage()
+        # Reset timestep-region accumulators
+        self._tr_tumor_sum = [0.0] * self.num_timestep_bins
+        self._tr_tumor_count = [0] * self.num_timestep_bins
+        self._tr_bg_sum = [0.0] * self.num_timestep_bins
+        self._tr_bg_count = [0] * self.num_timestep_bins
         if self._regional_tracker is not None:
             self._regional_tracker.reset()
 
@@ -741,6 +835,79 @@ class UnifiedMetrics:
         """Reset everything."""
         self.reset_training()
         self.reset_validation()
+
+    def record_epoch_history(self, epoch: int):
+        """Record current epoch data to history for JSON export.
+
+        Call this BEFORE reset_validation() to capture the epoch's data.
+
+        Args:
+            epoch: Current epoch number.
+        """
+        # Regional history
+        if self._regional_tracker is not None:
+            metrics = self._regional_tracker.compute()
+            if metrics:
+                self._regional_history[str(epoch)] = {
+                    'tumor': metrics.get('tumor', 0),
+                    'background': metrics.get('background', 0),
+                    'tumor_bg_ratio': metrics.get('ratio', 0),
+                    'by_size': {
+                        'tiny': metrics.get('tumor_size_tiny', 0),
+                        'small': metrics.get('tumor_size_small', 0),
+                        'medium': metrics.get('tumor_size_medium', 0),
+                        'large': metrics.get('tumor_size_large', 0),
+                    }
+                }
+
+        # Timestep history
+        epoch_timesteps = {}
+        for i in range(self.num_timestep_bins):
+            if self._val_timesteps['counts'][i] > 0:
+                bin_start = int(i * (100 / self.num_timestep_bins))
+                bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
+                bin_name = f'{bin_start:04d}-{bin_end:04d}'
+                epoch_timesteps[bin_name] = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
+        if epoch_timesteps:
+            self._timestep_history[str(epoch)] = epoch_timesteps
+
+        # Timestep-region history
+        epoch_tr = {}
+        for i in range(self.num_timestep_bins):
+            bin_start = int(i * (100 / self.num_timestep_bins))
+            bin_label = f'{bin_start:04d}'
+            tumor_avg = self._tr_tumor_sum[i] / max(self._tr_tumor_count[i], 1) if self._tr_tumor_count[i] > 0 else 0.0
+            bg_avg = self._tr_bg_sum[i] / max(self._tr_bg_count[i], 1) if self._tr_bg_count[i] > 0 else 0.0
+            epoch_tr[bin_label] = {
+                'tumor': tumor_avg,
+                'background': bg_avg,
+            }
+        if any(self._tr_tumor_count) or any(self._tr_bg_count):
+            self._timestep_region_history[str(epoch)] = epoch_tr
+
+    def save_json_histories(self, save_dir: str):
+        """Save all history data to JSON files.
+
+        Args:
+            save_dir: Directory to save JSON files to.
+        """
+        import json
+        import os
+
+        if self._regional_history:
+            filepath = os.path.join(save_dir, 'regional_losses.json')
+            with open(filepath, 'w') as f:
+                json.dump(self._regional_history, f, indent=2)
+
+        if self._timestep_history:
+            filepath = os.path.join(save_dir, 'timestep_losses.json')
+            with open(filepath, 'w') as f:
+                json.dump(self._timestep_history, f, indent=2)
+
+        if self._timestep_region_history:
+            filepath = os.path.join(save_dir, 'timestep_region_losses.json')
+            with open(filepath, 'w') as f:
+                json.dump(self._timestep_region_history, f, indent=2)
 
     # =========================================================================
     # Visualization Methods
