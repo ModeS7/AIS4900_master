@@ -1,26 +1,20 @@
 #!/bin/bash
 #SBATCH --job-name=vram_test
-#SBATCH --output=IDUN/test/vram_test_%j.out
-#SBATCH --error=IDUN/test/vram_test_%j.err
+#SBATCH --output=IDUN/output/test/vram_test_%j.out
+#SBATCH --error=IDUN/output/test/vram_test_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --partition=GPUQ
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 
+# Change to submit directory
+cd ${SLURM_SUBMIT_DIR}
+
 # Load modules
 module purge
-module load Python/3.11.5-GCCcore-13.2.0
-module load CUDA/12.4.0
-
-# Change to project directory
-cd /cluster/work/modestas/AIS4900_master
-
-# Activate virtual environment
-source .venv/bin/activate
-
-# Add project to PYTHONPATH
-export PYTHONPATH="${PYTHONPATH}:/cluster/work/modestas/AIS4900_master/src"
+module load Anaconda3/2024.02-1
+conda activate AIS4900
 
 # Print environment info
 echo "=========================================="
