@@ -1076,6 +1076,10 @@ class Diffusion3DTrainer(BaseTrainer):
             # Compute generation metrics (KID, CMMD) - matches 2D trainer pattern
             # Skip for seg modes - feature extractors don't work on binary masks
             if self._gen_metrics is not None and self.is_main_process:
+                # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+
                 if epoch < 3:
                     self._log_memory(f"epoch_{epoch}_before_gen_metrics")
 
@@ -1099,6 +1103,9 @@ class Diffusion3DTrainer(BaseTrainer):
                         self._log_memory(f"epoch_{epoch}_after_gen_metrics")
                 except Exception as e:
                     logger.warning(f"Generation metrics computation failed: {e}")
+                finally:
+                    # Always clean up after generation metrics to prevent memory buildup
+                    torch.cuda.empty_cache()
 
             # Log epoch summary using unified system
             epoch_time = time.time() - epoch_start

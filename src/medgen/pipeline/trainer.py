@@ -2221,6 +2221,10 @@ class DiffusionTrainer(BaseTrainer):
 
             # Compute generation quality metrics (KID, CMMD)
             if self._gen_metrics is not None:
+                # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+
                 try:
                     model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                     model_to_use.eval()
@@ -2241,6 +2245,9 @@ class DiffusionTrainer(BaseTrainer):
                     model_to_use.train()
                 except Exception as e:
                     logger.warning(f"Generation metrics computation failed: {e}")
+                finally:
+                    # Always clean up after generation metrics to prevent memory buildup
+                    torch.cuda.empty_cache()
 
             # Record epoch history for JSON export (before reset)
             self._unified_metrics.record_epoch_history(epoch)
