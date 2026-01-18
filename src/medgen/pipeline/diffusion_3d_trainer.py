@@ -172,11 +172,17 @@ class Diffusion3DTrainer(BaseTrainer):
             if gen_cache_dir is None:
                 base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
                 gen_cache_dir = f"{base_cache}/generation_features"
+            # 3D volumes are much larger than 2D images - cap sample counts to avoid OOM
+            # Even with config values from default.yaml (100/500/1000), use sensible 3D limits
+            samples_per_epoch_3d = min(gen_cfg.get('samples_per_epoch', 1), 2)  # Max 2 volumes/epoch
+            samples_extended_3d = min(gen_cfg.get('samples_extended', 4), 4)    # Max 4 volumes
+            samples_test_3d = min(gen_cfg.get('samples_test', 10), 10)          # Max 10 volumes
+
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
-                samples_per_epoch=gen_cfg.get('samples_per_epoch', 1),  # 1 volume for 3D
-                samples_extended=gen_cfg.get('samples_extended', 4),  # 4 volumes
-                samples_test=gen_cfg.get('samples_test', 10),
+                samples_per_epoch=samples_per_epoch_3d,
+                samples_extended=samples_extended_3d,
+                samples_test=samples_test_3d,
                 steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
                 steps_extended=gen_cfg.get('steps_extended', 25),
                 steps_test=gen_cfg.get('steps_test', 50),
