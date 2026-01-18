@@ -218,6 +218,7 @@ class UnifiedMetrics:
         # Training accumulators
         self._train_losses: Dict[str, Dict[str, float]] = {}
         self._grad_norm_sum = 0.0
+        self._grad_norm_max = 0.0
         self._grad_norm_count = 0
         self._current_lr: Optional[float] = None
 
@@ -454,6 +455,7 @@ class UnifiedMetrics:
             value: Gradient norm value.
         """
         self._grad_norm_sum += value
+        self._grad_norm_max = max(self._grad_norm_max, value)
         self._grad_norm_count += 1
 
     def update_lr(self, value: float):
@@ -573,10 +575,11 @@ class UnifiedMetrics:
         # Grad norm
         if self._grad_norm_count > 0:
             self.writer.add_scalar(
-                'training/grad_norm_epoch',
+                'training/grad_norm_avg',
                 self._grad_norm_sum / self._grad_norm_count,
                 epoch,
             )
+            self.writer.add_scalar('training/grad_norm_max', self._grad_norm_max, epoch)
 
         # VRAM
         if self._vram_allocated > 0:
@@ -805,6 +808,7 @@ class UnifiedMetrics:
         """Reset training accumulators for next epoch."""
         self._train_losses.clear()
         self._grad_norm_sum = 0.0
+        self._grad_norm_max = 0.0
         self._grad_norm_count = 0
         self._current_lr = None
         self._vram_allocated = 0.0

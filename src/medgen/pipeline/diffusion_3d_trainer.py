@@ -1121,6 +1121,10 @@ class Diffusion3DTrainer(BaseTrainer):
             # Training epoch
             train_loss = self._train_epoch(train_loader, epoch)
 
+            # Step LR scheduler once per epoch (not per step)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
             # Validation (every epoch by default)
             val_loss = None
             val_interval = self.cfg.training.get('val_interval', 1)
@@ -1188,10 +1192,6 @@ class Diffusion3DTrainer(BaseTrainer):
         self.model.train()
         self._unified_metrics.reset_training()
 
-        # Worst batch tracking
-        worst_batch_loss = 0.0
-        worst_batch_data: Optional[Dict[str, Any]] = None
-
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", disable=not self.is_main_process)
         for batch_idx, batch in enumerate(pbar):
             # Limit batches per epoch (for fast debugging)
@@ -1208,16 +1208,6 @@ class Diffusion3DTrainer(BaseTrainer):
             # Update progress bar
             pbar.set_postfix({'loss': f'{result.total_loss:.4f}'})
 
-            # Track worst batch (for visualization)
-            if self.log_worst_batch and result.total_loss > worst_batch_loss:
-                worst_batch_loss = result.total_loss
-                # Store minimal info for worst batch
-                prepared = self.mode.prepare_batch(batch, self.device)
-                worst_batch_data = {
-                    'images': prepared['images'][:2].detach().cpu(),  # Keep first 2 samples
-                    'loss': result.total_loss,
-                }
-
             self._global_step += 1
 
         # Log training metrics using unified system
@@ -1225,10 +1215,6 @@ class Diffusion3DTrainer(BaseTrainer):
             self._unified_metrics.update_lr(self.optimizer.param_groups[0]['lr'])
             self._unified_metrics.update_vram()
             self._unified_metrics.log_training(epoch)
-
-            # Log worst batch visualization (custom diagnostic)
-            if self.log_worst_batch and worst_batch_data is not None and (epoch + 1) % self.figure_interval == 0:
-                self._visualize_worst_batch(worst_batch_data, epoch, prefix='train')
 
         return self._unified_metrics.get_training_losses().get('Total', 0.0)
 
@@ -1421,9 +1407,7 @@ class Diffusion3DTrainer(BaseTrainer):
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        # LR scheduler step
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+        # NOTE: LR scheduler step moved to train() - once per epoch, not per step
 
         # EMA update
         if self.ema is not None:
@@ -1455,9 +1439,10 @@ class Diffusion3DTrainer(BaseTrainer):
         self._unified_metrics.reset_validation()
         num_batches = 0
 
-        # Worst batch tracking
-        worst_batch_loss = 0.0
-        worst_batch_data: Optional[Dict[str, Any]] = None
+        # Worst batch tracking - aggregate top-N worst samples (useful for batch_size=1)
+        import heapq
+        worst_samples: List[Tuple[float, Dict[str, Any]]] = []  # min-heap of (loss, data)
+        NUM_WORST_SAMPLES = 4
 
         for batch in tqdm(val_loader, desc="Validation", disable=not self.is_main_process):
             prepared = self.mode.prepare_batch(batch, self.device)
@@ -1500,20 +1485,26 @@ class Diffusion3DTrainer(BaseTrainer):
 
             batch_loss = mse_loss.item()
             self._unified_metrics.update_loss('MSE', batch_loss, phase='val')
+            self._unified_metrics.update_loss('Total', batch_loss, phase='val')  # Total = MSE for 3D diffusion
 
             # Track timestep losses using unified system
             if self.log_timestep_losses:
-                # Use average timestep for the batch
+                # Use average timestep for the batch, normalized to 0.0-1.0
                 avg_t = timesteps.float().mean().item()
-                self._unified_metrics.update_timestep_loss(avg_t, batch_loss)
+                t_normalized = avg_t / self.num_timesteps
+                self._unified_metrics.update_timestep_loss(t_normalized, batch_loss)
 
-            # Track worst batch
-            if self.log_worst_batch and batch_loss > worst_batch_loss:
-                worst_batch_loss = batch_loss
-                worst_batch_data = {
-                    'images': images[:2].detach().cpu(),
+            # Track worst samples (aggregate top-N for batch_size=1 scenarios)
+            if self.log_worst_batch:
+                sample_data = {
+                    'original': images[:1].detach().cpu(),
+                    'predicted': predicted_clean[:1].detach().cpu(),
                     'loss': batch_loss,
                 }
+                if len(worst_samples) < NUM_WORST_SAMPLES:
+                    heapq.heappush(worst_samples, (batch_loss, sample_data))
+                elif batch_loss > worst_samples[0][0]:
+                    heapq.heapreplace(worst_samples, (batch_loss, sample_data))
 
             # Decode if in latent space for quality metrics
             if isinstance(self.space, LatentSpace):
@@ -1554,8 +1545,8 @@ class Diffusion3DTrainer(BaseTrainer):
             self._unified_metrics.log_validation(epoch)
 
             # Log worst batch visualization at figure_interval
-            if self.log_worst_batch and worst_batch_data is not None and (epoch + 1) % self.figure_interval == 0:
-                self._visualize_worst_batch(worst_batch_data, epoch, prefix='val')
+            if self.log_worst_batch and worst_samples and (epoch + 1) % self.figure_interval == 0:
+                self._visualize_worst_batch(worst_samples, epoch)
 
             # Log info message for validation
             if self.is_seg_mode:
@@ -1591,7 +1582,7 @@ class Diffusion3DTrainer(BaseTrainer):
         self.model.eval()
 
         # Generate from noise
-        batch_size = 2
+        batch_size = 4
         if isinstance(self.space, LatentSpace):
             # Generate in latent space
             latent_shape = (batch_size, self.space.latent_channels,
@@ -1652,46 +1643,52 @@ class Diffusion3DTrainer(BaseTrainer):
 
     def _visualize_worst_batch(
         self,
-        worst_batch_data: Dict[str, Any],
+        worst_samples: List[Tuple[float, Dict[str, Any]]],
         epoch: int,
-        prefix: str = 'train',
     ) -> None:
-        """Visualize the worst-performing batch from training/validation.
+        """Visualize the worst-performing samples from validation.
 
         Shows center slices of volumes that had the highest loss.
+        Aggregates multiple samples for better visualization with batch_size=1.
 
         Args:
-            worst_batch_data: Dict with 'images' tensor and 'loss' value.
+            worst_samples: List of (loss, data_dict) tuples from heapq.
             epoch: Current epoch number.
-            prefix: Log prefix ('train' or 'val').
         """
-        if not self.is_main_process:
+        if not self.is_main_process or not worst_samples:
             return
 
-        images = worst_batch_data['images']  # [B, C, D, H, W] on CPU
-        loss = worst_batch_data['loss']
+        # Sort by loss (highest first) and collect slices
+        sorted_samples = sorted(worst_samples, key=lambda x: x[0], reverse=True)
+        all_slices = []
 
-        # Move to device for consistent processing
-        images = images.to(self.device)
+        for loss, data in sorted_samples:
+            # Get original and predicted
+            original = data['original'].to(self.device)  # [1, C, D, H, W]
+            predicted = data['predicted'].to(self.device)  # [1, C, D, H, W]
 
-        # Decode if in latent space
-        if isinstance(self.space, LatentSpace):
-            with torch.no_grad():
-                images = self.space.decode(images)
+            # Decode if in latent space
+            if isinstance(self.space, LatentSpace):
+                with torch.no_grad():
+                    original = self.space.decode(original)
+                    predicted = self.space.decode(predicted)
 
-        # Extract center slices
-        center_idx = images.shape[2] // 2
-        center_slices = images[:, :, center_idx, :, :]  # [B, C, H, W]
+            # Extract center slices
+            center_idx = original.shape[2] // 2
+            orig_slice = original[0, :, center_idx, :, :]  # [C, H, W]
+            pred_slice = predicted[0, :, center_idx, :, :]  # [C, H, W]
 
-        # Normalize to [0, 1]
-        center_slices = torch.clamp(center_slices, 0, 1)
+            # Normalize to [0, 1]
+            orig_slice = torch.clamp(orig_slice, 0, 1)
+            pred_slice = torch.clamp(pred_slice, 0, 1)
 
-        # Create grid
-        grid = make_grid(center_slices, nrow=2, normalize=False)
-        self.writer.add_image(f'worst_batch/{prefix}_loss_{loss:.4f}', grid, epoch)
+            all_slices.extend([orig_slice, pred_slice])
 
-        # Also log the loss value
-        self.writer.add_scalar(f'worst_batch/{prefix}_loss', loss, epoch)
+        # Stack and create grid: pairs of (original, predicted) per row
+        if all_slices:
+            slices_tensor = torch.stack(all_slices, dim=0)  # [N*2, C, H, W]
+            grid = make_grid(slices_tensor, nrow=2, normalize=False, padding=2)
+            self.writer.add_image('Validation/worst_batch', grid, epoch)
 
     @torch.no_grad()
     def _visualize_denoising_trajectory(
