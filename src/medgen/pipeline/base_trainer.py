@@ -90,7 +90,9 @@ class BaseTrainer(ABC):
         # Verbose mode (controls tqdm progress bars)
         # false: Disable tqdm progress bars (clean SLURM logs)
         # true: Enable tqdm progress bars
-        self.verbose: bool = cfg.training.get('verbose', False)
+        # Default: True on local, False on cluster (auto-detect from paths.name)
+        default_verbose = not self.is_cluster
+        self.verbose: bool = cfg.training.get('verbose', default_verbose)
 
         # ─────────────────────────────────────────────────────────────────────
         # Extract logging config
