@@ -376,12 +376,11 @@ class Diffusion3DTrainer(BaseTrainer):
     def _create_mode(self, name: str) -> TrainingMode:
         """Create training mode based on name."""
         if name == 'seg':
-            return SegmentationMode()
-        elif name == 'bravo':
-            return ConditionalSingleMode()
-        elif name == 'seg':
+            # Segmentation conditioned mode with size bin embedding
             size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
             return SegmentationConditionedMode(size_bin_config)
+        elif name == 'bravo':
+            return ConditionalSingleMode()
         else:
             # Default to conditional single for 3D (most common)
             return ConditionalSingleMode()
