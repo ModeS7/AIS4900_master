@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vram_test
-#SBATCH --output=misc/vram_test_%j.out
-#SBATCH --error=misc/vram_test_%j.err
+#SBATCH --output=IDUN/test/vram_test_%j.out
+#SBATCH --error=IDUN/test/vram_test_%j.err
 #SBATCH --time=00:30:00
 #SBATCH --partition=GPUQ
 #SBATCH --gres=gpu:1
@@ -13,11 +13,14 @@ module purge
 module load Python/3.11.5-GCCcore-13.2.0
 module load CUDA/12.4.0
 
-# Activate virtual environment
-source ~/.virtualenvs/medgen/bin/activate
-
 # Change to project directory
-cd /home/mode/NTNU/AIS4900_master
+cd /cluster/work/modestas/AIS4900_master
+
+# Activate virtual environment
+source .venv/bin/activate
+
+# Add project to PYTHONPATH
+export PYTHONPATH="${PYTHONPATH}:/cluster/work/modestas/AIS4900_master/src"
 
 # Print environment info
 echo "=========================================="
