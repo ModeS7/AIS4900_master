@@ -233,6 +233,11 @@ class Diffusion3DTrainer(BaseTrainer):
         self.log_flops = log_cfg.get('flops', True)
         self.log_lpips = log_cfg.get('lpips', True) and not self.is_seg_mode  # Slice-wise LPIPS
 
+        # Memory profiling (detailed VRAM logging at key points)
+        self.memory_profiling: bool = cfg.training.get('memory_profiling', False)
+        if self.memory_profiling and self.is_main_process:
+            logger.info("Memory profiling ENABLED - detailed VRAM logging at key points")
+
         # FLOPs tracker (measured at start of training)
         self._flops_tracker = FLOPsTracker()
 
@@ -719,6 +724,29 @@ class Diffusion3DTrainer(BaseTrainer):
                 logger.info("Compiling 3D UNet with torch.compile (mode=default)...")
                 self.model = torch.compile(self.model, mode="default")
 
+    def _log_memory(self, label: str, reset_peak: bool = False) -> None:
+        """Log detailed VRAM usage at a checkpoint (only if memory_profiling enabled).
+
+        Args:
+            label: Description of the checkpoint (e.g., "after_model_setup").
+            reset_peak: If True, reset peak memory stats after logging.
+        """
+        if not self.memory_profiling or not self.is_main_process:
+            return
+
+        torch.cuda.synchronize()
+        allocated = torch.cuda.memory_allocated(self.device) / 1e9
+        reserved = torch.cuda.memory_reserved(self.device) / 1e9
+        peak = torch.cuda.max_memory_allocated(self.device) / 1e9
+
+        logger.info(
+            f"[MEMORY] {label}: "
+            f"allocated={allocated:.2f}GB, reserved={reserved:.2f}GB, peak={peak:.2f}GB"
+        )
+
+        if reset_peak:
+            torch.cuda.reset_peak_memory_stats(self.device)
+
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using batch_size=1 to avoid OOM during profiling.
 
@@ -968,9 +996,13 @@ class Diffusion3DTrainer(BaseTrainer):
         # Measure FLOPs at start of training
         self._measure_model_flops(train_loader)
 
+        # Memory profiling checkpoint: after model setup
+        self._log_memory("after_model_setup", reset_peak=True)
+
         # Initialize generation metrics (cache reference features, set conditioning)
         # Uses same GenerationMetrics as 2D - features cached to disk and shared
         if self._gen_metrics_config is not None and self.is_main_process and not self.is_seg_mode:
+            self._log_memory("before_gen_metrics_init")
             logger.info("Initializing 3D generation metrics...")
             from medgen.metrics.generation import GenerationMetrics
             self._gen_metrics = GenerationMetrics(
@@ -989,15 +1021,27 @@ class Diffusion3DTrainer(BaseTrainer):
                 cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
                 cache_id = f"{self.mode_name}_{self.volume_height}x{self.volume_depth}_{cache_hash}"
                 self._gen_metrics.cache_reference_features(train_loader, val_loader, experiment_id=cache_id)
+            self._log_memory("after_gen_metrics_init_and_cache")
         elif self._gen_metrics_config is not None and self.is_seg_mode and self.is_main_process:
             logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
+
+        # Memory profiling checkpoint: before training loop
+        self._log_memory("before_training_loop", reset_peak=True)
 
         for epoch in range(self.cfg.training.epochs):
             self._current_epoch = epoch
             epoch_start = time.time()
 
+            # Memory profiling: before training epoch (only first 3 epochs to reduce log spam)
+            if epoch < 3:
+                self._log_memory(f"epoch_{epoch}_before_train")
+
             # Training epoch
             train_loss = self._train_epoch(train_loader, epoch)
+
+            # Memory profiling: after training epoch
+            if epoch < 3:
+                self._log_memory(f"epoch_{epoch}_after_train")
 
             # Step LR scheduler once per epoch (not per step)
             if self.lr_scheduler is not None:
@@ -1010,7 +1054,14 @@ class Diffusion3DTrainer(BaseTrainer):
                 # Sync CUDA and clear cache before validation to prevent worker issues
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
+
+                if epoch < 3:
+                    self._log_memory(f"epoch_{epoch}_before_val")
+
                 val_loss = self._validate(val_loader, epoch)
+
+                if epoch < 3:
+                    self._log_memory(f"epoch_{epoch}_after_val")
 
                 # Save best checkpoint
                 if val_loss < self.best_val_loss:
@@ -1025,6 +1076,9 @@ class Diffusion3DTrainer(BaseTrainer):
             # Compute generation metrics (KID, CMMD) - matches 2D trainer pattern
             # Skip for seg modes - feature extractors don't work on binary masks
             if self._gen_metrics is not None and self.is_main_process:
+                if epoch < 3:
+                    self._log_memory(f"epoch_{epoch}_before_gen_metrics")
+
                 try:
                     # Use EMA model if available (matches 2D)
                     model_to_use = self.ema.ema_model if self.ema is not None else self.model
@@ -1040,6 +1094,9 @@ class Diffusion3DTrainer(BaseTrainer):
                         self._unified_metrics.log_generation(epoch, ext_results)
 
                     model_to_use.train()
+
+                    if epoch < 3:
+                        self._log_memory(f"epoch_{epoch}_after_gen_metrics")
                 except Exception as e:
                     logger.warning(f"Generation metrics computation failed: {e}")
 
