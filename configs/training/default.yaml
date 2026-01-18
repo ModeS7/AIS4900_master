@@ -257,6 +257,12 @@ precision:
   dtype: bf16                # bf16, fp16, fp32 - model weight dtype when pure_weights=true
   pure_weights: false        # If true, model weights stored in low precision (saves ~50% memory)
 
+# Memory profiling (detailed VRAM logging at key training points)
+# Useful for debugging OOM issues. Logs VRAM usage at:
+#   - Model setup, generation metrics init, before/after epochs
+#   - Only logs first 3 epochs to avoid spam
+memory_profiling: false
+
 # Logging and metrics (all logged every epoch, figures at figure_interval)
 # Mode compatibility:
 #   [seg] = segmentation only
