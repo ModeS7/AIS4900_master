@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import ModeType
 from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
-from medgen.metrics import MetricsTracker, create_reconstruction_figure
+from medgen.metrics import create_reconstruction_figure
 from medgen.models import ControlNetConditionedUNet, ControlNetGenerationWrapper
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,6 @@ class ValidationVisualizer:
         cfg: Hydra configuration object.
         strategy: Diffusion strategy instance.
         mode: Training mode instance.
-        metrics: MetricsTracker instance for quality metrics.
         writer: Optional TensorBoard SummaryWriter.
         save_dir: Directory for saving visualizations.
         device: PyTorch device.
@@ -50,7 +49,6 @@ class ValidationVisualizer:
         cfg: DictConfig,
         strategy: DiffusionStrategy,
         mode: TrainingMode,
-        metrics: MetricsTracker,
         writer: Optional[SummaryWriter],
         save_dir: str,
         device: torch.device,
@@ -62,7 +60,6 @@ class ValidationVisualizer:
         self.cfg = cfg
         self.strategy = strategy
         self.mode = mode
-        self.metrics = metrics
         self.writer = writer
         self.save_dir = save_dir
         self.device = device

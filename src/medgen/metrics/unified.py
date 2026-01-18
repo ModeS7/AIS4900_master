@@ -170,6 +170,19 @@ class UnifiedMetrics:
         fov_mm: float = 240.0,
         # Regional tracker params (3D)
         volume_size: Optional[Tuple[int, int, int]] = None,
+        # Logging config flags (from MetricsTracker)
+        log_grad_norm: bool = True,
+        log_timestep_losses: bool = True,
+        log_regional_losses: bool = True,
+        log_msssim: bool = True,
+        log_psnr: bool = True,
+        log_lpips: bool = False,
+        log_flops: bool = True,
+        # SNR weight config
+        strategy_name: str = 'ddpm',
+        num_train_timesteps: int = 1000,
+        use_min_snr: bool = False,
+        min_snr_gamma: float = 5.0,
     ):
         """Initialize unified metrics.
 
@@ -186,6 +199,17 @@ class UnifiedMetrics:
             image_size: Image size for 2D regional tracker (default 256).
             fov_mm: Field of view in mm for regional tracker (default 240.0).
             volume_size: (H, W, D) for 3D regional tracker.
+            log_grad_norm: Enable gradient norm logging.
+            log_timestep_losses: Enable timestep loss logging.
+            log_regional_losses: Enable regional loss logging.
+            log_msssim: Enable MS-SSIM logging.
+            log_psnr: Enable PSNR logging.
+            log_lpips: Enable LPIPS logging.
+            log_flops: Enable FLOPs logging.
+            strategy_name: Diffusion strategy ('ddpm' or 'rflow').
+            num_train_timesteps: Number of training timesteps for SNR computation.
+            use_min_snr: Enable min-SNR loss weighting.
+            min_snr_gamma: Gamma value for min-SNR weighting.
         """
         self.writer = writer
         self.mode = mode
@@ -200,6 +224,22 @@ class UnifiedMetrics:
         # Mode-aware flags
         self.is_seg_mode = mode in ('seg', 'seg_compression')
         self.uses_image_quality = not self.is_seg_mode
+
+        # Logging config flags (consolidated from MetricsTracker)
+        self.log_grad_norm = log_grad_norm
+        self.log_timestep_losses = log_timestep_losses
+        self.log_regional_losses = log_regional_losses
+        self.log_msssim = log_msssim
+        self.log_psnr = log_psnr
+        self.log_lpips = log_lpips
+        self.log_flops = log_flops
+
+        # SNR weight config
+        self.strategy_name = strategy_name
+        self.num_train_timesteps = num_train_timesteps
+        self.use_min_snr = use_min_snr
+        self.min_snr_gamma = min_snr_gamma
+        self.scheduler: Optional[Any] = None  # Set via set_scheduler()
 
         # Initialize accumulators
         self._init_accumulators()
@@ -465,6 +505,37 @@ class UnifiedMetrics:
             value: Learning rate value.
         """
         self._current_lr = value
+
+    def set_scheduler(self, scheduler: Any) -> None:
+        """Set scheduler reference for SNR weight computation.
+
+        Args:
+            scheduler: Diffusion scheduler with alphas_cumprod attribute.
+        """
+        self.scheduler = scheduler
+
+    def compute_snr_weights(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Compute Min-SNR loss weights for given timesteps.
+
+        Args:
+            timesteps: Tensor of timestep indices.
+
+        Returns:
+            Tensor of SNR-based loss weights.
+        """
+        if self.strategy_name == 'ddpm' and self.scheduler is not None:
+            alphas_cumprod = self.scheduler.alphas_cumprod.to(timesteps.device)
+            alpha_bar = alphas_cumprod[timesteps]
+            snr = alpha_bar / (1.0 - alpha_bar + 1e-8)
+        else:
+            # For RFlow: use continuous timesteps directly
+            t_normalized = timesteps.float() / self.num_train_timesteps
+            snr = (1.0 - t_normalized) / (t_normalized + 1e-8)
+
+        snr_clipped = torch.clamp(snr, max=self.min_snr_gamma)
+        weights = snr_clipped / (snr + 1e-8)
+
+        return weights
 
     def update_vram(self):
         """Capture current VRAM usage."""

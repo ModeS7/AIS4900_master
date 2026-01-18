@@ -42,6 +42,7 @@ class TrainStepResult:
     mse_loss: float
     grad_norm: float
     timesteps: Optional[torch.Tensor] = None  # For timestep bin tracking
+    perceptual_loss: float = 0.0  # 2.5D perceptual loss (center slice)
 
 from monai.networks.nets import DiffusionModelUNet
 from monai.metrics import SSIMMetric
@@ -204,6 +205,10 @@ class Diffusion3DTrainer(BaseTrainer):
         # Seg mode detection (use Dice/IoU instead of image quality metrics)
         self.is_seg_mode = self.mode_name == 'seg'
 
+        # Perceptual loss weight (disabled for seg mode - binary masks don't work with VGG features)
+        # Uses 2.5D approach: compute perceptual loss on center slice for efficiency
+        self.perceptual_weight: float = 0.0 if self.is_seg_mode else cfg.training.get('perceptual_weight', 0.0)
+
         # Size bin embedding for seg mode
         self.use_size_bin_embedding = (self.mode_name == 'seg')
         if self.use_size_bin_embedding:
@@ -346,12 +351,8 @@ class Diffusion3DTrainer(BaseTrainer):
         # Timestep bins for per-bin loss tracking
         self.num_timestep_bins = 10
 
-        # Figure interval for extended visualizations
-        figure_count = cfg.training.get('figure_count', 20)
-        total_epochs = cfg.training.epochs
-        self.figure_interval = max(1, total_epochs // figure_count)
-
         # Unified metrics system (initialized in train() when writer is available)
+        # Note: figure_interval is set in BaseTrainer from cfg.training.figure_interval
         self._unified_metrics: Optional[UnifiedMetrics] = None
         self._last_val_metrics: Optional[Dict[str, float]] = None
 
@@ -680,6 +681,21 @@ class Diffusion3DTrainer(BaseTrainer):
             total_epochs=total_epochs,
             eta_min=self.cfg.training.get('eta_min', 1e-6),
         )
+
+        # Setup perceptual loss function (2.5D: compute on center slice)
+        # Uses RadImageNet-pretrained ResNet50 for medical image features
+        self.perceptual_loss_fn = None
+        if self.perceptual_weight > 0:
+            from medgen.losses import PerceptualLoss
+            cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
+            self.perceptual_loss_fn = PerceptualLoss(
+                spatial_dims=2,
+                network_type="radimagenet_resnet50",
+                cache_dir=cache_dir,
+                pretrained=True,
+                device=self.device,
+            )
+            logger.info(f"Perceptual loss enabled (2.5D center slice) with weight={self.perceptual_weight}")
 
         # Setup EMA (on the appropriate model)
         ema_target = self.controlnet if (self.use_controlnet and self.controlnet_freeze_unet) else self.model
@@ -1066,6 +1082,8 @@ class Diffusion3DTrainer(BaseTrainer):
             # Accumulate losses using unified system
             self._unified_metrics.update_loss('Total', result.total_loss)
             self._unified_metrics.update_loss('MSE', result.mse_loss)
+            if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Perceptual', result.perceptual_loss)
             self._unified_metrics.update_grad_norm(result.grad_norm)
 
             # Update progress bar
@@ -1217,6 +1235,23 @@ class Diffusion3DTrainer(BaseTrainer):
 
             # SDA: Shifted Data Augmentation - additional loss on augmented clean data
             total_loss = mse_loss
+
+            # 2.5D Perceptual loss on center slice
+            p_loss = torch.tensor(0.0, device=self.device)
+            if self.perceptual_weight > 0 and self.perceptual_loss_fn is not None:
+                # Get predicted_clean from prediction
+                # For RFlow: x_0 = x_t - t * v
+                # For DDPM: x_0 = (x_t - sqrt(1-alpha_bar) * eps) / sqrt(alpha_bar)
+                _, predicted_clean = self.strategy.compute_loss(
+                    prediction, images, noise, noisy_images, timesteps
+                )
+                # Extract center slice (2.5D approach)
+                center_idx = images.shape[2] // 2  # [B, C, D, H, W] -> D dimension
+                pred_slice = predicted_clean[:, :, center_idx, :, :].float()  # [B, C, H, W]
+                img_slice = images[:, :, center_idx, :, :].float()
+                p_loss = self.perceptual_loss_fn(pred_slice, img_slice)
+                total_loss = total_loss + self.perceptual_weight * p_loss
+
             if self.sda is not None:
                 # Apply SDA to clean images (before noise)
                 aug_images, transform_info = self.sda(images)
@@ -1277,11 +1312,13 @@ class Diffusion3DTrainer(BaseTrainer):
             self.ema.update()
 
         # Return extended result with grad_norm and timesteps
+        p_loss_val = p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss
         return TrainStepResult(
-            total_loss=total_loss.item(),  # Total loss (MSE + SDA if enabled)
+            total_loss=total_loss.item(),  # Total loss (MSE + SDA + Perceptual if enabled)
             mse_loss=mse_loss.item(),
             grad_norm=grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             timesteps=timesteps.detach(),  # Keep for timestep bin tracking
+            perceptual_loss=p_loss_val,
         )
 
     @torch.no_grad()

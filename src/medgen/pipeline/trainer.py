@@ -60,7 +60,6 @@ from .utils import (
     create_epoch_iterator,
 )
 from medgen.metrics import (
-    MetricsTracker,
     create_reconstruction_figure,
     RegionalMetricsTracker,
     compute_msssim,
@@ -180,20 +179,17 @@ class DiffusionTrainer(BaseTrainer):
             use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
         )
 
-        # Initialize metrics tracker
-        self.metrics = MetricsTracker(
-            cfg=cfg,
-            device=self.device,
-            writer=self.writer,
-            save_dir=self.save_dir,
-            is_main_process=self.is_main_process,
-            is_conditional=self.mode.is_conditional,
-        )
-        self.metrics.set_scheduler(self.scheduler)
-
+        # Logging config flags (previously in MetricsTracker)
+        logging_cfg = cfg.training.get('logging', {})
+        self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
+        self.log_timestep_losses: bool = logging_cfg.get('timestep_losses', True)
+        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
+        self.log_msssim: bool = logging_cfg.get('msssim', True)
+        self.log_psnr: bool = logging_cfg.get('psnr', True)
         # Disable LPIPS for seg modes (binary masks don't work with VGG features)
-        if is_seg_mode:
-            self.metrics.log_lpips = False
+        self.log_lpips: bool = False if is_seg_mode else logging_cfg.get('lpips', False)
+        self.log_flops: bool = logging_cfg.get('flops', True)
+        self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
 
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
@@ -869,7 +865,6 @@ class DiffusionTrainer(BaseTrainer):
             cfg=self.cfg,
             strategy=self.strategy,
             mode=self.mode,
-            metrics=self.metrics,
             writer=self.writer,
             save_dir=self.save_dir,
             device=self.device,
@@ -901,9 +896,6 @@ class DiffusionTrainer(BaseTrainer):
         # Save metadata
         if self.is_main_process:
             self._save_metadata()
-
-        # Initialize metrics accumulators
-        self.metrics.init_accumulators()
 
         # Setup feature perturbation hooks if enabled
         self._setup_feature_perturbation()
@@ -1139,7 +1131,7 @@ class DiffusionTrainer(BaseTrainer):
         Returns:
             Weighted MSE loss scalar.
         """
-        snr_weights = self.metrics.compute_snr_weights(timesteps)
+        snr_weights = self._unified_metrics.compute_snr_weights(timesteps)
 
         # Cast to FP32 for MSE computation (BF16 underflow causes ~15-20% lower loss)
         if isinstance(images, dict):
@@ -1806,16 +1798,10 @@ class DiffusionTrainer(BaseTrainer):
             if self.use_ema:
                 self._update_ema()
 
-            # Track metrics using MetricsTracker (use saved predicted_clean)
-            mask = labels_dict.get('labels')
-            with torch.no_grad():
-                self.metrics.track_step(
-                    timesteps=timesteps,
-                    predicted_clean=predicted_clean_saved,
-                    images=images,
-                    mask=mask,
-                    grad_norm=grad_norm,
-                )
+            # Track gradient norm
+            if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                self._unified_metrics.update_grad_norm(grad_val)
 
             return TrainingStepResult(
                 total_loss=total_loss_val,
@@ -1839,16 +1825,10 @@ class DiffusionTrainer(BaseTrainer):
             if self.use_ema:
                 self._update_ema()
 
-            # Track metrics using MetricsTracker
-            mask = labels_dict.get('labels')
-            with torch.no_grad():
-                self.metrics.track_step(
-                    timesteps=timesteps,
-                    predicted_clean=predicted_clean,
-                    images=images,
-                    mask=mask,
-                    grad_norm=grad_norm,
-                )
+            # Track gradient norm
+            if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                self._unified_metrics.update_grad_norm(grad_val)
 
             return TrainingStepResult(
                 total_loss=total_loss.item(),
@@ -1957,7 +1937,7 @@ class DiffusionTrainer(BaseTrainer):
 
         # Initialize regional tracker for validation (if enabled)
         regional_tracker = None
-        if self.metrics.log_regional_losses:
+        if self.log_regional_losses:
             regional_tracker = RegionalMetricsTracker(
                 image_size=self.image_size,
                 fov_mm=self.cfg.paths.get('fov_mm', 240.0),
@@ -2072,7 +2052,7 @@ class DiffusionTrainer(BaseTrainer):
                     for key in keys:
                         channel_msssim[key] = compute_msssim(metrics_pred[key], metrics_gt[key])
                         channel_psnr[key] = compute_psnr(metrics_pred[key], metrics_gt[key])
-                        if self.metrics.log_lpips:
+                        if self.log_lpips:
                             channel_lpips[key] = compute_lpips(metrics_pred[key], metrics_gt[key], self.device)
 
                         # Accumulate per-channel metrics
@@ -2080,18 +2060,18 @@ class DiffusionTrainer(BaseTrainer):
                             per_channel_metrics[key] = {'msssim': 0.0, 'psnr': 0.0, 'lpips': 0.0, 'count': 0}
                         per_channel_metrics[key]['msssim'] += channel_msssim[key]
                         per_channel_metrics[key]['psnr'] += channel_psnr[key]
-                        if self.metrics.log_lpips:
+                        if self.log_lpips:
                             per_channel_metrics[key]['lpips'] += channel_lpips[key]
                         per_channel_metrics[key]['count'] += 1
 
                     # Average across channels for combined metrics
                     msssim_val = sum(channel_msssim.values()) / len(keys)
                     psnr_val = sum(channel_psnr.values()) / len(keys)
-                    lpips_val = sum(channel_lpips.values()) / len(keys) if self.metrics.log_lpips else 0.0
+                    lpips_val = sum(channel_lpips.values()) / len(keys) if self.log_lpips else 0.0
                 else:
                     msssim_val = compute_msssim(metrics_pred, metrics_gt)
                     psnr_val = compute_psnr(metrics_pred, metrics_gt)
-                    if self.metrics.log_lpips:
+                    if self.log_lpips:
                         lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
                     else:
                         lpips_val = 0.0
@@ -2115,7 +2095,7 @@ class DiffusionTrainer(BaseTrainer):
                     regional_tracker.update(predicted_clean, images, labels)
 
                 # Timestep loss tracking (per-bin reconstruction MSE)
-                if self.metrics.log_timestep_losses:
+                if self.log_timestep_losses:
                     if isinstance(predicted_clean, dict):
                         pred = torch.cat(list(predicted_clean.values()), dim=1)
                         img = torch.cat(list(images.values()), dim=1)
@@ -2128,7 +2108,7 @@ class DiffusionTrainer(BaseTrainer):
                     timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
                     # Timestep-region tracking (for heatmap) - split by tumor/background
-                    if self.metrics.log_timestep_region_losses and labels is not None:
+                    if self.log_timestep_region_losses and labels is not None:
                         error_map = ((pred - img) ** 2).mean(dim=1)  # [B, H, W]
                         mask = labels[:, 0] > 0.5  # [B, H, W]
                         for i in range(current_batch_size):
@@ -2157,7 +2137,7 @@ class DiffusionTrainer(BaseTrainer):
             'msssim': total_msssim / n_batches,
             'psnr': total_psnr / n_batches,
         }
-        if self.metrics.log_lpips:
+        if self.log_lpips:
             metrics['lpips'] = total_lpips / n_batches
 
         # Add Dice/IoU for seg modes
@@ -2202,7 +2182,7 @@ class DiffusionTrainer(BaseTrainer):
 
             # Log per-timestep validation losses using unified system
             # NOTE: Must happen BEFORE log_validation() so timesteps are included
-            if self.metrics.log_timestep_losses:
+            if self.log_timestep_losses:
                 counts = timestep_loss_count.cpu()
                 sums = timestep_loss_sum.cpu()
                 for i in range(num_timestep_bins):
@@ -2223,7 +2203,7 @@ class DiffusionTrainer(BaseTrainer):
                     suffix = f'_{channel_key}'
                     self.writer.add_scalar(f'Validation/PSNR{suffix}', avg_psnr, epoch)
                     self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', avg_msssim, epoch)
-                    if self.metrics.log_lpips:
+                    if self.log_lpips:
                         avg_lpips = channel_data['lpips'] / count
                         self.writer.add_scalar(f'Validation/LPIPS{suffix}', avg_lpips, epoch)
 
@@ -2236,7 +2216,7 @@ class DiffusionTrainer(BaseTrainer):
                     regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
             # Log timestep-region heatmap on figure epochs
-            if (epoch + 1) % self.figure_interval == 0 and self.metrics.log_timestep_region_losses:
+            if (epoch + 1) % self.figure_interval == 0 and self.log_timestep_region_losses:
                 self._unified_metrics.log_timestep_region_heatmap(epoch)
 
             # Compute generation quality metrics (KID, CMMD)
@@ -2313,11 +2293,25 @@ class DiffusionTrainer(BaseTrainer):
             spatial_dims=2,
             modality=self.mode_name if self.mode_name not in ('multi', 'dual') else None,
             device=self.device,
-            enable_regional=self.metrics.log_regional_losses,
+            enable_regional=self.log_regional_losses,
             num_timestep_bins=10,
             image_size=self.image_size,
             fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            # Logging config flags
+            log_grad_norm=self.log_grad_norm,
+            log_timestep_losses=self.log_timestep_losses,
+            log_regional_losses=self.log_regional_losses,
+            log_msssim=self.log_msssim,
+            log_psnr=self.log_psnr,
+            log_lpips=self.log_lpips,
+            log_flops=self.log_flops,
+            # SNR weight config
+            strategy_name=self.strategy_name,
+            num_train_timesteps=self.num_timesteps,
+            use_min_snr=self.use_min_snr,
+            min_snr_gamma=self.min_snr_gamma,
         )
+        self._unified_metrics.set_scheduler(self.scheduler)
 
         # Measure FLOPs
         self._measure_model_flops(train_loader)
@@ -2385,7 +2379,6 @@ class DiffusionTrainer(BaseTrainer):
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
 
-                    self.metrics.log_epoch(epoch, log_all=True, is_figure_epoch=log_figures)
                     self._flops_tracker.log_epoch(self.writer, epoch)
                     log_vram_to_tensorboard(self.writer, self.device, epoch)
 
@@ -2422,7 +2415,7 @@ class DiffusionTrainer(BaseTrainer):
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using batch_size=1 to avoid OOM during torch.compile."""
-        if not self.metrics.log_flops:
+        if not self.log_flops:
             return
 
         try:
@@ -2485,7 +2478,7 @@ class DiffusionTrainer(BaseTrainer):
 
             # Initialize regional tracker for this modality
             regional_tracker = None
-            if self.metrics.log_regional_losses:
+            if self.log_regional_losses:
                 regional_tracker = RegionalMetricsTracker(
                     image_size=self.image_size,
                     fov_mm=self.cfg.paths.get('fov_mm', 240.0),
@@ -2518,7 +2511,7 @@ class DiffusionTrainer(BaseTrainer):
 
                     # Compute metrics
                     total_psnr += compute_psnr(predicted_clean, images)
-                    if self.metrics.log_lpips:
+                    if self.log_lpips:
                         total_lpips += compute_lpips(predicted_clean, images, device=self.device)
                     total_msssim += compute_msssim(predicted_clean, images)
 
@@ -2537,7 +2530,7 @@ class DiffusionTrainer(BaseTrainer):
                 self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
                 self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
 
-                if self.metrics.log_lpips:
+                if self.log_lpips:
                     avg_lpips = total_lpips / n_batches
                     self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
 
@@ -2792,7 +2785,7 @@ class DiffusionTrainer(BaseTrainer):
 
         # Initialize regional tracker for test (if enabled)
         regional_tracker = None
-        if self.metrics.log_regional_losses:
+        if self.log_regional_losses:
             regional_tracker = RegionalMetricsTracker(
                 image_size=self.image_size,
                 fov_mm=self.cfg.paths.get('fov_mm', 240.0),
@@ -2869,7 +2862,7 @@ class DiffusionTrainer(BaseTrainer):
                                   compute_msssim(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
                     psnr_val = (compute_psnr(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
                                 compute_psnr(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
-                    if self.metrics.log_lpips:
+                    if self.log_lpips:
                         lpips_val = (compute_lpips(metrics_pred[keys[0]], metrics_gt[keys[0]], self.device) +
                                      compute_lpips(metrics_pred[keys[1]], metrics_gt[keys[1]], self.device)) / 2
                     else:
@@ -2877,7 +2870,7 @@ class DiffusionTrainer(BaseTrainer):
                 else:
                     msssim_val = compute_msssim(metrics_pred, metrics_gt)
                     psnr_val = compute_psnr(metrics_pred, metrics_gt)
-                    if self.metrics.log_lpips:
+                    if self.log_lpips:
                         lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
                     else:
                         lpips_val = 0.0
@@ -2926,7 +2919,7 @@ class DiffusionTrainer(BaseTrainer):
             'psnr': total_psnr / n_batches,
             'n_samples': n_samples,
         }
-        if self.metrics.log_lpips:
+        if self.log_lpips:
             metrics['lpips'] = total_lpips / n_batches
 
         # Log results
