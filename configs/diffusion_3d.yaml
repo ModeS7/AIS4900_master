@@ -44,6 +44,11 @@ training:
     msssim: true                   # MONAI 3D MS-SSIM
     psnr: true
     lpips: true                    # 2.5D slice-wise
+  # 3D generation metrics - fewer samples since each is a full volume
+  generation_metrics:
+    samples_per_epoch: 1           # 1 volume/epoch (vs 100 for 2D)
+    samples_extended: 4            # 4 volumes at figure_interval
+    samples_test: 10               # 10 volumes for final test
 
 # Hydra configuration
 # Output structure: runs/diffusion_3d/{mode}/{exp_name}{strategy}_{size}_{timestamp}
