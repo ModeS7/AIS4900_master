@@ -285,13 +285,14 @@ class DDPMStrategy(DiffusionStrategy):
     """
 
     def setup_scheduler(
-        self, num_timesteps: int = 1000, image_size: int = 128
+        self, num_timesteps: int = 1000, image_size: int = 128, **kwargs
     ) -> DDPMScheduler:
         """Setup DDPM scheduler with cosine schedule.
 
         Args:
             num_timesteps: Number of diffusion timesteps.
             image_size: Size of input images (unused but kept for interface).
+            **kwargs: Ignored (for interface compatibility with RFlowStrategy).
 
         Returns:
             Configured DDPMScheduler instance.
@@ -511,14 +512,20 @@ class RFlowStrategy(DiffusionStrategy):
         image_size: int = 128,
         depth_size: Optional[int] = None,
         spatial_dims: int = 2,
+        use_discrete_timesteps: bool = True,
+        sample_method: str = 'logit-normal',
+        use_timestep_transform: bool = True,
     ):
         """Setup RFlow scheduler.
 
         Args:
-            num_timesteps: Number of diffusion timesteps.
+            num_timesteps: Number of diffusion timesteps (default 1000).
             image_size: Height/width of input.
             depth_size: Depth for 3D volumes (required if spatial_dims=3).
             spatial_dims: Number of spatial dimensions (2 or 3).
+            use_discrete_timesteps: Use discrete integer timesteps (default True).
+            sample_method: Timestep sampling - 'uniform' or 'logit-normal' (default).
+            use_timestep_transform: Apply resolution-based timestep transform (default True).
         """
         self.spatial_dims = spatial_dims
 
@@ -531,9 +538,9 @@ class RFlowStrategy(DiffusionStrategy):
 
         self.scheduler = RFlowScheduler(
             num_train_timesteps=num_timesteps,
-            use_discrete_timesteps=True,
-            sample_method='logit-normal',
-            use_timestep_transform=True,
+            use_discrete_timesteps=use_discrete_timesteps,
+            sample_method=sample_method,
+            use_timestep_transform=use_timestep_transform,
             base_img_size_numel=base_numel,
             spatial_dim=spatial_dims
         )

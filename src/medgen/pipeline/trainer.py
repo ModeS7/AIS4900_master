@@ -172,7 +172,13 @@ class DiffusionTrainer(BaseTrainer):
         # Initialize strategy and mode
         self.strategy = self._create_strategy(self.strategy_name)
         self.mode = self._create_mode(self.mode_name)
-        self.scheduler = self.strategy.setup_scheduler(self.num_timesteps, self.image_size)
+        self.scheduler = self.strategy.setup_scheduler(
+            num_timesteps=self.num_timesteps,
+            image_size=self.image_size,
+            use_discrete_timesteps=cfg.strategy.get('use_discrete_timesteps', True),
+            sample_method=cfg.strategy.get('sample_method', 'logit-normal'),
+            use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
+        )
 
         # Initialize metrics tracker
         self.metrics = MetricsTracker(
@@ -2192,7 +2198,6 @@ class DiffusionTrainer(BaseTrainer):
             if self.metrics.log_timestep_losses:
                 counts = timestep_loss_count.cpu()
                 sums = timestep_loss_sum.cpu()
-                bin_size = self.num_timesteps // num_timestep_bins
                 for i in range(num_timestep_bins):
                     if counts[i] > 0:
                         avg_loss = (sums[i] / counts[i]).item()
@@ -2766,7 +2771,7 @@ class DiffusionTrainer(BaseTrainer):
         worst_batch_loss = 0.0
         worst_batch_data: Optional[Dict[str, Any]] = None
 
-        # Timestep bin accumulators (10 bins: 0-99, 100-199, ..., 900-999)
+        # Timestep bin accumulators (10 bins: 0.0-0.1, 0.1-0.2, ..., 0.9-1.0)
         num_timestep_bins = 10
         timestep_loss_sum = torch.zeros(num_timestep_bins, device=self.device)
         timestep_loss_count = torch.zeros(num_timestep_bins, device=self.device, dtype=torch.long)
@@ -2938,18 +2943,17 @@ class DiffusionTrainer(BaseTrainer):
 
             self._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
 
-            # Log timestep bin losses using unified system
-            bin_size = self.num_timesteps // num_timestep_bins
+            # Log timestep bin losses using unified system (normalized 0.0-1.0 format)
             counts = timestep_loss_count.cpu()
             sums = timestep_loss_sum.cpu()
             timestep_bins = {}
             for bin_idx in range(num_timestep_bins):
-                bin_start = bin_idx * bin_size
-                bin_end = (bin_idx + 1) * bin_size - 1
+                bin_start = bin_idx / num_timestep_bins
+                bin_end = (bin_idx + 1) / num_timestep_bins
                 count = counts[bin_idx].item()
                 if count > 0:
                     avg_loss = (sums[bin_idx] / count).item()
-                    timestep_bins[f'{bin_start:04d}-{bin_end:04d}'] = avg_loss
+                    timestep_bins[f'{bin_start:.1f}-{bin_end:.1f}'] = avg_loss
             if timestep_bins:
                 # Log timestep losses directly since log_test doesn't handle this prefix
                 for bin_name, loss in timestep_bins.items():

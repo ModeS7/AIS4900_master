@@ -657,14 +657,14 @@ class UnifiedMetrics:
                 epoch,
             )
 
-        # Validation timesteps (format: Timestep/0-9, Timestep/10-19, etc.)
+        # Validation timesteps (format: Timestep/0.0-0.1, Timestep/0.1-0.2, etc.)
         for i in range(self.num_timestep_bins):
             if self._val_timesteps['counts'][i] > 0:
-                # Convert bin index to timestep range (assuming 100 timesteps)
-                bin_start = int(i * (100 / self.num_timestep_bins))
-                bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
+                # Convert bin index to normalized timestep range [0.0, 1.0]
+                bin_start = i / self.num_timestep_bins
+                bin_end = (i + 1) / self.num_timestep_bins
                 avg = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
-                self.writer.add_scalar(f'Timestep/{bin_start}-{bin_end}', avg, epoch)
+                self.writer.add_scalar(f'Timestep/{bin_start:.1f}-{bin_end:.1f}', avg, epoch)
 
         # Regional
         if self._regional_tracker is not None:
@@ -721,9 +721,9 @@ class UnifiedMetrics:
         labels_timestep = []
 
         for i in range(self.num_timestep_bins):
-            bin_start = int(i * (100 / self.num_timestep_bins))
-            bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
-            labels_timestep.append(f'{bin_start}-{bin_end}')
+            bin_start = i / self.num_timestep_bins
+            bin_end = (i + 1) / self.num_timestep_bins
+            labels_timestep.append(f'{bin_start:.1f}-{bin_end:.1f}')
 
             # Tumor column
             if self._tr_tumor_count[i] > 0:
@@ -868,9 +868,9 @@ class UnifiedMetrics:
         epoch_timesteps = {}
         for i in range(self.num_timestep_bins):
             if self._val_timesteps['counts'][i] > 0:
-                bin_start = int(i * (100 / self.num_timestep_bins))
-                bin_end = int((i + 1) * (100 / self.num_timestep_bins)) - 1
-                bin_name = f'{bin_start:04d}-{bin_end:04d}'
+                bin_start = i / self.num_timestep_bins
+                bin_end = (i + 1) / self.num_timestep_bins
+                bin_name = f'{bin_start:.1f}-{bin_end:.1f}'
                 epoch_timesteps[bin_name] = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
         if epoch_timesteps:
             self._timestep_history[str(epoch)] = epoch_timesteps
@@ -878,8 +878,8 @@ class UnifiedMetrics:
         # Timestep-region history
         epoch_tr = {}
         for i in range(self.num_timestep_bins):
-            bin_start = int(i * (100 / self.num_timestep_bins))
-            bin_label = f'{bin_start:04d}'
+            bin_start = i / self.num_timestep_bins
+            bin_label = f'{bin_start:.1f}'
             tumor_avg = self._tr_tumor_sum[i] / max(self._tr_tumor_count[i], 1) if self._tr_tumor_count[i] > 0 else 0.0
             bg_avg = self._tr_bg_sum[i] / max(self._tr_bg_count[i], 1) if self._tr_bg_count[i] > 0 else 0.0
             epoch_tr[bin_label] = {

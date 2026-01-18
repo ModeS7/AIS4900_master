@@ -137,6 +137,9 @@ class Diffusion3DTrainer(BaseTrainer):
             image_size=self.volume_height,
             depth_size=self.volume_depth,
             spatial_dims=3,
+            use_discrete_timesteps=cfg.strategy.get('use_discrete_timesteps', True),
+            sample_method=cfg.strategy.get('sample_method', 'logit-normal'),
+            use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
         )
 
         # EMA

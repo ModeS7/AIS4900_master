@@ -23,7 +23,7 @@
 
 name: rflow
 num_train_timesteps: 1000         # Total flow steps
-use_discrete_timesteps: true      # Use discrete timestep indices
+use_discrete_timesteps: false     # Use continuous timesteps (true for RFlow)
 sample_method: logit-normal       # Bias sampling to mid-range t
 use_timestep_transform: true      # Apply timestep transformation
 prediction_type: velocity         # Predict velocity (vs noise for ddpm)

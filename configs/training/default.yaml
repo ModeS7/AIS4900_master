@@ -163,7 +163,8 @@ augmented_diffusion:
   # Has no effect on pixel-space diffusion
 
 # Perceptual loss (SqueezeNet features)
-perceptual_weight: 0.001   # Weight for perceptual loss term
+# Disabled by default for diffusion - adds compute overhead with minimal benefit
+perceptual_weight: 0.0     # Weight for perceptual loss term (0 = disabled)
 
 # Multi-GPU (DDP)
 use_multi_gpu: false
