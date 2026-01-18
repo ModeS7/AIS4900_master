@@ -52,7 +52,7 @@ time python -m medgen.scripts.train_diffusion_3d \
     model=default_3d \
     volume.height=256 \
     volume.width=256 \
-    volume.pad_depth_to=160 \
+    volume.pad_depth_to=150 \
     training.batch_size=1 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
