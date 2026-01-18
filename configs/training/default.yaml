@@ -14,8 +14,8 @@ limit_train_batches: null  # Limit batches per epoch (null = use all, int = limi
 learning_rate: 1.0e-4      # Base learning rate
 gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
 warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
-figure_count: 20           # Target number of figure logs per training run (adaptive interval)
-augment: true              # Data augmentation (horizontal flip, small rotation)
+figure_interval: 20        # Log figures every N epochs
+augment: false             # Data augmentation (disabled by default for diffusion)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
 
 # Batch-level augmentations (VAE only - mixup/cutmix)
