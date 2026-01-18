@@ -447,6 +447,7 @@ class Diffusion3DTrainer(BaseTrainer):
     ) -> torch.Tensor:
         """Generate 3D samples for metric computation.
 
+        Generates in batches of self.batch_size (from training.batch_size) to avoid OOM.
         Supports two conditioning modes:
         - ControlNet: Full pixel-resolution conditioning (recommended for latent)
         - Concatenation: Conditioning encoded to latent space
@@ -459,57 +460,76 @@ class Diffusion3DTrainer(BaseTrainer):
         Returns:
             Generated volumes [N, C, D, H, W] in pixel space.
         """
-        # Determine output shape
+        # Use training.batch_size for generation batching (typically 1 for 3D)
+        batch_size = self.batch_size
+        all_samples = []
+
+        # Determine base shape (without batch dimension)
         if isinstance(self.space, LatentSpace):
-            # Latent space shape
             latent_depth = self.volume_depth // self.space.scale_factor
             latent_height = self.volume_height // self.space.scale_factor
             latent_width = self.volume_width // self.space.scale_factor
-            noise_shape = (num_samples, self.space.latent_channels,
-                          latent_depth, latent_height, latent_width)
+            base_shape = (self.space.latent_channels, latent_depth, latent_height, latent_width)
         else:
-            noise_shape = (num_samples, 1, self.volume_depth,
-                          self.volume_height, self.volume_width)
+            base_shape = (1, self.volume_depth, self.volume_height, self.volume_width)
 
-        noise = torch.randn(noise_shape, device=self.device)
+        # Generate in batches to avoid OOM
+        for start_idx in range(0, num_samples, batch_size):
+            end_idx = min(start_idx + batch_size, num_samples)
+            current_batch_size = end_idx - start_idx
 
-        # Handle conditioning based on mode
-        if self.mode.is_conditional and self._fixed_conditioning_volumes is not None:
-            # Use fixed conditioning (cycle if needed)
-            n_cond = self._fixed_conditioning_volumes.shape[0]
-            indices = [i % n_cond for i in range(num_samples)]
-            conditioning = self._fixed_conditioning_volumes[indices]  # Pixel-space
+            # Create noise for this batch
+            noise_shape = (current_batch_size,) + base_shape
+            noise = torch.randn(noise_shape, device=self.device)
 
-            if self.use_controlnet:
-                # ControlNet mode: wrap model with pixel-space conditioning
-                # Conditioning stays at full resolution
-                gen_model = ControlNetGenerationWrapper(model, conditioning)
-                model_input = noise  # Just noise, no concatenation
+            # Handle conditioning based on mode
+            if self.mode.is_conditional and self._fixed_conditioning_volumes is not None:
+                # Use fixed conditioning (cycle if needed)
+                n_cond = self._fixed_conditioning_volumes.shape[0]
+                indices = [i % n_cond for i in range(start_idx, end_idx)]
+                conditioning = self._fixed_conditioning_volumes[indices]  # Pixel-space
+
+                if self.use_controlnet:
+                    # ControlNet mode: wrap model with pixel-space conditioning
+                    gen_model = ControlNetGenerationWrapper(model, conditioning)
+                    model_input = noise  # Just noise, no concatenation
+                else:
+                    # Concatenation mode: encode conditioning to match latent space
+                    if isinstance(self.space, LatentSpace):
+                        conditioning = self.space.encode(conditioning)
+                    model_input = torch.cat([noise, conditioning], dim=1)
+                    gen_model = model
             else:
-                # Concatenation mode: encode conditioning to match latent space
-                if isinstance(self.space, LatentSpace):
-                    conditioning = self.space.encode(conditioning)
-                model_input = torch.cat([noise, conditioning], dim=1)
+                model_input = noise
                 gen_model = model
-        else:
-            model_input = noise
-            gen_model = model
 
-        # Generate samples
-        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            samples = self.strategy.generate(
-                gen_model,
-                model_input,
-                num_steps=num_steps,
-                device=self.device,
-                use_progress_bars=False,
-            )
+            # Generate samples for this batch
+            with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                samples = self.strategy.generate(
+                    gen_model,
+                    model_input,
+                    num_steps=num_steps,
+                    device=self.device,
+                    use_progress_bars=False,
+                )
 
-        # Decode if in latent space
-        if isinstance(self.space, LatentSpace):
-            samples = self.space.decode(samples)
+            # Decode if in latent space
+            if isinstance(self.space, LatentSpace):
+                samples = self.space.decode(samples)
 
-        return torch.clamp(samples, 0, 1)
+            # Move to CPU to free GPU memory
+            all_samples.append(torch.clamp(samples, 0, 1).cpu())
+
+            # Clean up batch tensors
+            del noise, model_input, samples
+            if self.mode.is_conditional and self._fixed_conditioning_volumes is not None:
+                del conditioning
+
+        # Concatenate all batches and move back to device
+        result = torch.cat(all_samples, dim=0).to(self.device)
+        del all_samples
+
+        return result
 
     @torch.no_grad()
     def _compute_generation_metrics_3d(
