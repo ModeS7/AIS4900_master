@@ -31,7 +31,6 @@ time python -m medgen.scripts.train \
     strategy=rflow \
     mode=bravo \
     model.image_size=128 \
-    training.epochs=500 \
     training.name=exp_1_3_continuous_
 
 conda deactivate
