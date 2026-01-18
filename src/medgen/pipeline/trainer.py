@@ -1881,9 +1881,9 @@ class DiffusionTrainer(BaseTrainer):
 
         # Log training losses using unified system
         if self.is_main_process and not self.use_multi_gpu:
-            self._unified_metrics.update_loss('Total', avg_loss)
             self._unified_metrics.update_loss('MSE', avg_mse)
             if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Total', avg_loss)
                 self._unified_metrics.update_loss('Perceptual', avg_perceptual)
             self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
             self._unified_metrics.update_vram()
@@ -2150,8 +2150,8 @@ class DiffusionTrainer(BaseTrainer):
             # Update unified metrics with validation values
             self._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
             if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Total', metrics['total'], phase='val')
                 self._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
-            self._unified_metrics.update_loss('Total', metrics['total'], phase='val')
 
             # Compute 3D MS-SSIM first so we can include it in metrics
             msssim_3d = None
@@ -2374,9 +2374,9 @@ class DiffusionTrainer(BaseTrainer):
 
                     # Log training losses using unified system (DDP path)
                     if self.use_multi_gpu:
-                        self._unified_metrics.update_loss('Total', avg_loss)
                         self._unified_metrics.update_loss('MSE', avg_mse)
                         if self.perceptual_weight > 0:
+                            self._unified_metrics.update_loss('Total', avg_loss)
                             self._unified_metrics.update_loss('Perceptual', avg_perceptual)
                         self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
                         self._unified_metrics.update_vram()

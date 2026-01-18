@@ -215,8 +215,8 @@ class Diffusion3DTrainer(BaseTrainer):
         # Uses 2.5D approach: compute perceptual loss on center slice for efficiency
         self.perceptual_weight: float = 0.0 if self.is_seg_mode else cfg.training.get('perceptual_weight', 0.0)
 
-        # Size bin embedding for seg mode
-        self.use_size_bin_embedding = (self.mode_name == 'seg')
+        # Size bin embedding for seg_conditioned mode (matches 2D trainer)
+        self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned')
         if self.use_size_bin_embedding:
             size_bin_cfg = cfg.mode.get('size_bins', {})
             self.size_bin_num_bins = size_bin_cfg.get('num_bins', 7)
@@ -318,6 +318,13 @@ class Diffusion3DTrainer(BaseTrainer):
                     f"flip={score_aug_cfg.get('flip', True)})"
                 )
 
+            # Mode intensity scaling is not supported in 3D (requires mode_id/mode embedding)
+            if score_aug_cfg.get('mode_intensity_scaling', False):
+                logger.warning(
+                    "mode_intensity_scaling is not supported in 3D diffusion "
+                    "(requires mode_id from multi-modality mode). Ignoring."
+                )
+
         # SDA 3D (Shifted Data Augmentation - transforms on CLEAN data with shifted timesteps)
         # Note: SDA and ScoreAug are mutually exclusive - use one OR the other
         self.sda = None
@@ -359,6 +366,26 @@ class Diffusion3DTrainer(BaseTrainer):
                     f"Regional weighting 3D enabled: tiny={weights['tiny']}, "
                     f"small={weights['small']}, medium={weights['medium']}, large={weights['large']}"
                 )
+
+        # Augmented diffusion (DC-AE 1.5 - channel masking for latent space training)
+        aug_diff_cfg = cfg.training.get('augmented_diffusion', {})
+        self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
+        self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
+        self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
+        self._aug_diff_channel_steps: Optional[List[int]] = None
+
+        # Self-conditioning (consistency loss via two forward passes)
+        self_cond_cfg = cfg.training.get('self_conditioning', {})
+        self.self_conditioning_enabled: bool = self_cond_cfg.get('enabled', False)
+        self.self_conditioning_prob: float = self_cond_cfg.get('prob', 0.5)
+        self.self_conditioning_weight: float = self_cond_cfg.get('consistency_weight', 0.1)
+
+        # Feature perturbation (noise on intermediate UNet layers)
+        feat_cfg = cfg.training.get('feature_perturbation', {})
+        self.feature_perturbation_enabled: bool = feat_cfg.get('enabled', False)
+        self.feature_perturbation_std: float = feat_cfg.get('std', 0.1)
+        self.feature_perturbation_layers: List[str] = feat_cfg.get('layers', ['mid'])
+        self._perturbation_hooks: List[Any] = []
 
         # Timestep bins for per-bin loss tracking
         self.num_timestep_bins = 10
@@ -738,6 +765,9 @@ class Diffusion3DTrainer(BaseTrainer):
             )
             logger.info(f"EMA enabled with decay={self.ema_decay}")
 
+        # Setup feature perturbation hooks if enabled
+        self._setup_feature_perturbation()
+
         # torch.compile for model optimization
         # Note: Incompatible with gradient_checkpointing - must disable one or the other
         use_compile = self.cfg.training.get('use_compile', False)
@@ -888,6 +918,126 @@ class Diffusion3DTrainer(BaseTrainer):
         weighted_mse = (mse_per_sample * snr_weights).mean()
 
         return weighted_mse
+
+    def _get_aug_diff_channel_steps(self, num_channels: int) -> List[int]:
+        """Get list of channel counts for augmented diffusion masking.
+
+        Returns [min_channels, min+step, min+2*step, ..., num_channels].
+        Paper uses [16, 20, 24, ..., c] with step=4, min=16.
+
+        Args:
+            num_channels: Total number of latent channels.
+
+        Returns:
+            List of valid channel counts to sample from during training.
+        """
+        if self._aug_diff_channel_steps is None:
+            steps = list(range(
+                self.aug_diff_min_channels,
+                num_channels + 1,
+                self.aug_diff_channel_step
+            ))
+            # Ensure max channels is always included
+            if not steps or steps[-1] != num_channels:
+                steps.append(num_channels)
+            self._aug_diff_channel_steps = steps
+        return self._aug_diff_channel_steps
+
+    def _create_aug_diff_mask(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Create channel mask for augmented diffusion training.
+
+        From DC-AE 1.5 paper (Eq. 2):
+        - Sample random channel count c' from [min_channels, ..., num_channels]
+        - Create mask: [1,...,1 (c' times), 0,...,0]
+
+        Args:
+            tensor: Input tensor [B, C, D, H, W] to get shape from.
+
+        Returns:
+            Mask tensor [1, C, 1, 1, 1] for broadcasting.
+        """
+        C = tensor.shape[1]
+        steps = self._get_aug_diff_channel_steps(C)
+        c_prime = random.choice(steps)
+
+        mask = torch.zeros(1, C, 1, 1, 1, device=tensor.device, dtype=tensor.dtype)
+        mask[:, :c_prime, :, :, :] = 1.0
+        return mask
+
+    def _compute_self_conditioning_loss(
+        self,
+        model_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        prediction: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute self-conditioning consistency loss.
+
+        With probability `prob`, runs model a second time and computes
+        consistency loss between the two predictions.
+
+        Args:
+            model_input: Current model input tensor.
+            timesteps: Current timesteps.
+            prediction: Current prediction from main forward pass.
+
+        Returns:
+            Consistency loss (0 if disabled or skipped this batch).
+        """
+        if not self.self_conditioning_enabled:
+            return torch.tensor(0.0, device=model_input.device)
+
+        # With probability (1-prob), skip self-conditioning
+        if random.random() >= self.self_conditioning_prob:
+            return torch.tensor(0.0, device=model_input.device)
+
+        # Get second prediction (detached first prediction as reference)
+        with torch.no_grad():
+            prediction_ref = self.model(x=model_input, timesteps=timesteps)
+            prediction_ref = prediction_ref.detach()
+
+        # Consistency loss: predictions should be similar
+        consistency_loss = F.mse_loss(prediction.float(), prediction_ref.float())
+        return consistency_loss
+
+    def _setup_feature_perturbation(self) -> None:
+        """Setup forward hooks for feature perturbation."""
+        self._perturbation_hooks = []
+
+        if not self.feature_perturbation_enabled:
+            return
+
+        def make_hook(noise_std):
+            def hook(module, input, output):
+                if self.model.training:
+                    noise = torch.randn_like(output) * noise_std
+                    return output + noise
+                return output
+            return hook
+
+        # Register hooks on specified layers
+        # UNet structure: down_blocks, mid_block, up_blocks
+        if hasattr(self.model_raw, 'mid_block') and 'mid' in self.feature_perturbation_layers:
+            handle = self.model_raw.mid_block.register_forward_hook(make_hook(self.feature_perturbation_std))
+            self._perturbation_hooks.append(handle)
+
+        if hasattr(self.model_raw, 'down_blocks') and 'encoder' in self.feature_perturbation_layers:
+            for block in self.model_raw.down_blocks:
+                handle = block.register_forward_hook(make_hook(self.feature_perturbation_std))
+                self._perturbation_hooks.append(handle)
+
+        if hasattr(self.model_raw, 'up_blocks') and 'decoder' in self.feature_perturbation_layers:
+            for block in self.model_raw.up_blocks:
+                handle = block.register_forward_hook(make_hook(self.feature_perturbation_std))
+                self._perturbation_hooks.append(handle)
+
+        if self._perturbation_hooks and self.is_main_process:
+            logger.info(f"Feature perturbation enabled: {len(self._perturbation_hooks)} hooks on {self.feature_perturbation_layers}")
+
+    def _remove_feature_perturbation_hooks(self) -> None:
+        """Remove feature perturbation hooks."""
+        for handle in getattr(self, '_perturbation_hooks', []):
+            handle.remove()
+        self._perturbation_hooks = []
 
     def _add_gradient_noise(self, step: int) -> None:
         """Add Gaussian noise to gradients for regularization.
@@ -1170,9 +1320,9 @@ class Diffusion3DTrainer(BaseTrainer):
             result = self._train_step(batch)
 
             # Accumulate losses using unified system
-            self._unified_metrics.update_loss('Total', result.total_loss)
             self._unified_metrics.update_loss('MSE', result.mse_loss)
             if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Total', result.total_loss)
                 self._unified_metrics.update_loss('Perceptual', result.perceptual_loss)
             self._unified_metrics.update_grad_norm(result.grad_norm)
 
@@ -1221,6 +1371,14 @@ class Diffusion3DTrainer(BaseTrainer):
 
         # Add noise to get noisy images
         noisy_images = self.strategy.add_noise(images, noise, timesteps)
+
+        # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
+        # Only active for latent diffusion (LatentSpace)
+        aug_diff_mask = None
+        if self.augmented_diffusion_enabled and isinstance(self.space, LatentSpace):
+            aug_diff_mask = self._create_aug_diff_mask(noise)
+            noise = noise * aug_diff_mask
+            noisy_images = noisy_images * aug_diff_mask
 
         # ScoreAug: apply transforms to noisy data (after noise addition)
         omega = None
@@ -1295,6 +1453,11 @@ class Diffusion3DTrainer(BaseTrainer):
 
                 prediction = self.model(x=model_input, timesteps=timesteps)
 
+            # DC-AE 1.5: Mask prediction for augmented diffusion training
+            # Paper Eq. 2: ||ε·mask - ε_θ(x_t·mask, t)·mask||²
+            if aug_diff_mask is not None:
+                prediction = prediction * aug_diff_mask
+
             # Compute loss with optional Min-SNR weighting and regional weighting
             # Use augmented target if ScoreAug was applied
             if self.score_aug is not None and target is not None:
@@ -1341,6 +1504,14 @@ class Diffusion3DTrainer(BaseTrainer):
                 img_slice = images[:, :, center_idx, :, :].float()
                 p_loss = self.perceptual_loss_fn(pred_slice, img_slice)
                 total_loss = total_loss + self.perceptual_weight * p_loss
+
+            # Self-conditioning consistency loss (only for standard/omega modes)
+            if self.self_conditioning_enabled and not self.use_controlnet and not self.use_size_bin_embedding:
+                # model_input is set in omega or standard branch
+                consistency_loss = self._compute_self_conditioning_loss(
+                    model_input, timesteps, prediction
+                )
+                total_loss = total_loss + self.self_conditioning_weight * consistency_loss
 
             if self.sda is not None:
                 # Apply SDA to clean images (before noise)
@@ -1432,12 +1603,14 @@ class Diffusion3DTrainer(BaseTrainer):
         # Worst batch tracking - simple scalar approach (matches 2D trainer)
         worst_loss = 0.0
         worst_batch_data: Optional[Dict[str, Any]] = None
+        min_batch_size = self.batch_size  # Don't track small last batches
 
         for batch in tqdm(val_loader, desc="Validation", disable=not self.verbose):
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
             labels = prepared.get('labels')
             size_bins = prepared.get('size_bins')  # For seg mode
+            current_batch_size = images.shape[0]
 
             # Sample noise and timesteps
             noise = torch.randn_like(images)
@@ -1474,7 +1647,9 @@ class Diffusion3DTrainer(BaseTrainer):
 
             batch_loss = mse_loss.item()
             self._unified_metrics.update_loss('MSE', batch_loss, phase='val')
-            self._unified_metrics.update_loss('Total', batch_loss, phase='val')  # Total = MSE for 3D diffusion
+            # Only log Total when it differs from MSE (perceptual weight > 0)
+            if self.perceptual_weight > 0:
+                self._unified_metrics.update_loss('Total', batch_loss, phase='val')
 
             # Track timestep losses using unified system
             if self.log_timestep_losses:
@@ -1483,8 +1658,8 @@ class Diffusion3DTrainer(BaseTrainer):
                 t_normalized = avg_t / self.num_timesteps
                 self._unified_metrics.update_timestep_loss(t_normalized, batch_loss)
 
-            # Track worst batch (matches 2D trainer approach)
-            if self.log_worst_batch and batch_loss > worst_loss:
+            # Track worst batch (matches 2D trainer approach, filter small last batches)
+            if self.log_worst_batch and batch_loss > worst_loss and current_batch_size >= min_batch_size:
                 worst_loss = batch_loss
                 worst_batch_data = {
                     'original': images.cpu(),
@@ -2177,8 +2352,8 @@ class Diffusion3DTrainer(BaseTrainer):
                 batch_loss = mse_loss.item()
                 total_mse += batch_loss
 
-                # Track worst batch (matches 2D trainer)
-                if batch_loss > worst_batch_loss:
+                # Track worst batch (matches 2D trainer, filter small last batches)
+                if batch_loss > worst_batch_loss and batch_size >= self.batch_size:
                     worst_batch_loss = batch_loss
                     worst_batch_data = {
                         'original': images.cpu(),
