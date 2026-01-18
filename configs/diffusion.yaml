@@ -17,13 +17,13 @@
 #   python -m medgen.scripts.train --cfg job
 
 defaults:
-  - paths: local      # local.yaml or cluster.yaml
   - model: default    # Model architecture (DiffusionModelUNet)
   - strategy: ddpm    # ddpm.yaml or rflow.yaml
   - mode: bravo       # seg.yaml, bravo.yaml, or dual.yaml
   - training: default # Training hyperparameters
   - optional latent: default      # Latent diffusion settings (disabled by default)
   - optional controlnet: default  # ControlNet conditioning (disabled by default)
+  - paths: local      # local.yaml or cluster.yaml (AFTER training so it can override verbose)
   - _self_
 
 # Hydra configuration

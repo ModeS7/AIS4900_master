@@ -21,11 +21,11 @@
 #   - other modes: 1 channel
 
 defaults:
-  - paths: local
   - model: default
   - mode: dual        # Can be seg, bravo, dual, t1_pre, or t1_gd
   - vae: default      # VAE architecture
   - training: default
+  - paths: local      # AFTER training so it can override verbose
   - _self_
 
 # Pretrained checkpoint (for fine-tuning from progressive VAE)

@@ -17,11 +17,11 @@
 #   python -m medgen.scripts.train_vqvae vqvae.disable_gan=true
 
 defaults:
-  - paths: local
   - model: default
   - mode: dual
   - vqvae: default
   - training: default
+  - paths: local      # AFTER training so it can override verbose
   - _self_
 
 # Pretrained checkpoint (for fine-tuning)

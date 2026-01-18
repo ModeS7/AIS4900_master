@@ -40,10 +40,10 @@
 #       dcae.seg_mode=true
 
 defaults:
-  - paths: local
   - mode: multi_modality  # Single-channel slices from all modalities
   - dcae: f32  # Default to f32c32 (32× compression)
   - training: default
+  - paths: local      # AFTER training so it can override verbose
   - _self_
 
 # Model settings (for dataloader compatibility)

@@ -20,12 +20,12 @@
 #   python -m medgen.scripts.train_dcae_3d mode=multi_modality
 
 defaults:
-  - paths: local
   - model: default
   - mode: multi_modality
   - dcae_3d: default
   - training: default
   - volume: default
+  - paths: local      # AFTER training so it can override verbose
   - _self_
 
 # Pretrained checkpoint (for fine-tuning)

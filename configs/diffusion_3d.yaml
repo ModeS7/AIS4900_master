@@ -24,12 +24,12 @@
 #   python -m medgen.scripts.train_diffusion_3d --cfg job
 
 defaults:
-  - paths: local          # local.yaml or cluster.yaml
   - model: default_3d     # 3D UNet architecture
   - strategy: rflow       # ddpm.yaml or rflow.yaml
   - mode: bravo           # seg.yaml, bravo.yaml, dual.yaml, multi.yaml
   - training: default     # Training hyperparameters
   - volume: default       # 3D volume dimensions
+  - paths: local          # local.yaml or cluster.yaml (AFTER training so it can override verbose)
   - optional latent: default     # Latent diffusion settings
   - optional controlnet: default # ControlNet conditioning
   - _self_

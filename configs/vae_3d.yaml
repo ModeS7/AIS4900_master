@@ -13,12 +13,12 @@
 #   python -m medgen.scripts.train_vae_3d paths=cluster
 
 defaults:
-  - paths: local
   - model: default
   - mode: dual
   - vae_3d: default
   - training: default
   - volume: default
+  - paths: local      # AFTER training so it can override verbose
   - _self_
 
 # Pretrained checkpoint (for fine-tuning)
