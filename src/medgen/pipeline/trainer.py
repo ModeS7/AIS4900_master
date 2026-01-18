@@ -1869,7 +1869,7 @@ class DiffusionTrainer(BaseTrainer):
         epoch_perceptual_loss = 0
 
         epoch_iter = create_epoch_iterator(
-            data_loader, epoch, self.is_cluster, self.is_main_process,
+            data_loader, epoch, not self.verbose, self.is_main_process,
             limit_batches=self.limit_train_batches
         )
 
@@ -2787,7 +2787,7 @@ class DiffusionTrainer(BaseTrainer):
             )
 
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=self.is_cluster):
+            for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=not self.verbose):
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')

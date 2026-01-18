@@ -1195,7 +1195,7 @@ class Diffusion3DTrainer(BaseTrainer):
         self.model.train()
         self._unified_metrics.reset_training()
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", disable=not self.is_main_process)
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}", disable=not self.verbose)
         for batch_idx, batch in enumerate(pbar):
             # Limit batches per epoch (for fast debugging)
             if self.limit_train_batches is not None and batch_idx >= self.limit_train_batches:
@@ -1447,7 +1447,7 @@ class Diffusion3DTrainer(BaseTrainer):
         worst_samples: List[Tuple[float, Dict[str, Any]]] = []  # min-heap of (loss, data)
         NUM_WORST_SAMPLES = 4
 
-        for batch in tqdm(val_loader, desc="Validation", disable=not self.is_main_process):
+        for batch in tqdm(val_loader, desc="Validation", disable=not self.verbose):
             prepared = self.mode.prepare_batch(batch, self.device)
             images = prepared['images']
             labels = prepared.get('labels')
@@ -2044,7 +2044,7 @@ class Diffusion3DTrainer(BaseTrainer):
             )
 
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Test evaluation", disable=not self.is_main_process):
+            for batch in tqdm(test_loader, desc="Test evaluation", disable=not self.verbose):
                 prepared = self.mode.prepare_batch(batch, self.device)
                 images = prepared['images']
                 labels = prepared.get('labels')

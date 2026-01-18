@@ -7,6 +7,12 @@
 # Include trailing underscore: training.name=exp1_ -> exp1_rflow_128_...
 name: ""
 
+# Progress bar verbosity (tqdm)
+# false: Disable tqdm progress bars (cleaner SLURM logs)
+# true: Enable tqdm progress bars
+# Default true for local development, overridden to false in paths/cluster.yaml
+verbose: true
+
 # Core training parameters
 epochs: 500                # Total training epochs
 batch_size: 16             # Batch size per GPU

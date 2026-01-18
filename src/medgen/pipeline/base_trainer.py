@@ -87,6 +87,11 @@ class BaseTrainer(ABC):
         # Determine if running on cluster
         self.is_cluster: bool = (cfg.paths.name == "cluster")
 
+        # Verbose mode (controls tqdm progress bars)
+        # false: Disable tqdm progress bars (clean SLURM logs)
+        # true: Enable tqdm progress bars
+        self.verbose: bool = cfg.training.get('verbose', False)
+
         # ─────────────────────────────────────────────────────────────────────
         # Extract logging config
         # ─────────────────────────────────────────────────────────────────────

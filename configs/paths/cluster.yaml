@@ -8,3 +8,7 @@ cache_dir: /cluster/work/modestas/.cache/medgen
 
 # Dataset-specific parameters (BrainMetShare: 256x256 @ 0.94mm/pixel)
 fov_mm: 240.0  # Field of view in mm
+
+# Disable tqdm progress bars on cluster (keeps .err files clean)
+training:
+  verbose: false
