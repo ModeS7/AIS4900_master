@@ -12,6 +12,7 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1_1_pixel_bravo_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --exclude=idun-06-02
 
 cd ${SLURM_SUBMIT_DIR}
 

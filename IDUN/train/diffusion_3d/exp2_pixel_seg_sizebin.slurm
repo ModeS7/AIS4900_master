@@ -12,6 +12,7 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp2_pixel_seg_sizebin_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --exclude=idun-06-02
 
 cd ${SLURM_SUBMIT_DIR}
 
