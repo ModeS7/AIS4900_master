@@ -278,8 +278,8 @@ class ValidationVisualizer:
 
             if self.strategy_name == 'rflow':
                 dt = 1.0 / num_steps
-                # RFlow: velocity points from data to noise, so subtract when going noise→data
-                current = current - dt * pred
+                # RFlow: v = x_0 - x_1 (clean - noise), so ADD to move toward clean
+                current = current + dt * pred
             else:
                 # For DDPM, scheduler.step needs integer timestep
                 timestep_int = int(t_scaled)

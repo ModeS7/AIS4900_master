@@ -2051,8 +2051,8 @@ class Diffusion3DTrainer(BaseTrainer):
             else:
                 v_pred = self.model(x, t_tensor)
 
-            # Euler step
-            x = x - dt * v_pred
+            # Euler step: x_{t-dt} = x_t + dt * v_pred (MONAI convention: v points toward clean)
+            x = x + dt * v_pred
 
             # Capture at intervals
             if (i + 1) % capture_every == 0:
@@ -2093,8 +2093,8 @@ class Diffusion3DTrainer(BaseTrainer):
             # Forward with size_bins
             v_pred = self.model(x, t_tensor, size_bins=size_bins)
 
-            # Euler step
-            x = x - dt * v_pred
+            # Euler step: x_{t-dt} = x_t + dt * v_pred (MONAI convention: v points toward clean)
+            x = x + dt * v_pred
 
             # Capture at intervals
             if (i + 1) % capture_every == 0:
@@ -2134,8 +2134,8 @@ class Diffusion3DTrainer(BaseTrainer):
             # Forward with size_bins
             v_pred = self.model(x, t_tensor, size_bins=size_bins)
 
-            # Euler step
-            x = x - dt * v_pred
+            # Euler step: x_{t-dt} = x_t + dt * v_pred (MONAI convention: v points toward clean)
+            x = x + dt * v_pred
 
         return x
 
