@@ -1019,12 +1019,12 @@ class UnifiedMetrics:
         from .figures import create_reconstruction_figure
         import matplotlib.pyplot as plt
 
-        # Handle 3D volumes - take center slice
+        # Handle 3D volumes - extract multiple slices for visualization
         if self.spatial_dims == 3:
-            original = self._extract_center_slice(original)
-            reconstructed = self._extract_center_slice(reconstructed)
+            original = self._extract_multiple_slices(original, num_slices=max_samples)
+            reconstructed = self._extract_multiple_slices(reconstructed, num_slices=max_samples)
             if mask is not None:
-                mask = self._extract_center_slice(mask)
+                mask = self._extract_multiple_slices(mask, num_slices=max_samples)
 
         fig = create_reconstruction_figure(
             original=original,
@@ -1077,11 +1077,12 @@ class UnifiedMetrics:
         if self.writer is None and save_path is None:
             return
 
-        # Determine tag
+        # Determine tag - use TensorBoard standard format: Validation/worst_batch
         if tag_prefix is not None:
             tag = f'{tag_prefix}/worst_batch'
         else:
-            tag = f'worst_batch/{phase}'
+            phase_cap = phase.capitalize()  # val -> Validation, train -> Train
+            tag = f'{phase_cap}/worst_batch'
 
         # Determine metrics to display
         metrics = display_metrics if display_metrics is not None else {'loss': loss}
@@ -1218,6 +1219,36 @@ class UnifiedMetrics:
             center_idx = depth // 2
             return tensor[:, :, center_idx, :, :]
         return tensor
+
+    def _extract_multiple_slices(
+        self,
+        tensor: torch.Tensor,
+        num_slices: int = 8,
+    ) -> torch.Tensor:
+        """Extract multiple evenly-spaced slices from 3D volume.
+
+        For 3D worst_batch visualization, extracts N slices from the depth
+        dimension and returns them as a batch of 2D images.
+
+        Args:
+            tensor: 5D tensor [B, C, D, H, W] (typically B=1 for 3D).
+            num_slices: Number of slices to extract.
+
+        Returns:
+            4D tensor [N, C, H, W] with N evenly-spaced slices.
+        """
+        if tensor.dim() != 5:
+            return tensor
+
+        B, C, D, H, W = tensor.shape
+        # Calculate evenly spaced indices (avoid edges)
+        margin = D // (num_slices + 1)
+        indices = [margin + i * (D - 2 * margin) // (num_slices - 1) for i in range(num_slices)]
+        indices = [min(max(0, idx), D - 1) for idx in indices]  # Clamp to valid range
+
+        # Extract slices from first volume (3D typically has batch_size=1)
+        slices = [tensor[0, :, idx, :, :] for idx in indices]
+        return torch.stack(slices, dim=0)  # [num_slices, C, H, W]
 
     # =========================================================================
     # Console Logging

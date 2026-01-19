@@ -2408,7 +2408,21 @@ class DiffusionTrainer(BaseTrainer):
                     log_vram_to_tensorboard(self.writer, self.device, epoch)
 
                     if log_figures and worst_val_data is not None:
-                        self.visualizer.log_worst_batch(epoch, worst_val_data)
+                        # Decode from latent space if needed
+                        original = worst_val_data['original']
+                        generated = worst_val_data['generated']
+                        if self.space.scale_factor > 1:
+                            original = self.space.decode(original.to(self.device))
+                            generated = self.space.decode(generated.to(self.device))
+                        self._unified_metrics.log_worst_batch(
+                            original=original,
+                            reconstructed=generated,
+                            loss=worst_val_data['loss'],
+                            epoch=epoch,
+                            phase='val',
+                            mask=worst_val_data.get('mask'),
+                            timesteps=worst_val_data.get('timesteps'),
+                        )
 
                     self._compute_per_modality_validation(epoch)
 
