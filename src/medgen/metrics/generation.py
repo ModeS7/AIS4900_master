@@ -490,10 +490,11 @@ class GenerationMetrics:
         device: PyTorch device.
         run_dir: Run directory for caching.
         space: Optional DiffusionSpace for latent decoding.
+        mode_name: Training mode name (seg, bravo, dual, etc.).
 
     Example:
         config = GenerationMetricsConfig(enabled=True)
-        metrics = GenerationMetrics(config, device, run_dir)
+        metrics = GenerationMetrics(config, device, run_dir, mode_name='bravo')
 
         # At training start
         metrics.set_fixed_conditioning(train_dataset, num_masks=500)
@@ -510,11 +511,14 @@ class GenerationMetrics:
         device: torch.device,
         run_dir: Path,
         space: Optional[Any] = None,
+        mode_name: str = 'bravo',
     ) -> None:
         self.config = config
         self.device = device
         self.run_dir = Path(run_dir)
         self.space = space  # DiffusionSpace for latent decoding
+        self.mode_name = mode_name
+        self.is_seg_mode = mode_name in ('seg', 'seg_conditioned')
 
         # Initialize feature extractors (lazy-loaded)
         self.resnet = ResNet50Features(device, cache_dir=Path(config.cache_dir))
@@ -532,6 +536,9 @@ class GenerationMetrics:
         # Fixed conditioning masks (loaded once, used every epoch)
         self.fixed_conditioning_masks: Optional[torch.Tensor] = None
         self.fixed_gt_images: Optional[torch.Tensor] = None
+
+        if self.is_seg_mode:
+            logger.info(f"GenerationMetrics: {mode_name} mode - will threshold output at 0.5")
 
     def set_fixed_conditioning(
         self,
@@ -678,6 +685,7 @@ class GenerationMetrics:
         # Get model config for output channels
         model_config = mode.get_model_config()
         out_channels = model_config['out_channels']
+        in_channels = model_config['in_channels']
 
         model.eval()
         all_samples = []
@@ -694,7 +702,10 @@ class GenerationMetrics:
                 noise_pre = torch.randn_like(masks)
                 noise_gd = torch.randn_like(masks)
                 model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
-            else:  # Single channel modes (bravo, seg)
+            elif in_channels == 1:  # Unconditional modes (seg, seg_conditioned)
+                # No channel concatenation - conditioning via embedding (if any)
+                model_input = noise
+            else:  # Conditional single channel modes (bravo)
                 model_input = torch.cat([noise, masks], dim=1)
 
             # Generate samples
@@ -722,6 +733,10 @@ class GenerationMetrics:
         result = result.to(self.device)
         if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
             result = self.space.decode(result)
+
+        # Threshold seg mode output at 0.5 to get binary masks
+        if self.is_seg_mode:
+            result = (result > 0.5).float()
 
         return result
 

@@ -568,6 +568,10 @@ class Diffusion3DTrainer(BaseTrainer):
         result = torch.cat(all_samples, dim=0).to(self.device)
         del all_samples
 
+        # Threshold seg mode output at 0.5 to get binary masks
+        if self.is_seg_mode:
+            result = (result > 0.5).float()
+
         return result
 
     @torch.no_grad()
@@ -1220,7 +1224,7 @@ class Diffusion3DTrainer(BaseTrainer):
 
         # Initialize generation metrics (cache reference features, set conditioning)
         # Uses same GenerationMetrics as 2D - features cached to disk and shared
-        if self._gen_metrics_config is not None and self.is_main_process and not self.is_seg_mode:
+        if self._gen_metrics_config is not None and self.is_main_process:
             self._log_memory("before_gen_metrics_init")
             logger.info("Initializing 3D generation metrics...")
             from medgen.metrics.generation import GenerationMetrics
@@ -1229,6 +1233,7 @@ class Diffusion3DTrainer(BaseTrainer):
                 self.device,
                 self.save_dir,
                 space=self.space,
+                mode_name=self.mode_name,
             )
             # Set fixed conditioning volumes for generation
             self._set_fixed_conditioning_3d(train_loader, num_volumes=self._gen_metrics_config.samples_extended)
@@ -1241,8 +1246,6 @@ class Diffusion3DTrainer(BaseTrainer):
                 cache_id = f"{self.mode_name}_{self.volume_height}x{self.volume_depth}_{cache_hash}"
                 self._gen_metrics.cache_reference_features(train_loader, val_loader, experiment_id=cache_id)
             self._log_memory("after_gen_metrics_init_and_cache")
-        elif self._gen_metrics_config is not None and self.is_seg_mode and self.is_main_process:
-            logger.info(f"{self.mode_name} mode: generation metrics disabled (binary masks)")
 
         # Memory profiling checkpoint: before training loop
         self._log_memory("before_training_loop", reset_peak=True)
