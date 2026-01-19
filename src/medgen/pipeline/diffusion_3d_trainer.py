@@ -1787,9 +1787,17 @@ class Diffusion3DTrainer(BaseTrainer):
             # Log validation metrics using unified system
             self._unified_metrics.log_validation(epoch)
 
-            # Log worst batch visualization at figure_interval
+            # Log worst batch visualization at figure_interval (uses unified metrics)
             if self.log_worst_batch and worst_batch_data is not None and (epoch + 1) % self.figure_interval == 0:
-                self._visualize_worst_batch(worst_batch_data, epoch)
+                self._unified_metrics.log_worst_batch(
+                    original=worst_batch_data['original'].to(self.device),
+                    reconstructed=worst_batch_data['generated'].to(self.device),
+                    loss=worst_batch_data['loss'],
+                    epoch=epoch,
+                    phase='val',
+                    mask=worst_batch_data.get('mask'),
+                    timesteps=worst_batch_data.get('timesteps'),
+                )
 
             # Log timestep-region heatmap at figure_interval
             if (epoch + 1) % self.figure_interval == 0 and self.log_timestep_region_losses:
@@ -1917,130 +1925,6 @@ class Diffusion3DTrainer(BaseTrainer):
         from torchvision.utils import make_grid
         grid = make_grid(center_slices, nrow=2, normalize=False)
         self.writer.add_image('Generated_3D_CenterSlice', grid, epoch)
-
-    def _visualize_worst_batch(
-        self,
-        worst_batch_data: Dict[str, Any],
-        epoch: int,
-    ) -> None:
-        """Visualize the worst-performing batch from validation.
-
-        Shows center slices of 3D volumes that had the highest loss.
-        Matches 2D trainer approach with consistent keys and timestep display.
-
-        Args:
-            worst_batch_data: Dictionary with 'original', 'generated', 'mask', 'timesteps', 'loss' keys.
-            epoch: Current epoch number.
-        """
-        if not self.is_main_process or worst_batch_data is None:
-            return
-
-        # Get data from dict (matches 2D trainer keys)
-        original = worst_batch_data['original'].to(self.device)  # [B, C, D, H, W]
-        generated = worst_batch_data['generated'].to(self.device)  # [B, C, D, H, W]
-        timesteps = worst_batch_data.get('timesteps')
-        loss = worst_batch_data['loss']
-
-        # Compute average timestep for title
-        avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
-
-        # Decode if in latent space
-        if isinstance(self.space, LatentSpace):
-            with torch.no_grad():
-                original = self.space.decode(original)
-                generated = self.space.decode(generated)
-
-        # Extract center slices from 3D volumes
-        center_idx = original.shape[2] // 2
-        orig_slices = original[:, :, center_idx, :, :]  # [B, C, H, W]
-        gen_slices = generated[:, :, center_idx, :, :]  # [B, C, H, W]
-
-        # Normalize to [0, 1]
-        orig_slices = torch.clamp(orig_slices, 0, 1)
-        gen_slices = torch.clamp(gen_slices, 0, 1)
-
-        # Interleave original and generated for side-by-side comparison
-        batch_size = orig_slices.shape[0]
-        all_slices = []
-        for i in range(min(batch_size, 4)):  # Max 4 samples
-            all_slices.append(orig_slices[i])
-            all_slices.append(gen_slices[i])
-
-        # Stack and create grid: pairs of (original, generated) per row
-        if all_slices:
-            slices_tensor = torch.stack(all_slices, dim=0)  # [N*2, C, H, W]
-            grid = make_grid(slices_tensor, nrow=2, normalize=False, padding=2)
-            self.writer.add_image('Validation/worst_batch', grid, epoch)
-
-            # Also log loss info
-            self.writer.add_scalar('Validation/worst_batch_loss', loss, epoch)
-            self.writer.add_scalar('Validation/worst_batch_avg_timestep', avg_timestep, epoch)
-
-    def _visualize_test_worst_batch(
-        self,
-        worst_batch_data: Dict[str, Any],
-        label: str,
-    ) -> None:
-        """Visualize the worst-performing batch from test evaluation.
-
-        Shows center slices of 3D volumes that had the highest loss.
-        Saves as PNG file and logs to TensorBoard.
-
-        Args:
-            worst_batch_data: Dictionary with 'original', 'generated', 'mask', 'timesteps', 'loss' keys.
-            label: Checkpoint label (e.g., "best", "latest").
-        """
-        if not self.is_main_process or worst_batch_data is None:
-            return
-
-        import os
-
-        # Get data from dict
-        original = worst_batch_data['original'].to(self.device)  # [B, C, D, H, W]
-        generated = worst_batch_data['generated'].to(self.device)  # [B, C, D, H, W]
-        timesteps = worst_batch_data.get('timesteps')
-        loss = worst_batch_data['loss']
-
-        # Compute average timestep for title
-        avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
-
-        # Decode if in latent space
-        if isinstance(self.space, LatentSpace):
-            with torch.no_grad():
-                original = self.space.decode(original)
-                generated = self.space.decode(generated)
-
-        # Extract center slices from 3D volumes
-        center_idx = original.shape[2] // 2
-        orig_slices = original[:, :, center_idx, :, :]  # [B, C, H, W]
-        gen_slices = generated[:, :, center_idx, :, :]  # [B, C, H, W]
-
-        # Normalize to [0, 1]
-        orig_slices = torch.clamp(orig_slices, 0, 1)
-        gen_slices = torch.clamp(gen_slices, 0, 1)
-
-        # Interleave original and generated for side-by-side comparison
-        batch_size = orig_slices.shape[0]
-        all_slices = []
-        for i in range(min(batch_size, 4)):  # Max 4 samples
-            all_slices.append(orig_slices[i])
-            all_slices.append(gen_slices[i])
-
-        # Stack and create grid
-        if all_slices:
-            slices_tensor = torch.stack(all_slices, dim=0)  # [N*2, C, H, W]
-            grid = make_grid(slices_tensor, nrow=2, normalize=False, padding=2)
-
-            # Log to TensorBoard
-            self.writer.add_image(f'Test/worst_batch_{label}', grid, 0)
-            self.writer.add_scalar(f'Test/worst_batch_loss_{label}', loss, 0)
-            self.writer.add_scalar(f'Test/worst_batch_avg_timestep_{label}', avg_timestep, 0)
-
-            # Save as PNG
-            from torchvision.utils import save_image
-            filepath = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-            save_image(grid, filepath)
-            logger.info(f"Test worst batch visualization saved to: {filepath}")
 
     @torch.no_grad()
     def _visualize_denoising_trajectory(
@@ -2529,8 +2413,16 @@ class Diffusion3DTrainer(BaseTrainer):
             if regional_tracker is not None:
                 regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
 
-        # Visualize worst batch from test set
+        # Visualize worst batch from test set (uses unified metrics)
         if worst_batch_data is not None:
-            self._visualize_test_worst_batch(worst_batch_data, label)
+            self._unified_metrics.log_worst_batch(
+                original=worst_batch_data['original'].to(self.device),
+                reconstructed=worst_batch_data['generated'].to(self.device),
+                loss=worst_batch_data['loss'],
+                epoch=0,  # Test uses epoch 0
+                phase='test',
+                mask=worst_batch_data.get('mask'),
+                timesteps=worst_batch_data.get('timesteps'),
+            )
 
         return metrics
