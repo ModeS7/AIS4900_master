@@ -84,6 +84,10 @@ class ValidationVisualizer:
         self.log_intermediate_steps: bool = logging_cfg.get('intermediate_steps', True)
         self.num_intermediate_steps: int = logging_cfg.get('num_intermediate_steps', 5)
 
+        # Cached training samples for deterministic visualization
+        # Keyed by (num_samples, seg_channel_idx, return_images) for different modes
+        self._cached_samples: Dict[Tuple[int, int, bool], Any] = {}
+
     def log_worst_batch(self, epoch: int, data: Dict[str, Any]) -> None:
         """Save visualization of the worst (highest loss) batch.
 
@@ -132,6 +136,9 @@ class ValidationVisualizer:
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """Sample slices with positive segmentation masks from dataset.
 
+        Uses deterministic sampling with caching for reproducibility across epochs.
+        First call samples with fixed seed, subsequent calls return cached result.
+
         Args:
             train_dataset: Dataset to sample from.
             num_samples: Number of samples to get.
@@ -141,6 +148,15 @@ class ValidationVisualizer:
         Returns:
             Segmentation masks [N, 1, H, W], or tuple of (masks, images) if return_images=True.
         """
+        # Check cache first for deterministic visualization across epochs
+        cache_key = (num_samples, seg_channel_idx, return_images)
+        if cache_key in self._cached_samples:
+            return self._cached_samples[cache_key]
+
+        # Use fixed seed for deterministic sampling (same samples every run)
+        rng_state = torch.get_rng_state()
+        torch.manual_seed(42)  # Fixed seed for reproducibility
+
         seg_masks = []
         gt_images = []
         attempts = 0
@@ -176,6 +192,9 @@ class ValidationVisualizer:
                     gt_images.append(tensor[0:seg_channel_idx, :, :])
             attempts += 1
 
+        # Restore RNG state to avoid affecting training randomness
+        torch.set_rng_state(rng_state)
+
         if len(seg_masks) < num_samples:
             logger.warning(f"Only found {len(seg_masks)} positive masks for validation")
 
@@ -185,8 +204,15 @@ class ValidationVisualizer:
         masks = torch.stack(seg_masks).to(self.device)
         if return_images:
             images = torch.stack(gt_images).to(self.device)
-            return masks, images
-        return masks
+            result = (masks, images)
+        else:
+            result = masks
+
+        # Cache for subsequent epochs
+        self._cached_samples[cache_key] = result
+        logger.info(f"Cached {len(seg_masks)} training samples for visualization (seg_idx={seg_channel_idx})")
+
+        return result
 
     def _generate_with_intermediate_steps(
         self,

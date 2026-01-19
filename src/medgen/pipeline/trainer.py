@@ -395,6 +395,14 @@ class DiffusionTrainer(BaseTrainer):
         if noise_aug_cfg.get('enabled', False) and self.is_main_process:
             logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
 
+        # Conditioning dropout for classifier-free guidance training
+        # Only for seg_conditioned mode (all slices have positive masks)
+        # bravo/dual has natural ~20% dropout from negative slices - no need for explicit
+        cond_dropout_cfg = cfg.training.get('conditioning_dropout', {})
+        self.conditioning_dropout_prob: float = cond_dropout_cfg.get('prob', 0.15)
+        if self.conditioning_dropout_prob > 0 and self.is_main_process:
+            logger.info(f"Conditioning dropout enabled: prob={self.conditioning_dropout_prob}")
+
         # Region-weighted loss (per-pixel weighting by tumor size)
         # Only applies to conditional modes (bravo, dual, multi) where seg mask is available
         self.regional_weight_computer: Optional[RegionalWeightComputer] = None
@@ -1361,6 +1369,14 @@ class DiffusionTrainer(BaseTrainer):
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
             size_bins = prepared.get('size_bins')  # For seg_conditioned mode
+
+            # Conditioning dropout for classifier-free guidance training
+            # Only for seg_conditioned mode (all slices have positive masks)
+            # bravo/dual has natural ~20% dropout from negative slices
+            if self.use_size_bin_embedding and self.conditioning_dropout_prob > 0:
+                if random.random() < self.conditioning_dropout_prob:
+                    if size_bins is not None:
+                        size_bins = torch.zeros_like(size_bins)
 
             # Store pixel-space labels for ControlNet (before any encoding)
             controlnet_cond = labels if self.use_controlnet else None

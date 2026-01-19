@@ -13,6 +13,7 @@ Key differences from 2D DiffusionTrainer:
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -386,6 +387,17 @@ class Diffusion3DTrainer(BaseTrainer):
         self.feature_perturbation_std: float = feat_cfg.get('std', 0.1)
         self.feature_perturbation_layers: List[str] = feat_cfg.get('layers', ['mid'])
         self._perturbation_hooks: List[Any] = []
+
+        # Conditioning dropout (train with dropped conditioning for classifier-free guidance)
+        # For 3D, we explicitly drop conditioning since all volumes have tumors (unlike 2D slices)
+        cond_dropout_cfg = cfg.training.get('conditioning_dropout', {})
+        self.conditioning_dropout_prob: float = cond_dropout_cfg.get('prob', 0.15)
+        if self.conditioning_dropout_prob > 0 and self.mode.is_conditional and self.is_main_process:
+            logger.info(f"Conditioning dropout enabled: prob={self.conditioning_dropout_prob}")
+
+        # Cached training samples for visualization (real conditioning instead of zeros)
+        # Uses training data to keep validation/test datasets properly separated
+        self._cached_train_batch: Optional[Dict[str, torch.Tensor]] = None
 
         # Timestep bins for per-bin loss tracking
         self.num_timestep_bins = 10
@@ -852,6 +864,37 @@ class Diffusion3DTrainer(BaseTrainer):
             if self.is_main_process:
                 logger.warning(f"Could not measure FLOPs: {e}")
 
+    def _cache_training_samples(self, train_loader: DataLoader) -> None:
+        """Cache first training batch for deterministic visualization.
+
+        Uses training data (not validation) to keep datasets properly separated.
+        Cached once at training start for reproducibility across epochs.
+
+        Args:
+            train_loader: Training dataloader.
+        """
+        if self._cached_train_batch is not None:
+            return  # Already cached
+
+        try:
+            batch = next(iter(train_loader))
+            prepared = self.mode.prepare_batch(batch, self.device)
+            images = prepared['images']
+            labels = prepared.get('labels')
+            size_bins = prepared.get('size_bins')
+
+            self._cached_train_batch = {
+                'images': images.detach().clone(),
+                'labels': labels.detach().clone() if labels is not None else None,
+                'size_bins': size_bins.detach().clone() if size_bins is not None else None,
+            }
+
+            if self.is_main_process:
+                logger.info(f"Cached {images.shape[0]} training samples for visualization")
+        except Exception as e:
+            if self.is_main_process:
+                logger.warning(f"Could not cache training samples: {e}")
+
     def _compute_snr_weights(self, timesteps: torch.Tensor) -> torch.Tensor:
         """Compute Min-SNR loss weights for given timesteps.
 
@@ -1205,6 +1248,10 @@ class Diffusion3DTrainer(BaseTrainer):
         # Memory profiling checkpoint: before training loop
         self._log_memory("before_training_loop", reset_peak=True)
 
+        # Cache first training batch for deterministic visualization
+        # Uses training data (not validation) to keep datasets separate
+        self._cache_training_samples(train_loader)
+
         for epoch in range(self.cfg.training.epochs):
             self._current_epoch = epoch
             epoch_start = time.time()
@@ -1357,6 +1404,15 @@ class Diffusion3DTrainer(BaseTrainer):
         images = prepared['images']  # [B, C, D, H, W] - latent or pixel space
         labels = prepared.get('labels')  # [B, 1, D, H, W] - pixel space from cache
         size_bins = prepared.get('size_bins')  # [B, num_bins] - for seg mode
+
+        # Conditioning dropout: randomly drop conditioning for classifier-free guidance training
+        # Unlike 2D (where negative slices naturally provide unconditional samples),
+        # 3D volumes always have tumors so we must explicitly drop conditioning
+        if self.conditioning_dropout_prob > 0 and random.random() < self.conditioning_dropout_prob:
+            if labels is not None:
+                labels = torch.zeros_like(labels)
+            if size_bins is not None:
+                size_bins = torch.zeros_like(size_bins)
 
         # Sample noise (with optional augmentation)
         noise = torch.randn_like(images)
@@ -1764,6 +1820,11 @@ class Diffusion3DTrainer(BaseTrainer):
     def _visualize_samples(self, epoch: int) -> None:
         """Generate and visualize 3D samples (center slices).
 
+        Uses REAL conditioning from cached TRAINING samples instead of zeros.
+        This matches the 2D trainer approach and ensures the model gets proper
+        conditioning for generation (model was trained with real masks, not zeros).
+        Uses training data to keep validation/test datasets properly separated.
+
         Args:
             epoch: Current epoch number.
         """
@@ -1772,40 +1833,65 @@ class Diffusion3DTrainer(BaseTrainer):
 
         self.model.eval()
 
-        # Generate from noise
-        batch_size = 4
-        if isinstance(self.space, LatentSpace):
-            # Generate in latent space
-            latent_shape = (batch_size, self.space.latent_channels,
-                           self.volume_depth // 8, self.volume_height // 8, self.volume_width // 8)
-            noise = torch.randn(latent_shape, device=self.device)
-        else:
-            noise = torch.randn(batch_size, 1, self.volume_depth, self.volume_height, self.volume_width,
-                               device=self.device)
+        # Use cached training batch for real conditioning (instead of zeros!)
+        # This is critical: model trained with real masks cannot generate with zeros
+        if self._cached_train_batch is not None:
+            cached_images = self._cached_train_batch['images']
+            cached_labels = self._cached_train_batch.get('labels')
+            cached_size_bins = self._cached_train_batch.get('size_bins')
+            batch_size = min(4, cached_images.shape[0])
 
-        # Add conditioning if needed
-        # Note: seg uses embedding-based conditioning (not concatenation)
-        if self.use_size_bin_embedding:
-            # Size bin embedding mode: no concatenation, just noise
-            model_input = noise
-            # For visualization, we use zero size_bins (unconditional generation)
-            # The model wrapper will use its default behavior
-        elif self.mode.is_conditional:
-            # Channel concatenation mode
-            cond_shape = list(noise.shape)
-            cond_shape[1] = 1
-            conditioning = torch.zeros(cond_shape, device=self.device)
-            model_input = torch.cat([noise, conditioning], dim=1)
+            # Generate noise matching the cached batch shape
+            if isinstance(self.space, LatentSpace):
+                # Get latent shape from actual encoding
+                with torch.no_grad():
+                    encoded = self.space.encode(cached_images[:batch_size])
+                noise = torch.randn_like(encoded)
+            else:
+                noise = torch.randn_like(cached_images[:batch_size])
+
+            # Use real conditioning from cached batch
+            if self.use_size_bin_embedding:
+                model_input = noise
+                size_bins = cached_size_bins[:batch_size] if cached_size_bins is not None else None
+            elif self.mode.is_conditional and cached_labels is not None:
+                labels = cached_labels[:batch_size]
+                if isinstance(self.space, LatentSpace):
+                    labels_encoded = self.space.encode(labels)
+                else:
+                    labels_encoded = labels
+                model_input = torch.cat([noise, labels_encoded], dim=1)
+            else:
+                model_input = noise
         else:
-            model_input = noise
+            # Fallback: no cached batch yet, use unconditional generation
+            batch_size = 4
+            if isinstance(self.space, LatentSpace):
+                latent_shape = (batch_size, self.space.latent_channels,
+                               self.volume_depth // 8, self.volume_height // 8, self.volume_width // 8)
+                noise = torch.randn(latent_shape, device=self.device)
+            else:
+                noise = torch.randn(batch_size, 1, self.volume_depth, self.volume_height, self.volume_width,
+                                   device=self.device)
+
+            if self.use_size_bin_embedding:
+                model_input = noise
+                size_bins = None
+            elif self.mode.is_conditional:
+                cond_shape = list(noise.shape)
+                cond_shape[1] = 1
+                conditioning = torch.zeros(cond_shape, device=self.device)
+                model_input = torch.cat([noise, conditioning], dim=1)
+            else:
+                model_input = noise
 
         # Generate samples
-        # For size_bin_embedding mode, we need a custom generation loop
         if self.use_size_bin_embedding:
-            # Generate with zero size_bins (unconditional)
-            batch_size = noise.shape[0]
-            zero_size_bins = torch.zeros(batch_size, self.size_bin_num_bins, device=self.device)
-            samples = self._generate_with_size_bins(noise, zero_size_bins, num_steps=25)
+            if size_bins is not None:
+                samples = self._generate_with_size_bins(noise, size_bins, num_steps=25)
+            else:
+                zero_size_bins = torch.zeros(batch_size, self.size_bin_num_bins, device=self.device)
+                samples = self._generate_with_size_bins(noise, zero_size_bins, num_steps=25)
         else:
             samples = self.strategy.generate(
                 self.model,
