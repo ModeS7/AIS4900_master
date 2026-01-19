@@ -1,10 +1,12 @@
+# @package _global_
 # Local development paths (Linux)
 
-name: local
-data_dir: /home/mode/NTNU/MedicalDataSets/brainmetshare-3
-model_dir: /home/mode/NTNU/AIS4900_master/runs
-log_dir: /home/mode/NTNU/AIS4900_master/runs
-cache_dir: /home/mode/.cache/medgen
+paths:
+  name: local
+  data_dir: /home/mode/NTNU/MedicalDataSets/brainmetshare-3
+  model_dir: /home/mode/NTNU/AIS4900_master/runs
+  log_dir: /home/mode/NTNU/AIS4900_master/runs
+  cache_dir: /home/mode/.cache/medgen
 
-# Dataset-specific parameters (BrainMetShare: 256x256 @ 0.94mm/pixel)
-fov_mm: 240.0  # Field of view in mm
+  # Dataset-specific parameters (BrainMetShare: 256x256 @ 0.94mm/pixel)
+  fov_mm: 240.0  # Field of view in mm

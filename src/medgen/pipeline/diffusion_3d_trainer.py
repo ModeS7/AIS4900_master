@@ -237,6 +237,9 @@ class Diffusion3DTrainer(BaseTrainer):
         self.log_timestep_losses = log_cfg.get('timestep_losses', True)
         self.log_worst_batch = log_cfg.get('worst_batch', True)
         self.log_intermediate_steps = log_cfg.get('intermediate_steps', True)
+
+        # Verbosity (controls tqdm progress bars - disabled on cluster to keep .err files clean)
+        self.verbose = cfg.training.get('verbose', True)
         self.num_intermediate_steps = log_cfg.get('num_intermediate_steps', 5)
         self.log_regional_losses = log_cfg.get('regional_losses', True)
         self.log_timestep_region_losses = log_cfg.get('timestep_region_losses', True)

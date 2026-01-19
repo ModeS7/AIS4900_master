@@ -192,6 +192,9 @@ class DiffusionTrainer(BaseTrainer):
         self.log_flops: bool = logging_cfg.get('flops', True)
         self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
 
+        # Verbosity (controls tqdm progress bars - disabled on cluster to keep .err files clean)
+        self.verbose: bool = cfg.training.get('verbose', True)
+
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
         self._unified_metrics: Optional[UnifiedMetrics] = None
