@@ -79,7 +79,12 @@ class BaseTrainer(ABC):
         self.batch_size: int = cfg.training.batch_size
         self.learning_rate: float = cfg.training.get('learning_rate', 1e-4)
         self.warmup_epochs: int = cfg.training.warmup_epochs
-        self.figure_interval: int = max(1, cfg.training.get('figure_interval', 20))
+        # Calculate figure_interval from num_figures (or use legacy figure_interval if set)
+        if cfg.training.get('figure_interval') is not None:
+            self.figure_interval: int = max(1, cfg.training.figure_interval)
+        else:
+            num_figures = cfg.training.get('num_figures', 20)
+            self.figure_interval: int = max(1, self.n_epochs // max(1, num_figures))
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.gradient_clip_norm: float = cfg.training.get('gradient_clip_norm', 1.0)
         self.limit_train_batches: Optional[int] = cfg.training.get('limit_train_batches', None)

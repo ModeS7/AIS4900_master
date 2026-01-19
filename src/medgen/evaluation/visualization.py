@@ -246,19 +246,23 @@ class ValidationVisualizer:
 
         save_at_timesteps = set()
         if self.num_intermediate_steps > 0:
+            # frac=1.0 means start (noisiest, step_idx=0), frac=0.0 means end (cleanest, step_idx=num_steps-1)
             for frac in [1.0, 0.75, 0.5, 0.25, 0.1, 0.0]:
-                save_at_timesteps.add(int(frac * (num_steps - 1)))
+                save_at_timesteps.add(int((1.0 - frac) * (num_steps - 1)))
 
         intermediates = []
         current = noisy.clone()
+        num_train_timesteps = self.strategy.scheduler.num_train_timesteps
 
         for step_idx in range(num_steps):
-            timestep_val = num_steps - 1 - step_idx
+            # Compute normalized timestep [1, 0] descending
+            t_normalized = (num_steps - 1 - step_idx) / num_steps
+            # Scale to training range [0, num_train_timesteps] for correct embeddings
+            t_scaled = t_normalized * num_train_timesteps
             t = torch.full(
                 (current.shape[0],),
-                timestep_val,
+                t_scaled,
                 device=current.device,
-                dtype=torch.long
             )
 
             if condition is not None:
@@ -274,11 +278,14 @@ class ValidationVisualizer:
 
             if self.strategy_name == 'rflow':
                 dt = 1.0 / num_steps
-                current = current + dt * pred
+                # RFlow: velocity points from data to noise, so subtract when going noise→data
+                current = current - dt * pred
             else:
-                current = self.strategy.scheduler.step(pred, timestep_val, current).prev_sample
+                # For DDPM, scheduler.step needs integer timestep
+                timestep_int = int(t_scaled)
+                current = self.strategy.scheduler.step(pred, timestep_int, current).prev_sample
 
-            if timestep_val in save_at_timesteps:
+            if step_idx in save_at_timesteps:
                 intermediates.append(current.clone())
 
         if not intermediates or not torch.equal(intermediates[-1], current):

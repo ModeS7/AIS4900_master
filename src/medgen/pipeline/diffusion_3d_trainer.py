@@ -1162,11 +1162,18 @@ class Diffusion3DTrainer(BaseTrainer):
 
         std = jitter_cfg.get('std', 0.05)
 
-        # Add Gaussian noise to normalized timesteps
-        t_normalized = timesteps.float()
+        # Detect if input is discrete (int) or continuous (float)
+        is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
+        # Normalize to [0, 1], add jitter, clamp, scale back
+        t_normalized = timesteps.float() / self.num_timesteps
         t_jittered = t_normalized + torch.randn_like(t_normalized) * std
-
-        return t_jittered.clamp(0.0, 1.0)
+        t_jittered = t_jittered.clamp(0.0, 1.0)
+        t_scaled = t_jittered * self.num_timesteps
+        # Preserve dtype: int for DDPM, float for RFlow
+        if is_discrete:
+            return t_scaled.long()
+        else:
+            return t_scaled
 
     def _apply_noise_augmentation(self, noise: torch.Tensor) -> torch.Tensor:
         """Perturb noise vector for diversity.
@@ -2029,10 +2036,13 @@ class Diffusion3DTrainer(BaseTrainer):
 
         trajectory = [x.clone()]
         dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
 
         for i in range(num_steps):
             t = 1.0 - i * dt
-            t_tensor = torch.full((x.shape[0],), t, device=x.device)
+            # Scale to training range [0, num_train_timesteps] for correct embeddings
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
 
             # Forward pass
             if conditioning is not None:
@@ -2072,10 +2082,13 @@ class Diffusion3DTrainer(BaseTrainer):
         x = noise.clone()
         trajectory = [x.clone()]
         dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
 
         for i in range(num_steps):
             t = 1.0 - i * dt
-            t_tensor = torch.full((x.shape[0],), t, device=x.device)
+            # Scale to training range [0, num_train_timesteps] for correct embeddings
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
 
             # Forward with size_bins
             v_pred = self.model(x, t_tensor, size_bins=size_bins)
@@ -2110,10 +2123,13 @@ class Diffusion3DTrainer(BaseTrainer):
         """
         x = noise.clone()
         dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
 
         for i in range(num_steps):
             t = 1.0 - i * dt
-            t_tensor = torch.full((x.shape[0],), t, device=x.device)
+            # Scale to training range [0, num_train_timesteps] for correct embeddings
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
 
             # Forward with size_bins
             v_pred = self.model(x, t_tensor, size_bins=size_bins)

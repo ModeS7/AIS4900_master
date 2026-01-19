@@ -994,11 +994,18 @@ class DiffusionTrainer(BaseTrainer):
             return timesteps
 
         std = jitter_cfg.get('std', 0.05)
-        # Convert to float, add jitter, convert back
+        # Detect if input is discrete (int) or continuous (float)
+        is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
+        # Convert to float, normalize to [0, 1], add jitter, clamp, scale back
         t_float = timesteps.float() / self.num_timesteps
         jitter = torch.randn_like(t_float) * std
         t_jittered = (t_float + jitter).clamp(0.0, 1.0)
-        return (t_jittered * self.num_timesteps).long()
+        t_scaled = t_jittered * self.num_timesteps
+        # Preserve dtype: int for DDPM, float for RFlow
+        if is_discrete:
+            return t_scaled.long()
+        else:
+            return t_scaled
 
     def _apply_noise_augmentation(
         self,

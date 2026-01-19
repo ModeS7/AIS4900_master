@@ -620,7 +620,12 @@ class RFlowStrategy(DiffusionStrategy):
             device = sample_tensor.device
             # RFlow uses continuous timesteps in [0, 1], then scales to [0, num_train_timesteps]
             t_float = torch.rand(batch_size, device=device) * (max_t - min_t) + min_t
-            return (t_float * self.scheduler.num_train_timesteps).long()
+            t_scaled = t_float * self.scheduler.num_train_timesteps
+            # Respect use_discrete_timesteps config
+            if self.scheduler.use_discrete_timesteps:
+                return t_scaled.long()
+            else:
+                return t_scaled
 
         # Default: logit-normal sampling
         return self.scheduler.sample_timesteps(sample_tensor)

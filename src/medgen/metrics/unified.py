@@ -1156,30 +1156,93 @@ class UnifiedMetrics:
         epoch: int,
         tag: str = 'Generated_Samples',
         nrow: int = 4,
+        num_slices: int = 8,
     ):
         """Log generated samples grid to TensorBoard.
+
+        For 3D volumes, shows multiple evenly-spaced slices per sample.
 
         Args:
             samples: Generated samples [B, C, (D), H, W].
             epoch: Current epoch number.
             tag: TensorBoard tag.
-            nrow: Number of images per row in grid.
+            nrow: Number of images per row in grid (2D only).
+            num_slices: Number of slices to show for 3D volumes.
         """
         if self.writer is None:
             return
 
         from torchvision.utils import make_grid
 
-        # Handle 3D - take center slice
+        # Handle 3D - show multiple slices per sample
         if self.spatial_dims == 3 and samples.dim() == 5:
-            samples = self._extract_center_slice(samples)
+            self._log_generated_samples_3d(samples, epoch, tag, num_slices)
+            return
 
-        # Clamp to valid range
+        # 2D: simple grid
         samples = torch.clamp(samples.float(), 0, 1)
-
-        # Create grid
         grid = make_grid(samples, nrow=nrow, normalize=False, padding=2)
         self.writer.add_image(tag, grid, epoch)
+
+    def _log_generated_samples_3d(
+        self,
+        samples: torch.Tensor,
+        epoch: int,
+        tag: str,
+        num_slices: int = 8,
+    ):
+        """Log 3D generated samples with multiple slices per sample.
+
+        Creates a figure with one row per sample, showing evenly-spaced
+        depth slices across columns.
+
+        Args:
+            samples: 5D tensor [B, C, D, H, W].
+            epoch: Current epoch number.
+            tag: TensorBoard tag.
+            num_slices: Number of slices per sample.
+        """
+        import matplotlib.pyplot as plt
+
+        B, C, D, H, W = samples.shape
+        samples = torch.clamp(samples.float(), 0, 1).cpu()
+
+        # Calculate slice indices (evenly spaced, avoiding edges)
+        margin = max(1, D // (num_slices + 2))
+        indices = torch.linspace(margin, D - margin - 1, num_slices).long().tolist()
+
+        # Create figure: rows = samples, cols = slices
+        fig, axes = plt.subplots(B, num_slices, figsize=(num_slices * 2, B * 2))
+
+        # Handle single sample case
+        if B == 1:
+            axes = axes.reshape(1, -1)
+
+        for b in range(B):
+            for s, slice_idx in enumerate(indices):
+                ax = axes[b, s]
+                # Get slice and handle channels
+                slice_img = samples[b, :, slice_idx, :, :]
+                if C == 1:
+                    ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
+                else:
+                    # Multi-channel: show first channel or RGB if 3
+                    ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+                # Label top row with slice indices
+                if b == 0:
+                    ax.set_title(f'z={slice_idx}', fontsize=8)
+
+                # Label left column with sample number
+                if s == 0:
+                    ax.set_ylabel(f'Sample {b+1}', fontsize=8)
+
+        plt.tight_layout()
+        self.writer.add_figure(tag, fig, epoch)
+        plt.close(fig)
 
     def log_test_figure(
         self,
