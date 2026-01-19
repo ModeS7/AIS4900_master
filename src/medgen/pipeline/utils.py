@@ -11,7 +11,8 @@ import itertools
 import logging
 import os
 import time
-from typing import Any, Dict, Iterator, Optional, Tuple, Union
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -21,11 +22,84 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+class EpochTimeEstimator:
+    """Track epoch times and estimate completion time.
+
+    Excludes first epoch from average calculations since it includes
+    warmup overhead (compilation, caching, etc.).
+    """
+
+    def __init__(self, total_epochs: int):
+        self.total_epochs = total_epochs
+        self.epoch_times: List[float] = []
+
+    def update(self, elapsed_time: float) -> None:
+        """Record time for completed epoch."""
+        self.epoch_times.append(elapsed_time)
+
+    def get_eta_string(self) -> str:
+        """Get formatted ETA string.
+
+        Returns:
+            String like "ETA: 2h 30m (Jan 20 15:30)" or empty if not enough data.
+        """
+        if len(self.epoch_times) < 1:
+            return ""
+
+        current_epoch = len(self.epoch_times)
+        remaining_epochs = self.total_epochs - current_epoch
+
+        if remaining_epochs <= 0:
+            return ""
+
+        # Use average excluding first epoch (warmup) if we have enough data
+        if len(self.epoch_times) >= 2:
+            avg_time = sum(self.epoch_times[1:]) / len(self.epoch_times[1:])
+        else:
+            # Only have first epoch, use it but it's likely overestimate
+            avg_time = self.epoch_times[0]
+
+        eta_seconds = avg_time * remaining_epochs
+        completion_time = datetime.now() + timedelta(seconds=eta_seconds)
+
+        # Format duration
+        eta_str = self._format_duration(eta_seconds)
+
+        # Format completion date/time
+        if eta_seconds < 86400:  # Less than a day
+            date_str = completion_time.strftime("%H:%M")
+        else:
+            date_str = completion_time.strftime("%b %d %H:%M")
+
+        return f"ETA: {eta_str} ({date_str})"
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in human-readable format."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            minutes = seconds / 60
+            return f"{minutes:.0f}m"
+        elif seconds < 86400:
+            hours = seconds / 3600
+            minutes = (seconds % 3600) / 60
+            if minutes > 0:
+                return f"{hours:.0f}h {minutes:.0f}m"
+            return f"{hours:.0f}h"
+        else:
+            days = seconds / 86400
+            hours = (seconds % 86400) / 3600
+            if hours > 0:
+                return f"{days:.0f}d {hours:.0f}h"
+            return f"{days:.0f}d"
+
+
 def log_epoch_summary(
     epoch: int,
     total_epochs: int,
     avg_losses: Tuple[float, float, float],
-    elapsed_time: float
+    elapsed_time: float,
+    time_estimator: Optional[EpochTimeEstimator] = None,
 ) -> None:
     """Log epoch completion summary.
 
@@ -34,15 +108,29 @@ def log_epoch_summary(
         total_epochs: Total number of epochs.
         avg_losses: Tuple of (total_loss, mse_loss, perceptual_loss).
         elapsed_time: Time taken for the epoch in seconds.
+        time_estimator: Optional estimator for ETA calculation.
     """
     timestamp = time.strftime("%H:%M:%S")
     epoch_pct = ((epoch + 1) / total_epochs) * 100
     total_loss, mse_loss, perceptual_loss = avg_losses
 
+    # Only show perceptual components when perceptual loss is enabled
+    if perceptual_loss > 0:
+        loss_str = f"Total: {total_loss:.6f} | MSE: {mse_loss:.6f} | Perceptual: {perceptual_loss:.6f}"
+    else:
+        loss_str = f"MSE: {mse_loss:.6f}"
+
+    # Update estimator and get ETA
+    eta_str = ""
+    if time_estimator is not None:
+        time_estimator.update(elapsed_time)
+        eta_str = time_estimator.get_eta_string()
+        if eta_str:
+            eta_str = f" | {eta_str}"
+
     logger.info(
         f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) completed | "
-        f"Total: {total_loss:.6f} | MSE: {mse_loss:.6f} | Perceptual: {perceptual_loss:.6f} | "
-        f"Time: {elapsed_time:.1f}s"
+        f"{loss_str} | Time: {elapsed_time:.1f}s{eta_str}"
     )
 
 

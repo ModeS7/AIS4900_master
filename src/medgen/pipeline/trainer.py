@@ -58,6 +58,7 @@ from .utils import (
     log_epoch_summary,
     save_full_checkpoint,
     create_epoch_iterator,
+    EpochTimeEstimator,
 )
 from medgen.metrics import (
     create_reconstruction_figure,
@@ -2371,6 +2372,7 @@ class DiffusionTrainer(BaseTrainer):
 
         avg_loss = float('inf')
         avg_mse = float('inf')
+        time_estimator = EpochTimeEstimator(self.n_epochs)
 
         try:
             for epoch in range(self.n_epochs):
@@ -2390,7 +2392,7 @@ class DiffusionTrainer(BaseTrainer):
                 self.lr_scheduler.step()
 
                 if self.is_main_process:
-                    log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time)
+                    log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time, time_estimator)
 
                     # Log training losses using unified system (DDP path)
                     if self.use_multi_gpu:

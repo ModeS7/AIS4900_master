@@ -30,7 +30,7 @@ from torch.utils.tensorboard import SummaryWriter
 from medgen.core import setup_distributed
 from medgen.pipeline.results import TrainingStepResult
 from medgen.metrics import FLOPsTracker, GradientNormTracker
-from .utils import log_vram_to_tensorboard
+from .utils import log_vram_to_tensorboard, EpochTimeEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -608,6 +608,9 @@ class BaseTrainer(ABC):
         last_epoch = start_epoch
         total_start = time.time()
 
+        # Time estimator for ETA calculation (excludes first epoch warmup)
+        self._time_estimator = EpochTimeEstimator(n_epochs)
+
         try:
             for epoch in range(start_epoch, n_epochs):
                 epoch_start = time.time()
@@ -716,9 +719,18 @@ class BaseTrainer(ABC):
         if 'psnr' in val_metrics:
             loss_parts.append(f"PSNR: {val_metrics['psnr']:.2f}")
 
+        loss_parts.append(f"Time: {elapsed_time:.1f}s")
+
+        # Add ETA from time estimator
+        if hasattr(self, '_time_estimator') and self._time_estimator is not None:
+            self._time_estimator.update(elapsed_time)
+            eta_str = self._time_estimator.get_eta_string()
+            if eta_str:
+                loss_parts.append(eta_str)
+
         loss_str = " | ".join(loss_parts) if loss_parts else "No losses"
 
         logger.info(
             f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
-            f"{loss_str} | Time: {elapsed_time:.1f}s"
+            f"{loss_str}"
         )

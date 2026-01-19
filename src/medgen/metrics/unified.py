@@ -39,10 +39,13 @@ Usage:
     self._unified_metrics.reset_validation()
 """
 import logging
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
+
+if TYPE_CHECKING:
+    from medgen.pipeline.utils import EpochTimeEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -1261,6 +1264,7 @@ class UnifiedMetrics:
         epoch: int,
         total_epochs: int,
         elapsed_time: float,
+        time_estimator: Optional["EpochTimeEstimator"] = None,
     ):
         """Log epoch completion summary to console.
 
@@ -1268,6 +1272,7 @@ class UnifiedMetrics:
             epoch: Current epoch number (0-indexed).
             total_epochs: Total number of epochs.
             elapsed_time: Time taken for epoch in seconds.
+            time_estimator: Optional estimator for ETA calculation.
         """
         import time as time_module
 
@@ -1309,6 +1314,13 @@ class UnifiedMetrics:
         # Combine all parts
         all_parts = loss_parts + metric_parts
         all_parts.append(f"Time: {elapsed_time:.1f}s")
+
+        # Add ETA if estimator provided
+        if time_estimator is not None:
+            time_estimator.update(elapsed_time)
+            eta_str = time_estimator.get_eta_string()
+            if eta_str:
+                all_parts.append(eta_str)
 
         logger.info(
             f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "

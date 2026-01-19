@@ -59,6 +59,7 @@ from .utils import (
     get_vram_usage,
     log_vram_to_tensorboard,
     save_full_checkpoint,
+    EpochTimeEstimator,
 )
 from medgen.metrics import FLOPsTracker
 from medgen.metrics import (
@@ -1256,6 +1257,9 @@ class Diffusion3DTrainer(BaseTrainer):
         # Uses training data (not validation) to keep datasets separate
         self._cache_training_samples(train_loader)
 
+        # Time estimator for ETA calculation (excludes first epoch warmup)
+        time_estimator = EpochTimeEstimator(self.cfg.training.epochs)
+
         for epoch in range(self.cfg.training.epochs):
             self._current_epoch = epoch
             epoch_start = time.time()
@@ -1341,6 +1345,7 @@ class Diffusion3DTrainer(BaseTrainer):
                 epoch=epoch,
                 total_epochs=self.cfg.training.epochs,
                 elapsed_time=epoch_time,
+                time_estimator=time_estimator,
             )
 
             # Log FLOPs (VRAM already logged via update_vram in _train_epoch)
