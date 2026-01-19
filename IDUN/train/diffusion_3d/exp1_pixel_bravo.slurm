@@ -12,6 +12,7 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1_pixel_bravo_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --exclude=idun-06-02
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -44,7 +45,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 #
 # Resolution: 128x128x160
 # ============================================================================
-
+<
 time python -m medgen.scripts.train_diffusion_3d \
     paths=cluster \
     strategy=rflow \
