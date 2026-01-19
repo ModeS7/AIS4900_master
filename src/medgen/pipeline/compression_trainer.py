@@ -967,11 +967,15 @@ class BaseCompressionTrainer(BaseTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # Log worst batch figure
+        # Log worst batch figure (uses unified metrics)
         if log_figures and worst_batch_data is not None:
-            fig = self._create_worst_batch_figure(worst_batch_data)
-            self.writer.add_figure('Validation/worst_batch', fig, epoch)
-            plt.close(fig)
+            self._unified_metrics.log_worst_batch(
+                original=worst_batch_data['original'],
+                reconstructed=worst_batch_data['generated'],
+                loss=worst_batch_data['loss'],
+                epoch=epoch,
+                phase='val',
+            )
 
         # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:

@@ -998,6 +998,7 @@ class UnifiedMetrics:
         tag: str = 'Figures/reconstruction',
         max_samples: int = 8,
         metrics: Optional[Dict[str, float]] = None,
+        save_path: Optional[str] = None,
     ):
         """Log reconstruction comparison figure to TensorBoard.
 
@@ -1010,8 +1011,9 @@ class UnifiedMetrics:
             tag: TensorBoard tag for the figure.
             max_samples: Maximum number of samples to display.
             metrics: Optional dict of metrics to show in subtitle.
+            save_path: Optional path to save figure as PNG file.
         """
-        if self.writer is None:
+        if self.writer is None and save_path is None:
             return
 
         from .figures import create_reconstruction_figure
@@ -1032,7 +1034,15 @@ class UnifiedMetrics:
             max_samples=max_samples,
             metrics=metrics,
         )
-        self.writer.add_figure(tag, fig, epoch)
+
+        # Log to TensorBoard
+        if self.writer is not None:
+            self.writer.add_figure(tag, fig, epoch)
+
+        # Save to file if path provided
+        if save_path is not None:
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
         plt.close(fig)
 
     def log_worst_batch(
@@ -1044,6 +1054,9 @@ class UnifiedMetrics:
         phase: str = 'train',
         mask: Optional[torch.Tensor] = None,
         timesteps: Optional[torch.Tensor] = None,
+        tag_prefix: Optional[str] = None,
+        save_path: Optional[str] = None,
+        display_metrics: Optional[Dict[str, float]] = None,
     ):
         """Log worst batch visualization to TensorBoard.
 
@@ -1052,15 +1065,26 @@ class UnifiedMetrics:
             reconstructed: Reconstructed tensor.
             loss: Loss value for this batch.
             epoch: Current epoch number.
-            phase: 'train' or 'val'.
+            phase: 'train' or 'val' (used if tag_prefix not provided).
             mask: Optional segmentation mask.
             timesteps: Optional timesteps (diffusion).
+            tag_prefix: Optional custom prefix (e.g., 'Test_best'). If provided,
+                tag becomes '{tag_prefix}/worst_batch' instead of 'worst_batch/{phase}'.
+            save_path: Optional path to save figure as PNG file.
+            display_metrics: Optional metrics dict to display (e.g., {'MS-SSIM': 0.95}).
+                If not provided, uses {'loss': loss}.
         """
-        if self.writer is None:
+        if self.writer is None and save_path is None:
             return
 
-        tag = f'worst_batch/{phase}'
-        metrics = {'loss': loss}
+        # Determine tag
+        if tag_prefix is not None:
+            tag = f'{tag_prefix}/worst_batch'
+        else:
+            tag = f'worst_batch/{phase}'
+
+        # Determine metrics to display
+        metrics = display_metrics if display_metrics is not None else {'loss': loss}
 
         self.log_reconstruction_figure(
             original=original,
@@ -1070,6 +1094,7 @@ class UnifiedMetrics:
             timesteps=timesteps,
             tag=tag,
             metrics=metrics,
+            save_path=save_path,
         )
 
     def log_denoising_trajectory(
@@ -1118,6 +1143,37 @@ class UnifiedMetrics:
         fig.tight_layout()
         self.writer.add_figure(f'{tag}/progression', fig, epoch)
         plt.close(fig)
+
+    def log_generated_samples(
+        self,
+        samples: torch.Tensor,
+        epoch: int,
+        tag: str = 'Generated_Samples',
+        nrow: int = 4,
+    ):
+        """Log generated samples grid to TensorBoard.
+
+        Args:
+            samples: Generated samples [B, C, (D), H, W].
+            epoch: Current epoch number.
+            tag: TensorBoard tag.
+            nrow: Number of images per row in grid.
+        """
+        if self.writer is None:
+            return
+
+        from torchvision.utils import make_grid
+
+        # Handle 3D - take center slice
+        if self.spatial_dims == 3 and samples.dim() == 5:
+            samples = self._extract_center_slice(samples)
+
+        # Clamp to valid range
+        samples = torch.clamp(samples.float(), 0, 1)
+
+        # Create grid
+        grid = make_grid(samples, nrow=nrow, normalize=False, padding=2)
+        self.writer.add_image(tag, grid, epoch)
 
     def log_test_figure(
         self,

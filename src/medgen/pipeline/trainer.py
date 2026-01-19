@@ -3003,29 +3003,24 @@ class DiffusionTrainer(BaseTrainer):
                     suffix = f'_{self.mode_name}' if is_single_modality else ''
                     self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D{suffix}', msssim_3d, 0)
 
-            # Create visualization of worst batch
+            # Create visualization of worst batch (uses unified metrics)
             if worst_batch_data is not None:
-                fig = self._create_test_reconstruction_figure(
-                    worst_batch_data['original'],
-                    worst_batch_data['generated'],
-                    metrics,
-                    label,
-                    worst_batch_data['timesteps'],
-                )
-                self.writer.add_figure(f'{tb_prefix}/worst_batch', fig, 0)
-                plt.close(fig)
+                # Build display metrics
+                display_metrics = {'MS-SSIM': metrics['msssim'], 'PSNR': metrics['psnr']}
+                if 'lpips' in metrics:
+                    display_metrics['LPIPS'] = metrics['lpips']
 
-                # Also save as image file
                 fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
-                fig = self._create_test_reconstruction_figure(
-                    worst_batch_data['original'],
-                    worst_batch_data['generated'],
-                    metrics,
-                    label,
-                    worst_batch_data['timesteps'],
+                self._unified_metrics.log_worst_batch(
+                    original=worst_batch_data['original'],
+                    reconstructed=worst_batch_data['generated'],
+                    loss=metrics.get('mse', 0.0),
+                    epoch=0,
+                    tag_prefix=tb_prefix,
+                    timesteps=worst_batch_data['timesteps'],
+                    save_path=fig_path,
+                    display_metrics=display_metrics,
                 )
-                fig.savefig(fig_path, dpi=150, bbox_inches='tight')
-                plt.close(fig)
                 logger.info(f"Test worst batch saved to: {fig_path}")
 
             # Compute generation quality metrics (FID, KID, CMMD) if enabled

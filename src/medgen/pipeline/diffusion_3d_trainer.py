@@ -32,7 +32,6 @@ from torch.amp import autocast
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import make_grid
 from tqdm import tqdm
 
 
@@ -1913,18 +1912,8 @@ class Diffusion3DTrainer(BaseTrainer):
         if isinstance(self.space, LatentSpace):
             samples = self.space.decode(samples)
 
-        # Extract center slice for visualization
-        center_idx = samples.shape[2] // 2
-        center_slices = samples[:, :, center_idx, :, :]  # [B, C, H, W]
-
-        # Log to TensorBoard
-        # Normalize to [0, 1] if needed
-        center_slices = torch.clamp(center_slices, 0, 1)
-
-        # Create grid
-        from torchvision.utils import make_grid
-        grid = make_grid(center_slices, nrow=2, normalize=False)
-        self.writer.add_image('Generated_3D_CenterSlice', grid, epoch)
+        # Log using unified metrics (handles 3D center slice extraction)
+        self._unified_metrics.log_generated_samples(samples, epoch, tag='Generated_Samples', nrow=2)
 
     @torch.no_grad()
     def _visualize_denoising_trajectory(
@@ -1972,19 +1961,8 @@ class Diffusion3DTrainer(BaseTrainer):
         if isinstance(self.space, LatentSpace):
             trajectory = [self.space.decode(t) for t in trajectory]
 
-        # Extract center slices from trajectory
-        slices = []
-        for i, vol in enumerate(trajectory):
-            center_idx = vol.shape[2] // 2
-            center_slice = vol[0, :, center_idx, :, :]  # [C, H, W]
-            center_slice = torch.clamp(center_slice, 0, 1)
-            slices.append(center_slice)
-
-        # Stack and create grid: each column is a timestep
-        if slices:
-            slices_tensor = torch.stack(slices, dim=0)  # [T, C, H, W]
-            grid = make_grid(slices_tensor, nrow=len(slices), normalize=False)
-            self.writer.add_image('denoising_trajectory/center_slice', grid, epoch)
+        # Log using unified metrics (handles 3D center slice extraction)
+        self._unified_metrics.log_denoising_trajectory(trajectory, epoch, tag='denoising_trajectory')
 
     @torch.no_grad()
     def _generate_trajectory(

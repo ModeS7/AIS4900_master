@@ -457,17 +457,15 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             if self.kl_weight > 0:
                 self.writer.add_scalar('Loss/KL_unweighted_val', metrics['reg'] / self.kl_weight, epoch)
 
-        # Log worst batch figure (3D-specific)
+        # Log worst batch figure (uses unified metrics - handles 3D automatically)
         if log_figures and worst_batch_data is not None:
-            fig = create_worst_batch_figure_3d(
-                worst_batch_data['original'],
-                worst_batch_data['generated'],
-                worst_batch_data.get('loss', 0.0),
-                loss_breakdown=worst_batch_data.get('loss_breakdown'),
+            self._unified_metrics.log_worst_batch(
+                original=worst_batch_data['original'],
+                reconstructed=worst_batch_data['generated'],
+                loss=worst_batch_data.get('loss', 0.0),
+                epoch=epoch,
+                phase='val',
             )
-            if fig is not None:
-                self.writer.add_figure('Validation/WorstBatch_3D', fig, epoch)
-                plt.close(fig)
 
         # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:
