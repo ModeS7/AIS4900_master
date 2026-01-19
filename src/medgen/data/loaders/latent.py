@@ -93,12 +93,14 @@ class LatentCacheBuilder:
         mode: str,
         image_size: int,
         compression_type: str = "vae",
+        verbose: bool = True,
     ) -> None:
         self.model = compression_model.eval()
         self.device = device
         self.mode = mode
         self.image_size = image_size
         self.compression_type = compression_type
+        self.verbose = verbose
 
         # Freeze model parameters
         for param in self.model.parameters():
@@ -208,7 +210,7 @@ class LatentCacheBuilder:
         logger.info(f"Encoding {len(pixel_dataset)} samples to {cache_dir}...")
 
         with torch.no_grad():
-            for batch in tqdm(temp_loader, desc="Encoding latents"):
+            for batch in tqdm(temp_loader, desc="Encoding latents", disable=not self.verbose):
                 # Handle different batch formats
                 images, seg_masks, patient_ids, slice_indices = self._parse_batch(batch)
 

@@ -108,6 +108,7 @@ def main(cfg: DictConfig) -> None:
             mode=cfg.mode.name,
             volume_shape=(cfg.volume.depth, cfg.volume.height, cfg.volume.width),
             compression_type=comp_type,
+            verbose=cfg.training.get('verbose', True),
         )
 
         # Build cache for train/val if needed

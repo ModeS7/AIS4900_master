@@ -94,12 +94,14 @@ class LatentCacheBuilder3D:
         mode: str,
         volume_shape: Tuple[int, int, int],
         compression_type: str = "vae",
+        verbose: bool = True,
     ) -> None:
         self.model = compression_model.eval()
         self.device = device
         self.mode = mode
         self.volume_shape = volume_shape  # (D, H, W)
         self.compression_type = compression_type
+        self.verbose = verbose
 
         # Freeze model parameters
         for param in self.model.parameters():
@@ -203,7 +205,7 @@ class LatentCacheBuilder3D:
         logger.info(f"Encoding {len(volume_dataset)} 3D volumes to {cache_dir}...")
 
         with torch.no_grad():
-            for idx in tqdm(range(len(volume_dataset)), desc="Encoding 3D volumes"):
+            for idx in tqdm(range(len(volume_dataset)), desc="Encoding 3D volumes", disable=not self.verbose):
                 # Get single volume
                 batch = volume_dataset[idx]
 

@@ -164,6 +164,7 @@ def main(cfg: DictConfig) -> None:
             mode=mode,
             image_size=cfg.model.image_size,
             compression_type=compression_type,
+            verbose=cfg.training.get('verbose', True),
         )
 
         compression_checkpoint = latent_cfg.get('compression_checkpoint')
