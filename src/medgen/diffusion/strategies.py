@@ -459,9 +459,9 @@ class DDPMStrategy(DiffusionStrategy):
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
                 noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                # Split predictions for each channel
-                noise_pred_pre = noise_pred[:, 0:1, :, :]
-                noise_pred_gd = noise_pred[:, 1:2, :, :]
+                # Split predictions for each channel (works for both 2D and 3D)
+                noise_pred_pre = noise_pred[:, 0:1]
+                noise_pred_gd = noise_pred[:, 1:2]
 
                 # Denoise each channel SEPARATELY using scheduler
                 noisy_pre, _ = self.scheduler.step(noise_pred_pre, t, noisy_pre)
@@ -710,9 +710,9 @@ class RFlowStrategy(DiffusionStrategy):
                 current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
                 velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                # Split predictions for each channel
-                velocity_pred_pre = velocity_pred[:, 0:1, :, :]
-                velocity_pred_gd = velocity_pred[:, 1:2, :, :]
+                # Split predictions for each channel (works for both 2D and 3D)
+                velocity_pred_pre = velocity_pred[:, 0:1]
+                velocity_pred_gd = velocity_pred[:, 1:2]
 
                 # Update each channel SEPARATELY using scheduler
                 noisy_pre, _ = self.scheduler.step(velocity_pred_pre, t, noisy_pre, next_timestep)

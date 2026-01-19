@@ -328,7 +328,9 @@ class DiffusionTrainer(BaseTrainer):
         self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned')
         if self.use_size_bin_embedding:
             size_bin_cfg = cfg.mode.get('size_bins', {})
-            self.size_bin_num_bins = size_bin_cfg.get('num_bins', 6)
+            bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+            # Default: len(edges) bins (6 bounded + 1 overflow for >= last edge)
+            self.size_bin_num_bins = size_bin_cfg.get('num_bins', len(bin_edges))
             self.size_bin_max_count = size_bin_cfg.get('max_count_per_bin', 10)
             self.size_bin_embed_dim = size_bin_cfg.get('embedding_dim', 32)
             if self.is_main_process:

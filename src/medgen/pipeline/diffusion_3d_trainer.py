@@ -219,7 +219,9 @@ class Diffusion3DTrainer(BaseTrainer):
         self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned')
         if self.use_size_bin_embedding:
             size_bin_cfg = cfg.mode.get('size_bins', {})
-            self.size_bin_num_bins = size_bin_cfg.get('num_bins', 7)
+            bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+            # Default: len(edges) bins (6 bounded + 1 overflow for >= last edge)
+            self.size_bin_num_bins = size_bin_cfg.get('num_bins', len(bin_edges))
             self.size_bin_max_count = size_bin_cfg.get('max_count_per_bin', 10)
             self.size_bin_embed_dim = size_bin_cfg.get('embedding_dim', 32)
             if self.is_main_process:
@@ -235,8 +237,8 @@ class Diffusion3DTrainer(BaseTrainer):
         self.log_worst_batch = log_cfg.get('worst_batch', True)
         self.log_intermediate_steps = log_cfg.get('intermediate_steps', True)
         self.num_intermediate_steps = log_cfg.get('num_intermediate_steps', 5)
-        self.log_regional_losses = log_cfg.get('regional_losses', True) and not self.is_seg_mode
-        self.log_timestep_region_losses = log_cfg.get('timestep_region_losses', True) and not self.is_seg_mode
+        self.log_regional_losses = log_cfg.get('regional_losses', True)
+        self.log_timestep_region_losses = log_cfg.get('timestep_region_losses', True)
         self.log_flops = log_cfg.get('flops', True)
         self.log_lpips = log_cfg.get('lpips', True) and not self.is_seg_mode  # Slice-wise LPIPS
 
@@ -1716,24 +1718,24 @@ class Diffusion3DTrainer(BaseTrainer):
                 t_normalized = avg_t / self.num_timesteps
                 self._unified_metrics.update_timestep_loss(t_normalized, batch_loss)
 
-            # Track worst batch (matches 2D trainer approach, filter small last batches)
-            if self.log_worst_batch and batch_loss > worst_loss and current_batch_size >= min_batch_size:
-                worst_loss = batch_loss
-                worst_batch_data = {
-                    'original': images.cpu(),
-                    'generated': predicted_clean.cpu(),
-                    'mask': labels.cpu() if labels is not None else None,
-                    'timesteps': timesteps.cpu(),
-                    'loss': batch_loss,
-                }
-
-            # Decode if in latent space for quality metrics
+            # Decode if in latent space for quality metrics and visualization
             if isinstance(self.space, LatentSpace):
                 images_pixel = self.space.decode(images)
                 predicted_pixel = self.space.decode(predicted_clean)
             else:
                 images_pixel = images
                 predicted_pixel = predicted_clean
+
+            # Track worst batch AFTER decode (so visualization shows pixel-space images)
+            if self.log_worst_batch and batch_loss > worst_loss and current_batch_size >= min_batch_size:
+                worst_loss = batch_loss
+                worst_batch_data = {
+                    'original': images_pixel.cpu(),
+                    'generated': predicted_pixel.cpu(),
+                    'mask': labels.cpu() if labels is not None else None,
+                    'timesteps': timesteps.cpu(),
+                    'loss': batch_loss,
+                }
 
             if self.is_seg_mode:
                 # Seg mode: compute Dice/IoU using unified metrics
@@ -1874,7 +1876,11 @@ class Diffusion3DTrainer(BaseTrainer):
             else:
                 model_input = noise
         else:
-            # Fallback: no cached batch yet, use unconditional generation
+            # Fallback: no cached batch yet - cannot generate properly without real conditioning
+            if self.mode.is_conditional:
+                logger.warning("Cannot visualize samples: no cached training batch for conditioning")
+                return
+            # Unconditional mode can proceed
             batch_size = 4
             if isinstance(self.space, LatentSpace):
                 latent_shape = (batch_size, self.space.latent_channels,
@@ -1886,22 +1892,14 @@ class Diffusion3DTrainer(BaseTrainer):
 
             if self.use_size_bin_embedding:
                 model_input = noise
-                size_bins = None
-            elif self.mode.is_conditional:
-                cond_shape = list(noise.shape)
-                cond_shape[1] = 1
-                conditioning = torch.zeros(cond_shape, device=self.device)
-                model_input = torch.cat([noise, conditioning], dim=1)
+                # Use uniform distribution instead of zeros
+                size_bins = torch.ones(batch_size, self.size_bin_num_bins, device=self.device) / self.size_bin_num_bins
             else:
                 model_input = noise
 
         # Generate samples
         if self.use_size_bin_embedding:
-            if size_bins is not None:
-                samples = self._generate_with_size_bins(noise, size_bins, num_steps=25)
-            else:
-                zero_size_bins = torch.zeros(batch_size, self.size_bin_num_bins, device=self.device)
-                samples = self._generate_with_size_bins(noise, zero_size_bins, num_steps=25)
+            samples = self._generate_with_size_bins(noise, size_bins, num_steps=25)
         else:
             samples = self.strategy.generate(
                 self.model,
@@ -1927,6 +1925,8 @@ class Diffusion3DTrainer(BaseTrainer):
         """Visualize intermediate denoising steps.
 
         Shows the progression from noise to clean sample at multiple timesteps.
+        Uses REAL conditioning from cached training samples (model cannot generate
+        properly with zeros if trained with real conditioning).
 
         Args:
             epoch: Current epoch number.
@@ -1937,28 +1937,54 @@ class Diffusion3DTrainer(BaseTrainer):
 
         self.model.eval()
 
-        # Generate one sample with trajectory
-        if isinstance(self.space, LatentSpace):
-            latent_shape = (1, self.space.latent_channels,
-                           self.volume_depth // 8, self.volume_height // 8, self.volume_width // 8)
-            noise = torch.randn(latent_shape, device=self.device)
-        else:
-            noise = torch.randn(1, 1, self.volume_depth, self.volume_height, self.volume_width,
-                               device=self.device)
+        # Use cached training batch for real conditioning (critical for proper generation)
+        if self._cached_train_batch is not None:
+            cached_images = self._cached_train_batch['images']
+            cached_labels = self._cached_train_batch.get('labels')
+            cached_size_bins = self._cached_train_batch.get('size_bins')
 
-        # Generate with trajectory capture
-        if self.use_size_bin_embedding:
-            # Size bin mode: use zero conditioning for visualization
-            zero_size_bins = torch.zeros(1, self.size_bin_num_bins, device=self.device)
-            trajectory = self._generate_trajectory_with_size_bins(noise, zero_size_bins, num_steps=25, capture_every=5)
+            # Generate noise matching first cached sample
+            if isinstance(self.space, LatentSpace):
+                with torch.no_grad():
+                    encoded = self.space.encode(cached_images[:1])
+                noise = torch.randn_like(encoded)
+            else:
+                noise = torch.randn_like(cached_images[:1])
+
+            # Generate with real conditioning from cached batch
+            if self.use_size_bin_embedding:
+                size_bins = cached_size_bins[:1] if cached_size_bins is not None else None
+                if size_bins is not None:
+                    trajectory = self._generate_trajectory_with_size_bins(
+                        noise, size_bins, num_steps=25, capture_every=5
+                    )
+                else:
+                    # Uniform size bins as fallback (better than zeros)
+                    uniform_bins = torch.ones(1, self.size_bin_num_bins, device=self.device) / self.size_bin_num_bins
+                    trajectory = self._generate_trajectory_with_size_bins(
+                        noise, uniform_bins, num_steps=25, capture_every=5
+                    )
+            elif self.mode.is_conditional and cached_labels is not None:
+                labels = cached_labels[:1]
+                if isinstance(self.space, LatentSpace):
+                    labels_encoded = self.space.encode(labels)
+                else:
+                    labels_encoded = labels
+                model_input = torch.cat([noise, labels_encoded], dim=1)
+                trajectory = self._generate_trajectory(model_input, num_steps=25, capture_every=5)
+            else:
+                trajectory = self._generate_trajectory(noise, num_steps=25, capture_every=5)
         else:
-            model_input = noise
-            if self.mode.is_conditional:
-                cond_shape = list(noise.shape)
-                cond_shape[1] = 1
-                conditioning = torch.zeros(cond_shape, device=self.device)
-                model_input = torch.cat([noise, conditioning], dim=1)
-            trajectory = self._generate_trajectory(model_input, num_steps=25, capture_every=5)
+            # Fallback: no cached batch yet (shouldn't happen after first training step)
+            logger.warning("No cached training batch for denoising trajectory - using unconditional")
+            if isinstance(self.space, LatentSpace):
+                latent_shape = (1, self.space.latent_channels,
+                               self.volume_depth // 8, self.volume_height // 8, self.volume_width // 8)
+                noise = torch.randn(latent_shape, device=self.device)
+            else:
+                noise = torch.randn(1, 1, self.volume_depth, self.volume_height, self.volume_width,
+                                   device=self.device)
+            trajectory = self._generate_trajectory(noise, num_steps=25, capture_every=5)
 
         # Decode trajectory if in latent space
         if isinstance(self.space, LatentSpace):
@@ -2303,24 +2329,24 @@ class Diffusion3DTrainer(BaseTrainer):
                 batch_loss = mse_loss.item()
                 total_mse += batch_loss
 
-                # Track worst batch (matches 2D trainer, filter small last batches)
-                if batch_loss > worst_batch_loss and batch_size >= self.batch_size:
-                    worst_batch_loss = batch_loss
-                    worst_batch_data = {
-                        'original': images.cpu(),
-                        'generated': predicted_clean.cpu(),
-                        'mask': labels.cpu() if labels is not None else None,
-                        'timesteps': timesteps.cpu(),
-                        'loss': batch_loss,
-                    }
-
-                # Decode if in latent space
+                # Decode if in latent space for metrics and visualization
                 if isinstance(self.space, LatentSpace):
                     images_pixel = self.space.decode(images)
                     predicted_pixel = self.space.decode(predicted_clean)
                 else:
                     images_pixel = images
                     predicted_pixel = predicted_clean
+
+                # Track worst batch AFTER decode (matches 2D trainer, filter small last batches)
+                if batch_loss > worst_batch_loss and batch_size >= self.batch_size:
+                    worst_batch_loss = batch_loss
+                    worst_batch_data = {
+                        'original': images_pixel.cpu(),
+                        'generated': predicted_pixel.cpu(),
+                        'mask': labels.cpu() if labels is not None else None,
+                        'timesteps': timesteps.cpu(),
+                        'loss': batch_loss,
+                    }
 
                 if self.is_seg_mode:
                     dice = compute_dice(predicted_pixel, images_pixel, apply_sigmoid=False)
