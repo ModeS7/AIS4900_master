@@ -1025,6 +1025,8 @@ class UnifiedMetrics:
             reconstructed = self._extract_multiple_slices(reconstructed, num_slices=max_samples)
             if mask is not None:
                 mask = self._extract_multiple_slices(mask, num_slices=max_samples)
+            # Don't pass timesteps for 3D - slices are from same volume, timestep doesn't vary
+            timesteps = None
 
         fig = create_reconstruction_figure(
             original=original,
