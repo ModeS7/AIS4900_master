@@ -31,17 +31,17 @@ echo "=========================================="
 # Run the basic test
 echo ""
 echo "Running basic extractor test..."
-python misc/test_extractor_vram.py
+python misc/profiling/test_extractor_vram.py
 
 # Run the full test (includes LPIPS)
 echo ""
 echo "Running full test (all compiled models)..."
-python misc/test_extractor_vram.py full
+python misc/profiling/test_extractor_vram.py full
 
 # Run the 3D workload test
 echo ""
 echo "Running 3D workload test..."
-python misc/test_extractor_vram.py 3d
+python misc/profiling/test_extractor_vram.py 3d
 
 echo ""
 echo "=========================================="

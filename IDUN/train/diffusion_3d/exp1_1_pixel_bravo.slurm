@@ -45,7 +45,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Resolution: 128x128x160
 # ============================================================================
 
-time python -m medgen.scripts.train_diffusion_3d \
+time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \

@@ -62,7 +62,7 @@ fi
 
 echo "Using compression checkpoint: $COMPRESSION_CHECKPOINT"
 
-time python -m medgen.scripts.train_diffusion_3d \
+time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
