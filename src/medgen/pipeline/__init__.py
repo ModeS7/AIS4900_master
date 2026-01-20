@@ -55,6 +55,9 @@ from .results import TrainingStepResult
 # Gradient checkpointing base class
 from .checkpointing import BaseCheckpointedModel
 
+# Checkpoint management
+from .checkpoint_manager import CheckpointManager
+
 __all__ = [
     # Trainers
     'DiffusionTrainerBase',
@@ -109,4 +112,6 @@ __all__ = [
     'ValidationResult',
     # Gradient checkpointing
     'BaseCheckpointedModel',
+    # Checkpoint management
+    'CheckpointManager',
 ]

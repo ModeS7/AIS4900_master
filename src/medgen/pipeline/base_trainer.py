@@ -31,6 +31,7 @@ from medgen.core import setup_distributed
 from medgen.pipeline.results import TrainingStepResult
 from medgen.metrics import FLOPsTracker, GradientNormTracker
 from .utils import EpochTimeEstimator
+from .checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,11 @@ class BaseTrainer(ABC):
         self.optimizer: Optional[Optimizer] = None
         self.lr_scheduler: Optional[LRScheduler] = None
         self.val_loader: Optional[DataLoader] = None
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Checkpoint manager (initialized in _setup_checkpoint_manager)
+        # ─────────────────────────────────────────────────────────────────────
+        self.checkpoint_manager: Optional[CheckpointManager] = None
 
     def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
         """Setup distributed training.
@@ -443,6 +449,88 @@ class BaseTrainer(ABC):
         return batch.to(self.device, non_blocking=True), None
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Checkpoint management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _setup_checkpoint_manager(self) -> None:
+        """Setup checkpoint manager after model initialization.
+
+        Call this method at the end of setup_model() to initialize the
+        CheckpointManager with all required components.
+
+        Subclasses can override to add discriminator/GAN components.
+        """
+        if not self.is_main_process:
+            return
+
+        self.checkpoint_manager = CheckpointManager(
+            save_dir=self.save_dir,
+            model=self.model_raw,
+            optimizer=self.optimizer,
+            scheduler=self.lr_scheduler,
+            ema=getattr(self, 'ema', None),
+            config=self._get_model_config() if hasattr(self, '_get_model_config') else None,
+            metric_name=self._get_best_metric_name(),
+            keep_last_n=self.cfg.training.get('keep_last_n_checkpoints', 0),
+            device=self.device,
+        )
+
+    def _get_best_metric_name(self) -> str:
+        """Return metric name for best checkpoint tracking.
+
+        Override in subclasses if using different metric names.
+        Default: 'gen' for compression trainers, 'total' for diffusion.
+
+        Returns:
+            Metric key string (e.g., 'gen', 'total').
+        """
+        return 'gen'
+
+    def _get_checkpoint_extra_state(self) -> Optional[dict]:
+        """Return extra state to include in checkpoints.
+
+        Override in subclasses to add trainer-specific state.
+        Default: None.
+
+        Returns:
+            Dict of extra state or None.
+        """
+        return None
+
+    def _handle_checkpoints(
+        self,
+        epoch: int,
+        val_metrics: dict[str, float],
+    ) -> None:
+        """Handle checkpoint saving using CheckpointManager.
+
+        Call this at the end of each epoch to save latest and optionally best
+        checkpoints. Falls back to legacy _save_checkpoint() if manager not set.
+
+        Args:
+            epoch: Current epoch number.
+            val_metrics: Validation metrics dict.
+        """
+        if not self.is_main_process:
+            return
+
+        extra_state = self._get_checkpoint_extra_state()
+
+        if self.checkpoint_manager is not None:
+            # Use CheckpointManager
+            self.checkpoint_manager.save(epoch, val_metrics, name="latest", extra_state=extra_state)
+            if self.checkpoint_manager.save_if_best(epoch, val_metrics, extra_state=extra_state):
+                logger.info(f"New best model saved (loss: {val_metrics.get(self._get_best_metric_name(), 0):.4f})")
+        else:
+            # Fallback to legacy method
+            self._save_checkpoint(epoch, "latest")
+            val_loss = val_metrics.get('gen', val_metrics.get('total', float('inf')))
+            if val_loss > 0 and val_loss < self.best_loss:
+                self.best_loss = val_loss
+                self._save_checkpoint(epoch, "best")
+                logger.info(f"New best model saved (loss: {val_loss:.4f})")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Abstract methods (must be implemented by subclasses)
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -646,15 +734,10 @@ class BaseTrainer(ABC):
                     elapsed = time.time() - epoch_start
                     self._log_epoch_summary(epoch, n_epochs, avg_losses, val_metrics, elapsed)
 
-                    # Save checkpoints
-                    self._save_checkpoint(epoch, "latest")
-
-                    # Save best checkpoint (guard against empty validation returning 0.0)
-                    val_loss = val_metrics.get('gen', avg_losses.get('gen', float('inf')))
-                    if val_loss > 0 and val_loss < self.best_loss:
-                        self.best_loss = val_loss
-                        self._save_checkpoint(epoch, "best")
-                        logger.info(f"New best model saved (loss: {val_loss:.4f})")
+                    # Save checkpoints using unified handler
+                    # Merge avg_losses into val_metrics for metric availability
+                    merged_metrics = {**avg_losses, **val_metrics}
+                    self._handle_checkpoints(epoch, merged_metrics)
 
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")

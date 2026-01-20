@@ -1439,6 +1439,52 @@ class BaseCompressionTrainer(BaseTrainer):
     # Checkpointing
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _setup_checkpoint_manager(self) -> None:
+        """Setup checkpoint manager with GAN components.
+
+        Overrides BaseTrainer to add discriminator, optimizer_d, scheduler_d.
+        """
+        if not self.is_main_process:
+            return
+
+        from .checkpoint_manager import CheckpointManager
+
+        self.checkpoint_manager = CheckpointManager(
+            save_dir=self.save_dir,
+            model=self.model_raw,
+            optimizer=self.optimizer,
+            scheduler=self.lr_scheduler if not self.use_constant_lr else None,
+            ema=self.ema if self.use_ema else None,
+            config=self._get_model_config(),
+            # GAN components
+            discriminator=self.discriminator_raw if not self.disable_gan else None,
+            optimizer_d=self.optimizer_d if not self.disable_gan else None,
+            scheduler_d=self.lr_scheduler_d if not self.disable_gan and not self.use_constant_lr else None,
+            metric_name=self._get_best_metric_name(),
+            keep_last_n=self.cfg.training.get('keep_last_n_checkpoints', 0),
+            device=self.device,
+        )
+
+    def _get_checkpoint_extra_state(self) -> Optional[Dict[str, Any]]:
+        """Return extra state for compression trainer checkpoints.
+
+        Includes discriminator config and training flags.
+        """
+        extra_state = {
+            'disable_gan': self.disable_gan,
+            'use_constant_lr': self.use_constant_lr,
+        }
+
+        # Add discriminator config if GAN is enabled
+        if not self.disable_gan and self.discriminator_raw is not None:
+            extra_state['disc_config'] = {
+                'in_channels': self.cfg.mode.get('in_channels', 1),
+                'channels': self.disc_num_channels,
+                'num_layers_d': self.disc_num_layers,
+            }
+
+        return extra_state
+
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint with standardized format.
 
@@ -1486,6 +1532,8 @@ class BaseCompressionTrainer(BaseTrainer):
     def load_checkpoint(self, checkpoint_path: str, load_optimizer: bool = True) -> int:
         """Load checkpoint to resume training.
 
+        Uses CheckpointManager if available, otherwise falls back to legacy loading.
+
         Args:
             checkpoint_path: Path to checkpoint file.
             load_optimizer: Whether to load optimizer state.
@@ -1495,6 +1543,20 @@ class BaseCompressionTrainer(BaseTrainer):
         """
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        # Use CheckpointManager if available
+        if self.checkpoint_manager is not None:
+            result = self.checkpoint_manager.load(
+                checkpoint_path,
+                strict=True,
+                load_optimizer=load_optimizer,
+            )
+            epoch = result['epoch']
+            if self.is_main_process:
+                logger.info(f"Resuming from epoch {epoch + 1}")
+            return epoch
+
+        # Legacy loading (backward compatibility)
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
