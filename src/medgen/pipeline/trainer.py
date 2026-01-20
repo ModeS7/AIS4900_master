@@ -55,7 +55,6 @@ from medgen.diffusion import (
 from medgen.evaluation import ValidationVisualizer
 from .utils import (
     get_vram_usage,
-    log_vram_to_tensorboard,
     log_epoch_summary,
     save_full_checkpoint,
     create_epoch_iterator,
@@ -1923,15 +1922,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
         worst_batch_data: Optional[Dict[str, Any]] = None
         min_batch_size = self.batch_size  # Don't track small last batches
 
-        # Initialize regional tracker for validation (if enabled)
-        regional_tracker = None
-        if self.log_regional_losses:
-            regional_tracker = RegionalMetricsTracker(
-                image_size=self.image_size,
-                fov_mm=self.cfg.paths.get('fov_mm', 240.0),
-                loss_fn='mse',
-                device=self.device,
-            )
+        # Regional tracking now uses unified metrics internal tracker
+        # (initialized with enable_regional=self.log_regional_losses)
 
         # Initialize timestep loss tracking for validation
         num_timestep_bins = 10
@@ -2078,9 +2070,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                 n_batches += 1
 
-                # Regional tracking (tumor vs background)
-                if regional_tracker is not None and labels is not None:
-                    regional_tracker.update(predicted_clean, images, labels)
+                # Regional tracking via unified metrics (tumor vs background)
+                if self.log_regional_losses and labels is not None:
+                    self._unified_metrics.update_regional(predicted_clean, images, labels)
 
                 # Timestep loss tracking (per-bin velocity/noise prediction MSE)
                 # Uses the actual training target (velocity for RFlow, noise for DDPM)
@@ -2157,24 +2149,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     metrics['msssim_3d'] = msssim_3d
 
             # Update quality metrics using unified system
-            # Note: For 2D trainer, we manually update with computed values since
-            # the validation loop already computed them batch-wise
-            self._unified_metrics._val_psnr_sum = metrics['psnr']
-            self._unified_metrics._val_psnr_count = 1
-            self._unified_metrics._val_msssim_sum = metrics['msssim']
-            self._unified_metrics._val_msssim_count = 1
-            if 'lpips' in metrics:
-                self._unified_metrics._val_lpips_sum = metrics['lpips']
-                self._unified_metrics._val_lpips_count = 1
-            if msssim_3d is not None:
-                self._unified_metrics._val_msssim_3d_sum = msssim_3d
-                self._unified_metrics._val_msssim_3d_count = 1
-            if 'dice' in metrics:
-                self._unified_metrics._val_dice_sum = metrics['dice']
-                self._unified_metrics._val_dice_count = 1
-            if 'iou' in metrics:
-                self._unified_metrics._val_iou_sum = metrics['iou']
-                self._unified_metrics._val_iou_count = 1
+            self._unified_metrics.update_validation_batch(
+                psnr=metrics['psnr'],
+                msssim=metrics['msssim'],
+                lpips=metrics.get('lpips'),
+                msssim_3d=msssim_3d,
+                dice=metrics.get('dice'),
+                iou=metrics.get('iou'),
+            )
 
             # Log per-timestep validation losses using unified system
             # NOTE: Must happen BEFORE log_validation() so timesteps are included
@@ -2190,26 +2172,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Log validation metrics (now includes timesteps)
             self._unified_metrics.log_validation(epoch)
 
-            # Log per-channel metrics for dual/multi modes
-            for channel_key, channel_data in per_channel_metrics.items():
-                count = channel_data['count']
-                if count > 0:
-                    avg_psnr = channel_data['psnr'] / count
-                    avg_msssim = channel_data['msssim'] / count
-                    suffix = f'_{channel_key}'
-                    self.writer.add_scalar(f'Validation/PSNR{suffix}', avg_psnr, epoch)
-                    self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', avg_msssim, epoch)
-                    if self.log_lpips:
-                        avg_lpips = channel_data['lpips'] / count
-                        self.writer.add_scalar(f'Validation/LPIPS{suffix}', avg_lpips, epoch)
+            # Log per-channel metrics for dual/multi modes (via unified metrics)
+            if per_channel_metrics:
+                self._unified_metrics.log_per_channel_validation(per_channel_metrics, epoch)
 
-            # Log regional metrics (tumor vs background) with modality suffix
-            if regional_tracker is not None:
-                is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
-                if is_single_modality:
-                    regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{self.mode_name}')
-                else:
-                    regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            # Regional metrics are now logged via log_validation() using internal tracker
 
             # Log timestep-region heatmap on figure epochs
             if (epoch + 1) % self.figure_interval == 0 and self.log_timestep_region_losses:
@@ -2391,8 +2358,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
                     log_figures = (epoch + 1) % self.figure_interval == 0
 
-                    self._flops_tracker.log_epoch(self.writer, epoch)
-                    log_vram_to_tensorboard(self.writer, self.device, epoch)
+                    self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
+                    self._unified_metrics.log_vram(epoch)
 
                     if log_figures and worst_val_data is not None:
                         # Decode from latent space if needed
@@ -2547,18 +2514,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     n_batches += 1
 
-            # Compute averages and log per-modality metrics
-            if n_batches > 0 and self.writer is not None:
-                avg_psnr = total_psnr / n_batches
-                avg_msssim = total_msssim / n_batches
-
-                # Log per-modality quality metrics
-                self.writer.add_scalar(f'Validation/PSNR_{modality}', avg_psnr, epoch)
-                self.writer.add_scalar(f'Validation/MS-SSIM_{modality}', avg_msssim, epoch)
+            # Compute averages and log per-modality metrics (via unified metrics)
+            if n_batches > 0:
+                modality_metrics = {
+                    'psnr': total_psnr / n_batches,
+                    'msssim': total_msssim / n_batches,
+                }
 
                 if self.log_lpips:
-                    avg_lpips = total_lpips / n_batches
-                    self.writer.add_scalar(f'Validation/LPIPS_{modality}', avg_lpips, epoch)
+                    modality_metrics['lpips'] = total_lpips / n_batches
 
                 # Compute 3D MS-SSIM for this modality
                 if self.log_msssim:
@@ -2566,12 +2530,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         epoch, data_split='val', modality_override=modality
                     )
                     if msssim_3d is not None:
-                        self.writer.add_scalar(f'Validation/MS-SSIM-3D_{modality}', msssim_3d, epoch)
+                        modality_metrics['msssim_3d'] = msssim_3d
 
-                # Log regional metrics for this modality
+                # Log via unified metrics
+                self._unified_metrics.log_per_modality_validation(modality_metrics, modality, epoch)
+
+                # Log regional metrics for this modality via unified system
                 if regional_tracker is not None:
-                    regional_tracker.log_to_tensorboard(
-                        self.writer, epoch, prefix=f'regional_{modality}'
+                    self._unified_metrics.log_validation_regional(
+                        regional_tracker, epoch, modality_override=modality
                     )
 
     def _compute_volume_3d_msssim(
@@ -2965,6 +2932,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Log to TensorBoard using unified system
         tb_prefix = f'test_{label}'
         if self.writer is not None and self._unified_metrics is not None:
+            # Compute volume 3D MS-SSIM first so it can be included in test_metrics
+            msssim_3d = None
+            if self.log_msssim:
+                msssim_3d = self._compute_volume_3d_msssim(0, data_split='test_new')
+                if msssim_3d is not None:
+                    metrics['msssim_3d'] = msssim_3d
+
             # Build test metrics dict for unified logging
             test_metrics = {
                 'PSNR': metrics['psnr'],
@@ -2973,10 +2947,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             }
             if 'lpips' in metrics:
                 test_metrics['LPIPS'] = metrics['lpips']
+            if msssim_3d is not None:
+                test_metrics['MS-SSIM-3D'] = msssim_3d
 
             self._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
 
-            # Log timestep bin losses using unified system (normalized 0.0-1.0 format)
+            # Log timestep bin losses using unified system
             counts = timestep_loss_count.cpu()
             sums = timestep_loss_sum.cpu()
             timestep_bins = {}
@@ -2988,23 +2964,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     avg_loss = (sums[bin_idx] / count).item()
                     timestep_bins[f'{bin_start:.1f}-{bin_end:.1f}'] = avg_loss
             if timestep_bins:
-                # Log timestep losses directly since log_test doesn't handle this prefix
-                for bin_name, loss in timestep_bins.items():
-                    self.writer.add_scalar(f'{tb_prefix}/Timestep/{bin_name}', loss, 0)
+                self._unified_metrics.log_test_timesteps(timestep_bins, prefix=tb_prefix)
 
-            # Log regional metrics with modality suffix for single-modality modes
-            is_single_modality = self.mode_name not in ('multi_modality', 'dual', 'multi')
+            # Log regional metrics via unified system
             if regional_tracker is not None:
-                regional_prefix = f'{tb_prefix}_regional_{self.mode_name}' if is_single_modality else f'{tb_prefix}_regional'
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=regional_prefix)
-
-            # Compute and log volume 3D MS-SSIM
-            if self.log_msssim:
-                msssim_3d = self._compute_volume_3d_msssim(0, data_split='test_new')
-                if msssim_3d is not None:
-                    metrics['msssim_3d'] = msssim_3d
-                    suffix = f'_{self.mode_name}' if is_single_modality else ''
-                    self.writer.add_scalar(f'{tb_prefix}/MS-SSIM-3D{suffix}', msssim_3d, 0)
+                self._unified_metrics.log_test_regional(regional_tracker, prefix=tb_prefix)
 
             # Create visualization of worst batch (uses unified metrics)
             if worst_batch_data is not None:
@@ -3033,10 +2997,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     test_gen_results = self._gen_metrics.compute_test_metrics(
                         model_to_use, self.strategy, self.mode, test_loader
                     )
-                    # Log to TensorBoard
-                    for key, value in test_gen_results.items():
-                        self.writer.add_scalar(f'{tb_prefix}/{key}', value, 0)
-                        metrics[f'gen_{key.lower()}'] = value
+                    # Log to TensorBoard via unified metrics
+                    exported = self._unified_metrics.log_test_generation(test_gen_results, prefix=tb_prefix)
+                    metrics.update(exported)
                     # Log to console
                     if 'FID' in test_gen_results:
                         logger.info(f"  FID:     {test_gen_results['FID']:.4f}")

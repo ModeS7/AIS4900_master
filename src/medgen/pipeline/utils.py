@@ -225,29 +225,6 @@ def get_vram_stats(device: torch.device) -> Dict[str, float]:
     }
 
 
-def log_vram_to_tensorboard(
-    writer,
-    device: torch.device,
-    epoch: int,
-    prefix: str = 'VRAM',
-) -> None:
-    """Log VRAM usage statistics to TensorBoard.
-
-    Args:
-        writer: TensorBoard SummaryWriter.
-        device: CUDA device to query.
-        epoch: Current epoch number.
-        prefix: TensorBoard tag prefix (default: 'VRAM').
-    """
-    if writer is None:
-        return
-
-    stats = get_vram_stats(device)
-    writer.add_scalar(f'{prefix}/allocated_GB', stats['allocated'], epoch)
-    writer.add_scalar(f'{prefix}/reserved_GB', stats['reserved'], epoch)
-    writer.add_scalar(f'{prefix}/max_allocated_GB', stats['max_allocated'], epoch)
-
-
 def save_full_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,

@@ -24,6 +24,11 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from medgen.metrics.unified import UnifiedMetrics
+
 logger = logging.getLogger(__name__)
 
 
@@ -133,6 +138,7 @@ def log_metrics_to_tensorboard(
     metrics: Dict[str, float],
     prefix: str,
     step: int = 0,
+    unified_metrics: Optional["UnifiedMetrics"] = None,
 ) -> None:
     """Log metrics to TensorBoard.
 
@@ -141,7 +147,34 @@ def log_metrics_to_tensorboard(
         metrics: Dictionary of metric name -> value.
         prefix: Prefix for metric names (e.g., "test_best").
         step: Global step for TensorBoard.
+        unified_metrics: Optional UnifiedMetrics instance for centralized logging.
     """
+    # Use UnifiedMetrics if provided (preferred)
+    if unified_metrics is not None:
+        # Transform metrics to match UnifiedMetrics expectations
+        transformed = {}
+        name_map = {
+            'l1': 'L1',
+            'mse': 'MSE',
+            'msssim': 'MS-SSIM',
+            'msssim_3d': 'MS-SSIM-3D',
+            'psnr': 'PSNR',
+            'lpips': 'LPIPS',
+            'dice': 'Dice',
+            'iou': 'IoU',
+            'bce': 'BCE',
+            'boundary': 'Boundary',
+            'gen': 'Generator',
+        }
+        for key, value in metrics.items():
+            if key in name_map:
+                transformed[name_map[key]] = value
+            elif key != 'n_samples':
+                transformed[key] = value
+        unified_metrics.log_test(transformed, prefix=prefix)
+        return
+
+    # Fallback to direct writer calls for backward compatibility
     if writer is None:
         return
 
@@ -173,6 +206,7 @@ def log_test_per_modality(
     prefix: str,
     modality: str,
     step: int = 0,
+    unified_metrics: Optional["UnifiedMetrics"] = None,
 ) -> None:
     """Log per-modality test metrics to TensorBoard.
 
@@ -185,7 +219,28 @@ def log_test_per_modality(
         prefix: Prefix for metric names (e.g., "test_best").
         modality: Modality name (e.g., "t1_pre", "bravo").
         step: Global step for TensorBoard.
+        unified_metrics: Optional UnifiedMetrics instance for centralized logging.
     """
+    # Use UnifiedMetrics if provided (preferred)
+    if unified_metrics is not None:
+        # Map metric keys to display names and add modality suffix
+        name_map = {
+            'msssim': 'MS-SSIM',
+            'msssim_3d': 'MS-SSIM-3D',
+            'psnr': 'PSNR',
+            'lpips': 'LPIPS',
+            'dice': 'Dice',
+            'iou': 'IoU',
+        }
+        transformed = {}
+        for key, value in metrics.items():
+            display_name = name_map.get(key)
+            if display_name:
+                transformed[f'{display_name}_{modality}'] = value
+        unified_metrics.log_test(transformed, prefix=prefix)
+        return
+
+    # Fallback to direct writer calls for backward compatibility
     if writer is None:
         return
 
@@ -250,6 +305,7 @@ class BaseTestEvaluator(ABC):
         is_cluster: bool = False,
         worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
         modality_name: Optional[str] = None,
+        unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize test evaluator.
 
@@ -264,6 +320,7 @@ class BaseTestEvaluator(ABC):
             modality_name: Optional modality name for single-modality suffix
                 (e.g., 'bravo', 'seg'). If set and not 'multi_modality' or 'dual',
                 metrics are logged with this suffix.
+            unified_metrics: Optional UnifiedMetrics instance for centralized logging.
         """
         self.model = model
         self.device = device
@@ -273,6 +330,7 @@ class BaseTestEvaluator(ABC):
         self.is_cluster = is_cluster
         self.worst_batch_figure_fn = worst_batch_figure_fn
         self.modality_name = modality_name
+        self._unified_metrics = unified_metrics
 
     def evaluate(
         self,
@@ -319,13 +377,19 @@ class BaseTestEvaluator(ABC):
         )
         if is_single_modality:
             # Use per-modality logging for single-modality modes (e.g., test_best/PSNR_bravo)
-            log_test_per_modality(self.writer, metrics, f'test_{label}', self.modality_name)
+            log_test_per_modality(
+                self.writer, metrics, f'test_{label}', self.modality_name,
+                unified_metrics=self._unified_metrics,
+            )
         else:
             # Aggregate logging for multi-modality/dual (e.g., test_best/PSNR)
-            log_metrics_to_tensorboard(self.writer, metrics, f'test_{label}')
+            log_metrics_to_tensorboard(
+                self.writer, metrics, f'test_{label}',
+                unified_metrics=self._unified_metrics,
+            )
 
         # Log worst batch figure
-        if worst_batch_data is not None and self.writer is not None:
+        if worst_batch_data is not None and (self.writer is not None or self._unified_metrics is not None):
             self._log_worst_batch(worst_batch_data, label)
 
         # Restore training mode
@@ -485,9 +549,24 @@ class BaseTestEvaluator(ABC):
         """
         import matplotlib.pyplot as plt
 
-        if self.worst_batch_figure_fn is None or self.writer is None:
+        if self.worst_batch_figure_fn is None:
+            return
+        if self.writer is None and self._unified_metrics is None:
             return
 
+        # Use UnifiedMetrics if available (preferred)
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_worst_batch(
+                original=worst_batch_data['original'],
+                reconstructed=worst_batch_data['generated'],
+                loss=worst_batch_data['loss'],
+                epoch=0,
+                tag_prefix=f'test_{label}',
+                save_path=os.path.join(self.save_dir, f'test_worst_batch_{label}.png'),
+            )
+            return
+
+        # Fallback to direct writer calls for backward compatibility
         # Log to TensorBoard
         fig = self.worst_batch_figure_fn(worst_batch_data)
         self.writer.add_figure(f'test_{label}/worst_batch', fig, 0)
@@ -527,6 +606,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         image_keys: Optional[List[str]] = None,
         seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
         modality_name: Optional[str] = None,
+        unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize 2D compression evaluator.
 
@@ -546,11 +626,13 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             image_keys: Optional list of channel names for per-channel metrics (e.g., ['t1_pre', 't1_gd']).
             seg_loss_fn: Optional segmentation loss function for seg_mode (returns total, breakdown).
             modality_name: Optional modality name for single-modality suffix (e.g., 'bravo', 'seg').
+            unified_metrics: Optional UnifiedMetrics instance for centralized logging.
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
             worst_batch_figure_fn=worst_batch_figure_fn,
             modality_name=modality_name,
+            unified_metrics=unified_metrics,
         )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
@@ -583,7 +665,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         label = checkpoint_name or "current"
 
         # Log regional metrics to TensorBoard with modality suffix for single-modality
-        if self._regional_tracker is not None and self.writer is not None:
+        if self._regional_tracker is not None and (self.writer is not None or self._unified_metrics is not None):
             is_single_modality = (
                 self.modality_name is not None
                 and self.modality_name not in ('multi_modality', 'dual')
@@ -592,9 +674,15 @@ class CompressionTestEvaluator(BaseTestEvaluator):
                 regional_prefix = f'test_{label}_regional_{self.modality_name}'
             else:
                 regional_prefix = f'test_{label}_regional'
-            self._regional_tracker.log_to_tensorboard(
-                self.writer, 0, prefix=regional_prefix
-            )
+            # Use UnifiedMetrics if available (preferred)
+            if self._unified_metrics is not None:
+                self._unified_metrics.log_test_regional(
+                    self._regional_tracker, prefix=regional_prefix
+                )
+            else:
+                self._regional_tracker.log_to_tensorboard(
+                    self.writer, 0, prefix=regional_prefix
+                )
 
         # Log per-channel metrics to TensorBoard using unified helper
         if self._per_channel_count > 0 and self.writer is not None:
@@ -777,6 +865,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         image_keys: Optional[List[str]] = None,
         seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
         modality_name: Optional[str] = None,
+        unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize 3D compression evaluator.
 
@@ -794,11 +883,13 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             image_keys: Optional list of channel names for per-channel metrics.
             seg_loss_fn: Optional segmentation loss function for seg_mode.
             modality_name: Optional modality name for single-modality suffix (e.g., 'bravo', 'seg').
+            unified_metrics: Optional UnifiedMetrics instance for centralized logging.
         """
         super().__init__(
             model, device, save_dir, writer, metrics_config, is_cluster,
             worst_batch_figure_fn=worst_batch_figure_fn,
             modality_name=modality_name,
+            unified_metrics=unified_metrics,
         )
         self.forward_fn = forward_fn
         self.weight_dtype = weight_dtype
@@ -835,7 +926,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         label = checkpoint_name or "current"
 
         # Log regional metrics with modality suffix for single-modality modes
-        if self._regional_tracker is not None and self.writer is not None:
+        if self._regional_tracker is not None and (self.writer is not None or self._unified_metrics is not None):
             is_single_modality = (
                 self.modality_name is not None
                 and self.modality_name not in ('multi_modality', 'dual')
@@ -844,9 +935,15 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
                 regional_prefix = f'test_{label}_regional_{self.modality_name}'
             else:
                 regional_prefix = f'test_{label}_regional'
-            self._regional_tracker.log_to_tensorboard(
-                self.writer, 0, prefix=regional_prefix
-            )
+            # Use UnifiedMetrics if available (preferred)
+            if self._unified_metrics is not None:
+                self._unified_metrics.log_test_regional(
+                    self._regional_tracker, prefix=regional_prefix
+                )
+            else:
+                self._regional_tracker.log_to_tensorboard(
+                    self.writer, 0, prefix=regional_prefix
+                )
 
         # Log per-channel metrics to TensorBoard using unified helper
         if self._per_channel_count > 0 and self.writer is not None:

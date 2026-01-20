@@ -45,6 +45,12 @@ from torch.amp import autocast
 from torch.utils.data import DataLoader, Dataset
 
 from .feature_extractors import ResNet50Features, BiomedCLIPFeatures
+from .quality import (
+    compute_lpips_diversity,
+    compute_msssim_diversity,
+    compute_lpips_diversity_3d,
+    compute_msssim_diversity_3d,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -809,6 +815,56 @@ class GenerationMetrics:
 
         return results
 
+    def _compute_diversity_metrics(
+        self,
+        samples: torch.Tensor,
+        prefix: str = "",
+    ) -> Dict[str, float]:
+        """Compute diversity metrics for generated samples.
+
+        Measures how different the generated samples are from each other
+        using LPIPS and MS-SSIM diversity. Higher values indicate more
+        diversity (less mode collapse).
+
+        Args:
+            samples: Generated samples [N, C, H, W] or [B, C, D, H, W].
+            prefix: Prefix for metric names (e.g., "extended_").
+
+        Returns:
+            Dictionary with diversity metrics.
+        """
+        results = {}
+        is_3d = samples.ndim == 5
+        n_samples = samples.shape[0]
+
+        if n_samples < 2:
+            logger.debug(f"Need at least 2 samples for diversity (got {n_samples})")
+            return results
+
+        try:
+            if is_3d:
+                # 3D: compare same slice across volumes
+                lpips_div = compute_lpips_diversity_3d(
+                    samples, device=self.device
+                )
+                msssim_div = compute_msssim_diversity_3d(samples)
+            else:
+                # 2D: compare all generated images
+                lpips_div = compute_lpips_diversity(
+                    samples, device=self.device
+                )
+                msssim_div = compute_msssim_diversity(samples)
+
+            # Use special prefix format for separate TensorBoard section
+            # "Diversity/" prefix tells log_generation to use Generation_Diversity/ section
+            results[f'Diversity/{prefix}LPIPS'] = lpips_div
+            results[f'Diversity/{prefix}MSSSIM'] = msssim_div
+
+        except Exception as e:
+            logger.warning(f"Diversity computation failed: {e}")
+
+        return results
+
     def compute_epoch_metrics(
         self,
         model: nn.Module,
@@ -843,11 +899,17 @@ class GenerationMetrics:
             gen_resnet = self._extract_features_batched(samples, self.resnet)
             gen_biomed = self._extract_features_batched(samples, self.biomed)
 
+            # Compute diversity metrics (2D - every epoch)
+            diversity_metrics = self._compute_diversity_metrics(samples, prefix="")
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
 
             results = {}
+
+            # Add diversity metrics
+            results.update(diversity_metrics)
 
             # Metrics vs train
             train_metrics = self._compute_metrics_against_reference(
@@ -908,11 +970,17 @@ class GenerationMetrics:
             gen_resnet = self._extract_features_batched(samples, self.resnet)
             gen_biomed = self._extract_features_batched(samples, self.biomed)
 
+            # Compute diversity metrics (2D - extended)
+            diversity_metrics = self._compute_diversity_metrics(samples, prefix="extended_")
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
 
             results = {}
+
+            # Add diversity metrics
+            results.update(diversity_metrics)
 
             # Metrics vs train
             train_metrics = self._compute_metrics_against_reference(
@@ -962,6 +1030,7 @@ class GenerationMetrics:
 
         prefix = "extended_" if extended else ""
         is_3d = samples.ndim == 5
+        n_samples = samples.shape[0]
 
         # Extract features
         if is_3d:
@@ -971,11 +1040,20 @@ class GenerationMetrics:
             gen_resnet = self._extract_features_batched(samples, self.resnet)
             gen_biomed = self._extract_features_batched(samples, self.biomed)
 
+        # Compute diversity metrics (3D: only when 2+ volumes, typically 4+ for extended/test)
+        # For 3D, diversity is computed per-slice across volumes, so we need multiple volumes
+        diversity_metrics = {}
+        if n_samples >= 2:
+            diversity_metrics = self._compute_diversity_metrics(samples, prefix=prefix)
+
         # Free samples
         del samples
         torch.cuda.empty_cache()
 
         results = {}
+
+        # Add diversity metrics
+        results.update(diversity_metrics)
 
         # Metrics vs train
         train_metrics = self._compute_metrics_against_reference(
@@ -1030,11 +1108,17 @@ class GenerationMetrics:
         gen_resnet = self._extract_features_batched(samples, self.resnet)
         gen_biomed = self._extract_features_batched(samples, self.biomed)
 
+        # Compute diversity metrics (2D - test)
+        diversity_metrics = self._compute_diversity_metrics(samples, prefix="")
+
         # Free samples
         del samples
         torch.cuda.empty_cache()
 
         results = {}
+
+        # Add diversity metrics
+        results.update(diversity_metrics)
 
         # If test loader provided, compute metrics vs test
         if test_loader is not None:

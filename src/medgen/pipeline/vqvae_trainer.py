@@ -365,9 +365,13 @@ class VQVAETrainer(BaseCompressionTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # VQ-VAE-specific: log VQ loss
-        if 'reg' in metrics and self.writer is not None:
-            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
+        # VQ-VAE-specific: log VQ loss using unified system
+        if 'reg' in metrics:
+            self._unified_metrics.log_regularization_loss(
+                loss_type='VQ',
+                weighted_loss=metrics['reg'],
+                epoch=epoch,
+            )
 
         # Log worst batch figure (uses unified metrics)
         if log_figures and worst_batch_data is not None:
@@ -384,10 +388,8 @@ class VQVAETrainer(BaseCompressionTrainer):
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
             is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
-            if not is_multi_modality and not is_dual:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{mode_name}')
-            else:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            modality_override = mode_name if not is_multi_modality and not is_dual else None
+            self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _log_epoch_summary(
         self,
@@ -471,18 +473,19 @@ class VQVAETrainer(BaseCompressionTrainer):
         # Call parent validation
         metrics = super().compute_validation_losses(epoch, log_figures)
 
-        # Track codebook usage and log
+        # Track codebook usage and log using unified system
         if self.is_main_process and self._codebook_tracker is not None:
             self._track_codebook_usage(self.val_loader, max_batches=50)
 
-            if self.writer is not None:
-                cb_metrics = self._codebook_tracker.log_to_tensorboard(
-                    self.writer, epoch, prefix='Codebook'
-                )
+            # Log codebook metrics using unified system
+            cb_metrics = self._unified_metrics.log_codebook_metrics(
+                self._codebook_tracker, epoch, prefix='Codebook'
+            )
 
+            if cb_metrics:
                 # Add to returned metrics for logging
-                metrics['codebook_perplexity'] = cb_metrics['perplexity']
-                metrics['codebook_utilization'] = cb_metrics['utilization']
+                metrics['codebook_perplexity'] = cb_metrics.get('perplexity', 0)
+                metrics['codebook_utilization'] = cb_metrics.get('utilization', 0)
 
             # Log summary to console
             self._codebook_tracker.log_summary()

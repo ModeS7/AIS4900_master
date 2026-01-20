@@ -30,7 +30,6 @@ from medgen.evaluation import (
 
 # Metrics (from medgen.metrics package)
 from medgen.metrics import (
-    MetricsTracker,
     compute_msssim,
     compute_psnr,
     compute_lpips,
@@ -81,7 +80,6 @@ __all__ = [
     'LatentSpace',
     'load_vae_for_latent_space',
     # Metrics and visualization
-    'MetricsTracker',
     'ValidationVisualizer',
     'compute_msssim',
     'compute_psnr',

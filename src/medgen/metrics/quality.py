@@ -527,3 +527,176 @@ def compute_iou(
         iou = (intersection + smooth) / (union + smooth)
 
         return iou.item()
+
+
+# =============================================================================
+# Diversity Metrics (sample-to-sample variation)
+# =============================================================================
+
+def compute_lpips_diversity(
+    samples: torch.Tensor,
+    device: Optional[torch.device] = None,
+    network_type: str = "radimagenet_resnet50",
+) -> float:
+    """Compute mean pairwise LPIPS diversity between generated samples.
+
+    Measures how different the generated samples are from each other.
+    Higher values indicate more diversity (less mode collapse).
+
+    Args:
+        samples: Generated images [N, C, H, W] in [0, 1] range.
+        device: Device for computation (defaults to input tensor device).
+        network_type: Pretrained network type (default: radimagenet_resnet50).
+
+    Returns:
+        Mean pairwise LPIPS distance (higher = more diverse).
+    """
+    n = samples.shape[0]
+    if n < 2:
+        logger.warning(f"Need at least 2 samples for diversity (got {n})")
+        return 0.0
+
+    if device is None:
+        device = samples.device
+
+    # Compute all pairwise LPIPS distances
+    total_lpips = 0.0
+    num_pairs = 0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Get pair of samples
+            img_i = samples[i:i+1]  # [1, C, H, W]
+            img_j = samples[j:j+1]  # [1, C, H, W]
+
+            lpips_dist = compute_lpips(img_i, img_j, device=device, network_type=network_type)
+            total_lpips += lpips_dist
+            num_pairs += 1
+
+    return total_lpips / num_pairs if num_pairs > 0 else 0.0
+
+
+def compute_msssim_diversity(
+    samples: torch.Tensor,
+    data_range: float = 1.0,
+) -> float:
+    """Compute mean pairwise MS-SSIM diversity between generated samples.
+
+    Uses 1 - MS-SSIM as diversity metric (since MS-SSIM measures similarity).
+    Higher values indicate more diversity (less mode collapse).
+
+    Args:
+        samples: Generated images [N, C, H, W] in [0, 1] range.
+        data_range: Value range of input images (default: 1.0).
+
+    Returns:
+        Mean pairwise (1 - MS-SSIM) distance (higher = more diverse).
+    """
+    n = samples.shape[0]
+    if n < 2:
+        logger.warning(f"Need at least 2 samples for diversity (got {n})")
+        return 0.0
+
+    # Compute all pairwise MS-SSIM distances
+    total_diversity = 0.0
+    num_pairs = 0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Get pair of samples
+            img_i = samples[i:i+1]  # [1, C, H, W]
+            img_j = samples[j:j+1]  # [1, C, H, W]
+
+            msssim = compute_msssim(img_i, img_j, data_range=data_range, spatial_dims=2)
+            diversity = 1.0 - msssim  # Convert similarity to diversity
+            total_diversity += diversity
+            num_pairs += 1
+
+    return total_diversity / num_pairs if num_pairs > 0 else 0.0
+
+
+def compute_lpips_diversity_3d(
+    volumes: torch.Tensor,
+    device: Optional[torch.device] = None,
+    network_type: str = "radimagenet_resnet50",
+) -> float:
+    """Compute mean pairwise LPIPS diversity for 3D volumes (same-slice comparison).
+
+    Compares the same slice index across different volumes, then averages.
+    This measures generation diversity without mixing anatomical variation.
+
+    For B volumes with D slices each:
+    - For each slice index d in [0, D):
+      - Compare all pairs of slice d across the B volumes
+    - Average across all slice indices
+
+    Args:
+        volumes: Generated volumes [B, C, D, H, W] in [0, 1] range.
+        device: Device for computation (defaults to input tensor device).
+        network_type: Pretrained network type (default: radimagenet_resnet50).
+
+    Returns:
+        Mean pairwise LPIPS distance across same-slice comparisons (higher = more diverse).
+    """
+    B, C, D, H, W = volumes.shape
+    if B < 2:
+        logger.warning(f"Need at least 2 volumes for diversity (got {B})")
+        return 0.0
+
+    if device is None:
+        device = volumes.device
+
+    total_diversity = 0.0
+    num_slices = 0
+
+    for d in range(D):
+        # Get slice d from all volumes: [B, C, H, W]
+        slices = volumes[:, :, d, :, :]
+
+        # Compute pairwise LPIPS for this slice across volumes
+        slice_diversity = compute_lpips_diversity(slices, device=device, network_type=network_type)
+        total_diversity += slice_diversity
+        num_slices += 1
+
+    return total_diversity / num_slices if num_slices > 0 else 0.0
+
+
+def compute_msssim_diversity_3d(
+    volumes: torch.Tensor,
+    data_range: float = 1.0,
+) -> float:
+    """Compute mean pairwise MS-SSIM diversity for 3D volumes (same-slice comparison).
+
+    Compares the same slice index across different volumes, then averages.
+    This measures generation diversity without mixing anatomical variation.
+
+    For B volumes with D slices each:
+    - For each slice index d in [0, D):
+      - Compare all pairs of slice d across the B volumes
+    - Average across all slice indices
+
+    Args:
+        volumes: Generated volumes [B, C, D, H, W] in [0, 1] range.
+        data_range: Value range of input images (default: 1.0).
+
+    Returns:
+        Mean pairwise (1 - MS-SSIM) distance across same-slice comparisons (higher = more diverse).
+    """
+    B, C, D, H, W = volumes.shape
+    if B < 2:
+        logger.warning(f"Need at least 2 volumes for diversity (got {B})")
+        return 0.0
+
+    total_diversity = 0.0
+    num_slices = 0
+
+    for d in range(D):
+        # Get slice d from all volumes: [B, C, H, W]
+        slices = volumes[:, :, d, :, :]
+
+        # Compute pairwise MS-SSIM diversity for this slice across volumes
+        slice_diversity = compute_msssim_diversity(slices, data_range=data_range)
+        total_diversity += slice_diversity
+        num_slices += 1
+
+    return total_diversity / num_slices if num_slices > 0 else 0.0

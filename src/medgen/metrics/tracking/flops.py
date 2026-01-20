@@ -9,7 +9,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-from torch.utils.tensorboard import SummaryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -152,22 +151,3 @@ class FLOPsTracker:
     def get_tflops_total(self, completed_epochs: int) -> float:
         """Get total TFLOPs for all completed epochs."""
         return self.get_tflops_epoch() * completed_epochs
-
-    def log_epoch(
-        self,
-        writer: Optional[SummaryWriter],
-        epoch: int,
-    ) -> None:
-        """Log TFLOPs metrics to TensorBoard.
-
-        Args:
-            writer: TensorBoard SummaryWriter.
-            epoch: Current epoch number (0-indexed, will log as epoch+1 completed).
-        """
-        if writer is None or not self._measured or self.forward_flops == 0:
-            return
-
-        completed_epochs = epoch + 1
-        writer.add_scalar('FLOPs/TFLOPs_epoch', self.get_tflops_epoch(), epoch)
-        writer.add_scalar('FLOPs/TFLOPs_total', self.get_tflops_total(completed_epochs), epoch)
-        writer.add_scalar('FLOPs/TFLOPs_bs1', self.get_tflops_bs1(), epoch)

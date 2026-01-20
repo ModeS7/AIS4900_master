@@ -747,7 +747,7 @@ class DCAETrainer(BaseCompressionTrainer):
                 phase='val',
             )
 
-        # Log regional metrics with modality suffix
+        # Log regional metrics with modality suffix using unified system
         if regional_tracker is not None:
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
@@ -755,12 +755,12 @@ class DCAETrainer(BaseCompressionTrainer):
             # For seg_mode, use 'regional_seg' prefix
             # For single-modality, add modality suffix
             if self.seg_mode:
-                prefix = f'regional_seg_{mode_name}'
+                modality_override = f'seg_{mode_name}'
             elif not is_multi_modality and not is_dual:
-                prefix = f'regional_{mode_name}'
+                modality_override = mode_name
             else:
-                prefix = 'regional'
-            regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+                modality_override = None
+            self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _create_test_evaluator(self) -> 'CompressionTestEvaluator':
         """Create test evaluator with seg_mode support.

@@ -442,17 +442,19 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Log training metrics using unified system
         self._log_training_metrics_unified(epoch, avg_losses)
 
-        # Log seg breakdown if in seg_mode (supplement unified logging with breakdown)
-        if self.seg_mode and self.writer is not None and self.is_main_process:
+        # Log seg breakdown if in seg_mode using unified system
+        if self.seg_mode and self.is_main_process:
             n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
             seg_breakdown = {
                 'bce': self._epoch_seg_breakdown['bce'] / n_batches,
                 'dice': self._epoch_seg_breakdown['dice'] / n_batches,
                 'boundary': self._epoch_seg_breakdown['boundary'] / n_batches,
             }
-            # Log seg breakdown components
+            # Log seg breakdown components via unified metrics
             for key, value in seg_breakdown.items():
-                self.writer.add_scalar(f'Loss/{key}_train', value, epoch)
+                self._unified_metrics.update_loss(key, value, phase='train')
+            # Note: These are already logged via _log_training_metrics_unified above
+            # but we need to update the losses first, then they'll be in next epoch's log
 
         return avg_losses
 
@@ -562,9 +564,13 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # VQ-VAE-specific: log VQ loss
-        if 'reg' in metrics and self.writer is not None:
-            self.writer.add_scalar('Loss/VQ_val', metrics['reg'], epoch)
+        # VQ-VAE-specific: log VQ loss using unified system
+        if 'reg' in metrics:
+            self._unified_metrics.log_regularization_loss(
+                loss_type='VQ',
+                weighted_loss=metrics['reg'],
+                epoch=epoch,
+            )
 
         # Log worst batch figure if available (3D-specific)
         # Log worst batch figure (uses unified metrics - handles 3D automatically)
@@ -582,10 +588,8 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
             is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
-            if not is_multi_modality and not is_dual:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{mode_name}')
-            else:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            modality_override = mode_name if not is_multi_modality and not is_dual else None
+            self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _log_epoch_summary(
         self,
@@ -672,18 +676,19 @@ class VQVAE3DTrainer(BaseCompression3DTrainer):
         # Call parent validation
         metrics = super().compute_validation_losses(epoch, log_figures)
 
-        # Track codebook usage and log
+        # Track codebook usage and log using unified system
         if self.is_main_process and self._codebook_tracker is not None:
             self._track_codebook_usage(self.val_loader, max_batches=10)
 
-            if self.writer is not None:
-                cb_metrics = self._codebook_tracker.log_to_tensorboard(
-                    self.writer, epoch, prefix='Codebook'
-                )
+            # Log codebook metrics using unified system
+            cb_metrics = self._unified_metrics.log_codebook_metrics(
+                self._codebook_tracker, epoch, prefix='Codebook'
+            )
 
+            if cb_metrics:
                 # Add to returned metrics for logging
-                metrics['codebook_perplexity'] = cb_metrics['perplexity']
-                metrics['codebook_utilization'] = cb_metrics['utilization']
+                metrics['codebook_perplexity'] = cb_metrics.get('perplexity', 0)
+                metrics['codebook_utilization'] = cb_metrics.get('utilization', 0)
 
             # Log summary to console
             self._codebook_tracker.log_summary()

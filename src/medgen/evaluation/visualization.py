@@ -18,6 +18,10 @@ from torch import nn
 from torch.amp import autocast
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from medgen.metrics.unified import UnifiedMetrics
 
 from medgen.core import ModeType
 from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
@@ -42,6 +46,7 @@ class ValidationVisualizer:
         device: PyTorch device.
         is_main_process: Whether this is the main process.
         space: Optional DiffusionSpace for pixel/latent operations.
+        unified_metrics: Optional UnifiedMetrics instance for centralized logging.
     """
 
     def __init__(
@@ -56,6 +61,7 @@ class ValidationVisualizer:
         space: Optional[DiffusionSpace] = None,
         use_controlnet: bool = False,
         controlnet: Optional[nn.Module] = None,
+        unified_metrics: Optional["UnifiedMetrics"] = None,
     ) -> None:
         self.cfg = cfg
         self.strategy = strategy
@@ -65,6 +71,7 @@ class ValidationVisualizer:
         self.device = device
         self.is_main_process = is_main_process
         self.space = space if space is not None else PixelSpace()
+        self._unified_metrics = unified_metrics
 
         # ControlNet support
         self.use_controlnet = use_controlnet
@@ -97,11 +104,10 @@ class ValidationVisualizer:
             epoch: Current epoch number.
             data: Dictionary with 'original', 'generated', 'mask', 'timesteps', 'loss' keys.
         """
-        if self.writer is None:
+        if self.writer is None and self._unified_metrics is None:
             return
 
         timesteps = data.get('timesteps')
-        avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
 
         # Decode from latent space to pixel space for visualization
         original = data['original']
@@ -110,6 +116,24 @@ class ValidationVisualizer:
             original = self.space.decode(original)
             generated = self.space.decode(generated)
 
+        filepath = os.path.join(self.save_dir, f'worst_val_batch_epoch_{epoch:04d}.png')
+
+        # Use UnifiedMetrics if available (preferred)
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_worst_batch(
+                original=original,
+                reconstructed=generated,
+                loss=data['loss'],
+                epoch=epoch,
+                phase='val',
+                mask=data.get('mask'),
+                timesteps=timesteps,
+                save_path=filepath,
+            )
+            return
+
+        # Fallback to direct writer calls for backward compatibility
+        avg_timestep = timesteps.float().mean().item() if timesteps is not None else 0
         title = f'Worst Validation Batch - Epoch {epoch} | Loss: {data["loss"]:.6f} | Avg t: {avg_timestep:.0f}'
 
         fig = create_reconstruction_figure(
@@ -121,7 +145,6 @@ class ValidationVisualizer:
             max_samples=8,
         )
 
-        filepath = os.path.join(self.save_dir, f'worst_val_batch_epoch_{epoch:04d}.png')
         fig.savefig(filepath, dpi=150, bbox_inches='tight')
 
         self.writer.add_figure('Validation/worst_batch', fig, epoch)
@@ -306,9 +329,40 @@ class ValidationVisualizer:
             intermediates: List of intermediate samples.
             mask: Optional segmentation mask for overlay.
         """
-        if self.writer is None or not intermediates:
+        if not intermediates:
+            return
+        if self.writer is None and self._unified_metrics is None:
             return
 
+        # Use UnifiedMetrics if available (preferred)
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_denoising_trajectory(
+                trajectory=intermediates,
+                epoch=epoch,
+                tag='denoising_trajectory',
+            )
+            # Still save the PNG file separately
+            num_steps = len(intermediates)
+            fracs = [1.0, 0.75, 0.5, 0.25, 0.1, 0.0]
+            timestep_labels = [f't={int(frac * (self.num_timesteps - 1))}' for frac in fracs]
+            timestep_labels = timestep_labels[:num_steps]
+
+            filepath = os.path.join(self.save_dir, f'denoising_trajectory_epoch_{epoch:04d}.png')
+            fig2, axes2 = plt.subplots(1, num_steps, figsize=(4 * num_steps, 4))
+            if num_steps == 1:
+                axes2 = [axes2]
+            for i, (intermediate, ax) in enumerate(zip(intermediates, axes2)):
+                img = intermediate[0, 0].cpu().numpy()
+                img = np.clip(img, 0, 1)
+                ax.imshow(img, cmap='gray')
+                ax.set_title(timestep_labels[i] if i < len(timestep_labels) else f'Step {i}')
+                ax.axis('off')
+            plt.tight_layout()
+            plt.savefig(filepath, dpi=100, bbox_inches='tight')
+            plt.close(fig2)
+            return
+
+        # Fallback to direct writer calls for backward compatibility
         num_steps = len(intermediates)
         fig, axes = plt.subplots(1, num_steps, figsize=(4 * num_steps, 4))
 
@@ -361,7 +415,9 @@ class ValidationVisualizer:
             epoch: Current epoch number.
             num_samples: Number of samples to generate.
         """
-        if not self.is_main_process or self.writer is None:
+        if not self.is_main_process:
+            return
+        if self.writer is None and self._unified_metrics is None:
             return
 
         model.eval()
@@ -480,8 +536,13 @@ class ValidationVisualizer:
                     samples_pre_rgb = samples_pre_norm.repeat(1, 3, 1, 1)
                     samples_gd_rgb = samples_gd_norm.repeat(1, 3, 1, 1)
 
-                    self.writer.add_images('Generated_T1_Pre', samples_pre_rgb, epoch)
-                    self.writer.add_images('Generated_T1_Gd', samples_gd_rgb, epoch)
+                    # Use UnifiedMetrics if available (preferred)
+                    if self._unified_metrics is not None:
+                        self._unified_metrics.log_sample_images(samples_pre_rgb, 'Generated_T1_Pre', epoch)
+                        self._unified_metrics.log_sample_images(samples_gd_rgb, 'Generated_T1_Gd', epoch)
+                    else:
+                        self.writer.add_images('Generated_T1_Pre', samples_pre_rgb, epoch)
+                        self.writer.add_images('Generated_T1_Gd', samples_gd_rgb, epoch)
 
                     # Note: Validation metrics (MS-SSIM, PSNR, LPIPS) are logged via
                     # the unified metrics system in trainer.py using Validation/ prefix
@@ -493,7 +554,12 @@ class ValidationVisualizer:
                         samples_normalized = samples_normalized.unsqueeze(1)
 
                     samples_rgb = samples_normalized.repeat(1, 3, 1, 1)
-                    self.writer.add_images('Generated_Images', samples_rgb, epoch)
+
+                    # Use UnifiedMetrics if available (preferred)
+                    if self._unified_metrics is not None:
+                        self._unified_metrics.log_sample_images(samples_rgb, 'Generated_Images', epoch)
+                    else:
+                        self.writer.add_images('Generated_Images', samples_rgb, epoch)
 
                     # Note: Validation metrics (MS-SSIM, PSNR, LPIPS) are logged via
                     # the unified metrics system in trainer.py using Validation/ prefix

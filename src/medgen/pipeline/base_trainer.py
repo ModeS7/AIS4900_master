@@ -30,7 +30,7 @@ from torch.utils.tensorboard import SummaryWriter
 from medgen.core import setup_distributed
 from medgen.pipeline.results import TrainingStepResult
 from medgen.metrics import FLOPsTracker, GradientNormTracker
-from .utils import log_vram_to_tensorboard, EpochTimeEstimator
+from .utils import EpochTimeEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +222,11 @@ class BaseTrainer(ABC):
         Args:
             epoch: Current epoch number.
         """
-        if self.is_main_process and self.writer is not None:
-            log_vram_to_tensorboard(self.writer, self.device, epoch)
+        if not self.is_main_process:
+            return
+        # Use unified metrics (all trainers must initialize _unified_metrics)
+        if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
+            self._unified_metrics.log_vram(epoch)
 
     def _log_flops(self, epoch: int) -> None:
         """Log FLOPs metrics to TensorBoard.
@@ -232,7 +235,9 @@ class BaseTrainer(ABC):
             epoch: Current epoch number.
         """
         if self.is_main_process:
-            self._flops_tracker.log_epoch(self.writer, epoch)
+            # Use unified metrics (all trainers must initialize _unified_metrics)
+            if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
+                self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
 
     def _log_learning_rate(
         self,
@@ -247,13 +252,15 @@ class BaseTrainer(ABC):
             scheduler: Learning rate scheduler (uses self.lr_scheduler if None).
             prefix: TensorBoard tag prefix.
         """
-        if not self.is_main_process or self.writer is None:
+        if not self.is_main_process:
             return
 
         sched = scheduler if scheduler is not None else self.lr_scheduler
         if sched is not None:
             lr = sched.get_last_lr()[0]
-            self.writer.add_scalar(prefix, lr, epoch)
+            # Use unified metrics (all trainers must initialize _unified_metrics)
+            if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
+                self._unified_metrics.log_lr(lr, epoch, prefix)
 
     def close_writer(self) -> None:
         """Close TensorBoard writer."""

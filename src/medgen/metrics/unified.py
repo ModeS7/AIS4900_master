@@ -509,6 +509,21 @@ class UnifiedMetrics:
         """
         self._current_lr = value
 
+    def log_lr(self, lr: float, epoch: int, prefix: str = 'LR/Generator'):
+        """Log learning rate to TensorBoard immediately.
+
+        Use this for immediate LR logging (e.g., from base trainer).
+        For deferred logging as part of training metrics, use update_lr() + log_training().
+
+        Args:
+            lr: Learning rate value.
+            epoch: Current epoch number.
+            prefix: TensorBoard tag (default: 'LR/Generator').
+        """
+        if self.writer is None:
+            return
+        self.writer.add_scalar(prefix, lr, epoch)
+
     def set_scheduler(self, scheduler: Any) -> None:
         """Set scheduler reference for SNR weight computation.
 
@@ -546,6 +561,28 @@ class UnifiedMetrics:
             self._vram_allocated = torch.cuda.memory_allocated(self.device) / 1e9
             self._vram_reserved = torch.cuda.memory_reserved(self.device) / 1e9
             self._vram_max = torch.cuda.max_memory_allocated(self.device) / 1e9
+
+    def log_vram(self, epoch: int, prefix: str = 'VRAM'):
+        """Log VRAM usage to TensorBoard immediately.
+
+        Captures current VRAM stats and logs them. Use this for immediate
+        logging (e.g., from base trainer). For deferred logging as part of
+        training metrics, use update_vram() + log_training().
+
+        Args:
+            epoch: Current epoch number.
+            prefix: TensorBoard tag prefix (default: 'VRAM').
+        """
+        if self.writer is None or not torch.cuda.is_available():
+            return
+
+        allocated = torch.cuda.memory_allocated(self.device) / 1e9
+        reserved = torch.cuda.memory_reserved(self.device) / 1e9
+        max_allocated = torch.cuda.max_memory_allocated(self.device) / 1e9
+
+        self.writer.add_scalar(f'{prefix}/allocated_GB', allocated, epoch)
+        self.writer.add_scalar(f'{prefix}/reserved_GB', reserved, epoch)
+        self.writer.add_scalar(f'{prefix}/max_allocated_GB', max_allocated, epoch)
 
     def update_flops(self, tflops_epoch: float, tflops_total: float):
         """Store FLOPs values.
@@ -751,11 +788,17 @@ class UnifiedMetrics:
         Args:
             epoch: Current epoch number.
             results: Dict of generation metric results (KID, CMMD, etc.).
+                Keys starting with 'Diversity/' go to 'Generation_Diversity/' section.
         """
         if self.writer is None:
             return
         for key, value in results.items():
-            self.writer.add_scalar(f'Generation/{key}', value, epoch)
+            if key.startswith('Diversity/'):
+                # Diversity metrics get their own section
+                metric_name = key[len('Diversity/'):]  # Remove 'Diversity/' prefix
+                self.writer.add_scalar(f'Generation_Diversity/{metric_name}', value, epoch)
+            else:
+                self.writer.add_scalar(f'Generation/{key}', value, epoch)
 
     def log_test(self, metrics: Dict[str, float], prefix: str = 'test_best'):
         """Log test evaluation metrics.
@@ -769,6 +812,286 @@ class UnifiedMetrics:
         suffix = f'_{self.modality}' if self.modality else ''
         for key, value in metrics.items():
             self.writer.add_scalar(f'{prefix}/{key}{suffix}', value, 0)
+
+    def log_test_generation(
+        self,
+        results: Dict[str, float],
+        prefix: str = 'test_best',
+    ) -> Dict[str, float]:
+        """Log test generation metrics (FID, KID, CMMD, diversity).
+
+        Paths:
+        - Generation: {prefix}_generation/{key}{suffix} (e.g., test_best_generation/FID_bravo)
+        - Diversity: {prefix}_diversity/{key}{suffix} (e.g., test_best_diversity/LPIPS_bravo)
+
+        Args:
+            results: Dict of metric name -> value from generation metrics computation.
+                Keys starting with 'Diversity/' go to diversity section.
+            prefix: 'test_best' or 'test_latest'.
+
+        Returns:
+            Dict for JSON export (gen_fid, gen_diversity_lpips, etc.)
+        """
+        exported = {}
+        if self.writer is None:
+            return exported
+
+        suffix = f'_{self.modality}' if self.modality else ''
+
+        for key, value in results.items():
+            if key.startswith('Diversity/'):
+                # Diversity metrics get their own section
+                metric_name = key[len('Diversity/'):]
+                self.writer.add_scalar(f'{prefix}_diversity/{metric_name}{suffix}', value, 0)
+                exported[f'gen_diversity_{metric_name.lower()}'] = value
+            else:
+                self.writer.add_scalar(f'{prefix}_generation/{key}{suffix}', value, 0)
+                exported[f'gen_{key.lower()}'] = value
+
+        return exported
+
+    def log_test_regional(
+        self,
+        regional_tracker: Any,
+        prefix: str = 'test_best',
+    ):
+        """Log regional metrics with modality suffix.
+
+        Path: {prefix}_regional_{modality} for single-modality modes,
+              {prefix}_regional for multi-modality modes.
+
+        Args:
+            regional_tracker: RegionalMetricsTracker instance with accumulated metrics.
+            prefix: 'test_best' or 'test_latest'.
+        """
+        if self.writer is None or regional_tracker is None:
+            return
+
+        # Determine if single modality based on mode
+        is_single_modality = self.mode not in ('multi_modality', 'dual', 'multi')
+
+        if is_single_modality and self.modality:
+            regional_prefix = f'{prefix}_regional_{self.modality}'
+        else:
+            regional_prefix = f'{prefix}_regional'
+
+        regional_tracker.log_to_tensorboard(self.writer, 0, prefix=regional_prefix)
+
+    def log_validation_regional(
+        self,
+        regional_tracker: Any,
+        epoch: int,
+        modality_override: Optional[str] = None,
+    ):
+        """Log regional metrics for validation (supports per-modality tracking).
+
+        Used for per-modality validation where each modality has its own tracker.
+        For regular validation, use update_regional() + log_validation() instead.
+
+        Path: regional_{modality} where modality comes from modality_override or self.modality.
+
+        Args:
+            regional_tracker: RegionalMetricsTracker instance with accumulated metrics.
+            epoch: Current epoch number.
+            modality_override: Optional modality name to use in prefix (for per-modality validation).
+                If None, uses self.modality.
+        """
+        if self.writer is None or regional_tracker is None:
+            return
+
+        modality = modality_override or self.modality
+        if modality:
+            regional_prefix = f'regional_{modality}'
+        else:
+            regional_prefix = 'regional'
+
+        regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=regional_prefix)
+
+    def log_test_timesteps(
+        self,
+        timestep_bins: Dict[str, float],
+        prefix: str = 'test_best',
+    ):
+        """Log timestep bin losses.
+
+        Path: {prefix}_timestep/{bin_name}{suffix}
+
+        Args:
+            timestep_bins: Dict mapping bin names (e.g., '0.0-0.1') to avg loss values.
+            prefix: 'test_best' or 'test_latest'.
+        """
+        if self.writer is None or not timestep_bins:
+            return
+
+        suffix = f'_{self.modality}' if self.modality else ''
+
+        for bin_name, loss in timestep_bins.items():
+            self.writer.add_scalar(f'{prefix}_timestep/{bin_name}{suffix}', loss, 0)
+
+    def log_per_channel_validation(
+        self,
+        channel_metrics: Dict[str, Dict[str, float]],
+        epoch: int,
+    ):
+        """Log per-channel validation (dual/multi modes).
+
+        Args:
+            channel_metrics: Dict mapping channel names to metric dicts.
+                e.g., {'t1_pre': {'psnr': 30.0, 'msssim': 0.95, 'lpips': 0.1, 'count': 10}, ...}
+        Paths: Validation/PSNR_t1_pre, Validation/MS-SSIM_t1_pre, etc.
+        """
+        if self.writer is None:
+            return
+
+        for channel_key, channel_data in channel_metrics.items():
+            count = channel_data.get('count', 0)
+            if count > 0:
+                suffix = f'_{channel_key}'
+                if 'psnr' in channel_data:
+                    avg_psnr = channel_data['psnr'] / count
+                    self.writer.add_scalar(f'Validation/PSNR{suffix}', avg_psnr, epoch)
+                if 'msssim' in channel_data:
+                    avg_msssim = channel_data['msssim'] / count
+                    self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', avg_msssim, epoch)
+                if 'lpips' in channel_data and channel_data.get('lpips', 0) > 0:
+                    avg_lpips = channel_data['lpips'] / count
+                    self.writer.add_scalar(f'Validation/LPIPS{suffix}', avg_lpips, epoch)
+
+    def log_per_modality_validation(
+        self,
+        metrics: Dict[str, float],
+        modality: str,
+        epoch: int,
+    ):
+        """Log per-modality validation.
+
+        Args:
+            metrics: Dict of metric name -> value.
+                Image quality: {'psnr': 30.0, 'msssim': 0.95, 'lpips': 0.1, 'msssim_3d': 0.92}
+                Segmentation: {'dice': 0.85, 'iou': 0.75}
+            modality: Modality name (e.g., 'bravo', 't1_pre').
+            epoch: Current epoch number.
+        Paths: Validation/PSNR_bravo, Validation/MS-SSIM-3D_bravo, Validation/Dice_bravo, etc.
+        """
+        if self.writer is None:
+            return
+
+        suffix = f'_{modality}'
+
+        # Image quality metrics
+        if 'psnr' in metrics and metrics['psnr'] is not None:
+            self.writer.add_scalar(f'Validation/PSNR{suffix}', metrics['psnr'], epoch)
+        if 'msssim' in metrics and metrics['msssim'] is not None:
+            self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', metrics['msssim'], epoch)
+        if 'lpips' in metrics and metrics['lpips'] is not None:
+            self.writer.add_scalar(f'Validation/LPIPS{suffix}', metrics['lpips'], epoch)
+        if 'msssim_3d' in metrics and metrics['msssim_3d'] is not None:
+            self.writer.add_scalar(f'Validation/MS-SSIM-3D{suffix}', metrics['msssim_3d'], epoch)
+
+        # Segmentation metrics
+        if 'dice' in metrics and metrics['dice'] is not None:
+            self.writer.add_scalar(f'Validation/Dice{suffix}', metrics['dice'], epoch)
+        if 'iou' in metrics and metrics['iou'] is not None:
+            self.writer.add_scalar(f'Validation/IoU{suffix}', metrics['iou'], epoch)
+
+    def log_regularization_loss(
+        self,
+        loss_type: str,
+        weighted_loss: float,
+        epoch: int,
+        unweighted_loss: Optional[float] = None,
+    ):
+        """Log regularization losses (KL for VAE, VQ for VQVAE).
+
+        Provides consistent TensorBoard paths for regularization losses
+        across all compression trainers.
+
+        Args:
+            loss_type: Type of regularization loss ('KL' or 'VQ').
+            weighted_loss: The weighted loss value (as used in total loss).
+            epoch: Current epoch number.
+            unweighted_loss: Optional unweighted loss value for monitoring.
+
+        Paths:
+            - Loss/{loss_type}_val (e.g., Loss/KL_val, Loss/VQ_val)
+            - Loss/{loss_type}_unweighted_val (if unweighted provided)
+        """
+        if self.writer is None:
+            return
+
+        self.writer.add_scalar(f'Loss/{loss_type}_val', weighted_loss, epoch)
+
+        if unweighted_loss is not None:
+            self.writer.add_scalar(f'Loss/{loss_type}_unweighted_val', unweighted_loss, epoch)
+
+    def log_codebook_metrics(
+        self,
+        codebook_tracker: Any,
+        epoch: int,
+        prefix: str = 'Codebook',
+    ) -> Dict[str, float]:
+        """Log codebook metrics from external tracker (VQVAE).
+
+        Delegates to the codebook_tracker's log_to_tensorboard() method
+        while ensuring the logging goes through a unified writer reference.
+
+        Args:
+            codebook_tracker: CodebookTracker instance with accumulated metrics.
+            epoch: Current epoch number.
+            prefix: TensorBoard prefix for codebook metrics (default: 'Codebook').
+
+        Returns:
+            Dict with codebook metrics (perplexity, utilization, etc.)
+            for downstream use (e.g., adding to returned metrics dict).
+
+        Paths:
+            - {prefix}/perplexity
+            - {prefix}/utilization
+            - {prefix}/active_codes
+        """
+        if self.writer is None or codebook_tracker is None:
+            return {}
+
+        return codebook_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+
+    def update_validation_batch(
+        self,
+        psnr: float,
+        msssim: float,
+        lpips: Optional[float] = None,
+        msssim_3d: Optional[float] = None,
+        dice: Optional[float] = None,
+        iou: Optional[float] = None,
+    ):
+        """Update validation metrics from pre-computed results.
+
+        Replaces direct state access (self._unified_metrics._val_psnr_sum = ...).
+
+        Args:
+            psnr: Pre-computed PSNR value.
+            msssim: Pre-computed MS-SSIM value.
+            lpips: Optional pre-computed LPIPS value.
+            msssim_3d: Optional pre-computed 3D MS-SSIM value.
+            dice: Optional pre-computed Dice value.
+            iou: Optional pre-computed IoU value.
+        """
+        self._val_psnr_sum = psnr
+        self._val_psnr_count = 1
+        self._val_msssim_sum = msssim
+        self._val_msssim_count = 1
+
+        if lpips is not None:
+            self._val_lpips_sum = lpips
+            self._val_lpips_count = 1
+        if msssim_3d is not None:
+            self._val_msssim_3d_sum = msssim_3d
+            self._val_msssim_3d_count = 1
+        if dice is not None:
+            self._val_dice_sum = dice
+            self._val_dice_count = 1
+        if iou is not None:
+            self._val_iou_sum = iou
+            self._val_iou_count = 1
 
     def log_timestep_region_heatmap(self, epoch: int):
         """Log 2D heatmap of loss by timestep bin and region.
@@ -1317,6 +1640,75 @@ class UnifiedMetrics:
         # Extract slices from first volume (3D typically has batch_size=1)
         slices = [tensor[0, :, idx, :, :] for idx in indices]
         return torch.stack(slices, dim=0)  # [num_slices, C, H, W]
+
+    # =========================================================================
+    # Tracker Integration Methods
+    # =========================================================================
+
+    def log_flops_from_tracker(self, flops_tracker: Any, epoch: int) -> None:
+        """Log FLOPs metrics from FLOPsTracker.
+
+        Centralizes FLOPs logging through UnifiedMetrics instead of
+        direct writer.add_scalar calls in trainers.
+
+        Args:
+            flops_tracker: FLOPsTracker instance.
+            epoch: Current epoch number.
+        """
+        if self.writer is None or flops_tracker is None:
+            return
+        if not getattr(flops_tracker, '_measured', False):
+            return
+        if flops_tracker.forward_flops == 0:
+            return
+
+        completed_epochs = epoch + 1
+        self.writer.add_scalar('FLOPs/TFLOPs_epoch', flops_tracker.get_tflops_epoch(), epoch)
+        self.writer.add_scalar('FLOPs/TFLOPs_total', flops_tracker.get_tflops_total(completed_epochs), epoch)
+        self.writer.add_scalar('FLOPs/TFLOPs_bs1', flops_tracker.get_tflops_bs1(), epoch)
+
+    def log_grad_norm_from_tracker(
+        self,
+        grad_tracker: Any,
+        epoch: int,
+        prefix: str = 'training/grad_norm',
+    ) -> None:
+        """Log gradient norm stats from GradientNormTracker.
+
+        Centralizes gradient norm logging through UnifiedMetrics instead of
+        direct writer.add_scalar calls in trainers.
+
+        Args:
+            grad_tracker: GradientNormTracker instance.
+            epoch: Current epoch number.
+            prefix: TensorBoard prefix (default: 'training/grad_norm').
+        """
+        if self.writer is None or grad_tracker is None:
+            return
+        if grad_tracker.count == 0:
+            return
+
+        self.writer.add_scalar(f'{prefix}_avg', grad_tracker.get_avg(), epoch)
+        self.writer.add_scalar(f'{prefix}_max', grad_tracker.get_max(), epoch)
+
+    def log_sample_images(
+        self,
+        images: torch.Tensor,
+        tag: str,
+        epoch: int,
+    ) -> None:
+        """Log image grid to TensorBoard using add_images.
+
+        Centralizes image logging through UnifiedMetrics.
+
+        Args:
+            images: Tensor of images [N, C, H, W] normalized to [0, 1].
+            tag: TensorBoard tag (e.g., 'Generated_Images').
+            epoch: Current epoch number.
+        """
+        if self.writer is None:
+            return
+        self.writer.add_images(tag, images, epoch)
 
     # =========================================================================
     # Console Logging

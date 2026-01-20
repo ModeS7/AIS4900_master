@@ -56,7 +56,6 @@ from medgen.diffusion import (
 )
 from .utils import (
     get_vram_usage,
-    log_vram_to_tensorboard,
     save_full_checkpoint,
     EpochTimeEstimator,
 )
@@ -1342,7 +1341,7 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
 
             # Log FLOPs (VRAM already logged via update_vram in _train_epoch)
             if self.is_main_process:
-                self._flops_tracker.log_epoch(self.writer, epoch)
+                self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
 
         logger.info("Training complete!")
 
@@ -2287,6 +2286,7 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
         total_mse = 0.0
         total_psnr = 0.0
         total_ssim = 0.0
+        total_ssim_3d = 0.0
         total_dice = 0.0
         total_iou = 0.0
         n_batches = 0
@@ -2305,6 +2305,11 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
                 loss_fn='l1',
                 device=self.device,
             )
+
+        # Timestep bin tracking (matches 2D trainer)
+        num_timestep_bins = self.num_timestep_bins
+        timestep_loss_sum = torch.zeros(num_timestep_bins, device=self.device)
+        timestep_loss_count = torch.zeros(num_timestep_bins, device=self.device, dtype=torch.long)
 
         with torch.no_grad():
             for batch in tqdm(test_loader, desc="Test evaluation", disable=not self.verbose):
@@ -2348,6 +2353,13 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
                 batch_loss = mse_loss.item()
                 total_mse += batch_loss
 
+                # Track timestep bin losses (matches 2D trainer)
+                t_normalized = timesteps.float() / self.strategy.num_train_timesteps
+                bin_indices = (t_normalized * num_timestep_bins).long().clamp(0, num_timestep_bins - 1)
+                for b in range(batch_size):
+                    timestep_loss_sum[bin_indices[b]] += batch_loss
+                    timestep_loss_count[bin_indices[b]] += 1
+
                 # Decode if in latent space for metrics and visualization
                 if isinstance(self.space, LatentSpace):
                     images_pixel = self.space.decode(images)
@@ -2375,8 +2387,10 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
                 else:
                     psnr = compute_psnr(predicted_pixel, images_pixel)
                     ssim = self.ssim_metric(predicted_pixel, images_pixel).mean().item()
+                    ssim_3d = compute_msssim(predicted_pixel, images_pixel, spatial_dims=3)
                     total_psnr += psnr
                     total_ssim += ssim
+                    total_ssim_3d += ssim_3d
 
                     # Regional metrics
                     if regional_tracker is not None and labels is not None:
@@ -2404,6 +2418,23 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
         else:
             metrics['psnr'] = total_psnr / n_batches
             metrics['msssim'] = total_ssim / n_batches
+            metrics['msssim_3d'] = total_ssim_3d / n_batches
+
+        # Compute generation metrics (KID, FID, CMMD) vs test set
+        gen_metrics_results = {}
+        if self._gen_metrics is not None:
+            logger.info("Computing generation metrics vs test set...")
+            try:
+                gen_metrics_results = self._gen_metrics.compute_test_metrics(
+                    model=model_to_use,
+                    strategy=self.strategy,
+                    mode=self.mode,
+                    test_loader=test_loader,
+                )
+                metrics.update({f'gen_{k}': v for k, v in gen_metrics_results.items()})
+                logger.info("Generation metrics computed successfully")
+            except Exception as e:
+                logger.warning(f"Failed to compute generation metrics: {e}")
 
         # Log results
         logger.info(f"Test Results - {label} ({n_samples} samples):")
@@ -2412,8 +2443,19 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
             logger.info(f"  Dice:    {metrics['dice']:.4f}")
             logger.info(f"  IoU:     {metrics['iou']:.4f}")
         else:
-            logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-            logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+            logger.info(f"  PSNR:       {metrics['psnr']:.2f} dB")
+            logger.info(f"  MS-SSIM:    {metrics['msssim']:.4f}")
+            logger.info(f"  MS-SSIM-3D: {metrics['msssim_3d']:.4f}")
+
+        # Log generation metrics
+        if gen_metrics_results:
+            logger.info("  Generation metrics:")
+            if 'FID' in gen_metrics_results:
+                logger.info(f"    FID:      {gen_metrics_results['FID']:.4f}")
+            if 'KID_mean' in gen_metrics_results:
+                logger.info(f"    KID:      {gen_metrics_results['KID_mean']:.6f} ± {gen_metrics_results.get('KID_std', 0):.6f}")
+            if 'CMMD' in gen_metrics_results:
+                logger.info(f"    CMMD:     {gen_metrics_results['CMMD']:.6f}")
 
         # Save results to JSON
         results_path = os.path.join(self.save_dir, f'test_results_{label}.json')
@@ -2432,23 +2474,50 @@ class Diffusion3DTrainer(DiffusionTrainerBase):
             else:
                 test_metrics['PSNR'] = metrics['psnr']
                 test_metrics['MS-SSIM'] = metrics['msssim']
+                test_metrics['MS-SSIM-3D'] = metrics['msssim_3d']
 
             self._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
 
-            # Regional metrics (already logged via log_to_tensorboard)
+            # Log timestep bin losses via unified system
+            counts = timestep_loss_count.cpu()
+            sums = timestep_loss_sum.cpu()
+            timestep_bins = {}
+            for bin_idx in range(num_timestep_bins):
+                bin_start = bin_idx / num_timestep_bins
+                bin_end = (bin_idx + 1) / num_timestep_bins
+                count = counts[bin_idx].item()
+                if count > 0:
+                    avg_loss = (sums[bin_idx] / count).item()
+                    timestep_bins[f'{bin_start:.1f}-{bin_end:.1f}'] = avg_loss
+            if timestep_bins:
+                self._unified_metrics.log_test_timesteps(timestep_bins, prefix=tb_prefix)
+
+            # Regional metrics via unified system
             if regional_tracker is not None:
-                regional_tracker.log_to_tensorboard(self.writer, 0, prefix=f'{tb_prefix}_regional')
+                self._unified_metrics.log_test_regional(regional_tracker, prefix=tb_prefix)
+
+            # Log generation metrics to TensorBoard via unified system
+            if gen_metrics_results:
+                exported = self._unified_metrics.log_test_generation(gen_metrics_results, prefix=tb_prefix)
+                metrics.update(exported)
 
         # Visualize worst batch from test set (uses unified metrics)
-        if worst_batch_data is not None:
+        if worst_batch_data is not None and self._unified_metrics is not None:
+            display_metrics = {'MS-SSIM': metrics['msssim'], 'PSNR': metrics['psnr']}
+            if 'msssim_3d' in metrics:
+                display_metrics['MS-SSIM-3D'] = metrics['msssim_3d']
+            fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
             self._unified_metrics.log_worst_batch(
                 original=worst_batch_data['original'].to(self.device),
                 reconstructed=worst_batch_data['generated'].to(self.device),
                 loss=worst_batch_data['loss'],
-                epoch=0,  # Test uses epoch 0
-                phase='test',
-                mask=worst_batch_data.get('mask'),
+                epoch=0,
+                tag_prefix=tb_prefix,
                 timesteps=worst_batch_data.get('timesteps'),
+                save_path=fig_path,
+                display_metrics=display_metrics,
+                mask=worst_batch_data.get('mask'),
             )
+            logger.info(f"Test worst batch saved to: {fig_path}")
 
         return metrics

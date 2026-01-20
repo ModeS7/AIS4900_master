@@ -20,7 +20,6 @@ Usage:
 """
 
 from .unified import SimpleLossAccumulator, UnifiedMetrics
-from .tracker import MetricsTracker
 from .quality import (
     compute_dice,
     compute_iou,
@@ -32,6 +31,11 @@ from .quality import (
     reset_msssim_nan_warning,
     reset_lpips_nan_warning,
     clear_metric_caches,
+    # Diversity metrics
+    compute_lpips_diversity,
+    compute_msssim_diversity,
+    compute_lpips_diversity_3d,
+    compute_msssim_diversity_3d,
 )
 from .regional import (
     BaseRegionalMetricsTracker,
@@ -69,7 +73,6 @@ __all__ = [
     # Core
     'SimpleLossAccumulator',
     'UnifiedMetrics',
-    'MetricsTracker',
     # Quality metrics
     'compute_dice',
     'compute_iou',
@@ -81,6 +84,11 @@ __all__ = [
     'reset_msssim_nan_warning',
     'reset_lpips_nan_warning',
     'clear_metric_caches',
+    # Diversity metrics
+    'compute_lpips_diversity',
+    'compute_msssim_diversity',
+    'compute_lpips_diversity_3d',
+    'compute_msssim_diversity_3d',
     # Regional metrics
     'BaseRegionalMetricsTracker',
     'RegionalMetricsTracker',

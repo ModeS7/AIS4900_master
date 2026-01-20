@@ -449,13 +449,15 @@ class VAE3DTrainer(BaseCompression3DTrainer):
         # Log metrics with modality suffix handling
         self._log_validation_metrics_core(epoch, metrics)
 
-        # VAE-specific: log unweighted KL
-        if 'reg' in metrics and self.writer is not None:
-            # Log weighted KL (as used in loss)
-            self.writer.add_scalar('Loss/KL_val', metrics['reg'], epoch)
-            # Log unweighted KL for monitoring
-            if self.kl_weight > 0:
-                self.writer.add_scalar('Loss/KL_unweighted_val', metrics['reg'] / self.kl_weight, epoch)
+        # VAE-specific: log KL loss using unified system
+        if 'reg' in metrics:
+            unweighted_kl = metrics['reg'] / self.kl_weight if self.kl_weight > 0 else None
+            self._unified_metrics.log_regularization_loss(
+                loss_type='KL',
+                weighted_loss=metrics['reg'],
+                epoch=epoch,
+                unweighted_loss=unweighted_kl,
+            )
 
         # Log worst batch figure (uses unified metrics - handles 3D automatically)
         if log_figures and worst_batch_data is not None:
@@ -472,10 +474,8 @@ class VAE3DTrainer(BaseCompression3DTrainer):
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
             is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
-            if not is_multi_modality and not is_dual:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=f'regional_{mode_name}')
-            else:
-                regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
+            modality_override = mode_name if not is_multi_modality and not is_dual else None
+            self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _log_epoch_summary(
         self,
