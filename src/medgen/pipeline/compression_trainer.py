@@ -1,13 +1,13 @@
 """
-Compression trainer module for VAE, VQ-VAE, DC-AE, and 3D variants.
+Compression trainer module for VAE, VQ-VAE, DC-AE (2D and 3D).
 
 This module provides:
-- BaseCompressionTrainer: Base class for all compression model trainers (2D)
-- BaseCompression3DTrainer: Base class for 3D volumetric trainers
+- BaseCompressionTrainer: Unified base class for all compression model trainers
+  supporting both 2D images and 3D volumes via spatial_dims parameter
 
 All compression trainers share:
 - GAN training (optional discriminator)
-- Perceptual loss
+- Perceptual loss (2D or 2.5D for 3D)
 - EMA support
 - Gradient norm tracking for G and D
 - Worst batch tracking and visualization
@@ -80,15 +80,18 @@ def _tensor_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tenso
 
 
 class BaseCompressionTrainer(BaseTrainer):
-    """Base trainer for compression models (VAE, VQ-VAE, DC-AE).
+    """Unified base trainer for compression models (VAE, VQ-VAE, DC-AE).
+
+    Supports both 2D images and 3D volumes via the spatial_dims parameter.
 
     Extends BaseTrainer with:
     - GAN training infrastructure (discriminator, adversarial loss)
-    - Perceptual loss
+    - Perceptual loss (2D or 2.5D for 3D volumes)
     - EMA support for generator
     - Dual gradient tracking (G and D)
     - Worst batch visualization
     - Per-modality validation
+    - Gradient checkpointing support (3D)
 
     Subclasses must implement:
     - setup_model(): Create model, discriminator, optimizers
@@ -98,15 +101,36 @@ class BaseCompressionTrainer(BaseTrainer):
 
     Args:
         cfg: Hydra configuration object.
+        spatial_dims: Spatial dimensions (2 for 2D images, 3 for 3D volumes).
     """
 
-    def __init__(self, cfg: DictConfig) -> None:
+    def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize compression trainer.
 
         Args:
             cfg: Hydra configuration object.
+            spatial_dims: Spatial dimensions (2 or 3).
         """
+        if spatial_dims not in (2, 3):
+            raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
+        self._spatial_dims = spatial_dims
+
         super().__init__(cfg)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Dimension-specific size config
+        # ─────────────────────────────────────────────────────────────────────
+        if spatial_dims == 3:
+            self.volume_depth: int = cfg.volume.get('depth', 160)
+            self.volume_height: int = cfg.volume.get('height', 256)
+            self.volume_width: int = cfg.volume.get('width', 256)
+            # 3D-specific: 2.5D perceptual loss config
+            self.use_2_5d_perceptual: bool = self._get_2_5d_perceptual(cfg)
+            self.perceptual_slice_fraction: float = self._get_perceptual_slice_fraction(cfg)
+            # 3D-specific: gradient checkpointing
+            self.gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
+        else:
+            self.image_size: int = cfg.model.image_size
 
         # ─────────────────────────────────────────────────────────────────────
         # Extract compression-specific config
@@ -233,6 +257,85 @@ class BaseCompressionTrainer(BaseTrainer):
             Loss type string.
         """
         return self._get_config_value(cfg, 'perceptual_loss_type', 'radimagenet')
+
+    def _get_2_5d_perceptual(self, cfg: DictConfig) -> bool:
+        """Get 2.5D perceptual loss flag (3D only).
+
+        When enabled, perceptual loss is computed on sampled 2D slices
+        rather than full 3D volumes.
+
+        Returns:
+            True if 2.5D perceptual loss is enabled.
+        """
+        for section in ['vae_3d', 'vqvae_3d', 'dcae_3d']:
+            if section in cfg:
+                return cfg[section].get('use_2_5d_perceptual', True)
+        return True
+
+    def _get_perceptual_slice_fraction(self, cfg: DictConfig) -> float:
+        """Get fraction of slices to sample for 2.5D perceptual loss.
+
+        Returns:
+            Fraction of depth slices to sample (0.0-1.0).
+        """
+        for section in ['vae_3d', 'vqvae_3d', 'dcae_3d']:
+            if section in cfg:
+                return cfg[section].get('perceptual_slice_fraction', 0.25)
+        return 0.25
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dimension Properties and Helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def spatial_dims(self) -> int:
+        """Return spatial dimensions (2 for images, 3 for volumes)."""
+        return self._spatial_dims
+
+    def _get_spatial_shape(self) -> Tuple[int, ...]:
+        """Get spatial shape based on dimensionality.
+
+        Returns:
+            (H, W) for 2D or (D, H, W) for 3D.
+        """
+        if self.spatial_dims == 2:
+            return (self.image_size, self.image_size)
+        return (self.volume_depth, self.volume_height, self.volume_width)
+
+    def _extract_center_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Extract center slice from 3D tensor for 2D visualization.
+
+        Args:
+            tensor: Input tensor [B, C, D, H, W] for 3D or [B, C, H, W] for 2D.
+
+        Returns:
+            2D tensor [B, C, H, W].
+        """
+        if self.spatial_dims == 2:
+            return tensor
+        center_idx = tensor.shape[2] // 2
+        return tensor[:, :, center_idx, :, :]
+
+    def _create_lpips_fn(self):
+        """Create LPIPS function appropriate for spatial dimensions.
+
+        Returns:
+            compute_lpips for 2D, compute_lpips_3d for 3D.
+        """
+        if self.spatial_dims == 2:
+            return compute_lpips
+        return compute_lpips_3d
+
+    def _create_worst_batch_figure_fn(self):
+        """Create worst batch figure function appropriate for spatial dimensions.
+
+        Returns:
+            create_worst_batch_figure for 2D, create_worst_batch_figure_3d for 3D.
+        """
+        if self.spatial_dims == 2:
+            return create_worst_batch_figure
+        from medgen.metrics import create_worst_batch_figure_3d
+        return create_worst_batch_figure_3d
 
     # ─────────────────────────────────────────────────────────────────────────
     # Unified Metrics System
@@ -516,11 +619,11 @@ class BaseCompressionTrainer(BaseTrainer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Prepare batch for 2D compression training.
+        """Prepare batch for compression training (2D or 3D).
 
         Handles multiple batch formats:
         - Tuple of (images, mask)
-        - Dict with image keys
+        - Dict with image keys (2D) or 'image'/'images' key (3D)
         - Single tensor
 
         Args:
@@ -529,6 +632,23 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Tuple of (images, mask).
         """
+        # 3D-specific handling
+        if self.spatial_dims == 3:
+            if isinstance(batch, dict):
+                images = batch.get('image', batch.get('images'))
+                mask = batch.get('mask', batch.get('seg'))
+            elif isinstance(batch, (list, tuple)):
+                images = batch[0]
+                mask = batch[1] if len(batch) > 1 else None
+            else:
+                images = batch
+                mask = None
+
+            images = _tensor_to_device(images, self.device)
+            mask = _tensor_to_device(mask, self.device) if mask is not None else None
+            return images, mask
+
+        # 2D handling
         # Handle tuple of (image, seg)
         if isinstance(batch, (tuple, list)) and len(batch) == 2:
             images, mask = batch
@@ -623,18 +743,58 @@ class BaseCompressionTrainer(BaseTrainer):
         reconstruction: torch.Tensor,
         target: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute perceptual loss.
+        """Compute perceptual loss (2D or 2.5D for 3D).
+
+        For 3D volumes with use_2_5d_perceptual=True, computes loss on
+        sampled 2D slices. Otherwise computes standard perceptual loss.
 
         Args:
-            reconstruction: Generated images.
-            target: Target images.
+            reconstruction: Generated images/volumes.
+            target: Target images/volumes.
 
         Returns:
             Perceptual loss value.
         """
         if self.perceptual_loss_fn is None:
             return torch.tensor(0.0, device=self.device)
+
+        # 3D with 2.5D perceptual loss
+        if self.spatial_dims == 3 and getattr(self, 'use_2_5d_perceptual', False):
+            return self._compute_2_5d_perceptual_loss(reconstruction, target)
+
         return self.perceptual_loss_fn(reconstruction, target)
+
+    def _compute_2_5d_perceptual_loss(
+        self,
+        reconstruction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute perceptual loss on sampled 2D slices from 3D volumes.
+
+        Args:
+            reconstruction: Reconstructed volume [B, C, D, H, W].
+            target: Target volume [B, C, D, H, W].
+
+        Returns:
+            Perceptual loss averaged over sampled slices.
+        """
+        if self.perceptual_loss_fn is None:
+            return torch.tensor(0.0, device=self.device)
+
+        depth = reconstruction.shape[2]
+        slice_fraction = getattr(self, 'perceptual_slice_fraction', 0.25)
+        n_slices = max(1, int(depth * slice_fraction))
+
+        # Sample slice indices
+        indices = torch.randperm(depth)[:n_slices].to(self.device)
+
+        total_loss = 0.0
+        for idx in indices:
+            recon_slice = reconstruction[:, :, idx, :, :]
+            target_slice = target[:, :, idx, :, :]
+            total_loss += self.perceptual_loss_fn(recon_slice, target_slice)
+
+        return total_loss / n_slices
 
     def _compute_kl_loss(self, mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Compute KL divergence loss for VAE training.
@@ -731,12 +891,20 @@ class BaseCompressionTrainer(BaseTrainer):
     # Validation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _create_regional_tracker(self) -> RegionalMetricsTracker:
-        """Create regional metrics tracker.
+    def _create_regional_tracker(self):
+        """Create regional metrics tracker (2D or 3D).
 
         Returns:
-            RegionalMetricsTracker instance.
+            RegionalMetricsTracker (2D) or RegionalMetricsTracker3D (3D).
         """
+        if self.spatial_dims == 3:
+            from medgen.metrics import RegionalMetricsTracker3D
+            return RegionalMetricsTracker3D(
+                volume_size=(self.volume_height, self.volume_width, self.volume_depth),
+                fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+                loss_fn='l1',
+                device=self.device,
+            )
         return RegionalMetricsTracker(
             image_size=self.cfg.model.image_size,
             fov_mm=self.cfg.paths.get('fov_mm', 240.0),
@@ -748,7 +916,7 @@ class BaseCompressionTrainer(BaseTrainer):
         self,
         worst_batch_data: Dict[str, Any],
     ) -> plt.Figure:
-        """Create worst batch figure for TensorBoard.
+        """Create worst batch figure for TensorBoard (2D or 3D).
 
         Args:
             worst_batch_data: Dict with 'original', 'generated', 'loss', 'loss_breakdown'.
@@ -756,7 +924,8 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Matplotlib figure.
         """
-        return create_worst_batch_figure(
+        figure_fn = self._create_worst_batch_figure_fn()
+        return figure_fn(
             original=worst_batch_data['original'],
             generated=worst_batch_data['generated'],
             loss=worst_batch_data['loss'],
@@ -764,7 +933,7 @@ class BaseCompressionTrainer(BaseTrainer):
         )
 
     def _create_validation_runner(self) -> 'ValidationRunner':
-        """Create ValidationRunner for this trainer.
+        """Create ValidationRunner for this trainer (2D or 3D).
 
         Factory method that creates a ValidationRunner with trainer-specific
         configuration and callbacks.
@@ -781,6 +950,7 @@ class BaseCompressionTrainer(BaseTrainer):
             log_regional_losses=self.log_regional_losses,
             weight_dtype=self.weight_dtype,
             use_compile=self.use_compile,
+            spatial_dims=self.spatial_dims,
         )
 
         regional_factory = None
@@ -801,7 +971,7 @@ class BaseCompressionTrainer(BaseTrainer):
         epoch: int,
         log_figures: bool = True,
     ) -> Dict[str, float]:
-        """Compute validation losses using ValidationRunner.
+        """Compute validation losses using ValidationRunner (2D or 3D).
 
         Args:
             epoch: Current epoch number.
@@ -829,8 +999,9 @@ class BaseCompressionTrainer(BaseTrainer):
         model_to_use.train()
 
         # Compute 3D MS-SSIM on full volumes (2D trainers only, skip for seg_mode)
+        # 3D trainers compute their own volumetric MS-SSIM in the runner
         # Must be done BEFORE logging so the metric gets logged with modality suffix
-        if not getattr(self, 'seg_mode', False):
+        if self.spatial_dims == 2 and not getattr(self, 'seg_mode', False):
             msssim_3d = self._compute_volume_3d_msssim(epoch, data_split='val')
             if msssim_3d is not None:
                 result.metrics['msssim_3d'] = msssim_3d
@@ -852,11 +1023,11 @@ class BaseCompressionTrainer(BaseTrainer):
         p_loss: torch.Tensor,
         reg_loss: torch.Tensor,
     ) -> Dict[str, Any]:
-        """Capture worst batch data for visualization.
+        """Capture worst batch data for visualization (2D or 3D).
 
         Args:
-            images: Original images.
-            reconstruction: Reconstructed images.
+            images: Original images/volumes.
+            reconstruction: Reconstructed images/volumes.
             loss: Total loss value.
             l1_loss: L1 loss tensor.
             p_loss: Perceptual loss tensor.
@@ -865,6 +1036,20 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Dictionary with worst batch data.
         """
+        # 3D: Simple capture without dict conversion
+        if self.spatial_dims == 3:
+            return {
+                'original': images.cpu(),
+                'generated': reconstruction.float().cpu(),
+                'loss': loss,
+                'loss_breakdown': {
+                    'L1': l1_loss.item() if isinstance(l1_loss, torch.Tensor) else l1_loss,
+                    'Perc': p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
+                    'Reg': reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss,
+                },
+            }
+
+        # 2D: Handle dual mode with dict conversion
         n_channels = self.cfg.mode.get('in_channels', 1)
 
         # Convert to dict format for dual mode
@@ -983,7 +1168,11 @@ class BaseCompressionTrainer(BaseTrainer):
             self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _compute_per_modality_validation(self, epoch: int) -> None:
-        """Compute per-modality validation metrics.
+        """Compute per-modality validation metrics (2D or 3D).
+
+        For 3D volumes:
+        - Uses compute_lpips_3d (slice-by-slice)
+        - Computes both volumetric MS-SSIM-3D and slice-wise MS-SSIM-2D
 
         Args:
             epoch: Current epoch number.
@@ -994,10 +1183,14 @@ class BaseCompressionTrainer(BaseTrainer):
         model_to_use = self._get_model_for_eval()
         model_to_use.eval()
 
+        # Get appropriate LPIPS function for dimensionality
+        lpips_fn = self._create_lpips_fn()
+
         for modality, loader in self.per_modality_val_loaders.items():
             total_psnr = 0.0
             total_lpips = 0.0
             total_msssim = 0.0
+            total_msssim_3d = 0.0  # Volumetric 3D MS-SSIM (only for 3D)
             n_batches = 0
 
             # Regional tracker for this modality
@@ -1016,24 +1209,39 @@ class BaseCompressionTrainer(BaseTrainer):
                     if self.log_psnr:
                         total_psnr += compute_psnr(reconstruction, images)
                     if self.log_lpips:
-                        total_lpips += compute_lpips(reconstruction, images, device=self.device)
+                        total_lpips += lpips_fn(
+                            reconstruction.float(), images.float(), device=self.device
+                        )
                     if self.log_msssim:
-                        total_msssim += compute_msssim(reconstruction, images)
+                        if self.spatial_dims == 3:
+                            # 3D: Compute both volumetric and slice-wise
+                            total_msssim_3d += compute_msssim(
+                                reconstruction.float(), images.float(), spatial_dims=3
+                            )
+                            total_msssim += compute_msssim_2d_slicewise(
+                                reconstruction.float(), images.float()
+                            )
+                        else:
+                            total_msssim += compute_msssim(reconstruction, images)
 
                     # Regional tracking
                     if regional_tracker is not None and mask is not None:
-                        regional_tracker.update(reconstruction, images, mask)
+                        regional_tracker.update(reconstruction.float(), images.float(), mask)
 
                     n_batches += 1
 
             # Log metrics using unified system
             if n_batches > 0 and self.writer is not None:
-                # Compute 3D MS-SSIM for this modality
+                # Compute 3D MS-SSIM for 2D trainers (full volume reconstruction)
                 msssim_3d = None
-                if self.log_msssim and not getattr(self, 'seg_mode', False):
-                    msssim_3d = self._compute_volume_3d_msssim(
-                        epoch, data_split='val', modality_override=modality
-                    )
+                if self.spatial_dims == 2:
+                    if self.log_msssim and not getattr(self, 'seg_mode', False):
+                        msssim_3d = self._compute_volume_3d_msssim(
+                            epoch, data_split='val', modality_override=modality
+                        )
+                else:
+                    # 3D trainers already computed volumetric MS-SSIM above
+                    msssim_3d = total_msssim_3d / n_batches if self.log_msssim else None
 
                 # Build metrics dict for unified logging
                 modality_metrics = {
@@ -1408,6 +1616,45 @@ class BaseCompressionTrainer(BaseTrainer):
             if self.is_main_process:
                 logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
 
+    def _load_pretrained_weights_base(
+        self,
+        base_model: nn.Module,
+        checkpoint_path: str,
+        model_name: str = "model",
+    ) -> None:
+        """Load pretrained weights into base model (before checkpointing wrapper).
+
+        Handles 'model.' prefix stripping for checkpointed model wrappers.
+        Used by 3D trainers that wrap models with gradient checkpointing.
+
+        Args:
+            base_model: The base model (unwrapped) to load weights into.
+            checkpoint_path: Path to the checkpoint file.
+            model_name: Name for logging (e.g., "3D VAE", "3D VQ-VAE").
+        """
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+                # Remove 'model.' prefix if present (from Checkpointed* wrappers)
+                keys_with_prefix = [k for k in state_dict.keys() if k.startswith('model.')]
+                if keys_with_prefix:
+                    if len(keys_with_prefix) != len(state_dict) and self.is_main_process:
+                        logger.warning(
+                            f"Mixed prefix state: {len(keys_with_prefix)}/{len(state_dict)} keys "
+                            "have 'model.' prefix. Stripping prefix from matching keys."
+                        )
+                    state_dict = {
+                        k.replace('model.', '', 1) if k.startswith('model.') else k: v
+                        for k, v in state_dict.items()
+                    }
+                base_model.load_state_dict(state_dict)
+                if self.is_main_process:
+                    logger.info(f"Loaded {model_name} weights from {checkpoint_path}")
+        except FileNotFoundError:
+            if self.is_main_process:
+                logger.warning(f"Checkpoint not found: {checkpoint_path}")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Abstract methods
     # ─────────────────────────────────────────────────────────────────────────
@@ -1464,47 +1711,88 @@ class BaseCompressionTrainer(BaseTrainer):
     # Test evaluation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _create_test_evaluator(self) -> 'CompressionTestEvaluator':
-        """Create test evaluator for this trainer.
+    def _create_test_evaluator(self):
+        """Create test evaluator for this trainer (2D or 3D).
 
-        Factory method that creates a CompressionTestEvaluator with trainer-specific
-        callbacks. This enables using the new unified evaluation infrastructure.
+        Factory method that creates a CompressionTestEvaluator (2D) or
+        Compression3DTestEvaluator (3D) with trainer-specific callbacks.
 
         Returns:
-            Configured CompressionTestEvaluator instance.
+            Configured test evaluator instance.
         """
-        from medgen.evaluation import CompressionTestEvaluator, MetricsConfig
+        from medgen.evaluation import CompressionTestEvaluator, Compression3DTestEvaluator, MetricsConfig
 
-        # Create metrics config based on trainer settings
-        metrics_config = MetricsConfig(
-            compute_l1=True,
-            compute_psnr=True,
-            compute_lpips=True,
-            compute_msssim=self.log_msssim,
-            compute_msssim_3d=False,  # Volume 3D MS-SSIM added via callback
-            compute_regional=self.log_regional_losses,
-        )
+        # Check for seg_mode (set by subclasses)
+        seg_mode = getattr(self, 'seg_mode', False)
+        seg_loss_fn = getattr(self, 'seg_loss_fn', None)
 
-        # Regional tracker factory (if configured)
-        regional_factory = None
-        if self.log_regional_losses:
-            regional_factory = self._create_regional_tracker
+        # Get modality name for single-modality suffix
+        mode_name = self.cfg.mode.get('name', 'bravo')
 
-        # Volume 3D MS-SSIM callback (for 2D trainers reconstructing full volumes)
-        def volume_3d_msssim() -> Optional[float]:
-            return self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
-
-        # Worst batch figure callback
-        worst_batch_fig_fn = self._create_worst_batch_figure
-
-        # Get image keys for per-channel metrics (dual mode)
+        # Get image keys for per-channel metrics
         n_channels = self.cfg.mode.get('in_channels', 1)
         image_keys = None
         if n_channels > 1:
             image_keys = self.cfg.mode.get('image_keys', None)
 
-        # Get modality name for single-modality suffix
-        mode_name = self.cfg.mode.get('name', 'bravo')
+        # Regional tracker factory (use seg-specific tracker for seg_mode)
+        regional_factory = None
+        if self.log_regional_losses:
+            if seg_mode and hasattr(self, '_create_seg_regional_tracker'):
+                regional_factory = self._create_seg_regional_tracker
+            else:
+                regional_factory = self._create_regional_tracker
+
+        # 3D evaluator
+        if self.spatial_dims == 3:
+            metrics_config = MetricsConfig(
+                compute_l1=not seg_mode,
+                compute_psnr=not seg_mode,
+                compute_lpips=not seg_mode,
+                compute_msssim=self.log_msssim and not seg_mode,  # 2D slicewise
+                compute_msssim_3d=self.log_msssim and not seg_mode,  # Volumetric
+                compute_regional=self.log_regional_losses,
+                seg_mode=seg_mode,
+            )
+
+            # Worst batch figure callback (3D version)
+            worst_batch_fig_fn = self._create_worst_batch_figure
+
+            return Compression3DTestEvaluator(
+                model=self.model_raw,
+                device=self.device,
+                save_dir=self.save_dir,
+                forward_fn=self._test_forward,
+                weight_dtype=self.weight_dtype,
+                writer=self.writer,
+                metrics_config=metrics_config,
+                is_cluster=self.is_cluster,
+                regional_tracker_factory=regional_factory,
+                worst_batch_figure_fn=worst_batch_fig_fn,
+                image_keys=image_keys,
+                seg_loss_fn=seg_loss_fn if seg_mode else None,
+                modality_name=mode_name,
+            )
+
+        # 2D evaluator
+        metrics_config = MetricsConfig(
+            compute_l1=not seg_mode,
+            compute_psnr=not seg_mode,
+            compute_lpips=not seg_mode,
+            compute_msssim=self.log_msssim and not seg_mode,
+            compute_msssim_3d=False,  # Volume 3D MS-SSIM added via callback
+            compute_regional=self.log_regional_losses,
+            seg_mode=seg_mode,
+        )
+
+        # Volume 3D MS-SSIM callback (for 2D trainers reconstructing full volumes)
+        def volume_3d_msssim() -> Optional[float]:
+            if seg_mode:
+                return None
+            return self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
+
+        # Worst batch figure callback
+        worst_batch_fig_fn = self._create_worst_batch_figure
 
         return CompressionTestEvaluator(
             model=self.model_raw,
@@ -1519,6 +1807,7 @@ class BaseCompressionTrainer(BaseTrainer):
             volume_3d_msssim_fn=volume_3d_msssim,
             worst_batch_figure_fn=worst_batch_fig_fn,
             image_keys=image_keys,
+            seg_loss_fn=seg_loss_fn if seg_mode else None,
             modality_name=mode_name,
         )
 
@@ -1550,17 +1839,10 @@ class BaseCompressionTrainer(BaseTrainer):
 
 
 class BaseCompression3DTrainer(BaseCompressionTrainer):
-    """Base trainer for 3D volumetric compression models.
+    """DEPRECATED: Use BaseCompressionTrainer with spatial_dims=3 instead.
 
-    Extends BaseCompressionTrainer with:
-    - Volume dimension handling
-    - Gradient checkpointing support
-    - 2.5D perceptual loss (slice sampling)
-    - 3D regional metrics
-    - 3D worst batch visualization
-
-    Args:
-        cfg: Hydra configuration object.
+    This class is maintained for backward compatibility only.
+    All 3D-specific functionality is now in BaseCompressionTrainer.
     """
 
     def __init__(self, cfg: DictConfig) -> None:
@@ -1569,405 +1851,11 @@ class BaseCompression3DTrainer(BaseCompressionTrainer):
         Args:
             cfg: Hydra configuration object.
         """
-        super().__init__(cfg)
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Extract 3D-specific config
-        # ─────────────────────────────────────────────────────────────────────
-        self.volume_depth: int = cfg.volume.get('depth', 160)
-        self.volume_height: int = cfg.volume.get('height', 256)
-        self.volume_width: int = cfg.volume.get('width', 256)
-
-        # 2.5D perceptual loss config
-        self.use_2_5d_perceptual: bool = self._get_2_5d_perceptual(cfg)
-        self.perceptual_slice_fraction: float = self._get_perceptual_slice_fraction(cfg)
-
-        # Gradient checkpointing
-        self.gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
-
-        # torch.compile for 3D models
-        self.use_compile: bool = cfg.training.get('use_compile', True)
-
-    def _get_2_5d_perceptual(self, cfg: DictConfig) -> bool:
-        """Get 2.5D perceptual loss flag."""
-        for section in ['vae_3d', 'vqvae_3d']:
-            if section in cfg:
-                return cfg[section].get('use_2_5d_perceptual', True)
-        return True
-
-    def _get_perceptual_slice_fraction(self, cfg: DictConfig) -> float:
-        """Get perceptual slice fraction."""
-        for section in ['vae_3d', 'vqvae_3d']:
-            if section in cfg:
-                return cfg[section].get('perceptual_slice_fraction', 0.25)
-        return 0.25
-
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Prepare batch for 3D compression training.
-
-        Args:
-            batch: Input batch.
-
-        Returns:
-            Tuple of (images, mask).
-        """
-        if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
-        elif isinstance(batch, (list, tuple)):
-            images = batch[0]
-            mask = batch[1] if len(batch) > 1 else None
-        else:
-            images = batch
-            mask = None
-
-        images = _tensor_to_device(images, self.device)
-        mask = _tensor_to_device(mask, self.device) if mask is not None else None
-
-        return images, mask
-
-    def _create_regional_tracker(self):
-        """Create 3D regional metrics tracker."""
-        from medgen.metrics import RegionalMetricsTracker3D
-        return RegionalMetricsTracker3D(
-            volume_size=(self.volume_height, self.volume_width, self.volume_depth),
-            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
-            loss_fn='l1',
-            device=self.device,
+        import warnings
+        warnings.warn(
+            "BaseCompression3DTrainer is deprecated. "
+            "Use BaseCompressionTrainer with spatial_dims=3 instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-
-    def _create_worst_batch_figure(
-        self,
-        worst_batch_data: Dict[str, Any],
-    ) -> plt.Figure:
-        """Create 3D worst batch figure."""
-        from medgen.metrics import create_worst_batch_figure_3d
-        return create_worst_batch_figure_3d(
-            original=worst_batch_data['original'],
-            generated=worst_batch_data['generated'],
-            loss=worst_batch_data['loss'],
-            loss_breakdown=worst_batch_data.get('loss_breakdown'),
-        )
-
-    def _create_validation_runner(self) -> 'ValidationRunner':
-        """Create ValidationRunner for 3D trainer.
-
-        Factory method that creates a ValidationRunner with 3D-specific
-        configuration and callbacks.
-
-        Returns:
-            Configured ValidationRunner instance for 3D volumes.
-        """
-        from medgen.evaluation import ValidationRunner, ValidationConfig
-
-        config = ValidationConfig(
-            log_msssim=self.log_msssim,
-            log_psnr=self.log_psnr,
-            log_lpips=self.log_lpips,
-            log_regional_losses=self.log_regional_losses,
-            weight_dtype=self.weight_dtype,
-            use_compile=self.use_compile,
-            spatial_dims=3,  # 3D volumes
-        )
-
-        regional_factory = None
-        if self.log_regional_losses:
-            regional_factory = self._create_regional_tracker
-
-        return ValidationRunner(
-            config=config,
-            device=self.device,
-            forward_fn=self._forward_for_validation,
-            perceptual_loss_fn=self._compute_perceptual_loss,
-            regional_tracker_factory=regional_factory,
-            prepare_batch_fn=self._prepare_batch,
-        )
-
-    def compute_validation_losses(
-        self,
-        epoch: int,
-        log_figures: bool = True,
-    ) -> Dict[str, float]:
-        """Compute validation losses for 3D volumes using ValidationRunner.
-
-        Args:
-            epoch: Current epoch number.
-            log_figures: Whether to log figures (worst_batch).
-
-        Returns:
-            Dictionary of validation metrics.
-        """
-        if self.val_loader is None:
-            return {}
-
-        # Get model for evaluation
-        model_to_use = self._get_model_for_eval()
-        model_to_use.eval()
-
-        # Run validation using extracted runner
-        runner = self._create_validation_runner()
-        result = runner.run(
-            val_loader=self.val_loader,
-            model=model_to_use,
-            perceptual_weight=self.perceptual_weight,
-            log_figures=log_figures,
-        )
-
-        model_to_use.train()
-
-        # Log to TensorBoard
-        self._log_validation_metrics(
-            epoch, result.metrics, result.worst_batch_data,
-            result.regional_tracker, log_figures
-        )
-
-        return result.metrics
-
-    def _compute_2_5d_perceptual_loss(
-        self,
-        reconstruction: torch.Tensor,
-        target: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute perceptual loss on sampled 2D slices.
-
-        Args:
-            reconstruction: Reconstructed volume [B, C, D, H, W].
-            target: Target volume [B, C, D, H, W].
-
-        Returns:
-            Perceptual loss averaged over sampled slices.
-        """
-        if self.perceptual_loss_fn is None:
-            return torch.tensor(0.0, device=self.device)
-
-        depth = reconstruction.shape[2]
-        n_slices = max(1, int(depth * self.perceptual_slice_fraction))
-
-        # Sample slice indices
-        indices = torch.randperm(depth)[:n_slices].to(self.device)
-
-        total_loss = 0.0
-        for idx in indices:
-            recon_slice = reconstruction[:, :, idx, :, :]
-            target_slice = target[:, :, idx, :, :]
-            total_loss += self.perceptual_loss_fn(recon_slice, target_slice)
-
-        return total_loss / n_slices
-
-    def _compute_perceptual_loss(
-        self,
-        reconstruction: torch.Tensor,
-        target: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute perceptual loss (2.5D for 3D data).
-
-        Args:
-            reconstruction: Reconstructed volume.
-            target: Target volume.
-
-        Returns:
-            Perceptual loss value.
-        """
-        if self.use_2_5d_perceptual:
-            return self._compute_2_5d_perceptual_loss(reconstruction, target)
-        return super()._compute_perceptual_loss(reconstruction, target)
-
-    def _capture_worst_batch(
-        self,
-        images: torch.Tensor,
-        reconstruction: torch.Tensor,
-        loss: float,
-        l1_loss: torch.Tensor,
-        p_loss: torch.Tensor,
-        reg_loss: torch.Tensor,
-    ) -> Dict[str, Any]:
-        """Capture worst batch data for 3D visualization."""
-        return {
-            'original': images.cpu(),
-            'generated': reconstruction.float().cpu(),
-            'loss': loss,
-            'loss_breakdown': {
-                'L1': l1_loss.item() if isinstance(l1_loss, torch.Tensor) else l1_loss,
-                'Perc': p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
-                'Reg': reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss,
-            },
-        }
-
-    def _create_fallback_save_dir(self) -> str:
-        """Create fallback save directory for 3D models."""
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        mode_name = self.cfg.mode.get('name', 'multi_modality')
-        run_name = f"{exp_name}{self.volume_height}_{timestamp}"
-        return os.path.join(self.cfg.paths.model_dir, 'vae_3d', mode_name, run_name)
-
-    def _compute_per_modality_validation(self, epoch: int) -> None:
-        """Compute per-modality validation metrics for 3D volumes.
-
-        Overrides base class to use 3D-appropriate metrics:
-        - MS-SSIM-3D with spatial_dims=3 (volumetric)
-        - MS-SSIM with slice-by-slice computation (comparable to 2D)
-        - LPIPS computed slice-by-slice via compute_lpips_3d
-
-        Args:
-            epoch: Current epoch number.
-        """
-        if not self.per_modality_val_loaders:
-            return
-
-        model_to_use = self._get_model_for_eval()
-        model_to_use.eval()
-
-        for modality, loader in self.per_modality_val_loaders.items():
-            total_psnr = 0.0
-            total_lpips = 0.0
-            total_msssim_3d = 0.0  # Volumetric 3D MS-SSIM
-            total_msssim_2d = 0.0  # Slice-by-slice 2D MS-SSIM
-            n_batches = 0
-
-            # Regional tracker for this modality
-            regional_tracker = None
-            if self.log_regional_losses:
-                regional_tracker = self._create_regional_tracker()
-
-            with torch.inference_mode():
-                for batch in loader:
-                    images, mask = self._prepare_batch(batch)
-
-                    with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                        reconstruction, _ = self._forward_for_validation(model_to_use, images)
-
-                    # Compute metrics - 3D versions
-                    if self.log_psnr:
-                        total_psnr += compute_psnr(reconstruction, images)
-                    if self.log_lpips:
-                        total_lpips += compute_lpips_3d(
-                            reconstruction.float(), images.float(), device=self.device
-                        )
-                    if self.log_msssim:
-                        # Volumetric 3D MS-SSIM
-                        total_msssim_3d += compute_msssim(
-                            reconstruction.float(), images.float(), spatial_dims=3
-                        )
-                        # Slice-by-slice 2D MS-SSIM (comparable to 2D trainers)
-                        total_msssim_2d += compute_msssim_2d_slicewise(
-                            reconstruction.float(), images.float()
-                        )
-
-                    # Regional tracking
-                    if regional_tracker is not None and mask is not None:
-                        regional_tracker.update(reconstruction.float(), images.float(), mask)
-
-                    n_batches += 1
-
-            # Log metrics using unified system
-            if n_batches > 0 and self.writer is not None:
-                # Build metrics dict for unified logging
-                modality_metrics = {
-                    'psnr': total_psnr / n_batches if self.log_psnr else None,
-                    'msssim': total_msssim_2d / n_batches if self.log_msssim else None,
-                    'lpips': total_lpips / n_batches if self.log_lpips else None,
-                    'msssim_3d': total_msssim_3d / n_batches if self.log_msssim else None,
-                }
-                self._unified_metrics.log_per_modality_validation(modality_metrics, modality, epoch)
-
-                # Log regional metrics using unified system
-                if regional_tracker is not None:
-                    self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality)
-
-        model_to_use.train()
-
-    def _create_test_evaluator(self) -> 'Compression3DTestEvaluator':
-        """Create 3D test evaluator for this trainer.
-
-        Factory method that creates a Compression3DTestEvaluator with trainer-specific
-        callbacks. This enables using the new unified evaluation infrastructure.
-
-        Returns:
-            Configured Compression3DTestEvaluator instance.
-        """
-        from medgen.evaluation import Compression3DTestEvaluator, MetricsConfig
-        from medgen.metrics import create_worst_batch_figure_3d
-
-        # Check for seg_mode (added by subclasses like VQVAE3DTrainer)
-        seg_mode = getattr(self, 'seg_mode', False)
-        seg_loss_fn = getattr(self, 'seg_loss_fn', None)
-
-        # Create metrics config for 3D evaluation
-        metrics_config = MetricsConfig(
-            compute_l1=not seg_mode,
-            compute_psnr=not seg_mode,
-            compute_lpips=not seg_mode,
-            compute_msssim=self.log_msssim and not seg_mode,  # 2D slicewise
-            compute_msssim_3d=self.log_msssim and not seg_mode,  # Volumetric
-            compute_regional=self.log_regional_losses,
-            seg_mode=seg_mode,
-        )
-
-        # Regional tracker factory (use seg-specific tracker for seg_mode)
-        regional_factory = None
-        if self.log_regional_losses:
-            if seg_mode and hasattr(self, '_create_seg_regional_tracker'):
-                regional_factory = self._create_seg_regional_tracker
-            else:
-                regional_factory = self._create_regional_tracker
-
-        # Worst batch figure callback (3D version)
-        def worst_batch_fig_fn(data: Dict[str, Any]) -> Any:
-            return create_worst_batch_figure_3d(
-                original=data['original'],
-                generated=data['generated'],
-                loss=data['loss'],
-            )
-
-        # Get image keys for per-channel metrics (multi-modality mode)
-        n_channels = self.cfg.mode.get('in_channels', 1)
-        image_keys = None
-        if n_channels > 1:
-            image_keys = self.cfg.mode.get('image_keys', None)
-
-        # Get modality name for single-modality suffix
-        mode_name = self.cfg.mode.get('name', 'bravo')
-
-        return Compression3DTestEvaluator(
-            model=self.model_raw,
-            device=self.device,
-            save_dir=self.save_dir,
-            forward_fn=self._test_forward,
-            weight_dtype=self.weight_dtype,
-            writer=self.writer,
-            metrics_config=metrics_config,
-            is_cluster=self.is_cluster,
-            regional_tracker_factory=regional_factory,
-            worst_batch_figure_fn=worst_batch_fig_fn,
-            image_keys=image_keys,
-            seg_loss_fn=seg_loss_fn if seg_mode else None,
-            modality_name=mode_name,
-        )
-
-    def evaluate_test_set(
-        self,
-        test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-    ) -> Dict[str, float]:
-        """Evaluate 3D compression model on test set.
-
-        Uses Compression3DTestEvaluator for unified test evaluation.
-
-        Args:
-            test_loader: Test data loader.
-            checkpoint_name: Checkpoint to load ("best", "latest", or None).
-
-        Returns:
-            Dict with test metrics.
-        """
-        if not self.is_main_process:
-            return {}
-
-        evaluator = self._create_test_evaluator()
-        return evaluator.evaluate(
-            test_loader,
-            checkpoint_name=checkpoint_name,
-            get_eval_model=self._get_model_for_eval,
-        )
+        super().__init__(cfg, spatial_dims=3)

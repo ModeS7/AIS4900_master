@@ -27,7 +27,7 @@ from medgen.data import (
     create_vae_3d_multi_modality_test_dataloader,
     create_vae_3d_single_modality_validation_loader,
 )
-from medgen.pipeline import VAE3DTrainer, VQVAE3DTrainer, DCAE3DTrainer
+from medgen.pipeline import VAETrainer, VQVAETrainer, DCAETrainer
 from .common import override_vae_channels, run_test_evaluation, get_image_keys, create_per_modality_val_loaders_3d
 
 # Enable CUDA optimizations at module import
@@ -208,21 +208,22 @@ class Trainer3DConfig:
 
 
 # Registry mapping trainer_type to configuration
+# Uses unified trainers with .create_3d() factory method (spatial_dims=3)
 TRAINER_3D_REGISTRY: Dict[str, Trainer3DConfig] = {
     'vae_3d': Trainer3DConfig(
-        trainer_class=VAE3DTrainer,
+        trainer_class=VAETrainer,
         validator=validate_vae_3d_config,
         config_section='vae_3d',
         display_name='3D VAE',
     ),
     'vqvae_3d': Trainer3DConfig(
-        trainer_class=VQVAE3DTrainer,
+        trainer_class=VQVAETrainer,
         validator=validate_vqvae_3d_config,
         config_section='vqvae_3d',
         display_name='3D VQ-VAE',
     ),
     'dcae_3d': Trainer3DConfig(
-        trainer_class=DCAE3DTrainer,
+        trainer_class=DCAETrainer,
         validator=validate_dcae_3d_config,
         config_section='dcae_3d',
         display_name='3D DC-AE',
@@ -289,8 +290,8 @@ def train_compression_3d(cfg: DictConfig, trainer_type: str) -> None:
     log.info("=" * 60)
     log.info("")
 
-    # Create trainer
-    trainer = config.trainer_class(cfg)
+    # Create trainer using unified trainer with spatial_dims=3
+    trainer = config.trainer_class.create_3d(cfg)
     log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create 3D dataloader
