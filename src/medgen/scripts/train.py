@@ -60,7 +60,6 @@ from medgen.data.loaders.latent import (
     load_compression_model,
 )
 from medgen.pipeline import DiffusionTrainer
-from medgen.pipeline.diffusion_3d_trainer import Diffusion3DTrainer
 from medgen.diffusion import PixelSpace, LatentSpace
 from medgen.data.loaders.unified import create_diffusion_dataloader
 
@@ -607,7 +606,7 @@ def _train_3d(cfg: DictConfig) -> None:
 
     # Create and setup trainer
     log.info("=== Creating 3D Trainer ===")
-    trainer = Diffusion3DTrainer(cfg, space=space)
+    trainer = DiffusionTrainer.create_3d(cfg, space=space)
     trainer.setup_model(train_dataset)
 
     # Log model info

@@ -66,6 +66,7 @@ from medgen.metrics import (
     compute_msssim,
     compute_psnr,
     compute_lpips,
+    compute_lpips_3d,
     compute_dice,
     compute_iou,
     # Unified metrics system
@@ -84,39 +85,60 @@ logger = logging.getLogger(__name__)
 
 
 class DiffusionTrainer(DiffusionTrainerBase):
-    """2D diffusion model trainer.
+    """Unified 2D/3D diffusion model trainer.
 
-    Inherits from DiffusionTrainerBase and adds 2D-specific functionality:
-    - 2D UNet model setup
-    - 2D tensor handling [B, C, H, W]
-    - ScoreAug v2 transforms
-    - Compiled forward paths for performance
-    - Mode support: seg, bravo, dual, multi, seg_conditioned
+    Supports both 2D and 3D diffusion training via the spatial_dims parameter.
+    Inherits from DiffusionTrainerBase and adds dimension-specific functionality:
+    - 2D: [B, C, H, W] tensors, full image perceptual loss
+    - 3D: [B, C, D, H, W] tensors, 2.5D perceptual loss (center slice)
 
     Args:
         cfg: Hydra configuration object containing all settings.
+        spatial_dims: Number of spatial dimensions (2 or 3). Defaults to 2.
         space: Optional DiffusionSpace for pixel/latent space operations.
             Defaults to PixelSpace (identity, backward compatible).
 
     Example:
+        >>> # 2D training (default)
         >>> trainer = DiffusionTrainer(cfg)
-        >>> trainer.setup_model(train_dataset)
-        >>> trainer.train(train_loader, train_dataset)
+        >>> # 3D training
+        >>> trainer = DiffusionTrainer(cfg, spatial_dims=3)
+        >>> # Or use convenience constructors
+        >>> trainer = DiffusionTrainer.create_3d(cfg)
     """
 
     @property
     def spatial_dims(self) -> int:
-        """Return spatial dimensions (2 for 2D trainer)."""
-        return 2
+        """Return spatial dimensions (2 or 3)."""
+        return self._spatial_dims
 
-    def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
+    def __init__(
+        self,
+        cfg: DictConfig,
+        spatial_dims: int = 2,
+        space: Optional[DiffusionSpace] = None,
+    ) -> None:
+        # Validate spatial_dims
+        if spatial_dims not in (2, 3):
+            raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
+        self._spatial_dims = spatial_dims
+
         # Initialize base class (handles common diffusion config)
         super().__init__(cfg, space)
 
         # ─────────────────────────────────────────────────────────────────────
-        # 2D-specific config
+        # Dimension-specific size config
         # ─────────────────────────────────────────────────────────────────────
-        self.image_size: int = cfg.model.image_size
+        if spatial_dims == 2:
+            self.image_size: int = cfg.model.image_size
+        else:
+            # 3D volume dimensions
+            self.volume_height: int = cfg.volume.height
+            self.volume_width: int = cfg.volume.width
+            self.volume_depth: int = cfg.volume.depth
+            # For compatibility with 2D code that uses image_size
+            self.image_size: int = cfg.volume.height
+
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
 
         # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
@@ -152,56 +174,101 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Initialize mode (2D-specific) and scheduler
         # Note: strategy is already created in base class
         self.mode = self._create_mode(self.mode_name)
-        self.scheduler = self.strategy.setup_scheduler(
-            num_timesteps=self.num_timesteps,
-            image_size=self.image_size,
-            use_discrete_timesteps=cfg.strategy.get('use_discrete_timesteps', True),
-            sample_method=cfg.strategy.get('sample_method', 'logit-normal'),
-            use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
-        )
+        # Setup scheduler with dimension-appropriate parameters
+        scheduler_kwargs = {
+            'num_timesteps': self.num_timesteps,
+            'image_size': self.image_size,
+            'use_discrete_timesteps': cfg.strategy.get('use_discrete_timesteps', True),
+            'sample_method': cfg.strategy.get('sample_method', 'logit-normal'),
+            'use_timestep_transform': cfg.strategy.get('use_timestep_transform', True),
+        }
+        if spatial_dims == 3:
+            scheduler_kwargs['depth_size'] = self.volume_depth
+            scheduler_kwargs['spatial_dims'] = 3
+        self.scheduler = self.strategy.setup_scheduler(**scheduler_kwargs)
 
-        # 2D-specific logging config (base class handles common ones)
+        # ─────────────────────────────────────────────────────────────────────
+        # 3D-specific memory optimizations (mandatory for 3D)
+        # ─────────────────────────────────────────────────────────────────────
+        if spatial_dims == 3:
+            self.use_amp: bool = True  # Always use AMP for 3D
+            self.use_gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
+            self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        else:
+            self.use_amp: bool = cfg.training.get('use_amp', False)
+            self.use_gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', False)
+            self.scaler = None
+
+        # Logging config
         logging_cfg = cfg.training.get('logging', {})
         self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
         # Disable LPIPS for seg modes (binary masks don't work with VGG features)
         self.log_lpips: bool = False if is_seg_mode else logging_cfg.get('lpips', False)
         self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
+        self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
+        self.log_intermediate_steps: bool = logging_cfg.get('intermediate_steps', True)
+        self.num_intermediate_steps: int = logging_cfg.get('num_intermediate_steps', 5)
 
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
         self._unified_metrics: Optional[UnifiedMetrics] = None
 
-        # 2D-specific model components
+        # Model components
         self.perceptual_loss_fn: Optional[nn.Module] = None
         self.visualizer: Optional[ValidationVisualizer] = None
 
+        # Cached training samples for deterministic visualization
+        # (Uses training data to keep validation/test datasets properly separated)
+        self._cached_train_batch: Optional[Dict[str, torch.Tensor]] = None
+
         # ScoreAug initialization (applies transforms to noisy data)
+        # Uses dimension-appropriate transform class (ScoreAugTransform or ScoreAugTransform3D)
         self.score_aug = None
         self.use_omega_conditioning = False
         self.use_mode_intensity_scaling = False
         self._apply_mode_intensity_scale = None  # Function reference (lazy import)
         score_aug_cfg = cfg.training.get('score_aug', {})
         if score_aug_cfg.get('enabled', False):
-            from medgen.augmentation import ScoreAugTransform
-            self.score_aug = ScoreAugTransform(
-                rotation=score_aug_cfg.get('rotation', True),
-                flip=score_aug_cfg.get('flip', True),
-                translation=score_aug_cfg.get('translation', False),
-                cutout=score_aug_cfg.get('cutout', False),
-                brightness=score_aug_cfg.get('brightness', False),
-                brightness_range=score_aug_cfg.get('brightness_range', 1.2),
-                compose=score_aug_cfg.get('compose', False),
-                compose_prob=score_aug_cfg.get('compose_prob', 0.5),
-            )
+            if spatial_dims == 2:
+                from medgen.augmentation import ScoreAugTransform
+                self.score_aug = ScoreAugTransform(
+                    rotation=score_aug_cfg.get('rotation', True),
+                    flip=score_aug_cfg.get('flip', True),
+                    translation=score_aug_cfg.get('translation', False),
+                    cutout=score_aug_cfg.get('cutout', False),
+                    brightness=score_aug_cfg.get('brightness', False),
+                    brightness_range=score_aug_cfg.get('brightness_range', 1.2),
+                    compose=score_aug_cfg.get('compose', False),
+                    compose_prob=score_aug_cfg.get('compose_prob', 0.5),
+                )
+            else:
+                from medgen.augmentation import ScoreAugTransform3D
+                self.score_aug = ScoreAugTransform3D(
+                    rotation=score_aug_cfg.get('rotation', True),
+                    flip=score_aug_cfg.get('flip', True),
+                    translation=score_aug_cfg.get('translation', False),
+                    cutout=score_aug_cfg.get('cutout', False),
+                    compose=score_aug_cfg.get('compose', False),
+                    compose_prob=score_aug_cfg.get('compose_prob', 0.5),
+                )
+
             self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
 
-            # Mode intensity scaling: scales input by modality-specific factor
+            # Mode intensity scaling: scales input by modality-specific factor (2D only)
             # Forces model to use mode conditioning (similar to how rotation requires omega)
             self.use_mode_intensity_scaling = score_aug_cfg.get('mode_intensity_scaling', False)
             if self.use_mode_intensity_scaling:
-                from medgen.augmentation import apply_mode_intensity_scale
-                self._apply_mode_intensity_scale = apply_mode_intensity_scale
+                if spatial_dims == 3:
+                    if self.is_main_process:
+                        logger.warning(
+                            "mode_intensity_scaling is not supported in 3D diffusion "
+                            "(requires mode_id from multi-modality mode). Ignoring."
+                        )
+                    self.use_mode_intensity_scaling = False
+                else:
+                    from medgen.augmentation import apply_mode_intensity_scale
+                    self._apply_mode_intensity_scale = apply_mode_intensity_scale
 
             # Validate: rotation/flip require omega conditioning per ScoreAug paper
             # Gaussian noise is rotation-invariant, allowing model to "cheat" without conditioning
@@ -233,11 +300,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     transforms.append('translation')
                 if score_aug_cfg.get('cutout', False):
                     transforms.append('cutout')
-                if score_aug_cfg.get('brightness', False):
+                if score_aug_cfg.get('brightness', False) and spatial_dims == 2:
                     transforms.append(f"brightness({score_aug_cfg.get('brightness_range', 1.2)})")
                 n_options = len(transforms) + 1
                 logger.info(
-                    f"ScoreAug enabled: transforms=[{', '.join(transforms)}], "
+                    f"ScoreAug {spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
                     f"each with 1/{n_options} prob (uniform), "
                     f"omega_conditioning={self.use_omega_conditioning}, "
                     f"mode_intensity_scaling={self.use_mode_intensity_scaling}"
@@ -250,35 +317,40 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.sda_weight = 1.0
         sda_cfg = cfg.training.get('sda', {})
         if sda_cfg.get('enabled', False):
-            from medgen.augmentation import SDATransform
-            self.sda = SDATransform(
-                rotation=sda_cfg.get('rotation', True),
-                flip=sda_cfg.get('flip', True),
-                noise_shift=sda_cfg.get('noise_shift', 0.1),
-                prob=sda_cfg.get('prob', 0.5),
-            )
-            self.sda_weight = sda_cfg.get('weight', 1.0)
-
-            if self.is_main_process:
-                transforms = []
-                if sda_cfg.get('rotation', True):
-                    transforms.append('rotation')
-                if sda_cfg.get('flip', True):
-                    transforms.append('flip')
-                logger.info(
-                    f"SDA enabled: transforms=[{', '.join(transforms)}], "
-                    f"noise_shift={sda_cfg.get('noise_shift', 0.1)}, "
-                    f"prob={sda_cfg.get('prob', 0.5)}, weight={self.sda_weight}"
-                )
-
-            # Validate: SDA and ScoreAug shouldn't both be enabled
-            # (they do similar things in different ways)
+            # SDA and ScoreAug are mutually exclusive
             if self.score_aug is not None:
-                logger.warning(
-                    "Both SDA and ScoreAug are enabled. This is unusual - "
-                    "SDA transforms clean data, ScoreAug transforms noisy data. "
-                    "Consider using only one for clearer experiments."
-                )
+                if self.is_main_process:
+                    logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
+            else:
+                if spatial_dims == 2:
+                    from medgen.augmentation import SDATransform
+                    self.sda = SDATransform(
+                        rotation=sda_cfg.get('rotation', True),
+                        flip=sda_cfg.get('flip', True),
+                        noise_shift=sda_cfg.get('noise_shift', 0.1),
+                        prob=sda_cfg.get('prob', 0.5),
+                    )
+                else:
+                    from medgen.augmentation import SDATransform3D
+                    self.sda = SDATransform3D(
+                        rotation=sda_cfg.get('rotation', True),
+                        flip=sda_cfg.get('flip', True),
+                        noise_shift=sda_cfg.get('noise_shift', 0.1),
+                        prob=sda_cfg.get('prob', 0.5),
+                    )
+                self.sda_weight = sda_cfg.get('weight', 1.0)
+
+                if self.is_main_process:
+                    transforms = []
+                    if sda_cfg.get('rotation', True):
+                        transforms.append('rotation')
+                    if sda_cfg.get('flip', True):
+                        transforms.append('flip')
+                    logger.info(
+                        f"SDA {spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
+                        f"noise_shift={sda_cfg.get('noise_shift', 0.1)}, "
+                        f"prob={sda_cfg.get('prob', 0.5)}, weight={self.sda_weight}"
+                    )
 
         # Mode embedding for multi-modality training
         self.use_mode_embedding = cfg.mode.get('use_mode_embedding', False)
@@ -403,17 +475,32 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Use training batch_size by default for torch.compile consistency
             feature_batch_size = gen_cfg.get('feature_batch_size', None)
             if feature_batch_size is None:
-                feature_batch_size = cfg.training.batch_size
+                if spatial_dims == 3:
+                    # 3D: use larger batch for slice-wise extraction
+                    feature_batch_size = max(32, cfg.training.batch_size * 16)
+                else:
+                    feature_batch_size = cfg.training.batch_size
             # Use absolute cache_dir from paths config, fallback to relative
             gen_cache_dir = gen_cfg.get('cache_dir', None)
             if gen_cache_dir is None:
                 base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
                 gen_cache_dir = f"{base_cache}/generation_features"
+
+            # 3D volumes are much larger - cap sample counts to avoid OOM
+            if spatial_dims == 3:
+                samples_per_epoch = min(gen_cfg.get('samples_per_epoch', 1), 2)
+                samples_extended = min(gen_cfg.get('samples_extended', 4), 4)
+                samples_test = min(gen_cfg.get('samples_test', 10), 10)
+            else:
+                samples_per_epoch = gen_cfg.get('samples_per_epoch', 100)
+                samples_extended = gen_cfg.get('samples_extended', 500)
+                samples_test = gen_cfg.get('samples_test', 1000)
+
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
-                samples_per_epoch=gen_cfg.get('samples_per_epoch', 100),
-                samples_extended=gen_cfg.get('samples_extended', 500),
-                samples_test=gen_cfg.get('samples_test', 1000),
+                samples_per_epoch=samples_per_epoch,
+                samples_extended=samples_extended,
+                samples_test=samples_test,
                 steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
                 steps_extended=gen_cfg.get('steps_extended', 25),
                 steps_test=gen_cfg.get('steps_test', 50),
@@ -421,10 +508,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 feature_batch_size=feature_batch_size,
             )
             if self.is_main_process:
+                sample_type = "volumes" if spatial_dims == 3 else "samples"
                 logger.info(
-                    f"Generation metrics enabled: {self._gen_metrics_config.samples_per_epoch} samples/epoch "
+                    f"Generation metrics enabled: {self._gen_metrics_config.samples_per_epoch} {sample_type}/epoch "
                     f"({self._gen_metrics_config.steps_per_epoch} steps), "
-                    f"{self._gen_metrics_config.samples_extended} samples/extended "
+                    f"{self._gen_metrics_config.samples_extended} {sample_type}/extended "
                     f"({self._gen_metrics_config.steps_extended} steps)"
                 )
         else:
@@ -442,6 +530,36 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 f"ControlNet enabled: freeze_unet={self.controlnet_freeze_unet}, "
                 f"conditioning_scale={self.controlnet_scale}"
             )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Convenience Constructors
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def create_2d(cls, cfg: DictConfig, **kwargs) -> 'DiffusionTrainer':
+        """Create 2D diffusion trainer.
+
+        Args:
+            cfg: Hydra configuration object.
+            **kwargs: Additional arguments passed to __init__.
+
+        Returns:
+            DiffusionTrainer with spatial_dims=2.
+        """
+        return cls(cfg, spatial_dims=2, **kwargs)
+
+    @classmethod
+    def create_3d(cls, cfg: DictConfig, **kwargs) -> 'DiffusionTrainer':
+        """Create 3D diffusion trainer.
+
+        Args:
+            cfg: Hydra configuration object.
+            **kwargs: Additional arguments passed to __init__.
+
+        Returns:
+            DiffusionTrainer with spatial_dims=3.
+        """
+        return cls(cfg, spatial_dims=3, **kwargs)
 
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
@@ -1586,6 +1704,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         )
 
                     # Compute perceptual loss (decode for latent space)
+                    # For 3D: use 2.5D approach (center slice) for efficiency
                     if self.perceptual_weight > 0:
                         if self.space.scale_factor > 1:
                             # Decode to pixel space for perceptual loss
@@ -1594,6 +1713,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         else:
                             pred_decoded = predicted_clean
                             images_decoded = images
+
+                        # For 3D: extract center slice (2.5D perceptual loss)
+                        if self.spatial_dims == 3:
+                            pred_decoded = self._extract_center_slice(pred_decoded)
+                            images_decoded = self._extract_center_slice(images_decoded)
 
                         # Wrapper handles both tensor and dict inputs
                         # Cast to FP32 for perceptual loss stability
@@ -1797,16 +1921,26 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 mse_loss=mse_loss_val,
             )
         else:
-            # Standard optimizer step
-            total_loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
-            )
+            # Standard optimizer step (with gradient scaler for 3D AMP)
+            if self.scaler is not None:
+                # 3D path: use gradient scaler
+                self.scaler.scale(total_loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
+                )
+                self._add_gradient_noise(self._global_step)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                # 2D path: standard backward
+                total_loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
+                )
+                self._add_gradient_noise(self._global_step)
+                self.optimizer.step()
 
-            # Add gradient noise (for regularization, decays over training)
-            self._add_gradient_noise(self._global_step)
-
-            self.optimizer.step()
             self._global_step += 1
 
             if self.use_ema:
@@ -1846,6 +1980,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         )
 
         for step, batch in enumerate(epoch_iter):
+            # Cache first batch for deterministic visualization (for 3D, uses real conditioning)
+            if self._cached_train_batch is None and self.spatial_dims == 3:
+                prepared = self.mode.prepare_batch(batch, self.device)
+                self._cached_train_batch = {
+                    'images': prepared['images'].detach().clone(),
+                    'labels': prepared.get('labels').detach().clone() if prepared.get('labels') is not None else None,
+                    'size_bins': prepared.get('size_bins').detach().clone() if prepared.get('size_bins') is not None else None,
+                }
+
             result = self.train_step(batch)
 
             # Step profiler to mark training step boundary
@@ -2049,10 +2192,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     psnr_val = sum(channel_psnr.values()) / len(keys)
                     lpips_val = sum(channel_lpips.values()) / len(keys) if self.log_lpips else 0.0
                 else:
-                    msssim_val = compute_msssim(metrics_pred, metrics_gt)
+                    # Use dimension-appropriate metric functions
+                    msssim_val = compute_msssim(metrics_pred, metrics_gt, spatial_dims=self.spatial_dims)
                     psnr_val = compute_psnr(metrics_pred, metrics_gt)
                     if self.log_lpips:
-                        lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
+                        if self.spatial_dims == 3:
+                            # 3D: use center-slice LPIPS (2.5D approach)
+                            lpips_val = compute_lpips_3d(metrics_pred, metrics_gt, self.device)
+                        else:
+                            lpips_val = compute_lpips(metrics_pred, metrics_gt, self.device)
                     else:
                         lpips_val = 0.0
 
@@ -2096,9 +2244,20 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     # Timestep-region tracking (for heatmap) - split by tumor/background
                     # Uses velocity/noise prediction error for consistency with timestep losses
+                    # For 3D: uses center slice for efficiency (matches 3D trainer)
                     if self.log_timestep_region_losses and labels is not None:
-                        error_map = ((prediction.float() - target.float()) ** 2).mean(dim=1)  # [B, H, W]
-                        mask = labels[:, 0] > 0.5  # [B, H, W]
+                        if self.spatial_dims == 3:
+                            # 3D: extract center slice for efficiency
+                            center_idx = prediction.shape[2] // 2
+                            pred_slice = prediction[:, :, center_idx, :, :]
+                            target_slice = target[:, :, center_idx, :, :]
+                            error_map = ((pred_slice.float() - target_slice.float()) ** 2).mean(dim=1)  # [B, H, W]
+                            mask = labels[:, 0, center_idx, :, :] > 0.5  # [B, H, W]
+                        else:
+                            # 2D: use full images
+                            error_map = ((prediction.float() - target.float()) ** 2).mean(dim=1)  # [B, H, W]
+                            mask = labels[:, 0] > 0.5  # [B, H, W]
+
                         for i in range(current_batch_size):
                             t_norm = timesteps[i].item() / self.num_timesteps
                             sample_error = error_map[i]  # [H, W]
@@ -2224,6 +2383,320 @@ class DiffusionTrainer(DiffusionTrainerBase):
             torch.cuda.set_rng_state(cuda_rng_state, self.device)
 
         return metrics, worst_batch_data
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Sample Generation and Visualization (unified for 2D/3D)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def _visualize_samples(
+        self,
+        model: nn.Module,
+        epoch: int,
+        train_dataset: Optional[Dataset] = None,
+    ) -> None:
+        """Generate and visualize samples.
+
+        For 3D: Uses center slice visualization with cached training conditioning.
+        For 2D: Uses ValidationVisualizer for full image visualization.
+
+        Args:
+            model: Model to use for generation (typically EMA model).
+            epoch: Current epoch number.
+            train_dataset: Training dataset (required for 2D, optional for 3D).
+        """
+        if not self.is_main_process:
+            return
+
+        model.eval()
+
+        if self.spatial_dims == 3:
+            # 3D: Generate samples using cached training batch for real conditioning
+            self._visualize_samples_3d(model, epoch)
+        else:
+            # 2D: Delegate to ValidationVisualizer
+            if self.visualizer is not None and train_dataset is not None:
+                self.visualizer.generate_samples(model, train_dataset, epoch)
+
+    @torch.no_grad()
+    def _visualize_samples_3d(self, model: nn.Module, epoch: int) -> None:
+        """Generate and visualize 3D samples (center slices).
+
+        Uses REAL conditioning from cached TRAINING samples instead of zeros.
+        This matches the 3D trainer approach and ensures the model gets proper
+        conditioning for generation.
+
+        Args:
+            model: Model to use for generation.
+            epoch: Current epoch number.
+        """
+        if self._cached_train_batch is None:
+            if self.mode.is_conditional:
+                logger.warning("Cannot visualize 3D samples: no cached training batch for conditioning")
+                return
+            # Unconditional mode can proceed with random noise
+            batch_size = 4
+            noise = torch.randn(
+                batch_size, 1, self.volume_depth, self.volume_height, self.volume_width,
+                device=self.device
+            )
+            model_input = noise
+            size_bins = None
+        else:
+            cached_images = self._cached_train_batch['images']
+            cached_labels = self._cached_train_batch.get('labels')
+            cached_size_bins = self._cached_train_batch.get('size_bins')
+            batch_size = min(4, cached_images.shape[0])
+
+            # Generate noise matching the cached batch shape
+            if self.space.scale_factor > 1:
+                # Latent space: get shape from encoding
+                with torch.no_grad():
+                    encoded = self.space.encode(cached_images[:batch_size])
+                noise = torch.randn_like(encoded)
+            else:
+                noise = torch.randn_like(cached_images[:batch_size])
+
+            # Build model input with real conditioning
+            if self.use_size_bin_embedding:
+                model_input = noise
+                size_bins = cached_size_bins[:batch_size] if cached_size_bins is not None else None
+            elif self.mode.is_conditional and cached_labels is not None:
+                labels = cached_labels[:batch_size]
+                if self.space.scale_factor > 1:
+                    labels_encoded = self.space.encode(labels)
+                else:
+                    labels_encoded = labels
+                model_input = torch.cat([noise, labels_encoded], dim=1)
+                size_bins = None
+            else:
+                model_input = noise
+                size_bins = None
+
+        # Generate samples
+        if self.use_size_bin_embedding and size_bins is not None:
+            samples = self._generate_with_size_bins_3d(noise, size_bins, num_steps=25)
+        else:
+            samples = self.strategy.generate(
+                model,
+                model_input,
+                num_steps=25,
+                device=self.device,
+                use_progress_bars=False,
+            )
+
+        # Decode if in latent space
+        if self.space.scale_factor > 1:
+            samples = self.space.decode(samples)
+
+        # Log using unified metrics (handles 3D center slice extraction)
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_generated_samples(samples, epoch, tag='Generated_Samples', nrow=2)
+
+    @torch.no_grad()
+    def _visualize_denoising_trajectory(self, model: nn.Module, epoch: int, num_steps: int = 5) -> None:
+        """Visualize intermediate denoising steps.
+
+        Shows the progression from noise to clean sample at multiple timesteps.
+        For 3D: uses center slice visualization.
+
+        Args:
+            model: Model to use for generation.
+            epoch: Current epoch number.
+            num_steps: Number of intermediate steps to visualize.
+        """
+        if not self.is_main_process:
+            return
+
+        model.eval()
+
+        if self.spatial_dims == 3:
+            self._visualize_denoising_trajectory_3d(model, epoch, num_steps)
+        else:
+            # 2D: Delegate to ValidationVisualizer (if it has this method)
+            pass  # 2D trajectory visualization handled separately
+
+    @torch.no_grad()
+    def _visualize_denoising_trajectory_3d(
+        self,
+        model: nn.Module,
+        epoch: int,
+        num_steps: int = 5,
+    ) -> None:
+        """Visualize intermediate denoising steps for 3D volumes.
+
+        Args:
+            model: Model to use for generation.
+            epoch: Current epoch number.
+            num_steps: Number of intermediate steps to capture.
+        """
+        if self._cached_train_batch is None:
+            logger.warning("No cached training batch for 3D denoising trajectory")
+            return
+
+        cached_images = self._cached_train_batch['images']
+        cached_labels = self._cached_train_batch.get('labels')
+        cached_size_bins = self._cached_train_batch.get('size_bins')
+
+        # Generate noise for single sample
+        if self.space.scale_factor > 1:
+            with torch.no_grad():
+                encoded = self.space.encode(cached_images[:1])
+            noise = torch.randn_like(encoded)
+        else:
+            noise = torch.randn_like(cached_images[:1])
+
+        # Build model input with conditioning
+        if self.use_size_bin_embedding and cached_size_bins is not None:
+            size_bins = cached_size_bins[:1]
+            trajectory = self._generate_trajectory_with_size_bins_3d(
+                noise, size_bins, num_steps=25, capture_every=5
+            )
+        elif self.mode.is_conditional and cached_labels is not None:
+            labels = cached_labels[:1]
+            if self.space.scale_factor > 1:
+                labels_encoded = self.space.encode(labels)
+            else:
+                labels_encoded = labels
+            model_input = torch.cat([noise, labels_encoded], dim=1)
+            trajectory = self._generate_trajectory_3d(model, model_input, num_steps=25, capture_every=5)
+        else:
+            trajectory = self._generate_trajectory_3d(model, noise, num_steps=25, capture_every=5)
+
+        # Decode trajectory if in latent space
+        if self.space.scale_factor > 1:
+            trajectory = [self.space.decode(t) for t in trajectory]
+
+        # Log using unified metrics (handles 3D center slice extraction)
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_denoising_trajectory(trajectory, epoch, tag='denoising_trajectory')
+
+    @torch.no_grad()
+    def _generate_trajectory_3d(
+        self,
+        model: nn.Module,
+        model_input: torch.Tensor,
+        num_steps: int = 25,
+        capture_every: int = 5,
+    ) -> List[torch.Tensor]:
+        """Generate samples while capturing intermediate states (3D).
+
+        Args:
+            model: Model to use for generation.
+            model_input: Starting noisy tensor (may include conditioning).
+            num_steps: Total denoising steps.
+            capture_every: Capture state every N steps.
+
+        Returns:
+            List of intermediate tensors.
+        """
+        # Extract noise from model_input (first channels)
+        if self.mode.is_conditional and not self.use_size_bin_embedding:
+            in_ch = 1 if self.space.scale_factor == 1 else self.space.latent_channels
+            x = model_input[:, :in_ch].clone()
+            conditioning = model_input[:, in_ch:]
+        else:
+            x = model_input.clone()
+            conditioning = None
+
+        trajectory = [x.clone()]
+        dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
+
+        for i in range(num_steps):
+            t = 1.0 - i * dt
+            # Scale to training range for correct embeddings
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
+
+            # Prepare input with conditioning
+            if conditioning is not None:
+                model_in = torch.cat([x, conditioning], dim=1)
+            else:
+                model_in = x
+
+            # Get velocity prediction
+            v = model(x=model_in, timesteps=t_tensor)
+
+            # Euler step: x = x + dt * v
+            x = x + dt * v
+
+            # Capture intermediate state
+            if (i + 1) % capture_every == 0:
+                trajectory.append(x.clone())
+
+        return trajectory
+
+    @torch.no_grad()
+    def _generate_with_size_bins_3d(
+        self,
+        noise: torch.Tensor,
+        size_bins: torch.Tensor,
+        num_steps: int = 25,
+    ) -> torch.Tensor:
+        """Generate 3D samples with size bin conditioning.
+
+        Args:
+            noise: Starting noise tensor.
+            size_bins: Size bin embedding tensor.
+            num_steps: Number of denoising steps.
+
+        Returns:
+            Generated samples.
+        """
+        x = noise.clone()
+        dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
+
+        for i in range(num_steps):
+            t = 1.0 - i * dt
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
+
+            # Model with size bin conditioning
+            v = self.model(x, t_tensor, size_bins=size_bins)
+
+            # Euler step
+            x = x + dt * v
+
+        return x
+
+    @torch.no_grad()
+    def _generate_trajectory_with_size_bins_3d(
+        self,
+        noise: torch.Tensor,
+        size_bins: torch.Tensor,
+        num_steps: int = 25,
+        capture_every: int = 5,
+    ) -> List[torch.Tensor]:
+        """Generate 3D samples with size bins while capturing trajectory.
+
+        Args:
+            noise: Starting noise tensor.
+            size_bins: Size bin embedding tensor.
+            num_steps: Total denoising steps.
+            capture_every: Capture state every N steps.
+
+        Returns:
+            List of intermediate tensors.
+        """
+        x = noise.clone()
+        trajectory = [x.clone()]
+        dt = 1.0 / num_steps
+        num_train_timesteps = self.scheduler.num_train_timesteps
+
+        for i in range(num_steps):
+            t = 1.0 - i * dt
+            t_scaled = t * num_train_timesteps
+            t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
+
+            v = self.model(x, t_tensor, size_bins=size_bins)
+            x = x + dt * v
+
+            if (i + 1) % capture_every == 0:
+                trajectory.append(x.clone())
+
+        return trajectory
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint using standardized format."""
@@ -2382,7 +2855,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     if log_figures or (epoch + 1) == self.n_epochs:
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
-                        self.visualizer.generate_samples(model_to_use, train_dataset, epoch)
+                        self._visualize_samples(model_to_use, epoch, train_dataset)
 
                     self._save_checkpoint(epoch, "latest")
 

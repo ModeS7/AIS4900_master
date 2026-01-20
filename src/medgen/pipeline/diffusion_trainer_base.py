@@ -612,3 +612,186 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self_cond_cfg = self.cfg.training.get('self_conditioning', {})
         if self_cond_cfg.get('enabled', False):
             logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dimension Helper Methods (for unified 2D/3D training)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _expand_timesteps(self, t: torch.Tensor) -> torch.Tensor:
+        """Expand timesteps for broadcasting to spatial dims.
+
+        Args:
+            t: Timesteps [B] or [B, 1]
+
+        Returns:
+            Expanded timesteps [B, 1, 1, 1] for 2D or [B, 1, 1, 1, 1] for 3D
+        """
+        if t.ndim == 1:
+            t = t.unsqueeze(1)
+        for _ in range(self.spatial_dims):
+            t = t.unsqueeze(-1)
+        return t
+
+    def _get_spatial_shape(self) -> Tuple[int, ...]:
+        """Get spatial dimensions as tuple.
+
+        Returns:
+            (H, W) for 2D or (D, H, W) for 3D
+        """
+        if self.spatial_dims == 2:
+            return (self.image_size, self.image_size)
+        else:
+            return (self.volume_depth, self.volume_height, self.volume_width)
+
+    def _get_noise_shape(self, batch_size: int, channels: int) -> Tuple[int, ...]:
+        """Get full tensor shape for noise generation.
+
+        Args:
+            batch_size: Batch size.
+            channels: Number of channels.
+
+        Returns:
+            [B, C, H, W] for 2D or [B, C, D, H, W] for 3D
+        """
+        return (batch_size, channels) + self._get_spatial_shape()
+
+    def _extract_center_slice(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Extract center slice from 3D volume. No-op for 2D.
+
+        Args:
+            tensor: [B, C, H, W] for 2D or [B, C, D, H, W] for 3D
+
+        Returns:
+            [B, C, H, W] (center slice for 3D, unchanged for 2D)
+        """
+        if self.spatial_dims == 2:
+            return tensor
+        center_idx = tensor.shape[2] // 2
+        return tensor[:, :, center_idx, :, :]
+
+    def _validate_tensor_shape(self, tensor: torch.Tensor, name: str) -> None:
+        """Validate tensor has expected number of dimensions.
+
+        Args:
+            tensor: Tensor to validate.
+            name: Name for error messages.
+
+        Raises:
+            ValueError: If tensor has wrong number of dimensions.
+        """
+        expected_ndim = 2 + self.spatial_dims  # [B, C] + spatial
+        if tensor.ndim != expected_ndim:
+            raise ValueError(
+                f"{name} has {tensor.ndim} dims, expected {expected_ndim} "
+                f"for spatial_dims={self.spatial_dims}"
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Metric/Component Factory Methods (for unified 2D/3D training)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _create_msssim_fn(self):
+        """Get dimension-appropriate MS-SSIM function.
+
+        Returns:
+            Function for computing MS-SSIM with spatial_dims preset.
+        """
+        from functools import partial
+        from medgen.metrics import compute_msssim
+        return partial(compute_msssim, spatial_dims=self.spatial_dims)
+
+    def _create_lpips_fn(self):
+        """Get dimension-appropriate LPIPS function.
+
+        Returns:
+            Function for computing LPIPS, or None if disabled.
+        """
+        log_lpips = getattr(self, 'log_lpips', False)
+        if not log_lpips:
+            return None
+        if self.spatial_dims == 2:
+            from medgen.metrics import compute_lpips
+            return compute_lpips
+        else:
+            from medgen.metrics import compute_lpips_3d
+            return compute_lpips_3d
+
+    def _create_regional_tracker(self, loss_fn=None):
+        """Create dimension-appropriate regional tracker.
+
+        Args:
+            loss_fn: Loss function for regional tracking.
+
+        Returns:
+            RegionalMetricsTracker instance.
+        """
+        if self.spatial_dims == 2:
+            from medgen.metrics import RegionalMetricsTracker
+            return RegionalMetricsTracker(
+                image_size=self.image_size,
+                loss_fn=loss_fn,
+            )
+        else:
+            from medgen.metrics import RegionalMetricsTracker3D
+            return RegionalMetricsTracker3D(
+                volume_size=(self.volume_height, self.volume_width, self.volume_depth),
+                loss_fn=loss_fn,
+            )
+
+    def _create_score_aug(self, cfg: Optional[Dict] = None):
+        """Create dimension-appropriate ScoreAug transform.
+
+        Args:
+            cfg: ScoreAug configuration dict.
+
+        Returns:
+            ScoreAugTransform instance, or None if disabled.
+        """
+        if cfg is None:
+            cfg = self.cfg.training.get('score_aug', {})
+        if not cfg.get('enabled', False):
+            return None
+
+        if self.spatial_dims == 2:
+            from medgen.augmentation import ScoreAugTransform
+            return ScoreAugTransform(
+                noise_std=cfg.get('noise_std', 0.05),
+                blur_sigma=cfg.get('blur_sigma', 0.5),
+                noise_prob=cfg.get('noise_prob', 0.5),
+                blur_prob=cfg.get('blur_prob', 0.5),
+                scale_intensity=cfg.get('scale_intensity', False),
+                mode_intensities=cfg.get('mode_intensities', {}),
+            )
+        else:
+            from medgen.augmentation import ScoreAugTransform3D
+            return ScoreAugTransform3D(
+                noise_std=cfg.get('noise_std', 0.05),
+                blur_sigma=cfg.get('blur_sigma', 0.5),
+                noise_prob=cfg.get('noise_prob', 0.5),
+                blur_prob=cfg.get('blur_prob', 0.5),
+            )
+
+    def _create_sda(self, cfg: Optional[Dict] = None):
+        """Create dimension-appropriate SDA transform.
+
+        Args:
+            cfg: SDA configuration dict.
+
+        Returns:
+            SDATransform instance, or None if disabled.
+        """
+        if cfg is None:
+            cfg = self.cfg.training.get('sda', {})
+        if not cfg.get('enabled', False):
+            return None
+
+        if self.spatial_dims == 2:
+            from medgen.augmentation import SDATransform
+            return SDATransform(
+                probability=cfg.get('probability', 0.5),
+            )
+        else:
+            from medgen.augmentation import SDATransform3D
+            return SDATransform3D(
+                probability=cfg.get('probability', 0.5),
+            )
