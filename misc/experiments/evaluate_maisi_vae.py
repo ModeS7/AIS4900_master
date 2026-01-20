@@ -33,7 +33,7 @@ from monai.apps.generation.maisi.networks.autoencoderkl_maisi import Autoencoder
 from monai.inferers import SlidingWindowInferer
 
 # Use existing project utilities
-from medgen.pipeline.metrics.quality import compute_psnr, compute_msssim, compute_lpips_3d
+from medgen.metrics.quality import compute_psnr, compute_msssim, compute_lpips_3d
 
 
 def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi:
@@ -232,7 +232,7 @@ def main():
                 slice_indices = np.linspace(0, D-1, min(10, D), dtype=int)
                 slice_lpips = []
                 for i in slice_indices:
-                    from medgen.pipeline.metrics.quality import compute_lpips
+                    from medgen.metrics.quality import compute_lpips
                     gen_slice = recon_for_lpips[:, :, i:i+1, :, :].squeeze(2)  # [B, C, H, W]
                     ref_slice = vol_for_lpips[:, :, i:i+1, :, :].squeeze(2)
                     slice_lpips_val = compute_lpips(gen_slice, ref_slice, device=device)

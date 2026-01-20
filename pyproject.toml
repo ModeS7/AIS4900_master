@@ -19,3 +19,9 @@ medgen-generate = "medgen.scripts.generate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "baseline: marks tests as baseline comparison tests (may fail after code changes)",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
