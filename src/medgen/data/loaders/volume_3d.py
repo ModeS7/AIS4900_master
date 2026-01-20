@@ -1,6 +1,6 @@
-"""3D VAE dataloaders for volumetric medical images.
+"""3D volume dataloaders for volumetric medical images.
 
-Loads full 3D NIfTI volumes for training 3D AutoencoderKL models.
+Loads full 3D NIfTI volumes for training 3D models (both diffusion and compression).
 Key differences from 2D:
 - Returns full volumes instead of 2D slices
 - Applies depth padding for clean compression

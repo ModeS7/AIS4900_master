@@ -17,7 +17,7 @@ from scipy import ndimage
 from scipy.spatial.distance import pdist
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 
-from .vae_3d import (
+from .volume_3d import (
     Base3DVolumeDataset,
     VolumeConfig,
     build_3d_transform,

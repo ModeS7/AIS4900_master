@@ -1,14 +1,20 @@
-# Main Diffusion Training Configuration
+# Unified Diffusion Training Configuration
 #
 # This is the primary config for training diffusion models (DDPM or Rectified Flow)
-# on brain MRI data. Composes from sub-configs via defaults list.
+# on brain MRI data. Supports both 2D and 3D training via spatial_dims setting.
 #
 # Usage:
-#   # Default: DDPM, 128px, bravo mode
-#   python -m medgen.scripts.train
+#   # 2D training (default)
+#   python -m medgen.scripts.train mode=bravo strategy=rflow
 #
-#   # Rectified Flow, dual mode
-#   python -m medgen.scripts.train strategy=rflow mode=dual
+#   # 3D training via spatial_dims override
+#   python -m medgen.scripts.train mode=bravo strategy=rflow model.spatial_dims=3
+#
+#   # 3D training via 3D model config
+#   python -m medgen.scripts.train mode=bravo strategy=rflow model=default_3d
+#
+#   # 3D with volume settings
+#   python -m medgen.scripts.train model=default_3d volume.depth=32 volume.height=128
 #
 #   # Custom settings
 #   python -m medgen.scripts.train model.image_size=256 training.epochs=1000
@@ -21,6 +27,7 @@ defaults:
   - strategy: ddpm    # ddpm.yaml or rflow.yaml
   - mode: bravo       # seg.yaml, bravo.yaml, or dual.yaml
   - training: default # Training hyperparameters
+  - optional volume: default      # 3D volume dimensions (required when model.spatial_dims=3)
   - optional latent: default      # Latent diffusion settings (disabled by default)
   - optional controlnet: default  # ControlNet conditioning (disabled by default)
   - paths: local      # local.yaml or cluster.yaml (AFTER training so it can override verbose)

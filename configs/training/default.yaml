@@ -69,6 +69,11 @@ score_aug:
   # When enabled, separates transforms into:
   # - Non-destructive (can stack): rotation, flip, translation
   # - Destructive (pick one): cutout OR fixed patterns
+  #
+  # Works for both 2D and 3D:
+  # - 2D: Standard 2D transforms and patterns
+  # - 3D: 3D rotations around D/H/W axes, 3D flips, translation (±40% X, ±20% Y, 0% Z)
+  #       Patterns are 2D masks applied uniformly across depth ("2.5D patterns")
   v2_mode: false             # Enable v2 structured augmentation
   nondestructive_prob: 0.5   # Probability for each non-destructive transform
   destructive_prob: 0.5      # Probability of applying any destructive transform
@@ -76,6 +81,7 @@ score_aug:
 
   # Fixed pattern options (16 total patterns, 4 per category)
   # Patterns are deterministic masks learned via one-hot embedding
+  # For 3D: patterns are 2D masks extended uniformly across depth dimension
   patterns:
     checkerboard: true       # 4×4 and 8×8 alternating grids (IDs 0-3)
     grid_dropout: true       # Random 25%/50% grid cells dropped (IDs 4-7)

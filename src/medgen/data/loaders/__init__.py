@@ -1,5 +1,23 @@
 """Dataloader factory functions for diffusion and VAE training."""
 
+# Base classes for unified 2D/3D loading
+from .base import (
+    BaseDiffusionDataset,
+    BaseDiffusionDataset2D,
+    BaseDiffusionDataset3D,
+    DictDatasetWrapper,
+    dict_collate_fn,
+    validate_batch_format,
+)
+
+# Unified loader factory (recommended entry point)
+from .unified import (
+    create_dataloader,
+    create_diffusion_dataloader,
+    get_dataloader_info,
+    _get_compression_output_format,
+)
+
 # Common utilities for dataloader configuration
 from .common import (
     DataLoaderConfig,
@@ -49,8 +67,8 @@ from .multi_diffusion import (
     create_single_modality_diffusion_val_loader,
 )
 
-# 3D VAE dataloaders (full volumes)
-from .vae_3d import (
+# 3D volume dataloaders (full volumes, used by both diffusion and compression)
+from .volume_3d import (
     create_vae_3d_dataloader,
     create_vae_3d_validation_dataloader,
     create_vae_3d_test_dataloader,
@@ -103,6 +121,18 @@ from .latent import (
 )
 
 __all__ = [
+    # Base classes
+    'BaseDiffusionDataset',
+    'BaseDiffusionDataset2D',
+    'BaseDiffusionDataset3D',
+    'DictDatasetWrapper',
+    'dict_collate_fn',
+    'validate_batch_format',
+    # Unified factory (recommended)
+    'create_dataloader',
+    'create_diffusion_dataloader',
+    'get_dataloader_info',
+    '_get_compression_output_format',
     # Common utilities
     'DataLoaderConfig',
     'setup_distributed_sampler',

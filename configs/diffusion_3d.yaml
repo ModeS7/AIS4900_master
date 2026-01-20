@@ -1,9 +1,19 @@
 # 3D Diffusion Training Configuration
 #
+# DEPRECATED: Use 'python -m medgen.scripts.train model.spatial_dims=3' instead.
+# This config is kept for backward compatibility.
+#
 # Main config for training 3D volumetric diffusion models.
 # Supports both pixel-space and latent-space diffusion.
 #
-# Usage:
+# Recommended usage (unified script):
+#   # 3D training via unified train.py
+#   python -m medgen.scripts.train model=default_3d mode=bravo strategy=rflow
+#
+#   # Or with explicit spatial_dims
+#   python -m medgen.scripts.train model.spatial_dims=3 mode=bravo strategy=rflow
+#
+# Legacy usage (deprecated):
 #   # Default: RFlow, bravo mode, 256x256x160 volumes
 #   python -m medgen.scripts.train_diffusion_3d
 #
@@ -11,14 +21,6 @@
 #   python -m medgen.scripts.train_diffusion_3d \
 #       latent.enabled=true \
 #       latent.compression_checkpoint=runs/compression_3d/.../checkpoint_best.pt
-#
-#   # With ControlNet for pixel-resolution conditioning (Stage 2)
-#   python -m medgen.scripts.train_diffusion_3d \
-#       latent.enabled=true \
-#       latent.compression_checkpoint=runs/compression_3d/.../checkpoint_best.pt \
-#       controlnet.enabled=true \
-#       controlnet.freeze_unet=true \
-#       pretrained_checkpoint=runs/diffusion_3d/.../checkpoint_best.pt
 #
 #   # View resolved config
 #   python -m medgen.scripts.train_diffusion_3d --cfg job

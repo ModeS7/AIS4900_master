@@ -1,15 +1,19 @@
 """
-Training entry point for diffusion models on medical images.
+Unified training entry point for diffusion models on medical images.
 
 This module provides the main training script using Hydra for configuration
-management. Trains diffusion models (DDPM or Rectified Flow) on brain MRI data.
+management. Supports both 2D and 3D training via model.spatial_dims config.
 
 Usage:
-    # Default config (ddpm, 128, bravo, local)
-    python -m medgen.scripts.train
+    # 2D training (default)
+    python -m medgen.scripts.train mode=bravo strategy=rflow
 
-    # Override via CLI
-    python -m medgen.scripts.train strategy=rflow model=unet_256
+    # 3D training via spatial_dims
+    python -m medgen.scripts.train mode=bravo strategy=rflow model.spatial_dims=3
+
+    # 3D training with volume config
+    python -m medgen.scripts.train mode=bravo model.spatial_dims=3 \\
+        volume.depth=32 volume.height=128 volume.width=128
 
     # Cluster training
     python -m medgen.scripts.train paths=cluster
@@ -56,7 +60,9 @@ from medgen.data.loaders.latent import (
     load_compression_model,
 )
 from medgen.pipeline import DiffusionTrainer
+from medgen.pipeline.diffusion_3d_trainer import Diffusion3DTrainer
 from medgen.diffusion import PixelSpace, LatentSpace
+from medgen.data.loaders.unified import create_diffusion_dataloader
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -93,6 +99,15 @@ def main(cfg: DictConfig) -> None:
     # Log resolved configuration
     log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
+    # Detect spatial dimensions (2D or 3D)
+    spatial_dims = cfg.model.get('spatial_dims', 2)
+
+    # Route to 3D training if spatial_dims=3
+    if spatial_dims == 3:
+        _train_3d(cfg)
+        return
+
+    # Continue with 2D training
     mode = cfg.mode.name
     strategy = cfg.strategy.name
     use_multi_gpu = cfg.training.use_multi_gpu
@@ -379,6 +394,303 @@ def main(cfg: DictConfig) -> None:
         log.info("No test_new/ directory found - skipping test evaluation")
 
     # Close TensorBoard writer after all logging
+    trainer.close_writer()
+
+
+def _train_3d(cfg: DictConfig) -> None:
+    """3D volumetric training entry point.
+
+    Called when model.spatial_dims=3 is set in config.
+
+    Args:
+        cfg: Hydra configuration object.
+    """
+    from medgen.data.loaders.latent import load_compression_model
+    from medgen.data.loaders.latent_3d import (
+        LatentCacheBuilder3D,
+        create_latent_3d_dataloader,
+        create_latent_3d_validation_dataloader,
+    )
+    from medgen.data.loaders.volume_3d import (
+        create_vae_3d_dataloader,
+        create_vae_3d_validation_dataloader,
+        SingleModality3DDatasetWithSeg,
+    )
+    from medgen.data.loaders.seg import (
+        create_seg_dataloader,
+        create_seg_validation_dataloader,
+    )
+    from torch.utils.data import DataLoader
+
+    mode = cfg.mode.name
+    strategy = cfg.strategy.name
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    log.info("")
+    log.info("=" * 60)
+    log.info(f"3D Volumetric Diffusion Training")
+    log.info(f"Mode: {mode} | Strategy: {strategy}")
+    log.info(f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width}")
+    log.info("=" * 60)
+    log.info("")
+
+    # Check latent diffusion config
+    latent_cfg = cfg.get('latent', {})
+    use_latent = latent_cfg.get('enabled', False)
+
+    if use_latent:
+        log.info("=== Latent Diffusion Mode ===")
+
+        # Get checkpoint path
+        checkpoint_path = latent_cfg.get('compression_checkpoint')
+        if checkpoint_path is None:
+            raise ValueError("latent.compression_checkpoint required when latent.enabled=true")
+
+        compression_type = latent_cfg.get('compression_type', 'auto')
+        spatial_dims_cfg = latent_cfg.get('spatial_dims', 'auto')
+
+        # Load 3D compression model
+        log.info(f"Loading compression model from: {checkpoint_path}")
+        compression_model, comp_type, detected_dims = load_compression_model(
+            checkpoint_path,
+            compression_type,
+            device,
+            spatial_dims=spatial_dims_cfg,
+        )
+
+        # Validate it's 3D
+        if detected_dims != 3:
+            raise ValueError(
+                f"Expected 3D compression model for spatial_dims=3, got {detected_dims}D."
+            )
+
+        log.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
+
+        # Setup cache directory
+        cache_dir = latent_cfg.get('cache_dir')
+        if cache_dir is None:
+            cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d"
+        log.info(f"Cache directory: {cache_dir}")
+
+        # Create cache builder
+        cache_builder = LatentCacheBuilder3D(
+            compression_model=compression_model,
+            device=device,
+            mode=mode,
+            volume_shape=(cfg.volume.depth, cfg.volume.height, cfg.volume.width),
+            compression_type=comp_type,
+            verbose=cfg.training.get('verbose', True),
+        )
+
+        # Build cache for train/val if needed
+        auto_encode = latent_cfg.get('auto_encode', True)
+        validate_cache = latent_cfg.get('validate_cache', True)
+
+        for split in ['train', 'val']:
+            split_cache = os.path.join(cache_dir, split)
+
+            needs_encoding = not os.path.exists(split_cache)
+            if not needs_encoding and validate_cache:
+                needs_encoding = not cache_builder.validate_cache(split_cache, checkpoint_path)
+
+            if needs_encoding:
+                if not auto_encode:
+                    raise ValueError(
+                        f"Cache missing/invalid for {split} and auto_encode=false. "
+                        f"Set latent.auto_encode=true to build cache automatically."
+                    )
+
+                log.info(f"Building {split} cache (this may take a while)...")
+
+                # Create pixel-space dataset for encoding
+                if split == 'train':
+                    pixel_loader, pixel_dataset = create_vae_3d_dataloader(cfg, mode)
+                else:
+                    result = create_vae_3d_validation_dataloader(cfg, mode)
+                    if result is None:
+                        log.warning(f"No {split} data found, skipping")
+                        continue
+                    pixel_loader, pixel_dataset = result
+
+                # Build cache
+                cache_builder.build_cache(pixel_dataset, split_cache, checkpoint_path)
+
+        # Create latent dataloaders
+        train_loader, train_dataset = create_latent_3d_dataloader(
+            cfg, cache_dir, 'train', mode
+        )
+        log.info(f"Train dataset: {len(train_dataset)} volumes")
+
+        val_result = create_latent_3d_validation_dataloader(cfg, cache_dir, mode)
+        if val_result is not None:
+            val_loader, val_dataset = val_result
+            log.info(f"Val dataset: {len(val_dataset)} volumes")
+        else:
+            val_loader = None
+            log.warning("No validation dataset found")
+
+        # Create LatentSpace
+        space = LatentSpace(
+            compression_model,
+            device,
+            deterministic=True,
+            spatial_dims=3,
+        )
+
+    else:
+        # Pixel-space training
+        log.info("=== Pixel-Space Mode ===")
+
+        # Use mode-specific dataloader
+        if mode == 'seg':
+            log.info("Using 3D seg dataloader (3D connected components)")
+            train_loader, train_dataset = create_seg_dataloader(cfg)
+            val_result = create_seg_validation_dataloader(cfg)
+        elif mode == 'bravo':
+            # Bravo mode: needs seg mask for conditioning
+            log.info("Using 3D bravo dataloader with seg mask conditioning")
+            train_dir = os.path.join(cfg.paths.data_dir, 'train')
+            train_dataset = SingleModality3DDatasetWithSeg(
+                data_dir=train_dir,
+                modality='bravo',
+                height=cfg.volume.height,
+                width=cfg.volume.width,
+                pad_depth_to=cfg.volume.pad_depth_to,
+                pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                slice_step=cfg.volume.get('slice_step', 1),
+            )
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=cfg.training.batch_size,
+                shuffle=True,
+                num_workers=cfg.training.get('num_workers', 4),
+                pin_memory=True,
+                drop_last=True,
+            )
+
+            val_dir = os.path.join(cfg.paths.data_dir, 'val')
+            if os.path.exists(val_dir):
+                val_dataset = SingleModality3DDatasetWithSeg(
+                    data_dir=val_dir,
+                    modality='bravo',
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                )
+                val_loader = DataLoader(
+                    val_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                val_result = (val_loader, val_dataset)
+            else:
+                val_result = None
+        else:
+            # Other modes
+            train_loader, train_dataset = create_vae_3d_dataloader(cfg, mode)
+            val_result = create_vae_3d_validation_dataloader(cfg, mode)
+
+        log.info(f"Train dataset: {len(train_dataset)} volumes")
+
+        if val_result is not None:
+            val_loader, val_dataset = val_result
+            log.info(f"Val dataset: {len(val_dataset)} volumes")
+        else:
+            val_loader = None
+            log.warning("No validation dataset found")
+
+        space = PixelSpace()
+
+    # Create and setup trainer
+    log.info("=== Creating 3D Trainer ===")
+    trainer = Diffusion3DTrainer(cfg, space=space)
+    trainer.setup_model(train_dataset)
+
+    # Log model info
+    log.info(f"Model parameters: {sum(p.numel() for p in trainer.model.parameters()):,}")
+    log.info(f"Space: {type(space).__name__}")
+    if hasattr(space, 'scale_factor'):
+        log.info(f"Space scale factor: {space.scale_factor}x")
+
+    # Train
+    log.info("=== Starting Training ===")
+    trainer.train(train_loader, train_dataset, val_loader=val_loader)
+
+    # Test evaluation (if test set exists and enabled)
+    run_test = cfg.training.get('test_after_training', True)
+    test_dir = os.path.join(cfg.paths.data_dir, 'test')
+    if run_test and os.path.exists(test_dir):
+        log.info("=== Test Evaluation ===")
+
+        # Create test dataloader based on mode
+        test_result = None
+        try:
+            if mode == 'bravo':
+                test_dataset = SingleModality3DDatasetWithSeg(
+                    data_dir=test_dir,
+                    modality='bravo',
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                )
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                test_result = (test_loader, test_dataset)
+            elif mode == 'seg':
+                from medgen.data.loaders.seg import SegDataset
+                size_bin_cfg = cfg.mode.get('size_bins', {})
+                bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+                num_bins = int(size_bin_cfg.get('num_bins', 7))
+                default_spacing = 240.0 / cfg.volume.height
+                voxel_spacing = tuple(size_bin_cfg.get('voxel_spacing', [1.0, default_spacing, default_spacing]))
+                test_dataset = SegDataset(
+                    data_dir=test_dir,
+                    bin_edges=bin_edges,
+                    num_bins=num_bins,
+                    voxel_spacing=voxel_spacing,
+                    height=cfg.volume.height,
+                    width=cfg.volume.width,
+                    pad_depth_to=cfg.volume.pad_depth_to,
+                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                    slice_step=cfg.volume.get('slice_step', 1),
+                    positive_only=False,
+                    cfg_dropout_prob=0.0,
+                )
+                test_loader = DataLoader(
+                    test_dataset,
+                    batch_size=cfg.training.batch_size,
+                    shuffle=False,
+                    num_workers=cfg.training.get('num_workers', 4),
+                    pin_memory=True,
+                )
+                test_result = (test_loader, test_dataset)
+        except Exception as e:
+            log.warning(f"Could not create test dataloader: {e}")
+
+        if test_result is not None:
+            test_loader, test_dataset = test_result
+            log.info(f"Test dataset: {len(test_dataset)} volumes")
+
+            # Evaluate best checkpoint
+            trainer.evaluate_test_set(test_loader, checkpoint_name='best')
+
+            # Evaluate latest checkpoint
+            trainer.evaluate_test_set(test_loader, checkpoint_name='latest')
+        else:
+            log.warning("No test dataset found or could not create dataloader")
+
+    # Close TensorBoard writer
     trainer.close_writer()
 
 

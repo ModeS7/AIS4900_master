@@ -1,13 +1,14 @@
 """
-Diffusion model trainer module.
+Diffusion model trainer module (2D).
 
-This module provides the DiffusionTrainer class which inherits from BaseTrainer
-and implements diffusion-specific functionality:
-- Strategy pattern (DDPM, Rectified Flow)
-- Mode pattern (seg, bravo, dual, multi)
+This module provides the DiffusionTrainer class which inherits from DiffusionTrainerBase
+and implements 2D-specific diffusion training functionality:
+- Strategy pattern (DDPM, Rectified Flow) - from base
+- Mode pattern (seg, bravo, dual, multi, seg_conditioned)
 - Timestep-based noise training
 - SAM optimizer support
-- ScoreAug transforms
+- ScoreAug v2 transforms
+- Compiled forward paths for performance
 """
 import json
 import logging
@@ -36,7 +37,7 @@ from tqdm import tqdm
 from monai.networks.nets import DiffusionModelUNet
 
 from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, wrap_model_for_training
-from .base_trainer import BaseTrainer
+from .diffusion_trainer_base import DiffusionTrainerBase
 from .optimizers import SAM
 from .results import TrainingStepResult
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
@@ -83,15 +84,15 @@ from medgen.models import (
 logger = logging.getLogger(__name__)
 
 
-class DiffusionTrainer(BaseTrainer):
-    """Unified diffusion model trainer composing strategy and mode.
+class DiffusionTrainer(DiffusionTrainerBase):
+    """2D diffusion model trainer.
 
-    Inherits from BaseTrainer and adds:
-    - Strategy pattern for noise prediction (DDPM, RFlow)
-    - Mode pattern for input/output formats (seg, bravo, dual, multi)
-    - SAM optimizer support
-    - ScoreAug transforms for data augmentation
+    Inherits from DiffusionTrainerBase and adds 2D-specific functionality:
+    - 2D UNet model setup
+    - 2D tensor handling [B, C, H, W]
+    - ScoreAug v2 transforms
     - Compiled forward paths for performance
+    - Mode support: seg, bravo, dual, multi, seg_conditioned
 
     Args:
         cfg: Hydra configuration object containing all settings.
@@ -104,44 +105,29 @@ class DiffusionTrainer(BaseTrainer):
         >>> trainer.train(train_loader, train_dataset)
     """
 
+    @property
+    def spatial_dims(self) -> int:
+        """Return spatial dimensions (2 for 2D trainer)."""
+        return 2
+
     def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
-        # Initialize base trainer (distributed setup, TensorBoard, trackers)
-        super().__init__(cfg)
-
-        self.space = space if space is not None else PixelSpace()
+        # Initialize base class (handles common diffusion config)
+        super().__init__(cfg, space)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Diffusion-specific config
+        # 2D-specific config
         # ─────────────────────────────────────────────────────────────────────
-        self.strategy_name: str = cfg.strategy.name
-        self.mode_name: str = cfg.mode.name
         self.image_size: int = cfg.model.image_size
-        self.num_timesteps: int = cfg.strategy.num_train_timesteps
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
 
         # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
         is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
         self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.perceptual_weight
 
-        # Min-SNR weighting
-        # NOTE: Min-SNR is DDPM-specific (uses alpha_bar from noise schedule).
-        # For RFlow, the SNR concept doesn't apply - disable with warning.
-        self.use_min_snr: bool = cfg.training.use_min_snr
-        self.min_snr_gamma: float = cfg.training.min_snr_gamma
-        if self.use_min_snr and self.strategy_name == 'rflow':
-            import warnings
-            warnings.warn(
-                "Min-SNR weighting is DDPM-specific and has no theoretical basis for RFlow. "
-                "The SNR formula (alpha_bar / (1 - alpha_bar)) is tied to DDPM's noise schedule. "
-                "Disabling Min-SNR for RFlow training.",
-                UserWarning,
-                stacklevel=2,
-            )
-            self.use_min_snr = False
-
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
-        logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss} (from config override)")
+        if self.is_main_process:
+            logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss}")
 
         # SAM (Sharpness-Aware Minimization)
         # DEPRECATED: SAM/ASAM requires 2x compute cost with minimal benefit for diffusion models.
@@ -164,13 +150,8 @@ class DiffusionTrainer(BaseTrainer):
         optimizer_cfg = cfg.training.get('optimizer', {})
         self.weight_decay: float = optimizer_cfg.get('weight_decay', 0.0)
 
-        # EMA (from config, not in base trainer)
-        self.use_ema: bool = cfg.training.use_ema
-        self.ema_decay: float = cfg.training.ema.decay
-        self.ema: Optional[EMA] = None
-
-        # Initialize strategy and mode
-        self.strategy = self._create_strategy(self.strategy_name)
+        # Initialize mode (2D-specific) and scheduler
+        # Note: strategy is already created in base class
         self.mode = self._create_mode(self.mode_name)
         self.scheduler = self.strategy.setup_scheduler(
             num_timesteps=self.num_timesteps,
@@ -180,37 +161,21 @@ class DiffusionTrainer(BaseTrainer):
             use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
         )
 
-        # Logging config flags (previously in MetricsTracker)
+        # 2D-specific logging config (base class handles common ones)
         logging_cfg = cfg.training.get('logging', {})
-        self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
-        self.log_timestep_losses: bool = logging_cfg.get('timestep_losses', True)
-        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
         self.log_msssim: bool = logging_cfg.get('msssim', True)
         self.log_psnr: bool = logging_cfg.get('psnr', True)
         # Disable LPIPS for seg modes (binary masks don't work with VGG features)
         self.log_lpips: bool = False if is_seg_mode else logging_cfg.get('lpips', False)
-        self.log_flops: bool = logging_cfg.get('flops', True)
         self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
-
-        # Verbosity (controls tqdm progress bars - disabled on cluster to keep .err files clean)
-        self.verbose: bool = cfg.training.get('verbose', True)
 
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
         self._unified_metrics: Optional[UnifiedMetrics] = None
 
-        # Initialize model components (set during setup_model)
+        # 2D-specific model components
         self.perceptual_loss_fn: Optional[nn.Module] = None
-
-        # Validation loader (set in train())
-        self.val_loader: Optional[DataLoader] = None
-
-        # Visualization helper (initialized in setup_model after strategy is ready)
         self.visualizer: Optional[ValidationVisualizer] = None
-
-        # Global step counter (for gradient noise decay, etc.)
-        self._global_step: int = 0
-        self._current_epoch: int = 0  # Set in train_epoch
 
         # ScoreAug initialization (applies transforms to noisy data)
         self.score_aug = None
@@ -2117,22 +2082,30 @@ class DiffusionTrainer(BaseTrainer):
                 if regional_tracker is not None and labels is not None:
                     regional_tracker.update(predicted_clean, images, labels)
 
-                # Timestep loss tracking (per-bin reconstruction MSE)
+                # Timestep loss tracking (per-bin velocity/noise prediction MSE)
+                # Uses the actual training target (velocity for RFlow, noise for DDPM)
+                # to match 3D trainer and provide meaningful loss-by-timestep analysis
                 if self.log_timestep_losses:
-                    if isinstance(predicted_clean, dict):
-                        pred = torch.cat(list(predicted_clean.values()), dim=1)
-                        img = torch.cat(list(images.values()), dim=1)
+                    # Compute target based on strategy (velocity for RFlow, noise for DDPM)
+                    if isinstance(images, dict):
+                        keys = list(images.keys())
+                        if self.strategy_name == 'rflow':
+                            target = torch.cat([images[k] - noise[k] for k in keys], dim=1)
+                        else:
+                            target = torch.cat([noise[k] for k in keys], dim=1)
                     else:
-                        pred, img = predicted_clean, images
-                    mse_per_sample = ((pred - img) ** 2).mean(dim=(1, 2, 3))
+                        target = images - noise if self.strategy_name == 'rflow' else noise
+
+                    mse_per_sample = ((prediction.float() - target.float()) ** 2).mean(dim=(1, 2, 3))
                     bin_size = self.num_timesteps // num_timestep_bins
                     bin_indices = (timesteps // bin_size).clamp(max=num_timestep_bins - 1).long()
                     timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
                     timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
                     # Timestep-region tracking (for heatmap) - split by tumor/background
+                    # Uses velocity/noise prediction error for consistency with timestep losses
                     if self.log_timestep_region_losses and labels is not None:
-                        error_map = ((pred - img) ** 2).mean(dim=1)  # [B, H, W]
+                        error_map = ((prediction.float() - target.float()) ** 2).mean(dim=1)  # [B, H, W]
                         mask = labels[:, 0] > 0.5  # [B, H, W]
                         for i in range(current_batch_size):
                             t_norm = timesteps[i].item() / self.num_timesteps

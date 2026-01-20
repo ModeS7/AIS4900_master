@@ -1,5 +1,6 @@
 """Generative pipeline for training and inference (diffusion and VAE)."""
 
+from .diffusion_trainer_base import DiffusionTrainerBase
 from .trainer import DiffusionTrainer
 from .vae_trainer import VAETrainer
 from .vae_3d_trainer import VAE3DTrainer
@@ -57,6 +58,7 @@ from .checkpointing import BaseCheckpointedModel
 
 __all__ = [
     # Trainers
+    'DiffusionTrainerBase',
     'DiffusionTrainer',
     'VAETrainer',
     'VAE3DTrainer',

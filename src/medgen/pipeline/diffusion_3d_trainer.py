@@ -1,14 +1,13 @@
 """
 3D Diffusion model trainer for volumetric latent diffusion.
 
-This module provides the Diffusion3DTrainer class for training diffusion models
-on 3D volumetric data, supporting both pixel-space and latent-space training.
-
-Key differences from 2D DiffusionTrainer:
+This module provides the Diffusion3DTrainer class which inherits from DiffusionTrainerBase
+and implements 3D-specific diffusion training functionality:
 - Handles 5D tensors [B, C, D, H, W]
-- Uses 3D UNet with memory optimizations
+- Uses 3D UNet with memory optimizations (gradient checkpointing)
 - Computes 2D-only metrics (LPIPS, KID, CMMD, FID) slice-wise (2.5D)
 - Visualizes center slices for TensorBoard
+- Mode support: seg, bravo
 """
 import json
 import logging
@@ -48,7 +47,7 @@ from monai.networks.nets import DiffusionModelUNet
 from monai.metrics import SSIMMetric
 
 from medgen.core import setup_distributed, create_warmup_cosine_scheduler
-from .base_trainer import BaseTrainer
+from .diffusion_trainer_base import DiffusionTrainerBase
 from .results import TrainingStepResult
 from medgen.diffusion import (
     ConditionalSingleMode, SegmentationMode, SegmentationConditionedMode, TrainingMode,
@@ -84,45 +83,46 @@ from medgen.models import (
 logger = logging.getLogger(__name__)
 
 
-class Diffusion3DTrainer(BaseTrainer):
+class Diffusion3DTrainer(DiffusionTrainerBase):
     """3D Volumetric diffusion model trainer.
 
-    Supports both pixel-space and latent-space training on 3D volumes.
-
-    Key features:
-    - Handles 5D tensors [B, C, D, H, W]
+    Inherits from DiffusionTrainerBase and adds 3D-specific functionality:
+    - 3D UNet model setup
+    - 5D tensor handling [B, C, D, H, W]
     - Memory-optimized (gradient checkpointing, batch_size=1)
     - 2D metrics (LPIPS, KID, CMMD, FID) computed slice-wise (2.5D)
     - Visualizations show center slices
+    - Mode support: seg, bravo
 
     Args:
         cfg: Hydra configuration object.
         space: DiffusionSpace for pixel/latent operations. Defaults to PixelSpace.
     """
 
-    def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
-        super().__init__(cfg)
+    @property
+    def spatial_dims(self) -> int:
+        """Return spatial dimensions (3 for 3D trainer)."""
+        return 3
 
-        self.space = space if space is not None else PixelSpace()
-        self.spatial_dims = 3
+    def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
+        # Initialize base class (handles common diffusion config)
+        super().__init__(cfg, space)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 3D-specific config
+        # ─────────────────────────────────────────────────────────────────────
 
         # Volume dimensions
         self.volume_height = cfg.volume.height
         self.volume_width = cfg.volume.width
         self.volume_depth = cfg.volume.depth
 
-        # Diffusion config
-        self.strategy_name: str = cfg.strategy.name
-        self.mode_name: str = cfg.mode.name
-        self.num_timesteps: int = cfg.strategy.num_train_timesteps
-
         # Training config
         self.use_gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
         self.use_amp: bool = True  # Always use automatic mixed precision for 3D
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
-        # Initialize strategy and mode
-        self.strategy = self._create_strategy(self.strategy_name)
+        # Initialize mode (3D-specific) - strategy is already created in base class
         self.mode = self._create_mode(self.mode_name)
 
         # Setup scheduler with 3D dimensions
@@ -136,26 +136,8 @@ class Diffusion3DTrainer(BaseTrainer):
             use_timestep_transform=cfg.strategy.get('use_timestep_transform', True),
         )
 
-        # EMA
-        self.use_ema: bool = cfg.training.get('use_ema', True)
-        self.ema_decay: float = cfg.training.get('ema', {}).get('decay', 0.9999)
-        self.ema: Optional[EMA] = None
-
-        # Model components (set in setup_model)
-        self.model_raw: Optional[nn.Module] = None
-        self.model: Optional[nn.Module] = None
-        self.optimizer: Optional[AdamW] = None
-        self.lr_scheduler: Optional[Any] = None
-
-        # 3D MS-SSIM metric
+        # 3D-specific metrics
         self.ssim_metric = SSIMMetric(spatial_dims=3, data_range=1.0, win_size=7)
-
-        # Validation loader (set in train())
-        self.val_loader: Optional[DataLoader] = None
-
-        # Tracking
-        self._global_step: int = 0
-        self._current_epoch: int = 0
         self.best_val_loss: float = float('inf')
 
         # Generation metrics (KID, CMMD) - uses same GenerationMetrics as 2D trainer
@@ -1772,16 +1754,29 @@ class Diffusion3DTrainer(BaseTrainer):
 
                 # Timestep-region tracking (for heatmap) - split by tumor/background
                 # Adapted for 3D: uses center slice for efficiency
+                # Uses velocity/noise prediction error for pixel space (matches training loss)
+                # Uses reconstruction error for latent space (velocity error not spatially meaningful)
                 if self.log_timestep_region_losses and labels is not None:
-                    batch_size = predicted_pixel.shape[0]
-                    center_idx = predicted_pixel.shape[2] // 2
-                    # Extract center slices [B, C, H, W]
-                    pred_slice = predicted_pixel[:, :, center_idx, :, :]
-                    img_slice = images_pixel[:, :, center_idx, :, :]
+                    batch_size = images.shape[0]
+                    center_idx = images.shape[2] // 2
                     mask_slice = labels[:, :, center_idx, :, :]
-                    # Compute error map [B, H, W]
-                    error_map = ((pred_slice - img_slice) ** 2).mean(dim=1)
                     mask_binary = mask_slice[:, 0] > 0.5  # [B, H, W]
+
+                    if isinstance(self.space, LatentSpace):
+                        # Latent space: use reconstruction error (velocity error not meaningful spatially)
+                        pred_slice = predicted_pixel[:, :, center_idx, :, :]
+                        img_slice = images_pixel[:, :, center_idx, :, :]
+                        error_map = ((pred_slice - img_slice) ** 2).mean(dim=1)
+                    else:
+                        # Pixel space: use velocity/noise prediction error (matches training loss)
+                        if self.strategy_name == 'rflow':
+                            target = images - noise
+                        else:
+                            target = noise
+                        pred_slice = prediction[:, :, center_idx, :, :]
+                        target_slice = target[:, :, center_idx, :, :]
+                        error_map = ((pred_slice.float() - target_slice.float()) ** 2).mean(dim=1)
+
                     for i in range(batch_size):
                         t_norm = timesteps[i].item() / self.num_timesteps
                         sample_error = error_map[i]  # [H, W]

@@ -65,6 +65,10 @@ from .score_aug_3d import (
     ScoreAugModelWrapper3D,
     OmegaTimeEmbed3D,
     encode_omega_3d,
+    generate_pattern_mask_3d,
+    apply_mode_intensity_scale_3d,
+    inverse_mode_intensity_scale_3d,
+    OMEGA_ENCODING_DIM_3D,
 )
 
 # SDA - Shifted Data Augmentation (2D)
@@ -111,6 +115,10 @@ __all__ = [
     'ScoreAugModelWrapper3D',
     'OmegaTimeEmbed3D',
     'encode_omega_3d',
+    'generate_pattern_mask_3d',
+    'apply_mode_intensity_scale_3d',
+    'inverse_mode_intensity_scale_3d',
+    'OMEGA_ENCODING_DIM_3D',
     # SDA 2D
     'SDATransform',
     'create_sda_transform',
