@@ -1431,7 +1431,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         }
 
     def _get_model_config(self) -> Dict[str, Any]:
-        """Get model configuration for checkpoint."""
+        """Get model configuration for checkpoint.
+
+        Includes architecture params so checkpoints are self-describing
+        and can be loaded without hardcoding defaults.
+        """
         model_cfg = self.mode.get_model_config()
         return {
             'model_type': self.model_type,
@@ -1439,6 +1443,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             'out_channels': model_cfg['out_channels'],
             'strategy': self.strategy_name,
             'mode': self.mode_name,
+            # Architecture params for inference loading
+            'channels': list(self.cfg.model.channels),
+            'attention_levels': list(self.cfg.model.attention_levels),
+            'num_res_blocks': self.cfg.model.num_res_blocks,
+            'num_head_channels': self.cfg.model.num_head_channels,
+            'spatial_dims': self.cfg.model.get('spatial_dims', 2),
         }
 
     def train_step(self, batch: Any) -> TrainingStepResult:

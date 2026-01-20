@@ -23,19 +23,15 @@ from typing import Callable, List, Literal, Tuple
 import nibabel as nib
 import numpy as np
 import torch
-from monai.networks.nets import DiffusionModelUNet
 from torch.amp import autocast
 
 from medgen.core import (
     MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
-    DEFAULT_CHANNELS, DEFAULT_ATTENTION_LEVELS,
-    DEFAULT_NUM_RES_BLOCKS, DEFAULT_NUM_HEAD_CHANNELS,
     ModeType, setup_cuda_optimizations,
 )
-from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy
+from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy, load_diffusion_model
 from medgen.pipeline.utils import get_vram_usage
 from medgen.data import make_binary
-from medgen.data import create_conditioning_wrapper
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -147,94 +143,6 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
     total_pixels = binary_mask.size
     white_percentage = white_pixels / total_pixels
     return 0.0 < white_percentage < max_white_percentage
-
-
-def _detect_wrapper_type(state_dict: dict) -> str:
-    """Detect wrapper type from checkpoint state dict keys.
-
-    Args:
-        state_dict: Model state dictionary from checkpoint.
-
-    Returns:
-        Wrapper type: 'raw', 'score_aug', 'mode_embed', or 'combined'.
-    """
-    keys = list(state_dict.keys())
-    has_inner_model = any('inner_model' in k for k in keys)
-
-    if not has_inner_model:
-        return 'raw'
-
-    has_omega_mlp = any('omega_mlp' in k for k in keys)
-    has_mode_mlp = any('mode_mlp' in k for k in keys)
-
-    if has_omega_mlp and has_mode_mlp:
-        return 'combined'
-    elif has_omega_mlp:
-        return 'score_aug'
-    elif has_mode_mlp:
-        return 'mode_embed'
-
-    return 'raw'
-
-
-def load_model(
-    model_path: str,
-    in_channels: int,
-    out_channels: int,
-    device: torch.device
-) -> torch.nn.Module:
-    """Load and compile trained diffusion model.
-
-    Automatically detects and handles wrapped models (ScoreAug, ModeEmbed, Combined).
-    """
-    # Load checkpoint first to detect wrapper type
-    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-
-    if 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-    else:
-        state_dict = checkpoint
-
-    wrapper_type = _detect_wrapper_type(state_dict)
-    log.info(f"Detected model type: {wrapper_type}")
-
-    # Create base model
-    base_model = DiffusionModelUNet(
-        spatial_dims=2,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        channels=DEFAULT_CHANNELS,
-        attention_levels=DEFAULT_ATTENTION_LEVELS,
-        num_res_blocks=DEFAULT_NUM_RES_BLOCKS,
-        num_head_channels=DEFAULT_NUM_HEAD_CHANNELS,
-    )
-
-    # Wrap model if needed
-    # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
-    embed_dim = 4 * DEFAULT_CHANNELS[0]
-
-    if wrapper_type == 'raw':
-        model = base_model
-    elif wrapper_type in ('score_aug', 'mode_embed', 'combined'):
-        # Use factory function to create appropriate wrapper
-        model, _ = create_conditioning_wrapper(
-            model=base_model,
-            use_omega=(wrapper_type in ('score_aug', 'combined')),
-            use_mode=(wrapper_type in ('mode_embed', 'combined')),
-            embed_dim=embed_dim,
-        )
-    else:
-        raise ValueError(f"Unknown wrapper type: {wrapper_type}")
-
-    # Load state dict
-    model.load_state_dict(state_dict, strict=True)
-
-    model.to(device)
-    model.eval()
-
-    opt_model = torch.compile(model, mode="reduce-overhead")
-
-    return opt_model
 
 
 class ValidationTracker:
@@ -479,20 +387,21 @@ def main() -> None:
 
     # Load models
     log.info("Loading segmentation model...")
-    seg_model = load_model(args.seg_model, in_channels=1, out_channels=1, device=device)
+    seg_model = load_diffusion_model(
+        args.seg_model, device=device,
+        in_channels=1, out_channels=1, compile_model=True
+    )
 
     log.info(f"Loading image model ({args.mode})...")
 
     if args.mode == ModeType.BRAVO:
-        in_channels = 2
-        out_channels = 1
+        in_ch, out_ch = 2, 1
     else:
-        in_channels = 3
-        out_channels = 2
+        in_ch, out_ch = 3, 2
 
-    image_model = load_model(
-        args.image_model, in_channels=in_channels,
-        out_channels=out_channels, device=device
+    image_model = load_diffusion_model(
+        args.image_model, device=device,
+        in_channels=in_ch, out_channels=out_ch, compile_model=True
     )
 
     save_dir = args.output_dir

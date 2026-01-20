@@ -10,6 +10,9 @@ from medgen.diffusion import (
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
     SegmentationMode, ConditionalSingleMode, ConditionalDualMode, TrainingMode,
     DiffusionSpace, PixelSpace, LatentSpace, load_vae_for_latent_space,
+    # Model loading utilities
+    load_diffusion_model, load_diffusion_model_with_metadata,
+    detect_wrapper_type, LoadedModel,
 )
 # Evaluation utilities (from medgen.evaluation package)
 from medgen.evaluation import (
@@ -76,6 +79,11 @@ __all__ = [
     'PixelSpace',
     'LatentSpace',
     'load_vae_for_latent_space',
+    # Model loading utilities
+    'load_diffusion_model',
+    'load_diffusion_model_with_metadata',
+    'detect_wrapper_type',
+    'LoadedModel',
     # Metrics and visualization
     'ValidationVisualizer',
     'compute_msssim',

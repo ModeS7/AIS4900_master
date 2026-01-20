@@ -519,6 +519,18 @@ class BaseCompressionTrainer(BaseTrainer):
             use_compile=self.use_compile,
         )
 
+    def _create_adversarial_loss(self) -> None:
+        """Create adversarial loss function if GAN is enabled.
+
+        Sets self.adv_loss_fn to PatchAdversarialLoss with least_squares criterion.
+        Does nothing if self.disable_gan is True.
+        """
+        if self.disable_gan:
+            return
+
+        from monai.losses import PatchAdversarialLoss
+        self.adv_loss_fn = PatchAdversarialLoss(criterion="least_squares")
+
     def _setup_optimizers(self, n_channels: int) -> None:
         """Setup optimizers and schedulers for generator and discriminator.
 

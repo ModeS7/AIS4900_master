@@ -239,9 +239,7 @@ class VAETrainer(BaseCompressionTrainer):
         perceptual_spatial_dims = 2 if (self.spatial_dims == 3 and getattr(self, 'use_2_5d_perceptual', False)) else self.spatial_dims
         if self.perceptual_weight > 0:
             self.perceptual_loss_fn = self._create_perceptual_loss(spatial_dims=perceptual_spatial_dims)
-        if not self.disable_gan:
-            from monai.losses import PatchAdversarialLoss
-            self.adv_loss_fn = PatchAdversarialLoss(criterion="least_squares")
+        self._create_adversarial_loss()
 
         # Setup optimizers and schedulers
         self._setup_optimizers(n_channels)
