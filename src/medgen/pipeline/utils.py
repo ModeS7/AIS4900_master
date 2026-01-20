@@ -134,60 +134,6 @@ def log_epoch_summary(
     )
 
 
-def log_compression_epoch_summary(
-    epoch: int,
-    total_epochs: int,
-    avg_losses: Dict[str, float],
-    val_metrics: Optional[Dict[str, float]],
-    elapsed_time: float,
-    regularization_key: Optional[str] = None,
-) -> None:
-    """Log compression trainer epoch summary.
-
-    Unified logging for VAE, VQ-VAE, DC-AE, and 3D variants.
-    Shows both MS-SSIM and PSNR when available.
-
-    Args:
-        epoch: Current epoch number (0-indexed).
-        total_epochs: Total number of epochs.
-        avg_losses: Dict with 'gen', 'recon', 'disc' keys (and optionally 'kl' or 'vq').
-        val_metrics: Dict with validation metrics ('gen', 'l1', 'msssim', 'psnr').
-        elapsed_time: Time taken for the epoch in seconds.
-        regularization_key: Loss key for regularization ('kl', 'vq', or None for DC-AE).
-    """
-    timestamp = time.strftime("%H:%M:%S")
-    epoch_pct = ((epoch + 1) / total_epochs) * 100
-
-    val_gen = f"(v:{val_metrics.get('gen', 0):.4f})" if val_metrics else ""
-    val_l1 = f"(v:{val_metrics.get('l1', 0):.4f})" if val_metrics else ""
-
-    # Build regularization string
-    reg_str = ""
-    if regularization_key and regularization_key in avg_losses:
-        reg_str = f"{regularization_key.upper()}: {avg_losses[regularization_key]:.4f} | "
-
-    # Build quality metrics string - show MS-SSIM, MS-SSIM-3D, and PSNR
-    metrics_parts = []
-    if val_metrics:
-        if val_metrics.get('msssim'):
-            metrics_parts.append(f"MS-SSIM: {val_metrics['msssim']:.3f}")
-        if val_metrics.get('msssim_3d'):
-            metrics_parts.append(f"MS-SSIM-3D: {val_metrics['msssim_3d']:.3f}")
-        if val_metrics.get('psnr'):
-            metrics_parts.append(f"PSNR: {val_metrics['psnr']:.2f}")
-    metric_str = " | ".join(metrics_parts) if metrics_parts else ""
-
-    logger.info(
-        f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
-        f"G: {avg_losses['gen']:.4f}{val_gen} | "
-        f"L1: {avg_losses['recon']:.4f}{val_l1} | "
-        f"{reg_str}"
-        f"D: {avg_losses['disc']:.4f} | "
-        f"{metric_str} | "
-        f"Time: {elapsed_time:.1f}s"
-    )
-
-
 def get_vram_usage(device: torch.device) -> str:
     """Get current VRAM usage statistics.
 
@@ -272,58 +218,6 @@ def save_full_checkpoint(
     save_path = os.path.join(save_dir, f"{filename}.pt")
     torch.save(checkpoint, save_path)
     return save_path
-
-
-def load_checkpoint(
-    checkpoint_path: str,
-    model: nn.Module,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-    ema: Optional[Any] = None,
-    device: Optional[torch.device] = None,
-    strict: bool = True,
-) -> Dict[str, Any]:
-    """Load training checkpoint with model, optimizer, scheduler, and EMA state.
-
-    Used by both DiffusionTrainer and VAETrainer. Returns full checkpoint dict
-    so caller can handle extra state (e.g., discriminator for VAE).
-
-    Args:
-        checkpoint_path: Path to the checkpoint file (.pt).
-        model: Model to load state into.
-        optimizer: Optional optimizer to load state into.
-        scheduler: Optional scheduler to load state into.
-        ema: Optional EMA wrapper to load state into.
-        device: Device to map tensors to.
-        strict: Whether to strictly enforce state dict key matching.
-
-    Returns:
-        Full checkpoint dict (includes 'epoch', 'config', and any extra_state).
-
-    Raises:
-        FileNotFoundError: If checkpoint file doesn't exist.
-    """
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-
-    # Load model state
-    model.load_state_dict(checkpoint['model_state_dict'], strict=strict)
-
-    # Load optimizer state if provided
-    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-    # Load scheduler state if provided
-    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-    # Load EMA state if provided and saved
-    if ema is not None and 'ema_state_dict' in checkpoint:
-        ema.load_state_dict(checkpoint['ema_state_dict'])
-
-    return checkpoint
 
 
 def create_epoch_iterator(

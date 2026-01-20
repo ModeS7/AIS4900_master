@@ -3,11 +3,8 @@
 from .diffusion_trainer_base import DiffusionTrainerBase
 from .trainer import DiffusionTrainer
 from .vae_trainer import VAETrainer
-from .vae_3d_trainer import VAE3DTrainer
 from .vqvae_trainer import VQVAETrainer
-from .vqvae_3d_trainer import VQVAE3DTrainer
 from .dcae_trainer import DCAETrainer
-from .dcae_3d_trainer import DCAE3DTrainer
 # Diffusion components (from medgen.diffusion package)
 from medgen.diffusion import (
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
@@ -63,11 +60,8 @@ __all__ = [
     'DiffusionTrainerBase',
     'DiffusionTrainer',
     'VAETrainer',
-    'VAE3DTrainer',
     'VQVAETrainer',
-    'VQVAE3DTrainer',
     'DCAETrainer',
-    'DCAE3DTrainer',
     # Diffusion strategies
     'DDPMStrategy',
     'RFlowStrategy',

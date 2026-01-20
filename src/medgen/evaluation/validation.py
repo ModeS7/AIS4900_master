@@ -1,7 +1,7 @@
 """Validation runner for compression trainers.
 
-Extracts the validation loop logic from BaseCompressionTrainer and
-BaseCompression3DTrainer into a reusable component.
+Extracts the validation loop logic from BaseCompressionTrainer
+into a reusable component.
 """
 
 import logging

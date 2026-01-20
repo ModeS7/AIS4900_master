@@ -1,7 +1,7 @@
 """Gradient checkpointing utilities for 3D models.
 
-Provides base class for gradient-checkpointed model wrappers,
-used by VAE3DTrainer and VQVAE3DTrainer for memory-efficient training.
+Provides base class for gradient-checkpointed model wrappers
+for memory-efficient training of 3D compression models.
 """
 
 from typing import Any

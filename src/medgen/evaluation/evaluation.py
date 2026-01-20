@@ -5,10 +5,7 @@ Provides shared functionality for test set evaluation:
 - Results saving (JSON + TensorBoard)
 - Metric computation orchestration
 
-This module extracts ~500 lines of duplicated code from:
-- BaseCompressionTrainer.evaluate_test_set()
-- BaseCompression3DTrainer.evaluate_test_set()
-- DiffusionTrainer.evaluate_test_set()
+This module extracts duplicated evaluation code from trainers.
 """
 
 import json

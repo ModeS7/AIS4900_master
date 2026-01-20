@@ -1898,26 +1898,3 @@ class BaseCompressionTrainer(BaseTrainer):
             checkpoint_name=checkpoint_name,
             get_eval_model=self._get_model_for_eval,
         )
-
-
-class BaseCompression3DTrainer(BaseCompressionTrainer):
-    """DEPRECATED: Use BaseCompressionTrainer with spatial_dims=3 instead.
-
-    This class is maintained for backward compatibility only.
-    All 3D-specific functionality is now in BaseCompressionTrainer.
-    """
-
-    def __init__(self, cfg: DictConfig) -> None:
-        """Initialize 3D compression trainer.
-
-        Args:
-            cfg: Hydra configuration object.
-        """
-        import warnings
-        warnings.warn(
-            "BaseCompression3DTrainer is deprecated. "
-            "Use BaseCompressionTrainer with spatial_dims=3 instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__init__(cfg, spatial_dims=3)
