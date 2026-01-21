@@ -14,7 +14,7 @@ from .constants import (
 )
 from .cuda_utils import setup_cuda_optimizations
 from .distributed import setup_distributed
-from .schedulers import create_warmup_cosine_scheduler, create_warmup_constant_scheduler
+from .schedulers import create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler
 from .validation import (
     validate_common_config,
     validate_model_config,
@@ -46,6 +46,7 @@ __all__ = [
     # Schedulers
     'create_warmup_cosine_scheduler',
     'create_warmup_constant_scheduler',
+    'create_plateau_scheduler',
     # Validation
     'validate_common_config',
     'validate_model_config',

@@ -36,7 +36,7 @@ from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, wrap_model_for_training
+from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler, wrap_model_for_training
 from .diffusion_trainer_base import DiffusionTrainerBase
 from .optimizers import SAM
 from .results import TrainingStepResult
@@ -933,9 +933,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if self.is_main_process and self.weight_decay > 0:
             logger.info(f"Using weight decay: {self.weight_decay}")
 
-        # Learning rate scheduler (cosine or constant)
-        scheduler_type = self.cfg.training.get('scheduler', 'cosine')
-        if scheduler_type == 'constant':
+        # Learning rate scheduler (cosine, constant, or plateau)
+        self.scheduler_type = self.cfg.training.get('scheduler', 'cosine')
+        if self.scheduler_type == 'constant':
             self.lr_scheduler = create_warmup_constant_scheduler(
                 self.optimizer,
                 warmup_epochs=self.warmup_epochs,
@@ -943,6 +943,20 @@ class DiffusionTrainer(DiffusionTrainerBase):
             )
             if self.is_main_process:
                 logger.info("Using constant LR scheduler (warmup then constant)")
+        elif self.scheduler_type == 'plateau':
+            plateau_cfg = self.cfg.training.get('plateau', {})
+            self.lr_scheduler = create_plateau_scheduler(
+                self.optimizer,
+                mode='min',
+                factor=plateau_cfg.get('factor', 0.5),
+                patience=plateau_cfg.get('patience', 10),
+                min_lr=plateau_cfg.get('min_lr', 1e-6),
+            )
+            if self.is_main_process:
+                logger.info(
+                    f"Using ReduceLROnPlateau scheduler "
+                    f"(factor={plateau_cfg.get('factor', 0.5)}, patience={plateau_cfg.get('patience', 10)})"
+                )
         else:
             self.lr_scheduler = create_warmup_cosine_scheduler(
                 self.optimizer,
@@ -2831,7 +2845,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     avg_loss, avg_mse, avg_perceptual = (loss_tensor / self.world_size).cpu().numpy()
 
                 epoch_time = time.time() - epoch_start
-                self.lr_scheduler.step()
+                # Step non-plateau schedulers here (plateau needs val_loss, stepped later)
+                if self.scheduler_type != 'plateau':
+                    self.lr_scheduler.step()
 
                 if self.is_main_process:
                     log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time, time_estimator)
@@ -2879,6 +2895,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     self._save_checkpoint(epoch, "latest")
 
                     loss_for_selection = val_metrics.get('total', avg_loss)
+
+                    # Step plateau scheduler with validation loss
+                    if self.scheduler_type == 'plateau':
+                        self.lr_scheduler.step(loss_for_selection)
+
                     if loss_for_selection < self.best_loss:
                         self.best_loss = loss_for_selection
                         self._save_checkpoint(epoch, "best")
