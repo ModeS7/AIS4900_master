@@ -282,6 +282,42 @@ class TestSiTCheckpoint:
         assert 'channels' not in config  # UNet-specific, should not be present
 
 
+class TestTensorOperations:
+    """Test tensor operations work for both 2D and 3D."""
+
+    def test_mse_per_sample_2d(self):
+        """MSE per sample should work for 2D tensors."""
+        pred = torch.randn(4, 1, 64, 64)  # [B, C, H, W]
+        target = torch.randn(4, 1, 64, 64)
+
+        # This should give [B] shaped output
+        mse = ((pred - target) ** 2).flatten(1).mean(1)
+        assert mse.shape == (4,), f"Expected (4,), got {mse.shape}"
+
+    def test_mse_per_sample_3d(self):
+        """MSE per sample should work for 3D tensors."""
+        pred = torch.randn(2, 1, 32, 64, 64)  # [B, C, D, H, W]
+        target = torch.randn(2, 1, 32, 64, 64)
+
+        # This should give [B] shaped output
+        mse = ((pred - target) ** 2).flatten(1).mean(1)
+        assert mse.shape == (2,), f"Expected (2,), got {mse.shape}"
+
+    def test_scatter_add_requires_matching_dims(self):
+        """scatter_add_ requires index and src to have same number of dims."""
+        timestep_loss_sum = torch.zeros(10)
+        bin_indices = torch.tensor([0, 1, 2, 3])  # [4]
+        mse_per_sample = torch.tensor([0.1, 0.2, 0.3, 0.4])  # [4]
+
+        # Both are 1D, this should work
+        timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
+
+        # If mse_per_sample were [4, 64] (2D), this would fail
+        mse_wrong = torch.randn(4, 64)
+        with pytest.raises(RuntimeError):
+            timestep_loss_sum.scatter_add_(0, bin_indices, mse_wrong)
+
+
 class TestTrainScriptModeRouting:
     """Test that train.py routes modes to correct dataloaders."""
 

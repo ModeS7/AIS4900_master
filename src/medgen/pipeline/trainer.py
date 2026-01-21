@@ -1242,7 +1242,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             mse_per_sample = (mse_0 + mse_1) / 2
         else:
             target = images - noise if self.strategy_name == 'rflow' else noise
-            mse_per_sample = ((prediction.float() - target.float()) ** 2).mean(dim=(1, 2, 3))
+            mse_per_sample = ((prediction.float() - target.float()) ** 2).flatten(1).mean(1)
 
         return (mse_per_sample * snr_weights).mean()
 
@@ -2254,7 +2254,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     else:
                         target = images - noise if self.strategy_name == 'rflow' else noise
 
-                    mse_per_sample = ((prediction.float() - target.float()) ** 2).mean(dim=(1, 2, 3))
+                    # Mean over all non-batch dims: 2D [B,C,H,W] -> (1,2,3), 3D [B,C,D,H,W] -> (1,2,3,4)
+                    mse_per_sample = ((prediction.float() - target.float()) ** 2).flatten(1).mean(1)
                     bin_size = self.num_timesteps // num_timestep_bins
                     bin_indices = (timesteps // bin_size).clamp(max=num_timestep_bins - 1).long()
                     timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
@@ -3322,11 +3323,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     if isinstance(predicted_clean, dict):
                         keys = list(predicted_clean.keys())
                         mse_per_sample = (
-                            (predicted_clean[keys[0]] - images[keys[0]]).pow(2).mean(dim=(1, 2, 3)) +
-                            (predicted_clean[keys[1]] - images[keys[1]]).pow(2).mean(dim=(1, 2, 3))
+                            (predicted_clean[keys[0]] - images[keys[0]]).pow(2).flatten(1).mean(1) +
+                            (predicted_clean[keys[1]] - images[keys[1]]).pow(2).flatten(1).mean(1)
                         ) / 2
                     else:
-                        mse_per_sample = (predicted_clean - images).pow(2).mean(dim=(1, 2, 3))
+                        mse_per_sample = (predicted_clean - images).pow(2).flatten(1).mean(1)
                     bin_size = self.num_timesteps // num_timestep_bins
                     bin_indices = (timesteps // bin_size).clamp(max=num_timestep_bins - 1).long()
                     timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
