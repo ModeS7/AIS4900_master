@@ -1351,8 +1351,12 @@ class UnifiedMetrics:
             reconstructed = self._extract_multiple_slices(reconstructed, num_slices=max_samples)
             if mask is not None:
                 mask = self._extract_multiple_slices(mask, num_slices=max_samples)
-            # Don't pass timesteps for 3D - slices are from same volume, timestep doesn't vary
-            timesteps = None
+            # For 3D, slices are from same volume - show timestep in metrics instead of per-column
+            if timesteps is not None and len(timesteps) > 0:
+                t_val = timesteps[0].item() if hasattr(timesteps[0], 'item') else timesteps[0]
+                metrics = metrics.copy() if metrics else {}
+                metrics['t'] = t_val
+            timesteps = None  # Don't show per-column (all slices have same timestep)
 
         fig = create_reconstruction_figure(
             original=original,
