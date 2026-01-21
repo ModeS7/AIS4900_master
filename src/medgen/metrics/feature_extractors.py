@@ -122,13 +122,19 @@ class ResNet50Features(nn.Module):
         """Extract ResNet50 features with AMP support.
 
         Args:
-            images: Images [B, C, H, W] in [0, 1] range, 1-3 channels.
+            images: Images [B, C, H, W] or [B, C, D, H, W] in [0, 1] range, 1-3 channels.
+                For 3D volumes, middle slice is extracted for feature computation.
             use_amp: Whether to use automatic mixed precision.
 
         Returns:
             Feature tensor [B, 2048].
         """
         self._ensure_model()
+
+        # Handle 3D volumes [B, C, D, H, W] by taking middle slice -> [B, C, H, W]
+        if images.dim() == 5:
+            mid_slice = images.shape[2] // 2
+            images = images[:, :, mid_slice]  # [B, C, H, W]
 
         # Handle grayscale by repeating to 3 channels
         if images.shape[1] == 1:
@@ -254,13 +260,19 @@ class BiomedCLIPFeatures(nn.Module):
         """Extract BiomedCLIP image features with AMP support.
 
         Args:
-            images: Images [B, C, H, W] in [0, 1] range, 1-3 channels.
+            images: Images [B, C, H, W] or [B, C, D, H, W] in [0, 1] range, 1-3 channels.
+                For 3D volumes, middle slice is extracted for feature computation.
             use_amp: Whether to use automatic mixed precision.
 
         Returns:
             Feature tensor [B, 512] (CLIP embedding dimension).
         """
         self._ensure_model()
+
+        # Handle 3D volumes [B, C, D, H, W] by taking middle slice -> [B, C, H, W]
+        if images.dim() == 5:
+            mid_slice = images.shape[2] // 2
+            images = images[:, :, mid_slice]  # [B, C, H, W]
 
         # Handle grayscale by repeating to 3 channels
         if images.shape[1] == 1:

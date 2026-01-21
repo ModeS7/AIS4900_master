@@ -79,11 +79,22 @@ def _create_single_reconstruction_figure(
     # Use first channel
     orig_ch = orig_np[:n_samples, 0]
     gen_ch = gen_np[:n_samples, 0]
+
+    # Handle 3D volumes [n_samples, D, H, W] by taking middle slice
+    if orig_ch.ndim == 4:
+        mid_slice = orig_ch.shape[1] // 2
+        orig_ch = orig_ch[:, mid_slice]  # [n_samples, H, W]
+        gen_ch = gen_ch[:, mid_slice]
+
     diff = np.abs(orig_ch - gen_ch)
 
     mask_np = None
     if mask is not None:
         mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
+        # Handle 3D masks [B, C, D, H, W] by taking middle slice
+        if mask_np.ndim == 5:
+            mid_slice = mask_np.shape[2] // 2
+            mask_np = mask_np[:, :, mid_slice]  # [B, C, H, W]
 
     # Create figure with minimal spacing - tight layout
     fig, axes = plt.subplots(
@@ -163,12 +174,25 @@ def _create_dual_reconstruction_figure(
     orig2_ch = orig2[:n_samples, 0]
     gen1_ch = gen1[:n_samples, 0]
     gen2_ch = gen2[:n_samples, 0]
+
+    # Handle 3D volumes [n_samples, D, H, W] by taking middle slice
+    if orig1_ch.ndim == 4:
+        mid_slice = orig1_ch.shape[1] // 2
+        orig1_ch = orig1_ch[:, mid_slice]
+        orig2_ch = orig2_ch[:, mid_slice]
+        gen1_ch = gen1_ch[:, mid_slice]
+        gen2_ch = gen2_ch[:, mid_slice]
+
     diff1 = np.abs(orig1_ch - gen1_ch)
     diff2 = np.abs(orig2_ch - gen2_ch)
 
     mask_np = None
     if mask is not None:
         mask_np = mask.cpu().float().numpy() if isinstance(mask, torch.Tensor) else mask
+        # Handle 3D masks [B, C, D, H, W] by taking middle slice
+        if mask_np.ndim == 5:
+            mid_slice = mask_np.shape[2] // 2
+            mask_np = mask_np[:, :, mid_slice]
 
     # Create figure: 6 rows (3 per channel) with minimal spacing
     fig, axes = plt.subplots(

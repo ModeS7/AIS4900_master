@@ -2752,7 +2752,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
             mode=self.mode_name,
-            spatial_dims=2,
+            spatial_dims=self.spatial_dims,
             modality=self.mode_name if self.mode_name not in ('multi', 'dual') else None,
             device=self.device,
             enable_regional=self.log_regional_losses,

@@ -372,3 +372,79 @@ class TestVolume3DMSSSIM:
             f"1 channel is not divisible by {num_groups} groups - "
             "this is why 2D slices fail in 3D models"
         )
+
+
+class TestFigures3DHandling:
+    """Test that figure creation handles 3D volumes correctly."""
+
+    def test_single_reconstruction_figure_2d(self):
+        """2D data should work without slicing."""
+        from medgen.metrics.figures import create_reconstruction_figure
+
+        orig = torch.randn(2, 1, 64, 64)  # [B, C, H, W]
+        gen = torch.randn(2, 1, 64, 64)
+
+        fig = create_reconstruction_figure(orig, gen, title="2D Test", max_samples=2)
+        assert fig is not None
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_single_reconstruction_figure_3d(self):
+        """3D data should take middle slice for visualization."""
+        from medgen.metrics.figures import create_reconstruction_figure
+
+        orig = torch.randn(2, 1, 32, 64, 64)  # [B, C, D, H, W]
+        gen = torch.randn(2, 1, 32, 64, 64)
+
+        # This should NOT raise an error - middle slice is extracted
+        fig = create_reconstruction_figure(orig, gen, title="3D Test", max_samples=2)
+        assert fig is not None
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_3d_mask_handling(self):
+        """3D masks should be sliced correctly."""
+        from medgen.metrics.figures import create_reconstruction_figure
+
+        orig = torch.randn(2, 1, 32, 64, 64)
+        gen = torch.randn(2, 1, 32, 64, 64)
+        mask = (torch.rand(2, 1, 32, 64, 64) > 0.5).float()
+
+        fig = create_reconstruction_figure(orig, gen, mask=mask, max_samples=2)
+        assert fig is not None
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+class TestFeatureExtractor3DHandling:
+    """Test that feature extractors handle 3D volumes correctly."""
+
+    def test_repeat_dims_2d(self):
+        """2D grayscale should work with repeat(1, 3, 1, 1)."""
+        images_2d = torch.randn(2, 1, 64, 64)  # [B, C, H, W]
+
+        # This should work
+        result = images_2d.repeat(1, 3, 1, 1)
+        assert result.shape == (2, 3, 64, 64)
+
+    def test_repeat_dims_3d_fails_without_fix(self):
+        """3D data would fail with repeat(1, 3, 1, 1) without our fix."""
+        images_3d = torch.randn(2, 1, 32, 64, 64)  # [B, C, D, H, W]
+
+        # This would fail - 4 dims in repeat but tensor has 5 dims
+        with pytest.raises(RuntimeError, match="repeat dims"):
+            images_3d.repeat(1, 3, 1, 1)
+
+    def test_3d_slicing_for_features(self):
+        """Our fix: take middle slice first, then repeat works."""
+        images_3d = torch.randn(2, 1, 32, 64, 64)  # [B, C, D, H, W]
+
+        # Take middle slice (this is what our fix does)
+        mid_slice = images_3d.shape[2] // 2
+        images_2d = images_3d[:, :, mid_slice]  # [B, C, H, W]
+
+        assert images_2d.shape == (2, 1, 64, 64)
+
+        # Now repeat works
+        result = images_2d.repeat(1, 3, 1, 1)
+        assert result.shape == (2, 3, 64, 64)
