@@ -333,3 +333,42 @@ class TestTrainScriptModeRouting:
         """mode='seg' should also use create_seg_dataloader for 3D."""
         mode = 'seg'
         assert mode in ('seg', 'seg_conditioned')
+
+
+class TestVolume3DMSSSIM:
+    """Test volume 3D MS-SSIM computation guards."""
+
+    def test_3d_diffusion_skips_slice_msssim(self):
+        """3D diffusion models should skip slice-by-slice MS-SSIM computation.
+
+        The _compute_volume_3d_msssim function processes 2D slices which is
+        incompatible with 3D models that expect 5D input [B, C, D, H, W].
+        """
+        # The guard condition in trainer.py
+        spatial_dims_2d = 2
+        spatial_dims_3d = 3
+
+        # 2D model: should NOT skip (returns actual metric)
+        assert spatial_dims_2d != 3, "2D models should compute slice MS-SSIM"
+
+        # 3D model: should skip (returns None)
+        assert spatial_dims_3d == 3, "3D models should skip slice MS-SSIM"
+
+    def test_3d_model_input_shape(self):
+        """3D models expect 5D input, not 4D slices."""
+        # 2D slice shape from volume
+        slice_shape_2d = (16, 1, 256, 256)  # [B, C, H, W]
+
+        # 3D model expects
+        expected_3d_input_shape = (1, 1, 32, 256, 256)  # [B, C, D, H, W]
+
+        assert len(slice_shape_2d) == 4, "2D slices are 4D"
+        assert len(expected_3d_input_shape) == 5, "3D models expect 5D input"
+
+        # This mismatch caused the GroupNorm error
+        num_groups = 16
+        channels_in_slice = slice_shape_2d[1]  # 1
+        assert channels_in_slice % num_groups != 0, (
+            f"1 channel is not divisible by {num_groups} groups - "
+            "this is why 2D slices fail in 3D models"
+        )

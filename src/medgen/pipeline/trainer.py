@@ -3041,13 +3041,16 @@ class DiffusionTrainer(DiffusionTrainerBase):
     ) -> Optional[float]:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
 
-        For diffusion models, this:
+        For 2D diffusion models only. This:
         1. Loads full 3D volumes
-        2. Processes each slice: add noise at mid-range timestep → denoise → get predicted clean
+        2. Processes each 2D slice: add noise at mid-range timestep → denoise → get predicted clean
         3. Stacks slices back into a volume
         4. Computes 3D MS-SSIM between reconstructed and original volumes
 
-        This measures cross-slice consistency of the diffusion model's denoising quality.
+        This measures cross-slice consistency of the 2D diffusion model's denoising quality.
+
+        Note: Returns None for 3D diffusion models (spatial_dims=3) since they process
+        volumes natively and this slice-by-slice approach is incompatible.
 
         Args:
             epoch: Current epoch number.
@@ -3056,9 +3059,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 (e.g., 'bravo', 't1_pre'). If None, uses mode from config.
 
         Returns:
-            Average 3D MS-SSIM across all volumes, or None if unavailable.
+            Average 3D MS-SSIM across all volumes, or None if unavailable/unsupported.
         """
         if not self.log_msssim:
+            return None
+
+        # Skip for 3D diffusion models - this function processes 2D slices which is
+        # incompatible with 3D models that expect 5D input [B, C, D, H, W]
+        spatial_dims = self.cfg.model.get('spatial_dims', 2)
+        if spatial_dims == 3:
             return None
 
         # Import here to avoid circular imports
