@@ -9,9 +9,9 @@ Key insight: Standard data augmentation on clean images causes "leakage" where
 augmented content appears in generated samples. SDA solves this with a dual-path
 training approach with shifted timesteps.
 
-Key differences from 2D:
-- Rotations around all 3 axes (D, H, W)
-- Flips along all 3 axes
+3D extension:
+- Rotations in the H-W plane (same as 2D, applied to each slice)
+- Flips along D, H, W axes
 
 Usage:
     sda = SDATransform3D(rotation=True, flip=True, noise_shift=0.1)
@@ -38,7 +38,7 @@ class SDATransform3D:
     with shifted timesteps to prevent leakage.
 
     Args:
-        rotation: Enable 90/180/270 degree rotations around D/H/W axes. Default: True.
+        rotation: Enable 90/180/270 degree rotations in H-W plane. Default: True.
         flip: Enable flips along D/H/W axes. Default: True.
         noise_shift: Amount to shift timesteps for augmented path.
             Positive values increase noise level. Default: 0.1.
@@ -67,15 +67,17 @@ class SDATransform3D:
         # Build list of available transforms
         self._transforms = []
         if rotation:
-            # Rotations around each axis: 90, 180, 270 degrees
-            for axis in ['d', 'h', 'w']:
-                for k in [1, 2, 3]:
-                    self._transforms.append(('rot90_3d', {'axis': axis, 'k': k}))
+            # Rotations in H-W plane (same as 2D)
+            self._transforms.extend([
+                ('rot90', {'k': 1}),   # 90 degrees
+                ('rot90', {'k': 2}),   # 180 degrees
+                ('rot90', {'k': 3}),   # 270 degrees
+            ])
         if flip:
             self._transforms.extend([
-                ('flip_d', {}),
-                ('flip_h', {}),
-                ('flip_w', {}),
+                ('flip_d', {}),  # Flip along depth
+                ('flip_h', {}),  # Flip along height (vflip)
+                ('flip_w', {}),  # Flip along width (hflip)
             ])
 
     def _sample_transform(self) -> Tuple[str, Dict[str, Any]]:
@@ -102,41 +104,16 @@ class SDATransform3D:
         """
         if transform_type == 'identity':
             return x
-        elif transform_type == 'rot90_3d':
-            return self._rotate_3d(x, params['axis'], params['k'])
+        elif transform_type == 'rot90':
+            # Rotate in H-W plane (last two dims), same as 2D
+            return torch.rot90(x, k=params['k'], dims=(-2, -1))
         elif transform_type == 'flip_d':
             return torch.flip(x, dims=[2])  # D dimension
         elif transform_type == 'flip_h':
-            return torch.flip(x, dims=[3])  # H dimension
+            return torch.flip(x, dims=[3])  # H dimension (vflip)
         elif transform_type == 'flip_w':
-            return torch.flip(x, dims=[4])  # W dimension
+            return torch.flip(x, dims=[4])  # W dimension (hflip)
         return x
-
-    def _rotate_3d(self, x: torch.Tensor, axis: str, k: int) -> torch.Tensor:
-        """Rotate 3D tensor by k*90 degrees around axis.
-
-        Args:
-            x: Input tensor [B, C, D, H, W]
-            axis: Rotation axis ('d', 'h', or 'w')
-            k: Number of 90-degree rotations (1, 2, or 3)
-
-        Returns:
-            Rotated tensor
-        """
-        # Determine which dimensions to rotate
-        if axis == 'd':
-            # Rotate around D axis = rotate H-W plane
-            dims = (3, 4)  # H, W
-        elif axis == 'h':
-            # Rotate around H axis = rotate D-W plane
-            dims = (2, 4)  # D, W
-        elif axis == 'w':
-            # Rotate around W axis = rotate D-H plane
-            dims = (2, 3)  # D, H
-        else:
-            return x
-
-        return torch.rot90(x, k=k, dims=dims)
 
     def shift_timesteps(
         self,
