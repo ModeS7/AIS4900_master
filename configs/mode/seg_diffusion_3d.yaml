@@ -13,10 +13,10 @@
 # For DIFFUSION training:
 #   in_channels: 1 = noisy_seg
 #   out_channels: 1 = predicted seg
-#   conditioning: 7-dim size bin vector (embedded and added to timestep)
+#   conditioning: 7-dim size bin vector (FiLM modulation on timestep embed)
 #   Dataloader: create_seg_dataloader()
 
-name: seg
+name: seg_conditioned
 is_conditional: true
 in_channels: 1   # noisy_seg only (conditioning via embedding, not concat)
 out_channels: 1  # predicted noise/velocity for seg

@@ -595,8 +595,8 @@ class GenerationMetrics:
                     second = torch.tensor(second).float()
 
                 # Check if this is seg_conditioned mode: (seg, size_bins)
-                # size_bins is 1D, seg is 3D [C, H, W]
-                if second.dim() == 1 and first.dim() == 3:
+                # size_bins is 1D, seg is 3D [C, H, W] or 4D [C, D, H, W]
+                if second.dim() == 1 and first.dim() >= 3:
                     # seg_conditioned mode: first element is the seg mask
                     tensor = first
                     # Override seg_channel_idx for this mode
