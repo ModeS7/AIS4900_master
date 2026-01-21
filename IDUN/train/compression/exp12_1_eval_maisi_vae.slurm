@@ -63,7 +63,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Create output directory
 OUTPUT_DIR="runs/compression_3d/maisi_eval"

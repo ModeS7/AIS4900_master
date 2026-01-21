@@ -29,7 +29,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Exp9.3 DC-AE 1.5: f128c512 with Structured Latent Space
 # Input: 256x256x1 -> Latent: 2x2x512

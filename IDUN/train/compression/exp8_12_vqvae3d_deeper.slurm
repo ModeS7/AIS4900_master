@@ -28,7 +28,7 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Exp8.12: 8x compression + deeper network (3 residual blocks), 4 latent channels
 # 3 levels: 256->128->64->32 (8x spatial compression)

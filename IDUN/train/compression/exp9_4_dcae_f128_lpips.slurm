@@ -30,7 +30,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Exp9.4: DC-AE f128c512 with LPIPS loss (DC-AE paper setting)
 # Compare with exp9.3 which uses RadImageNet perceptual loss
