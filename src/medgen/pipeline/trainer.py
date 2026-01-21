@@ -703,7 +703,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 channels=channels,
                 attention_levels=attention_levels,
                 num_res_blocks=num_res_blocks,
-                num_head_channels=num_head_channels
+                num_head_channels=num_head_channels,
+                norm_num_groups=self.cfg.model.get('norm_num_groups', 32),
             ).to(self.device)
 
         # Determine if DDPOptimizer should be disabled for large models
@@ -1434,19 +1435,34 @@ class DiffusionTrainer(DiffusionTrainerBase):
         and can be loaded without hardcoding defaults.
         """
         model_cfg = self.mode.get_model_config()
-        return {
+        config = {
             'model_type': self.model_type,
             'in_channels': model_cfg['in_channels'],
             'out_channels': model_cfg['out_channels'],
             'strategy': self.strategy_name,
             'mode': self.mode_name,
-            # Architecture params for inference loading
-            'channels': list(self.cfg.model.channels),
-            'attention_levels': list(self.cfg.model.attention_levels),
-            'num_res_blocks': self.cfg.model.num_res_blocks,
-            'num_head_channels': self.cfg.model.num_head_channels,
             'spatial_dims': self.cfg.model.get('spatial_dims', 2),
         }
+
+        # Architecture params differ between UNet and transformer
+        if self.is_transformer:
+            config.update({
+                'image_size': self.cfg.model.image_size,
+                'patch_size': self.cfg.model.patch_size,
+                'variant': self.cfg.model.variant,
+                'mlp_ratio': self.cfg.model.get('mlp_ratio', 4.0),
+                'conditioning': self.cfg.model.get('conditioning', 'concat'),
+                'qk_norm': self.cfg.model.get('qk_norm', True),
+            })
+        else:
+            config.update({
+                'channels': list(self.cfg.model.channels),
+                'attention_levels': list(self.cfg.model.attention_levels),
+                'num_res_blocks': self.cfg.model.num_res_blocks,
+                'num_head_channels': self.cfg.model.num_head_channels,
+            })
+
+        return config
 
     def train_step(self, batch: Any) -> TrainingStepResult:
         """Execute single training step.

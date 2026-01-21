@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100"
+#SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp12_2c_sit_b"
 #SBATCH --output=IDUN/output/train/diffusion/exp12_2c_sit_b_%j.out
 #SBATCH --error=IDUN/output/train/diffusion/exp12_2c_sit_b_%j.err
