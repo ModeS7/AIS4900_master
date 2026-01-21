@@ -54,6 +54,8 @@ class SiT(nn.Module):
         drop_rate: Dropout rate.
         drop_path_rate: Stochastic depth rate. Linearly increases from 0 to this
             value across transformer blocks. Default: 0.0 (disabled).
+        qk_norm: Whether to use QK-normalization in attention. Improves training
+            stability, especially for larger images/patches. Default: True.
         depth_size: Depth size for 3D (if different from input_size).
 
     Example:
@@ -79,6 +81,7 @@ class SiT(nn.Module):
         learn_sigma: bool = False,
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
+        qk_norm: bool = True,
         depth_size: Optional[int] = None,
     ):
         super().__init__()
@@ -150,6 +153,7 @@ class SiT(nn.Module):
                 num_heads,
                 mlp_ratio=mlp_ratio,
                 use_cross_attn=self.use_cross_attn,
+                qk_norm=qk_norm,
                 drop=drop_rate,
                 drop_path=dpr[i],
             )

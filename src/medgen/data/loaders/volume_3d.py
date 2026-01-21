@@ -40,25 +40,35 @@ from .common import create_dataloader, DataLoaderConfig, DistributedArgs
 logger = logging.getLogger(__name__)
 
 
-def build_3d_augmentation(seg_mode: bool = False) -> Callable:
+def build_3d_augmentation(seg_mode: bool = False, include_seg: bool = False) -> Callable:
     """Build 3D augmentation pipeline using MONAI transforms.
 
     Args:
-        seg_mode: If True, augmentations are for binary segmentation masks.
+        seg_mode: If True, augmentations are for binary segmentation masks only.
                   Uses nearest-neighbor interpolation to preserve binary values.
+        include_seg: If True, augmentations apply to both 'image' and 'seg' keys.
+                     Used for conditional modes (bravo, dual) where both must be
+                     augmented consistently.
 
     Returns:
-        MONAI Compose transform that operates on dict with 'image' key.
+        MONAI Compose transform that operates on dict with 'image' key
+        (and optionally 'seg' key if include_seg=True).
     """
+    # Determine which keys to augment
+    if include_seg:
+        keys = ['image', 'seg']
+    else:
+        keys = ['image']
+
     # For seg masks, we need to preserve binary values
     # RandFlip and RandRotate90 don't interpolate, so they're safe for binary masks
     transforms = [
         # Random flips along each axis (p=0.5 each)
-        RandFlipd(keys=['image'], prob=0.5, spatial_axis=0),  # Flip along depth
-        RandFlipd(keys=['image'], prob=0.5, spatial_axis=1),  # Flip along height
-        RandFlipd(keys=['image'], prob=0.5, spatial_axis=2),  # Flip along width
+        RandFlipd(keys=keys, prob=0.5, spatial_axis=0),  # Flip along depth
+        RandFlipd(keys=keys, prob=0.5, spatial_axis=1),  # Flip along height
+        RandFlipd(keys=keys, prob=0.5, spatial_axis=2),  # Flip along width
         # Random 90° rotations in axial plane (H, W)
-        RandRotate90d(keys=['image'], prob=0.5, spatial_axes=(1, 2)),
+        RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
     ]
 
     return Compose(transforms)
@@ -949,3 +959,286 @@ def create_vae_3d_single_modality_validation_loader(
     loader = _create_loader(dataset, vcfg, shuffle=False)
 
     return loader
+
+
+# ==============================================================================
+# 3D Diffusion Dataloaders (seg mode, bravo mode with conditioning)
+# ==============================================================================
+
+
+class SingleModality3DDatasetWithSegDropout(Base3DVolumeDataset):
+    """3D Dataset that loads single modality with seg mask and CFG dropout.
+
+    Used for 3D bravo mode training where bravo is conditioned on seg mask.
+    Supports classifier-free guidance dropout (randomly zeroing seg mask).
+
+    Args:
+        data_dir: Directory containing patient subdirectories.
+        modality: MR sequence name (e.g., 'bravo', 't1_pre').
+        height: Target height dimension.
+        width: Target width dimension.
+        pad_depth_to: Target depth after padding.
+        pad_mode: Padding mode ('replicate' or 'constant').
+        slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
+        cfg_dropout_prob: Probability of zeroing seg mask for CFG (default: 0.0).
+        augmentation: Optional MONAI augmentation transform.
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        modality: str,
+        height: int = 256,
+        width: int = 256,
+        pad_depth_to: int = 160,
+        pad_mode: str = 'replicate',
+        slice_step: int = 1,
+        cfg_dropout_prob: float = 0.0,
+        augmentation: Optional[Callable] = None,
+    ) -> None:
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True, augmentation=augmentation)
+        self.modality = modality
+        self.cfg_dropout_prob = cfg_dropout_prob
+
+        # Build index of patients that have both modality and seg
+        self.samples = []
+        patients = sorted([
+            p for p in os.listdir(data_dir)
+            if os.path.isdir(os.path.join(data_dir, p))
+        ])
+
+        for patient in patients:
+            patient_dir = os.path.join(data_dir, patient)
+            modality_path = os.path.join(patient_dir, f"{modality}.nii.gz")
+            seg_path = os.path.join(patient_dir, "seg.nii.gz")
+
+            # For conditioning mode, require BOTH modality and seg
+            if os.path.exists(modality_path) and os.path.exists(seg_path):
+                self.samples.append(patient)
+
+        if not self.samples:
+            raise ValueError(f"No patients with both {modality} and seg found in {data_dir}")
+
+        logger.info(f"SingleModality3DDatasetWithSegDropout: {len(self.samples)} volumes for {modality}, "
+                    f"cfg_dropout_prob={cfg_dropout_prob}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict:
+        patient = self.samples[idx]
+        patient_dir = os.path.join(self.data_dir, patient)
+        modality_path = os.path.join(patient_dir, f"{self.modality}.nii.gz")
+
+        volume = self._load_volume(modality_path)
+        seg = self._load_seg(patient_dir)
+
+        result = {'image': volume, 'seg': seg, 'patient': patient, 'modality': self.modality}
+
+        # Apply augmentation if configured (to both image and seg together)
+        result = self._apply_augmentation(result)
+
+        # CFG dropout: randomly zero out seg mask
+        if self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob:
+            result['seg'] = torch.zeros_like(result['seg'])
+
+        return result
+
+
+def create_segmentation_dataloader(
+    cfg,
+    vol_cfg: VolumeConfig,
+    augment: bool = False,
+) -> Tuple[DataLoader, Dataset]:
+    """Create 3D dataloader for unconditional segmentation training.
+
+    Loads seg masks only (no conditioning).
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+        augment: Whether to apply augmentation.
+
+    Returns:
+        Tuple of (DataLoader, Dataset).
+    """
+    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+
+    aug = build_3d_augmentation(seg_mode=True) if augment else None
+
+    dataset = Volume3DDataset(
+        data_dir=data_dir,
+        modality='seg',
+        height=vol_cfg.train_height,
+        width=vol_cfg.train_width,
+        pad_depth_to=vol_cfg.pad_depth_to,
+        pad_mode=vol_cfg.pad_mode,
+        slice_step=vol_cfg.slice_step,
+        load_seg=False,  # No separate seg needed - we ARE loading seg as image
+        augmentation=aug,
+    )
+
+    logger.info(f"Created 3D seg dataset: {len(dataset)} volumes")
+
+    loader = _create_loader(dataset, vol_cfg, shuffle=True, drop_last=True)
+    return loader, dataset
+
+
+def create_segmentation_validation_dataloader(
+    cfg,
+    vol_cfg: VolumeConfig,
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create 3D validation dataloader for unconditional segmentation.
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+
+    Returns:
+        Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, 'val')
+    if not os.path.exists(val_dir):
+        return None
+
+    dataset = Volume3DDataset(
+        data_dir=val_dir,
+        modality='seg',
+        height=vol_cfg.height,
+        width=vol_cfg.width,
+        pad_depth_to=vol_cfg.pad_depth_to,
+        pad_mode=vol_cfg.pad_mode,
+        slice_step=vol_cfg.slice_step,
+        load_seg=False,
+    )
+
+    loader = _create_loader(dataset, vol_cfg, shuffle=False)
+    return loader, dataset
+
+
+def create_single_modality_dataloader_with_seg(
+    cfg,
+    vol_cfg: VolumeConfig,
+    modality: str = 'bravo',
+    augment: bool = False,
+) -> Tuple[DataLoader, Dataset]:
+    """Create 3D dataloader for single modality conditioned on seg mask.
+
+    Used for 3D bravo mode where bravo generation is conditioned on seg mask.
+    Includes CFG dropout to randomly zero seg mask during training.
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+        modality: Modality to load (default: 'bravo').
+        augment: Whether to apply augmentation.
+
+    Returns:
+        Tuple of (DataLoader, Dataset).
+    """
+    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+
+    # CFG dropout for 3D - get from config (default 15%)
+    cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.15))
+
+    # include_seg=True ensures both image and seg are augmented consistently
+    aug = build_3d_augmentation(seg_mode=False, include_seg=True) if augment else None
+
+    dataset = SingleModality3DDatasetWithSegDropout(
+        data_dir=data_dir,
+        modality=modality,
+        height=vol_cfg.train_height,
+        width=vol_cfg.train_width,
+        pad_depth_to=vol_cfg.pad_depth_to,
+        pad_mode=vol_cfg.pad_mode,
+        slice_step=vol_cfg.slice_step,
+        cfg_dropout_prob=cfg_dropout_prob,
+        augmentation=aug,
+    )
+
+    logger.info(f"Created 3D {modality} dataset with seg conditioning: {len(dataset)} volumes, "
+                f"cfg_dropout={cfg_dropout_prob}")
+
+    loader = _create_loader(dataset, vol_cfg, shuffle=True, drop_last=True)
+    return loader, dataset
+
+
+def create_single_modality_validation_dataloader_with_seg(
+    cfg,
+    vol_cfg: VolumeConfig,
+    modality: str = 'bravo',
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create 3D validation dataloader for single modality with seg conditioning.
+
+    No CFG dropout during validation.
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+        modality: Modality to load (default: 'bravo').
+
+    Returns:
+        Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
+    """
+    val_dir = os.path.join(cfg.paths.data_dir, 'val')
+    if not os.path.exists(val_dir):
+        return None
+
+    # No CFG dropout during validation
+    dataset = SingleModality3DDatasetWithSegDropout(
+        data_dir=val_dir,
+        modality=modality,
+        height=vol_cfg.height,
+        width=vol_cfg.width,
+        pad_depth_to=vol_cfg.pad_depth_to,
+        pad_mode=vol_cfg.pad_mode,
+        slice_step=vol_cfg.slice_step,
+        cfg_dropout_prob=0.0,  # No dropout during validation
+    )
+
+    loader = _create_loader(dataset, vol_cfg, shuffle=False)
+    return loader, dataset
+
+
+def create_segmentation_conditioned_dataloader(
+    cfg,
+    vol_cfg: VolumeConfig,
+    size_bin_config: dict,
+    augment: bool = False,
+) -> Tuple[DataLoader, Dataset]:
+    """Create 3D dataloader for size-conditioned segmentation training.
+
+    Wrapper that routes to seg.py's create_seg_dataloader.
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+        size_bin_config: Size bin configuration dict.
+        augment: Whether to apply augmentation.
+
+    Returns:
+        Tuple of (DataLoader, Dataset).
+    """
+    from .seg import create_seg_dataloader
+    return create_seg_dataloader(cfg)
+
+
+def create_segmentation_conditioned_validation_dataloader(
+    cfg,
+    vol_cfg: VolumeConfig,
+    size_bin_config: dict,
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create 3D validation dataloader for size-conditioned segmentation.
+
+    Wrapper that routes to seg.py's create_seg_validation_dataloader.
+
+    Args:
+        cfg: Hydra configuration object.
+        vol_cfg: Volume configuration.
+        size_bin_config: Size bin configuration dict.
+
+    Returns:
+        Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
+    """
+    from .seg import create_seg_validation_dataloader
+    return create_seg_validation_dataloader(cfg)

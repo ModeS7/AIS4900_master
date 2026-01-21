@@ -37,4 +37,4 @@ size_bins:
   voxel_spacing: [1.0, 0.9375, 0.9375]
 
 # Classifier-free guidance (CFG) training
-cfg_dropout_prob: 0.1  # Probability of dropping conditioning (10% = unconditional)
+cfg_dropout_prob: 0.15  # Probability of dropping conditioning (15% = unconditional)

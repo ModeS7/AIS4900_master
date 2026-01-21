@@ -28,3 +28,12 @@ drop_rate: 0.0                       # Dropout rate (applied within attention/ML
 #   - Medium datasets (10-50K): 0.05 - 0.1
 #   - Large datasets (>50K): 0.0 - 0.05
 drop_path_rate: 0.0                  # Stochastic depth rate (0.0 = disabled)
+
+# ============================================================================
+# QK-Normalization
+# ============================================================================
+# Applies LayerNorm to query and key vectors before attention computation.
+# Prevents attention score explosion with high-variance inputs.
+# Critical for training stability with larger images/patches.
+# Reference: https://arxiv.org/abs/2302.05442 (Scaling Vision Transformers)
+qk_norm: true                        # QK-normalization (recommended: true)

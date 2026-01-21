@@ -19,3 +19,8 @@ in_channels: 3   # [noisy_t1_pre, noisy_t1_gd, seg_mask] - for diffusion
 out_channels: 2  # predicted noise/velocity for [t1_pre, t1_gd]
 image_keys: [t1_pre, t1_gd]  # Which modalities to load
 description: "T1 pre/post-contrast pair generation conditioned on segmentation mask"
+
+# Classifier-free guidance (CFG) dropout
+# - 2D: NOT used - ~65-75% natural dropout from tumor-free slices
+# - 3D: Used - every volume has tumors, no natural dropout
+cfg_dropout_prob: 0.15  # 15% CFG dropout (only affects 3D training)

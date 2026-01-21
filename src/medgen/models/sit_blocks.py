@@ -98,12 +98,13 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
 
 
 class Attention(nn.Module):
-    """Multi-head self-attention layer.
+    """Multi-head self-attention layer with optional QK-normalization.
 
     Args:
         dim: Input/output dimension.
         num_heads: Number of attention heads.
         qkv_bias: Whether to use bias in QKV projection.
+        qk_norm: Whether to apply layer normalization to Q and K (improves stability).
         attn_drop: Dropout rate for attention weights.
         proj_drop: Dropout rate for output projection.
     """
@@ -113,6 +114,7 @@ class Attention(nn.Module):
         dim: int,
         num_heads: int = 8,
         qkv_bias: bool = True,
+        qk_norm: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
     ):
@@ -122,11 +124,18 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
+        self.qk_norm = qk_norm
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+
+        # QK-normalization: prevents attention score explosion with high-variance inputs
+        # Reference: https://arxiv.org/abs/2302.05442 (Scaling Vision Transformers to 22B)
+        if qk_norm:
+            self.q_norm = nn.LayerNorm(self.head_dim, eps=1e-6)
+            self.k_norm = nn.LayerNorm(self.head_dim, eps=1e-6)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -139,6 +148,11 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)  # [B, heads, N, head_dim]
+
+        # QK-normalization for training stability
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         # Scaled dot-product attention (uses Flash Attention when available)
         x = F.scaled_dot_product_attention(
@@ -153,12 +167,13 @@ class Attention(nn.Module):
 
 
 class CrossAttention(nn.Module):
-    """Multi-head cross-attention layer.
+    """Multi-head cross-attention layer with optional QK-normalization.
 
     Args:
         dim: Query dimension.
         num_heads: Number of attention heads.
         qkv_bias: Whether to use bias in projections.
+        qk_norm: Whether to apply layer normalization to Q and K (improves stability).
         attn_drop: Dropout rate for attention weights.
         proj_drop: Dropout rate for output projection.
     """
@@ -168,6 +183,7 @@ class CrossAttention(nn.Module):
         dim: int,
         num_heads: int = 8,
         qkv_bias: bool = True,
+        qk_norm: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
     ):
@@ -177,12 +193,18 @@ class CrossAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
+        self.qk_norm = qk_norm
 
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
         self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+
+        # QK-normalization
+        if qk_norm:
+            self.q_norm = nn.LayerNorm(self.head_dim, eps=1e-6)
+            self.k_norm = nn.LayerNorm(self.head_dim, eps=1e-6)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         """
@@ -199,6 +221,11 @@ class CrossAttention(nn.Module):
         q = self.q(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         kv = self.kv(context).reshape(B, M, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)  # [B, heads, M, head_dim]
+
+        # QK-normalization for training stability
+        if self.qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         # Scaled dot-product attention
         x = F.scaled_dot_product_attention(
@@ -258,6 +285,7 @@ class SiTBlock(nn.Module):
         num_heads: Number of attention heads.
         mlp_ratio: MLP expansion ratio.
         use_cross_attn: Whether to include cross-attention for conditioning.
+        qk_norm: Whether to use QK-normalization in attention (improves stability).
         drop: Dropout rate.
         drop_path: Stochastic depth rate. Default: 0.0 (no drop).
     """
@@ -268,6 +296,7 @@ class SiTBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         use_cross_attn: bool = False,
+        qk_norm: bool = True,
         drop: float = 0.0,
         drop_path: float = 0.0,
     ):
@@ -276,12 +305,12 @@ class SiTBlock(nn.Module):
 
         # Self-attention
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, proj_drop=drop)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qk_norm=qk_norm, proj_drop=drop)
 
         # Cross-attention (optional, for conditioning)
         if use_cross_attn:
             self.norm_cross = nn.LayerNorm(hidden_size, eps=1e-6)
-            self.cross_attn = CrossAttention(hidden_size, num_heads=num_heads, proj_drop=drop)
+            self.cross_attn = CrossAttention(hidden_size, num_heads=num_heads, qk_norm=qk_norm, proj_drop=drop)
 
         # MLP
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)

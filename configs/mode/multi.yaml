@@ -33,3 +33,9 @@ mode_embedding_strategy: full  # Options: full, dropout, none, late, film
 mode_embedding_dropout: 0.2    # Probability of dropping mode embedding (when strategy=dropout)
 late_mode_start_level: 2       # UNet level to start injecting mode (when strategy=late, 0-indexed)
 description: "Multi-modality diffusion with mode embedding (4x training data)"
+
+# Classifier-free guidance (CFG) dropout for seg conditioning
+# - 2D: NOT used - ~65-75% natural dropout from tumor-free slices
+# - 3D: Used - every volume has tumors, no natural dropout
+# Note: This is separate from mode_embedding_dropout which drops the mode ID
+cfg_dropout_prob: 0.15  # 15% CFG dropout for seg mask (only affects 3D training)

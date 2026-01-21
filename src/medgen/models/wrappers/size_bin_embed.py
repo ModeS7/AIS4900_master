@@ -1,14 +1,17 @@
 """Size bin embedding for conditioned segmentation mask generation.
 
-Adds tumor size distribution conditioning to the diffusion model via time_embed
-modification. Follows the same pattern as ModeTimeEmbed from mode_embed.py.
+Adds tumor size distribution conditioning to the diffusion model via FiLM
+(Feature-wise Linear Modulation) on the time embedding. This provides stronger
+conditioning than simple additive embedding while still affecting all UNet layers.
 
 Size bins encode the tumor count per size category:
     - 7 bins: 0-3mm, 3-6mm, 6-10mm, 10-15mm, 15-20mm, 20-30mm, 30+mm
     - Each bin contains a count (0 to max_count_per_bin)
 
-The conditioning allows the model to generate masks with specific tumor
-size distributions (e.g., "2 small tumors and 1 large tumor").
+FiLM modulation: out = time_embed * (1 + scale) + shift
+    - Zero-initialized projection ensures identity at start (scale=0, shift=0)
+    - Conditioning strength grows during training
+    - Same principle as adaLN-Zero in DiT
 """
 
 from typing import List, Optional
@@ -53,22 +56,24 @@ def encode_size_bins(
 
 
 class SizeBinTimeEmbed(nn.Module):
-    """Wrapper around time_embed that adds size bin conditioning.
+    """Wrapper around time_embed that applies FiLM conditioning from size bins.
 
-    Embeds each bin's count separately and sums them to get the final
-    conditioning vector. This preserves information about the distribution
-    of tumor sizes.
+    Uses FiLM (Feature-wise Linear Modulation) to condition the time embedding:
+        out = time_embed * (1 + scale) + shift
+
+    Each bin's count is embedded separately, then concatenated and projected
+    to produce scale and shift parameters for FiLM modulation.
 
     Example:
         size_bins = [0, 0, 2, 0, 0, 0, 1]  # 2 tumors in bin 2, 1 in bin 6
         - bin_embeds[2](2) -> vector for "2 tumors of size 6-10mm"
         - bin_embeds[6](1) -> vector for "1 tumor of size 20-30mm"
-        - Sum both → final conditioning
+        - Concatenate → project → [scale, shift] → FiLM modulation
 
     This is compile-compatible because:
     - No hooks, just module replacement
     - No data-dependent control flow in forward
-    - Always adds conditioning (zero when not set due to init)
+    - Zero-init ensures identity at start (scale=0, shift=0)
     """
 
     def __init__(
@@ -101,11 +106,11 @@ class SizeBinTimeEmbed(nn.Module):
             for _ in range(num_bins)
         ])
 
-        # Project combined embeddings to time_embed dimension
+        # Project combined embeddings to FiLM parameters (scale and shift)
         # Input: num_bins * per_bin_embed_dim (concatenated)
-        # Output: embed_dim
+        # Output: embed_dim * 2 (scale and shift for FiLM modulation)
         combined_dim = num_bins * per_bin_embed_dim
-        self.projection = create_zero_init_mlp(combined_dim, embed_dim)
+        self.projection = create_zero_init_mlp(combined_dim, embed_dim * 2)
 
         # Store current size bins (set before each forward)
         self._size_bins: Optional[torch.Tensor] = None
@@ -137,7 +142,7 @@ class SizeBinTimeEmbed(nn.Module):
         self._size_bins = size_bins
 
     def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
-        """Forward pass: original time_embed + size bin embedding.
+        """Forward pass: original time_embed with FiLM conditioning from size bins.
 
         Args:
             t_emb: Timestep embedding input [B, C]
@@ -161,9 +166,11 @@ class SizeBinTimeEmbed(nn.Module):
             # Concatenate all bin embeddings
             combined = torch.cat(bin_embeds, dim=1)  # [B, num_bins * per_bin_embed_dim]
 
-            # Project to embed_dim and add
-            size_emb = self.projection(combined)  # [B, embed_dim]
-            out = out + size_emb
+            # FiLM: Feature-wise Linear Modulation
+            # Project to 2*embed_dim and split into scale and shift
+            film_params = self.projection(combined)  # [B, embed_dim * 2]
+            scale, shift = film_params.chunk(2, dim=-1)  # Each [B, embed_dim]
+            out = out * (1 + scale) + shift
 
         return out
 
