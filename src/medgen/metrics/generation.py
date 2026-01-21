@@ -576,8 +576,22 @@ class GenerationMetrics:
             idx = int(torch.randint(0, len(train_dataset), (1,), generator=rng).item())
             data = train_dataset[idx]
 
-            # Handle tuple (images, seg) or (seg, size_bins) format
-            if isinstance(data, tuple):
+            # Handle dict, tuple, or tensor format
+            if isinstance(data, dict):
+                # Dict format: {'image': ..., 'seg': ...}
+                image = data.get('image', data.get('images'))
+                seg_data = data.get('seg', data.get('mask', data.get('labels')))
+                if image is None or seg_data is None:
+                    attempts += 1
+                    continue
+                # Convert to tensors
+                if isinstance(image, np.ndarray):
+                    image = torch.from_numpy(image).float()
+                if isinstance(seg_data, np.ndarray):
+                    seg_data = torch.from_numpy(seg_data).float()
+                tensor = torch.cat([image, seg_data], dim=0)
+                local_seg_idx = image.shape[0]  # seg follows image channels
+            elif isinstance(data, tuple):
                 first, second = data
                 # Convert first element to tensor
                 if isinstance(first, torch.Tensor):
@@ -614,12 +628,13 @@ class GenerationMetrics:
                     tensor = torch.tensor(data).float()
                 local_seg_idx = seg_channel_idx
 
-            seg = tensor[local_seg_idx:local_seg_idx + 1, :, :]
+            # Extract seg mask - use ... to handle both 2D and 3D
+            seg = tensor[local_seg_idx:local_seg_idx + 1, ...]
 
             if seg.sum() > 0:  # Has positive mask
                 masks.append(seg)
                 if local_seg_idx > 0:
-                    gt_images.append(tensor[0:local_seg_idx, :, :])
+                    gt_images.append(tensor[0:local_seg_idx, ...])
             attempts += 1
 
         if len(masks) < num_masks:
