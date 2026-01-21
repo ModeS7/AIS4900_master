@@ -3072,6 +3072,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             mode_name = self.cfg.mode.get('name', 'bravo')
             out_channels = self.cfg.mode.get('out_channels', 1)
             modality = 'dual' if out_channels > 1 else mode_name
+            # Map mode names to actual file modalities
+            if modality == 'seg_conditioned':
+                modality = 'seg'
 
         # Skip for multi_modality mode - volume loader doesn't support mixed modalities
         # and computing volume metrics on mixed slices doesn't make sense

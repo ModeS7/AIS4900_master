@@ -687,21 +687,24 @@ class GenerationMetrics:
         if self.fixed_conditioning_masks is None:
             raise RuntimeError("Must call set_fixed_conditioning() first")
 
+        # Cap batch_size at available masks to avoid errors with small mask counts (e.g., 3D)
+        num_available = self.fixed_conditioning_masks.shape[0]
+        batch_size = min(batch_size, num_available)
+
         # Round up to full batches for torch.compile consistency
         # e.g., 100 samples with batch_size=16 → 112 samples (7 full batches)
         num_batches = math.ceil(num_samples / batch_size)
         num_to_use = num_batches * batch_size
 
         # Cap at available masks
-        num_available = self.fixed_conditioning_masks.shape[0]
         if num_to_use > num_available:
             # Round down to full batches if we don't have enough masks
             num_batches = num_available // batch_size
             num_to_use = num_batches * batch_size
             if num_to_use == 0:
-                raise RuntimeError(
-                    f"Not enough conditioning masks ({num_available}) for batch_size={batch_size}"
-                )
+                # If even 1 batch doesn't fit, use all available masks
+                num_to_use = num_available
+                logger.warning(f"Using all {num_available} masks (fewer than batch_size={batch_size})")
 
         # Get model config for output channels
         model_config = mode.get_model_config()
