@@ -28,7 +28,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # Exp3: 3D Latent Diffusion - Bravo with ControlNet
@@ -62,14 +62,12 @@ fi
 
 echo "Using compression checkpoint: $COMPRESSION_CHECKPOINT"
 
-time python -m medgen.scripts.train \
+time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    training.batch_size=1 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
-    training.gradient_checkpointing=true \
     latent.enabled=true \
     latent.compression_checkpoint=${COMPRESSION_CHECKPOINT} \
     latent.compression_type=auto \

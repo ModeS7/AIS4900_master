@@ -29,7 +29,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # 3D Pixel-Space Diffusion: Seg Mask conditioned on Tumor Size Bins
@@ -42,7 +42,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Mode: seg (uses seg_diffusion_3d config)
 #   - in_channels: 1 = noisy_seg (conditioning via embedding, not concat)
 #   - out_channels: 1 = predicted noise/velocity for seg
-#   - conditioning: 7-dim size bin vector (embedded and added to timestep)
+#   - conditioning: 7-dim size bin vector (FiLM modulation on timestep embed)
 #
 # Size bins (mm, RANO-BM aligned): [0-3, 3-6, 6-10, 10-15, 15-20, 20-30, 30+]
 # Example: [0, 0, 2, 0, 0, 0, 1] = 2 tumors 6-10mm + 1 tumor 30+mm
@@ -52,7 +52,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Resolution: 128x128x160
 # ============================================================================
 
-time python -m medgen.scripts.train \
+time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=seg_diffusion_3d \
@@ -60,10 +60,8 @@ time python -m medgen.scripts.train \
     volume.height=128 \
     volume.width=128 \
     volume.pad_depth_to=160 \
-    training.batch_size=1 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
-    training.gradient_checkpointing=true \
     training.name=exp2_pixel_seg_sizebin_
 
 conda deactivate

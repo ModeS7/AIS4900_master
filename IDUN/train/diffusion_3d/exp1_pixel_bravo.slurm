@@ -29,7 +29,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 # Memory optimization
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
 # 3D Pixel-Space Diffusion: Bravo conditioned on Seg Mask
@@ -46,7 +46,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Resolution: 128x128x160
 # ============================================================================
 
-time python -m medgen.scripts.train \
+time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
@@ -54,10 +54,8 @@ time python -m medgen.scripts.train \
     volume.height=128 \
     volume.width=128 \
     volume.pad_depth_to=160 \
-    training.batch_size=1 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
-    training.gradient_checkpointing=true \
     training.name=exp1_pixel_bravo_
 
 conda deactivate

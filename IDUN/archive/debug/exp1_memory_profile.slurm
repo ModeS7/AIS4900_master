@@ -37,7 +37,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # - Profiling logs VRAM at key points for first 3 epochs
 # ============================================================================
 
-time python -m medgen.scripts.train \
+time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
@@ -45,11 +45,9 @@ time python -m medgen.scripts.train \
     volume.height=128 \
     volume.width=128 \
     volume.pad_depth_to=160 \
-    training.batch_size=1 \
     training.epochs=10 \
     training.warmup_epochs=2 \
     training.learning_rate=1e-4 \
-    training.gradient_checkpointing=true \
     training.memory_profiling=true \
     training.name=exp1_memory_profile_
 
