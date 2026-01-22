@@ -145,5 +145,4 @@ def create_plateau_scheduler(
         patience=patience,
         min_lr=min_lr,
         threshold=threshold,
-        verbose=True,
     )
