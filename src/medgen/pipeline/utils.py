@@ -25,17 +25,35 @@ logger = logging.getLogger(__name__)
 class EpochTimeEstimator:
     """Track epoch times and estimate completion time.
 
-    Excludes first epoch from average calculations since it includes
-    warmup overhead (compilation, caching, etc.).
+    Uses total elapsed time for stable estimates. This approach:
+    - Naturally averages over all epochs including validation
+    - Becomes more stable as training progresses
+    - Is immune to individual epoch fluctuations
+
+    Excludes first epoch from calculations since it includes warmup overhead.
     """
 
     def __init__(self, total_epochs: int):
+        """Initialize estimator.
+
+        Args:
+            total_epochs: Total number of epochs for training.
+        """
         self.total_epochs = total_epochs
-        self.epoch_times: List[float] = []
+        self.epoch_count = 0
+        self.total_time = 0.0  # Total time excluding first epoch
+        self.first_epoch_time: Optional[float] = None
 
     def update(self, elapsed_time: float) -> None:
         """Record time for completed epoch."""
-        self.epoch_times.append(elapsed_time)
+        self.epoch_count += 1
+
+        if self.epoch_count == 1:
+            # Store first epoch separately (warmup overhead)
+            self.first_epoch_time = elapsed_time
+        else:
+            # Accumulate total time (excluding first epoch warmup)
+            self.total_time += elapsed_time
 
     def get_eta_string(self) -> str:
         """Get formatted ETA string.
@@ -43,21 +61,23 @@ class EpochTimeEstimator:
         Returns:
             String like "ETA: 2h 30m (Jan 20 15:30)" or empty if not enough data.
         """
-        if len(self.epoch_times) < 1:
+        if self.epoch_count < 1:
             return ""
 
-        current_epoch = len(self.epoch_times)
-        remaining_epochs = self.total_epochs - current_epoch
+        remaining_epochs = self.total_epochs - self.epoch_count
 
         if remaining_epochs <= 0:
             return ""
 
-        # Use average excluding first epoch (warmup) if we have enough data
-        if len(self.epoch_times) >= 2:
-            avg_time = sum(self.epoch_times[1:]) / len(self.epoch_times[1:])
+        # Calculate average time per epoch (excluding first epoch warmup)
+        if self.epoch_count >= 2:
+            # Use total accumulated time / epochs (excluding first)
+            avg_time = self.total_time / (self.epoch_count - 1)
+        elif self.first_epoch_time is not None:
+            # Only have first epoch, use it (likely overestimate)
+            avg_time = self.first_epoch_time
         else:
-            # Only have first epoch, use it but it's likely overestimate
-            avg_time = self.epoch_times[0]
+            return ""
 
         eta_seconds = avg_time * remaining_epochs
         completion_time = datetime.now() + timedelta(seconds=eta_seconds)
@@ -76,22 +96,22 @@ class EpochTimeEstimator:
     def _format_duration(self, seconds: float) -> str:
         """Format duration in human-readable format."""
         if seconds < 60:
-            return f"{seconds:.0f}s"
+            return f"{int(seconds)}s"
         elif seconds < 3600:
-            minutes = seconds / 60
-            return f"{minutes:.0f}m"
+            minutes = int(seconds // 60)
+            return f"{minutes}m"
         elif seconds < 86400:
-            hours = seconds / 3600
-            minutes = (seconds % 3600) / 60
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
             if minutes > 0:
-                return f"{hours:.0f}h {minutes:.0f}m"
-            return f"{hours:.0f}h"
+                return f"{hours}h {minutes}m"
+            return f"{hours}h"
         else:
-            days = seconds / 86400
-            hours = (seconds % 86400) / 3600
+            days = int(seconds // 86400)
+            hours = int((seconds % 86400) // 3600)
             if hours > 0:
-                return f"{days:.0f}d {hours:.0f}h"
-            return f"{days:.0f}d"
+                return f"{days}d {hours}h"
+            return f"{days}d"
 
 
 def log_epoch_summary(

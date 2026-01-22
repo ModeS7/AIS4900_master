@@ -71,16 +71,12 @@ from .score_aug_3d import (
     OMEGA_ENCODING_DIM_3D,
 )
 
-# SDA - Shifted Data Augmentation (2D)
+# SDA - Shifted Data Augmentation (unified 2D/3D)
 from .sda import (
     SDATransform,
+    SDATransform3D,  # Alias for backwards compatibility
     create_sda_transform,
-)
-
-# SDA (3D)
-from .sda_3d import (
-    SDATransform3D,
-    create_sda_transform_3d,
+    create_sda_transform_3d,  # Alias for backwards compatibility
 )
 
 __all__ = [
@@ -119,10 +115,9 @@ __all__ = [
     'apply_mode_intensity_scale_3d',
     'inverse_mode_intensity_scale_3d',
     'OMEGA_ENCODING_DIM_3D',
-    # SDA 2D
+    # SDA (unified 2D/3D)
     'SDATransform',
+    'SDATransform3D',  # Alias
     'create_sda_transform',
-    # SDA 3D
-    'SDATransform3D',
-    'create_sda_transform_3d',
+    'create_sda_transform_3d',  # Alias
 ]

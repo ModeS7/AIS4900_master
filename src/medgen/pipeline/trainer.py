@@ -322,22 +322,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 if self.is_main_process:
                     logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
             else:
-                if spatial_dims == 2:
-                    from medgen.augmentation import SDATransform
-                    self.sda = SDATransform(
-                        rotation=sda_cfg.get('rotation', True),
-                        flip=sda_cfg.get('flip', True),
-                        noise_shift=sda_cfg.get('noise_shift', 0.1),
-                        prob=sda_cfg.get('prob', 0.5),
-                    )
-                else:
-                    from medgen.augmentation import SDATransform3D
-                    self.sda = SDATransform3D(
-                        rotation=sda_cfg.get('rotation', True),
-                        flip=sda_cfg.get('flip', True),
-                        noise_shift=sda_cfg.get('noise_shift', 0.1),
-                        prob=sda_cfg.get('prob', 0.5),
-                    )
+                # Unified SDATransform handles both 2D and 3D based on input dims
+                from medgen.augmentation import SDATransform
+                self.sda = SDATransform(
+                    rotation=sda_cfg.get('rotation', True),
+                    flip=sda_cfg.get('flip', True),
+                    noise_shift=sda_cfg.get('noise_shift', 0.1),
+                    prob=sda_cfg.get('prob', 0.5),
+                )
                 self.sda_weight = sda_cfg.get('weight', 1.0)
 
                 if self.is_main_process:
@@ -1790,9 +1782,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         # Shift timesteps for augmented path
                         shifted_timesteps = self.sda.shift_timesteps(timesteps)
 
-                        # Add noise at SHIFTED timesteps
+                        # Transform noise to match transformed images
+                        aug_noise_dict = {
+                            k: self.sda.apply_to_target(noise[k], sda_info)
+                            for k in keys
+                        }
+
+                        # Add TRANSFORMED noise at SHIFTED timesteps
                         aug_noisy_dict = {
-                            k: self.strategy.add_noise(aug_images_dict[k], noise[k], shifted_timesteps)
+                            k: self.strategy.add_noise(aug_images_dict[k], aug_noise_dict[k], shifted_timesteps)
                             for k in keys
                         }
 
@@ -1807,10 +1805,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                                 self.model, aug_model_input, shifted_timesteps
                             )
 
-                        # Compute augmented target (transform original target)
+                        # Compute augmented target using transformed images and noise
                         if self.strategy_name == 'rflow':
+                            # Velocity = T(x_0) - T(noise)
                             aug_velocity = {
-                                k: self.sda.apply_to_target(images[k] - noise[k], sda_info)
+                                k: aug_images_dict[k] - aug_noise_dict[k]
                                 for k in keys
                             }
                             aug_mse = sum(
@@ -1818,9 +1817,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                                 for i, k in enumerate(keys)
                             ) / len(keys)
                         else:
-                            aug_noise = {k: self.sda.apply_to_target(noise[k], sda_info) for k in keys}
+                            # DDPM: target is transformed noise (already computed)
                             aug_mse = sum(
-                                ((aug_prediction[:, i:i+1] - aug_noise[k]) ** 2).mean()
+                                ((aug_prediction[:, i:i+1] - aug_noise_dict[k]) ** 2).mean()
                                 for i, k in enumerate(keys)
                             ) / len(keys)
 
@@ -1833,8 +1832,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         # Shift timesteps for augmented path
                         shifted_timesteps = self.sda.shift_timesteps(timesteps)
 
-                        # Add noise at SHIFTED timesteps
-                        aug_noisy = self.strategy.add_noise(aug_images, noise, shifted_timesteps)
+                        # Transform noise to match transformed images
+                        aug_noise = self.sda.apply_to_target(noise, sda_info)
+
+                        # Add TRANSFORMED noise at SHIFTED timesteps
+                        aug_noisy = self.strategy.add_noise(aug_images, aug_noise, shifted_timesteps)
 
                         # Format input and get prediction
                         aug_labels_dict = {'labels': labels}
@@ -1847,13 +1849,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
                                 self.model, aug_model_input, shifted_timesteps
                             )
 
-                        # Compute augmented target (transform original target)
+                        # Compute augmented target using transformed images and noise
                         if self.strategy_name == 'rflow':
-                            velocity_target = images - noise
-                            aug_velocity = self.sda.apply_to_target(velocity_target, sda_info)
+                            # Velocity = T(x_0) - T(noise)
+                            aug_velocity = aug_images - aug_noise
                             aug_mse = ((aug_prediction - aug_velocity) ** 2).mean()
                         else:
-                            aug_noise = self.sda.apply_to_target(noise, sda_info)
+                            # DDPM: target is transformed noise (already computed)
                             aug_mse = ((aug_prediction - aug_noise) ** 2).mean()
 
                         sda_loss = aug_mse

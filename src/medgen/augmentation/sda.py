@@ -3,6 +3,8 @@
 Reference: IEEE Access 2025 - "Regularization for Unconditional Image
 Diffusion Models via Shifted Data Augmentation" by Kensuke Nakamura
 
+Unified implementation for both 2D [B, C, H, W] and 3D [B, C, D, H, W] data.
+
 Key insight: Standard data augmentation on clean images causes "leakage" where
 augmented content appears in generated samples. SDA solves this with a dual-path
 training approach:
@@ -33,18 +35,18 @@ import random
 from typing import Optional, Tuple, Dict, Any
 
 import torch
-import torch.nn as nn
 
 
 class SDATransform:
     """Shifted Data Augmentation transform for diffusion models.
 
+    Unified implementation for 2D [B, C, H, W] and 3D [B, C, D, H, W] data.
     Applies geometric transforms to CLEAN data before noise addition,
     with shifted timesteps to prevent leakage.
 
     Args:
-        rotation: Enable 90/180/270 degree rotations. Default: True.
-        flip: Enable horizontal/vertical flips. Default: True.
+        rotation: Enable 90/180/270 degree rotations in H-W plane. Default: True.
+        flip: Enable flips (H/W for 2D, D/H/W for 3D). Default: True.
         noise_shift: Amount to shift timesteps for augmented path.
             Positive values increase noise level. Default: 0.1.
         prob: Probability of using the augmented path. Default: 0.5.
@@ -69,25 +71,41 @@ class SDATransform:
         self.noise_shift = noise_shift
         self.prob = prob
 
-        # Build list of available transforms
-        self._transforms = []
-        if rotation:
-            self._transforms.extend([
+    def _get_transforms(self, ndim: int) -> list:
+        """Get available transforms based on tensor dimensionality.
+
+        Args:
+            ndim: Number of dimensions (4 for 2D images, 5 for 3D volumes).
+
+        Returns:
+            List of (transform_type, params) tuples.
+        """
+        transforms = []
+
+        if self.rotation:
+            # Rotations in H-W plane (last two dims) - works for both 2D and 3D
+            transforms.extend([
                 ('rot90', {'k': 1}),   # 90 degrees
                 ('rot90', {'k': 2}),   # 180 degrees
                 ('rot90', {'k': 3}),   # 270 degrees
             ])
-        if flip:
-            self._transforms.extend([
-                ('hflip', {}),
-                ('vflip', {}),
-            ])
 
-    def _sample_transform(self) -> Tuple[str, Dict[str, Any]]:
-        """Sample a random transform."""
-        if not self._transforms:
-            return 'identity', {}
-        return random.choice(self._transforms)
+        if self.flip:
+            if ndim == 4:
+                # 2D: [B, C, H, W]
+                transforms.extend([
+                    ('flip', {'dim': -1}),  # W (hflip)
+                    ('flip', {'dim': -2}),  # H (vflip)
+                ])
+            else:
+                # 3D: [B, C, D, H, W]
+                transforms.extend([
+                    ('flip', {'dim': -1}),  # W (hflip)
+                    ('flip', {'dim': -2}),  # H (vflip)
+                    ('flip', {'dim': -3}),  # D (depth flip)
+                ])
+
+        return transforms
 
     def _apply(
         self,
@@ -95,11 +113,11 @@ class SDATransform:
         transform_type: str,
         params: Dict[str, Any],
     ) -> torch.Tensor:
-        """Apply transform to tensor [B, C, H, W].
+        """Apply transform to tensor.
 
         Args:
-            x: Input tensor.
-            transform_type: Type of transform ('rot90', 'hflip', 'vflip', 'identity').
+            x: Input tensor [B, C, H, W] or [B, C, D, H, W].
+            transform_type: Type of transform ('rot90', 'flip', 'identity').
             params: Transform parameters.
 
         Returns:
@@ -108,11 +126,10 @@ class SDATransform:
         if transform_type == 'identity':
             return x
         elif transform_type == 'rot90':
+            # Rotate in H-W plane (last two dims)
             return torch.rot90(x, k=params['k'], dims=(-2, -1))
-        elif transform_type == 'hflip':
-            return torch.flip(x, dims=[-1])
-        elif transform_type == 'vflip':
-            return torch.flip(x, dims=[-2])
+        elif transform_type == 'flip':
+            return torch.flip(x, dims=[params['dim']])
         return x
 
     def shift_timesteps(
@@ -145,7 +162,7 @@ class SDATransform:
         """Apply the same transform to the target (velocity/noise).
 
         Args:
-            target: Target tensor [B, C, H, W] (velocity for RFlow).
+            target: Target tensor (velocity for RFlow, noise for DDPM).
             transform_info: Transform info from __call__.
 
         Returns:
@@ -167,7 +184,7 @@ class SDATransform:
         Otherwise returns original images with None info.
 
         Args:
-            images: Clean images [B, C, H, W] (before noise addition).
+            images: Clean images [B, C, H, W] or [B, C, D, H, W].
 
         Returns:
             Tuple of:
@@ -179,11 +196,14 @@ class SDATransform:
         if random.random() >= self.prob:
             return images, None
 
-        # Sample and apply transform
-        transform_type, params = self._sample_transform()
+        # Get transforms based on input dimensionality
+        transforms = self._get_transforms(images.ndim)
 
-        if transform_type == 'identity':
+        if not transforms:
             return images, None
+
+        # Sample and apply transform
+        transform_type, params = random.choice(transforms)
 
         transformed = self._apply(images, transform_type, params)
 
@@ -199,6 +219,10 @@ class SDATransform:
             f"rotation={self.rotation}, flip={self.flip}, "
             f"noise_shift={self.noise_shift}, prob={self.prob}"
         )
+
+
+# Alias for backwards compatibility
+SDATransform3D = SDATransform
 
 
 def create_sda_transform(cfg) -> Optional[SDATransform]:
@@ -221,3 +245,7 @@ def create_sda_transform(cfg) -> Optional[SDATransform]:
         noise_shift=sda_cfg.get('noise_shift', 0.1),
         prob=sda_cfg.get('prob', 0.5),
     )
+
+
+# Alias for backwards compatibility
+create_sda_transform_3d = create_sda_transform

@@ -183,10 +183,17 @@ use_multi_gpu: false
 disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)
 
 # Learning rate scheduler
-scheduler: cosine            # Options: "cosine" (default), "constant"
+scheduler: cosine            # Options: "cosine" (default), "constant", "plateau"
                              # cosine: warmup + cosine annealing to eta_min
                              # constant: warmup then constant LR (may help with overfitting)
+                             # plateau: ReduceLROnPlateau - reduces LR when val loss plateaus
 eta_min: 1.0e-6              # Minimum LR for cosine annealing (only used if scheduler=cosine)
+
+# ReduceLROnPlateau settings (only used if scheduler=plateau)
+plateau:
+  factor: 0.5                # Factor to reduce LR by (new_lr = old_lr * factor)
+  patience: 10               # Epochs to wait before reducing LR
+  min_lr: 1.0e-6             # Minimum learning rate
 
 # Gradient Noise Injection
 # Adds Gaussian noise to gradients for implicit regularization
