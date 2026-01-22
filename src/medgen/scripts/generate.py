@@ -89,11 +89,14 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
     return 0.0 < white_percentage < max_white_percentage
 
 
-def save_nifti(data: np.ndarray, output_path: str, affine: Optional[np.ndarray] = None) -> None:
-    """Save numpy array as NIfTI file."""
-    if affine is None:
-        affine = np.eye(4)
-    nifti = nib.Nifti1Image(data.astype(np.float32), affine)
+def save_nifti(data: np.ndarray, output_path: str) -> None:
+    """Save numpy array as NIfTI file.
+
+    Args:
+        data: 3D numpy array [H, W, D]
+        output_path: Path to save the NIfTI file
+    """
+    nifti = nib.Nifti1Image(data.astype(np.float32), np.eye(4))
     nib.save(nifti, output_path)
 
 
@@ -292,8 +295,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     Output format:
         - bins.csv: All size bin information for all samples
-        - {id}.nii.gz: Combined volume [D, H, W, 2] where channel 0=seg, channel 1=bravo
-          (or just [D, H, W] for seg_conditioned mode)
+        - {id}/seg.nii.gz: Segmentation mask volume [H, W, D]
+        - {id}/bravo.nii.gz: BRAVO image volume [H, W, D] (bravo mode only)
     """
     # Validate gen_mode (fail-fast before loading models)
     VALID_3D_MODES = {'bravo', 'seg_conditioned'}
@@ -340,12 +343,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device, size_bins=size_bins)
 
             # Binarize and save
-            seg_np = seg[0, 0].cpu().numpy()
+            seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
             seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
             seg_binary = make_binary(seg_np, threshold=0.5)
 
-            # Save single-channel seg volume
-            save_nifti(seg_binary, str(output_dir / f"{i:05d}.nii.gz"))
+            # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
+            seg_binary = np.transpose(seg_binary, (1, 2, 0))
+
+            # Save in subdirectory: 00000/seg.nii.gz
+            sample_dir = output_dir / f"{i:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"))
             all_bins.append((i, bins))
 
             if i % 10 == 0:
@@ -383,14 +391,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Generate bravo
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
             bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device, seg_tensor)
-            bravo_np = bravo[0, 0].cpu().numpy()
+            # Clamp to [0, 1] like working 2D code does
+            bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 
-            # Stack seg + bravo into combined volume [D, H, W, 2]
-            # Channel 0 = seg (binary), Channel 1 = bravo (continuous)
-            # NOTE: NIfTI tools will interpret dim 4 as time series (2 frames).
-            # This is intentional - load with nibabel and index [..., 0] for seg, [..., 1] for bravo
-            combined = np.stack([seg_binary, bravo_np], axis=-1)
-            save_nifti(combined, str(output_dir / f"{i:05d}.nii.gz"))
+            # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
+            seg_binary = np.transpose(seg_binary, (1, 2, 0))
+            bravo_np = np.transpose(bravo_np, (1, 2, 0))
+
+            # Save in subdirectory: 00000/seg.nii.gz and 00000/bravo.nii.gz
+            sample_dir = output_dir / f"{i:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"))
+            save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"))
             all_bins.append((i, bins))
 
             if i % 10 == 0:

@@ -37,12 +37,13 @@ from medgen.core import (
     DEFAULT_NUM_HEAD_CHANNELS,
 )
 from medgen.data import create_conditioning_wrapper
+from medgen.models.wrappers.size_bin_embed import SizeBinModelWrapper
 
 
 log = logging.getLogger(__name__)
 
 
-WrapperType = Literal['raw', 'score_aug', 'mode_embed', 'combined']
+WrapperType = Literal['raw', 'score_aug', 'mode_embed', 'combined', 'size_bin']
 
 
 @dataclass
@@ -70,12 +71,13 @@ def detect_wrapper_type(state_dict: Dict[str, Any]) -> WrapperType:
     and have additional MLP keys for conditioning:
     - omega_mlp: ScoreAug conditioning
     - mode_mlp: Mode (modality) embedding
+    - size_bin_time_embed: Size bin conditioning for seg_conditioned mode
 
     Args:
         state_dict: Model state dictionary from checkpoint.
 
     Returns:
-        Wrapper type: 'raw', 'score_aug', 'mode_embed', or 'combined'.
+        Wrapper type: 'raw', 'score_aug', 'mode_embed', 'combined', or 'size_bin'.
     """
     keys = list(state_dict.keys())
 
@@ -89,6 +91,8 @@ def detect_wrapper_type(state_dict: Dict[str, Any]) -> WrapperType:
     # Check for conditioning MLPs
     has_omega_mlp = any('omega_mlp' in k for k in keys)
     has_mode_mlp = any('mode_mlp' in k for k in keys)
+    # Size bin wrapper has size_bin_time_embed or model.time_embed.bin_embeddings
+    has_size_bin = any('size_bin_time_embed' in k or 'bin_embeddings' in k for k in keys)
 
     if has_omega_mlp and has_mode_mlp:
         return 'combined'
@@ -96,6 +100,8 @@ def detect_wrapper_type(state_dict: Dict[str, Any]) -> WrapperType:
         return 'score_aug'
     elif has_mode_mlp:
         return 'mode_embed'
+    elif has_size_bin:
+        return 'size_bin'
 
     # Has model prefix but no recognized MLPs - could be a different wrapper
     # Fall back to raw and let strict loading fail if incompatible
@@ -170,8 +176,8 @@ def load_diffusion_model_with_metadata(
         ValueError: If channels not resolvable from args or checkpoint.
         FileNotFoundError: If checkpoint file doesn't exist.
     """
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    # Load checkpoint (weights_only=False needed for omegaconf config in checkpoint)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Extract state dict
     if 'model_state_dict' in checkpoint:
@@ -184,28 +190,48 @@ def load_diffusion_model_with_metadata(
     log.info(f"Detected model type: {wrapper_type}")
 
     # Extract config and architecture params
+    # Architecture can be in multiple places depending on checkpoint format:
+    # 1. 'model_config' (standalone key)
+    # 2. 'config' (flat format - old seg_conditioned checkpoints)
+    # 3. 'config.model' (nested format - new trainer checkpoints)
     config = checkpoint.get('config', {})
     model_config = checkpoint.get('model_config', {})
 
+    # Check for nested model config (config.model)
+    nested_model_config = config.get('model', {}) if isinstance(config, dict) else {}
+
+    # Merge: model_config > nested_model_config > config (priority order)
+    arch_config = {**config, **nested_model_config, **model_config}
+
     # Resolve architecture parameters (args > checkpoint > defaults)
     resolved_in_channels = _resolve_channels(
-        'in_channels', in_channels, model_config, required=True
+        'in_channels', in_channels, arch_config, required=True
     )
     resolved_out_channels = _resolve_channels(
-        'out_channels', out_channels, model_config, required=True
+        'out_channels', out_channels, arch_config, required=True
     )
 
-    channels = model_config.get('channels', list(DEFAULT_CHANNELS))
-    attention_levels = model_config.get('attention_levels', list(DEFAULT_ATTENTION_LEVELS))
-    num_res_blocks = model_config.get('num_res_blocks', DEFAULT_NUM_RES_BLOCKS)
-    num_head_channels = model_config.get('num_head_channels', DEFAULT_NUM_HEAD_CHANNELS)
+    channels = arch_config.get('channels', list(DEFAULT_CHANNELS))
+    attention_levels = arch_config.get('attention_levels', list(DEFAULT_ATTENTION_LEVELS))
+    num_res_blocks = arch_config.get('num_res_blocks', DEFAULT_NUM_RES_BLOCKS)
+    num_head_channels = arch_config.get('num_head_channels', DEFAULT_NUM_HEAD_CHANNELS)
 
     # Use checkpoint spatial_dims if available, else use arg
-    resolved_spatial_dims = model_config.get('spatial_dims', spatial_dims)
+    resolved_spatial_dims = arch_config.get('spatial_dims', spatial_dims)
+
+    # Compute norm_num_groups: must divide all channel counts
+    # Default is 32, but if channels are smaller, compute GCD
+    import math
+    from functools import reduce
+    norm_num_groups = arch_config.get('norm_num_groups', None)
+    if norm_num_groups is None:
+        # Find largest divisor that works for all channels (max 32)
+        gcd = reduce(math.gcd, channels)
+        norm_num_groups = min(gcd, 32)
 
     # Log architecture info
-    if 'channels' in model_config:
-        log.info(f"Using architecture from checkpoint: channels={channels}")
+    if 'channels' in arch_config:
+        log.info(f"Using architecture from checkpoint: channels={channels}, norm_num_groups={norm_num_groups}")
     else:
         log.info(f"Using default architecture: channels={channels}")
 
@@ -218,6 +244,7 @@ def load_diffusion_model_with_metadata(
         attention_levels=tuple(attention_levels),
         num_res_blocks=num_res_blocks,
         num_head_channels=num_head_channels,
+        norm_num_groups=norm_num_groups,
     )
 
     # Wrap model if needed
@@ -234,6 +261,17 @@ def load_diffusion_model_with_metadata(
             embed_dim=embed_dim,
         )
         log.info(f"Applied {wrapper_name} conditioning wrapper")
+    elif wrapper_type == 'size_bin':
+        # Size bin wrapper for seg_conditioned mode
+        # Get num_bins from checkpoint config if available
+        size_bin_cfg = config.get('size_bin', {})
+        num_bins = size_bin_cfg.get('num_bins', 7)
+        model = SizeBinModelWrapper(
+            model=base_model,
+            embed_dim=embed_dim,
+            num_bins=num_bins,
+        )
+        log.info(f"Applied SizeBinModelWrapper (num_bins={num_bins})")
     else:
         raise ValueError(f"Unknown wrapper type: {wrapper_type}")
 
