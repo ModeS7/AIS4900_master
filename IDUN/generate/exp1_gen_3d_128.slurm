@@ -7,9 +7,9 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="gen_3d_128"
-#SBATCH --output=IDUN/output/generate/gen_3d_128_%j.out
-#SBATCH --error=IDUN/output/generate/gen_3d_128_%j.err
+#SBATCH --job-name="exp1_gen_3d_128"
+#SBATCH --output=IDUN/output/generate/exp1_gen_3d_128_%j.out
+#SBATCH --error=IDUN/output/generate/exp1_gen_3d_128_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
@@ -39,10 +39,10 @@ BRAVO_CHECKPOINT="runs/bravo/diffusion_3d/exp1_pixel_bravo_rflow_128x160_2026011
 time python -m medgen.scripts.generate \
     paths=cluster \
     spatial_dims=3 \
-    mode=bravo \
+    gen_mode=bravo \
     seg_model=${SEG_CHECKPOINT} \
     image_model=${BRAVO_CHECKPOINT} \
-    output_subdir=3d_128_50_baseline \
+    output_subdir=exp1_3d_128_50_baseline \
     num_images=100 \
     num_steps=50 \
     image_size=128 \

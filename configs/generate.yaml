@@ -22,7 +22,7 @@ defaults:
 # Core settings
 spatial_dims: 2           # 2 for images, 3 for volumes
 strategy: rflow           # ddpm or rflow
-mode: bravo               # bravo, dual, seg_conditioned
+gen_mode: bravo           # bravo, dual, seg_conditioned
 
 # Model paths (relative to working dir or absolute)
 seg_model: null           # Path to trained segmentation model

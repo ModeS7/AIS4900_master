@@ -106,16 +106,6 @@ def get_noise_shape(batch_size: int, channels: int, spatial_dims: int,
         return (batch_size, channels, depth, image_size, image_size)
 
 
-def set_size_bins_on_model(model: torch.nn.Module, size_bins: torch.Tensor) -> None:
-    """Set size bins on model's time embedding if it supports it."""
-    model_raw = model.module if hasattr(model, 'module') else model
-
-    if hasattr(model_raw, 'time_embed') and hasattr(model_raw.time_embed, 'set_size_bins'):
-        model_raw.time_embed.set_size_bins(size_bins)
-    elif hasattr(model_raw, 'set_size_bins'):
-        model_raw.set_size_bins(size_bins)
-
-
 def generate_batch(
     model: torch.nn.Module,
     strategy: DiffusionStrategy,
@@ -123,9 +113,24 @@ def generate_batch(
     num_steps: int,
     device: torch.device,
     conditioning: Optional[torch.Tensor] = None,
+    size_bins: Optional[torch.Tensor] = None,
     use_progress: bool = False,
 ) -> torch.Tensor:
-    """Generate a batch using diffusion model."""
+    """Generate a batch using diffusion model.
+
+    Args:
+        model: Diffusion model (may be SizeBinModelWrapper for seg_conditioned).
+        strategy: Diffusion strategy (DDPM or RFlow).
+        noise: Initial noise tensor.
+        num_steps: Number of denoising steps.
+        device: Torch device.
+        conditioning: Optional conditioning tensor (e.g., seg mask for bravo).
+        size_bins: Optional size bin tensor [B, num_bins] for seg_conditioned mode.
+        use_progress: Show progress bar.
+
+    Returns:
+        Generated tensor.
+    """
     if conditioning is not None:
         model_input = torch.cat([noise, conditioning], dim=1)
     else:
@@ -135,12 +140,18 @@ def generate_batch(
         with torch.no_grad():
             return strategy.generate(
                 model, model_input, num_steps, device,
+                size_bins=size_bins,
                 use_progress_bars=use_progress
             )
 
 
 def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     """Run 2D generation pipeline: seg -> bravo/dual."""
+    # Validate gen_mode
+    VALID_2D_MODES = {'bravo', 'dual'}
+    if cfg.gen_mode not in VALID_2D_MODES:
+        raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 2D. Valid: {VALID_2D_MODES}")
+
     device = torch.device("cuda")
     batch_size = auto_adjust_batch_size(cfg.batch_size, 2, device)
 
@@ -155,8 +166,8 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         in_channels=1, out_channels=1, compile_model=True
     )
 
-    log.info(f"Loading image model ({cfg.mode})...")
-    if cfg.mode == 'bravo':
+    log.info(f"Loading image model ({cfg.gen_mode})...")
+    if cfg.gen_mode == 'bravo':
         in_ch, out_ch = 2, 1
     else:  # dual
         in_ch, out_ch = 3, 2
@@ -173,12 +184,17 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     mask_cache: List[Tuple[np.ndarray, int]] = []
     use_progress = cfg.verbose
 
+    # Infinite loop protection
+    MAX_CONSECUTIVE_FAILURES = 100
+    consecutive_failures = 0
+
     while current_image < cfg.num_images:
         # Generate seg masks
         noise = torch.randn(get_noise_shape(batch_size, 1, 2, cfg.image_size, 0), device=device)
         seg_masks = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
 
         # Validate and cache masks
+        valid_in_batch = 0
         for j in range(len(seg_masks)):
             if current_image >= cfg.num_images:
                 break
@@ -190,6 +206,21 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             if is_valid_mask(mask):
                 mask_cache.append((mask, current_image))
                 current_image += 1
+                valid_in_batch += 1
+
+        # Track consecutive failures to prevent infinite loop
+        if valid_in_batch == 0:
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                log.error(
+                    f"No valid masks in {MAX_CONSECUTIVE_FAILURES} consecutive batches. "
+                    f"Check seg model quality or adjust MAX_WHITE_PERCENTAGE threshold."
+                )
+                raise RuntimeError(
+                    f"Generation stuck: no valid masks in {MAX_CONSECUTIVE_FAILURES} batches"
+                )
+        else:
+            consecutive_failures = 0  # Reset on success
 
         # Process cached masks in batches
         while len(mask_cache) >= batch_size:
@@ -203,14 +234,14 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             ], dim=0).to(device, dtype=torch.float32)
 
             # Generate images
-            out_ch = 1 if cfg.mode == 'bravo' else 2
+            out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, cfg.image_size, 0), device=device)
             images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
 
             # Save
             for i, counter in enumerate(batch_counters):
                 output_path = output_dir / f"{counter:05d}.nii.gz"
-                if cfg.mode == 'bravo':
+                if cfg.gen_mode == 'bravo':
                     combined = np.stack([images[i, 0].cpu().numpy(), batch_masks[i]], axis=-1)
                 else:
                     combined = np.stack([
@@ -226,12 +257,12 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     if mask_cache:
         for mask, counter in mask_cache:
             masks_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).to(device, dtype=torch.float32)
-            out_ch = 1 if cfg.mode == 'bravo' else 2
+            out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(1, out_ch, 2, cfg.image_size, 0), device=device)
             images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
 
             output_path = output_dir / f"{counter:05d}.nii.gz"
-            if cfg.mode == 'bravo':
+            if cfg.gen_mode == 'bravo':
                 combined = np.stack([images[0, 0].cpu().numpy(), mask], axis=-1)
             else:
                 combined = np.stack([images[0, 0].cpu().numpy(), images[0, 1].cpu().numpy(), mask], axis=-1)
@@ -264,11 +295,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         - {id}.nii.gz: Combined volume [D, H, W, 2] where channel 0=seg, channel 1=bravo
           (or just [D, H, W] for seg_conditioned mode)
     """
+    # Validate gen_mode (fail-fast before loading models)
+    VALID_3D_MODES = {'bravo', 'seg_conditioned'}
+    if cfg.gen_mode not in VALID_3D_MODES:
+        raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 3D. Valid: {VALID_3D_MODES}")
+
     device = torch.device("cuda")
     batch_size = auto_adjust_batch_size(cfg.batch_size, 3, device)
 
     strategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
-    strategy.setup_scheduler(1000, cfg.image_size)
+    strategy.setup_scheduler(
+        num_timesteps=1000,
+        image_size=cfg.image_size,
+        depth_size=cfg.depth,
+        spatial_dims=3,
+    )
 
     # Parse fixed size bins if provided
     fixed_bins = None
@@ -283,7 +324,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     all_bins: List[Tuple[int, List[int]]] = []
 
     # Mode: seg_conditioned only (just generate seg masks)
-    if cfg.mode == 'seg_conditioned':
+    if cfg.gen_mode == 'seg_conditioned':
         log.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
@@ -294,10 +335,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
-            set_size_bins_on_model(seg_model, size_bins)
 
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
+            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device, size_bins=size_bins)
 
             # Binarize and save
             seg_np = seg[0, 0].cpu().numpy()
@@ -312,7 +352,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 torch.cuda.empty_cache()
 
     # Mode: bravo (full pipeline: seg -> bravo)
-    elif cfg.mode == 'bravo':
+    elif cfg.gen_mode == 'bravo':
         log.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
@@ -329,11 +369,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
-            set_size_bins_on_model(seg_model, size_bins)
 
-            # Generate seg
+            # Generate seg with size bin conditioning
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
+            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device, size_bins=size_bins)
 
             # Binarize seg
             seg_np = seg[0, 0].cpu().numpy()
@@ -348,6 +387,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Stack seg + bravo into combined volume [D, H, W, 2]
             # Channel 0 = seg (binary), Channel 1 = bravo (continuous)
+            # NOTE: NIfTI tools will interpret dim 4 as time series (2 frames).
+            # This is intentional - load with nibabel and index [..., 0] for seg, [..., 1] for bravo
             combined = np.stack([seg_binary, bravo_np], axis=-1)
             save_nifti(combined, str(output_dir / f"{i:05d}.nii.gz"))
             all_bins.append((i, bins))
@@ -356,7 +397,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 torch.cuda.empty_cache()
 
     else:
-        raise ValueError(f"Mode '{cfg.mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
+        raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")
@@ -373,10 +414,10 @@ def main(cfg: DictConfig) -> None:
         output_dir = generated_dir / cfg.output_subdir
     else:
         # Default subdirectory based on mode and spatial dims
-        output_dir = generated_dir / f"{cfg.spatial_dims}d_{cfg.mode}"
+        output_dir = generated_dir / f"{cfg.spatial_dims}d_{cfg.gen_mode}"
 
     log.info("=" * 60)
-    log.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.mode} | Strategy: {cfg.strategy}")
+    log.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.gen_mode} | Strategy: {cfg.strategy}")
     log.info(f"Output: {output_dir}")
     log.info(f"Paths: {cfg.paths.name}")
     log.info("=" * 60)
@@ -386,9 +427,9 @@ def main(cfg: DictConfig) -> None:
             raise ValueError("2D mode requires seg_model and image_model")
         run_2d_pipeline(cfg, output_dir)
     else:
-        if cfg.mode == 'seg_conditioned' and not cfg.seg_model:
+        if cfg.gen_mode == 'seg_conditioned' and not cfg.seg_model:
             raise ValueError("seg_conditioned mode requires seg_model")
-        if cfg.mode == 'bravo' and (not cfg.seg_model or not cfg.image_model):
+        if cfg.gen_mode == 'bravo' and (not cfg.seg_model or not cfg.image_model):
             raise ValueError("3D bravo mode requires seg_model and image_model")
         run_3d_pipeline(cfg, output_dir)
 
