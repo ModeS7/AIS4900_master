@@ -50,6 +50,11 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Uses 3D connected components: tumors touching in ANY direction count as ONE
 #
 # Resolution: 256x256x160
+#
+# Stability fixes (collapsed at epoch 65 with grad_norm_max spike to 21.5):
+#   - learning_rate: 1e-4 -> 5e-5 (half, more stable)
+#   - gradient_clip_norm: 1.0 -> 0.5 (stricter clipping)
+#   - warmup_epochs: 5 -> 10 (longer warmup)
 # ============================================================================
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
@@ -61,7 +66,9 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.width=256 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
-    training.learning_rate=1e-4 \
+    training.learning_rate=5e-5 \
+    training.gradient_clip_norm=0.5 \
+    training.warmup_epochs=10 \
     training.name=exp2_1_pixel_seg_sizebin_
 
 conda deactivate
