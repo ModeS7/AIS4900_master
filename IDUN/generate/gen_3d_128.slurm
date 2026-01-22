@@ -7,9 +7,9 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="gen_3d_full"
-#SBATCH --output=IDUN/output/generate/gen_3d_full_%j.out
-#SBATCH --error=IDUN/output/generate/gen_3d_full_%j.err
+#SBATCH --job-name="gen_3d_128"
+#SBATCH --output=IDUN/output/generate/gen_3d_128_%j.out
+#SBATCH --error=IDUN/output/generate/gen_3d_128_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
