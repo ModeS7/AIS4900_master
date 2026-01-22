@@ -32,6 +32,10 @@ image_model: null         # Path to trained image model (bravo or dual)
 image_size: 128           # Image height/width
 depth: 160                # Volume depth for 3D
 
+# Voxel spacing in mm (for correct NIfTI display)
+# Default: 256->128 downsampled (0.94*2=1.88mm XY), 1mm Z
+voxel_size: [1.88, 1.88, 1.0]
+
 # Generation settings
 batch_size: 8             # Batch size (auto-reduced for 3D)
 num_images: 1000          # Number of samples to generate

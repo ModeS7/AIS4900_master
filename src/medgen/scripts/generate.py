@@ -89,14 +89,18 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
     return 0.0 < white_percentage < max_white_percentage
 
 
-def save_nifti(data: np.ndarray, output_path: str) -> None:
-    """Save numpy array as NIfTI file.
+def save_nifti(data: np.ndarray, output_path: str,
+               voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
+    """Save numpy array as NIfTI file with correct voxel spacing.
 
     Args:
         data: 3D numpy array [H, W, D]
         output_path: Path to save the NIfTI file
+        voxel_size: Voxel dimensions in mm (x, y, z)
     """
-    nifti = nib.Nifti1Image(data.astype(np.float32), np.eye(4))
+    # Affine with voxel spacing on diagonal
+    affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
+    nifti = nib.Nifti1Image(data.astype(np.float32), affine)
     nib.save(nifti, output_path)
 
 
@@ -353,7 +357,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Save in subdirectory: 00000/seg.nii.gz
             sample_dir = output_dir / f"{i:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
-            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"))
+            voxel = tuple(cfg.voxel_size)
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             all_bins.append((i, bins))
 
             if i % 10 == 0:
@@ -401,8 +406,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Save in subdirectory: 00000/seg.nii.gz and 00000/bravo.nii.gz
             sample_dir = output_dir / f"{i:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
-            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"))
-            save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"))
+            voxel = tuple(cfg.voxel_size)
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
             all_bins.append((i, bins))
 
             if i % 10 == 0:
