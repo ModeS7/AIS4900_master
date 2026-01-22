@@ -11,10 +11,11 @@ ScoreAug:                 x -> add noise -> T(x + noise) -> denoise -> T(x)
 This aligns with diffusion's denoising mechanism and provides stronger
 regularization without changing the output distribution.
 
+Supports both 2D images [B, C, H, W] and 3D volumes [B, C, D, H, W].
+
 Conditioning requirements (per paper):
-- Rotation: REQUIRES omega conditioning (noise is rotation-invariant, model can cheat)
+- Rotation/Flip: REQUIRES omega conditioning (noise is rotation-invariant, model can cheat)
 - Translation/Cutout: Work without conditioning but risk data leakage
-- Brightness: Linear transform, works without conditioning
 
 v2 mode adds structured masking patterns:
 - Non-destructive transforms (can stack): rotation, flip, translation
@@ -36,7 +37,7 @@ from medgen.models.wrappers import create_zero_init_mlp
 # Fixed Pattern Definitions (16 total)
 # =============================================================================
 # These are deterministic masks that the network learns via one-hot embedding.
-# Patterns are generated as functions of (H, W) for flexibility.
+# Patterns are generated as functions of spatial dimensions.
 
 def _checkerboard_mask(H: int, W: int, grid_size: int, offset: bool) -> torch.Tensor:
     """Generate checkerboard mask (alternating grid cells).
@@ -175,7 +176,13 @@ def _patch_dropout_mask(H: int, W: int, patch_size: int, drop_ratio: float, seed
     return mask
 
 
-def generate_pattern_mask(pattern_id: int, H: int, W: int) -> torch.Tensor:
+def generate_pattern_mask(
+    pattern_id: int,
+    H: int,
+    W: int,
+    D: Optional[int] = None,
+    spatial_dims: int = 2,
+) -> torch.Tensor:
     """Generate mask for a fixed pattern ID.
 
     Pattern IDs (16 total):
@@ -186,51 +193,61 @@ def generate_pattern_mask(pattern_id: int, H: int, W: int) -> torch.Tensor:
 
     Args:
         pattern_id: Pattern index (0-15)
-        H, W: Image dimensions
+        H, W: Spatial dimensions (height, width)
+        D: Depth dimension for 3D (required if spatial_dims=3)
+        spatial_dims: Number of spatial dimensions (2 or 3)
 
     Returns:
-        Mask tensor [H, W] with 0=keep, 1=drop
+        Mask tensor [H, W] for 2D or [D, H, W] for 3D, with 0=keep, 1=drop
     """
+    # Generate 2D base mask
     if pattern_id < 4:
         # Checkerboard patterns
         if pattern_id == 0:
-            return _checkerboard_mask(H, W, grid_size=4, offset=False)
+            mask_2d = _checkerboard_mask(H, W, grid_size=4, offset=False)
         elif pattern_id == 1:
-            return _checkerboard_mask(H, W, grid_size=4, offset=True)
+            mask_2d = _checkerboard_mask(H, W, grid_size=4, offset=True)
         elif pattern_id == 2:
-            return _checkerboard_mask(H, W, grid_size=8, offset=False)
+            mask_2d = _checkerboard_mask(H, W, grid_size=8, offset=False)
         elif pattern_id == 3:
-            return _checkerboard_mask(H, W, grid_size=8, offset=True)
+            mask_2d = _checkerboard_mask(H, W, grid_size=8, offset=True)
 
     elif pattern_id < 8:
         # Grid dropout patterns
         if pattern_id == 4:
-            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=42)
+            mask_2d = _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=42)
         elif pattern_id == 5:
-            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=123)
+            mask_2d = _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.25, seed=123)
         elif pattern_id == 6:
-            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=42)
+            mask_2d = _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=42)
         elif pattern_id == 7:
-            return _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=123)
+            mask_2d = _grid_dropout_mask(H, W, grid_size=4, drop_ratio=0.50, seed=123)
 
     elif pattern_id < 12:
         # Coarse dropout patterns
-        return _coarse_dropout_mask(H, W, pattern_id=pattern_id - 8)
+        mask_2d = _coarse_dropout_mask(H, W, pattern_id=pattern_id - 8)
 
     else:
         # Patch dropout patterns (8x8 patches for 128px image = 16 patches)
         patch_size = max(H // 8, 1)
         if pattern_id == 12:
-            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=42)
+            mask_2d = _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=42)
         elif pattern_id == 13:
-            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=123)
+            mask_2d = _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.25, seed=123)
         elif pattern_id == 14:
-            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=42)
+            mask_2d = _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=42)
         elif pattern_id == 15:
-            return _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=123)
+            mask_2d = _patch_dropout_mask(H, W, patch_size=patch_size, drop_ratio=0.50, seed=123)
+        else:
+            mask_2d = torch.zeros(H, W)
 
-    # Fallback: no masking
-    return torch.zeros(H, W)
+    if spatial_dims == 2:
+        return mask_2d
+    else:
+        # Expand to 3D: uniform across depth
+        if D is None:
+            raise ValueError("D required for spatial_dims=3")
+        return mask_2d.unsqueeze(0).expand(D, -1, -1).contiguous()
 
 
 # Pattern category names for debugging/logging
@@ -259,25 +276,30 @@ NUM_PATTERNS = 16
 class ScoreAugTransform:
     """Applies transforms to noisy input and target per ScoreAug paper.
 
-    Transforms (from paper):
-    - Rotation: 90, 180, 270 degrees (REQUIRES omega conditioning)
-    - Translation: +/-10% shift with zero-padding
-    - Cutout: Random rectangular region zeroed
-    - Brightness: Scale by factor in [1/B, B] range
+    Supports both 2D images [B, C, H, W] and 3D volumes [B, C, D, H, W].
 
-    Note: Rotation requires omega conditioning because Gaussian noise is
+    Transforms:
+    - Rotation: 90, 180, 270 degrees (REQUIRES omega conditioning)
+      - 2D: around single axis
+      - 3D: around D, H, or W axes
+    - Flip: horizontal/vertical (2D) or D/H/W axes (3D)
+    - Translation: with zero-padding
+      - 2D: +/-40% X, +/-20% Y
+      - 3D: +/-40% W, +/-20% H, 0% D (brain centered in Z)
+    - Cutout: Random rectangular region zeroed
+
+    Note: Rotation/flip requires omega conditioning because Gaussian noise is
     rotation-invariant, allowing the model to detect rotation from the
     noise pattern and "cheat" by inverting it before denoising.
     """
 
     def __init__(
         self,
+        spatial_dims: int = 2,
         rotation: bool = True,
         flip: bool = True,
         translation: bool = False,
         cutout: bool = False,
-        brightness: bool = False,
-        brightness_range: float = 1.2,
         compose: bool = False,
         compose_prob: float = 0.5,
         # v2 mode parameters
@@ -302,12 +324,11 @@ class ScoreAugTransform:
         - Destructive (pick one): cutout OR fixed pattern (checkerboard/grid/coarse/patch)
 
         Args:
-            rotation: Enable 90, 180, 270 degree rotations (requires omega conditioning)
-            flip: Enable horizontal flip (requires omega conditioning for consistency)
-            translation: Enable ±40% X, ±20% Y translation with zero-padding
-            cutout: Enable random rectangle cutout (10-30% each dimension)
-            brightness: Enable brightness scaling (DEPRECATED - do not use)
-            brightness_range: Max brightness factor B (DEPRECATED)
+            spatial_dims: Number of spatial dimensions (2 or 3).
+            rotation: Enable rotations (requires omega conditioning)
+            flip: Enable flips (requires omega conditioning for consistency)
+            translation: Enable translation with zero-padding
+            cutout: Enable random rectangular cutout
             compose: If True, apply transforms independently (legacy mode)
             compose_prob: Probability for each transform when compose=True
             v2_mode: Enable structured non-destructive/destructive augmentation
@@ -319,12 +340,11 @@ class ScoreAugTransform:
             patterns_coarse_dropout: Enable coarse dropout patterns (IDs 8-11)
             patterns_patch_dropout: Enable patch dropout patterns (IDs 12-15)
         """
+        self.spatial_dims = spatial_dims
         self.rotation = rotation
         self.flip = flip
         self.translation = translation
         self.cutout = cutout
-        self.brightness = brightness
-        self.brightness_range = brightness_range
         self.compose = compose
         self.compose_prob = compose_prob
 
@@ -350,7 +370,7 @@ class ScoreAugTransform:
             self._enabled_patterns.extend([12, 13, 14, 15])
 
         # Cache for pattern masks (generated lazily per image size)
-        self._pattern_cache: Dict[Tuple[int, int, int], torch.Tensor] = {}
+        self._pattern_cache: Dict[Tuple[int, ...], torch.Tensor] = {}
 
     def sample_transform(self) -> Tuple[str, Dict[str, Any]]:
         """Sample a random transform with equal probability (per paper).
@@ -364,13 +384,11 @@ class ScoreAugTransform:
         # Build list of all enabled transforms + identity
         transforms = ['identity']
         if self.rotation or self.flip:
-            transforms.append('spatial')  # Unified D4 symmetries (rotations + flips)
+            transforms.append('spatial')  # Unified D4/D8 symmetries
         if self.translation:
             transforms.append('translate')
         if self.cutout:
             transforms.append('cutout')
-        if self.brightness:
-            transforms.append('brightness')
 
         # Sample uniformly across all options (per paper)
         transform_type = random.choice(transforms)
@@ -378,9 +396,19 @@ class ScoreAugTransform:
         if transform_type == 'identity':
             return 'identity', {}
         elif transform_type == 'spatial':
-            # D4 dihedral group: 7 non-identity symmetries
-            # Build list based on enabled options
-            spatial_options = []
+            return self._sample_spatial_transform()
+        elif transform_type == 'translate':
+            return self._sample_translation()
+        elif transform_type == 'cutout':
+            return self._sample_cutout()
+
+        return 'identity', {}
+
+    def _sample_spatial_transform(self) -> Tuple[str, Dict[str, Any]]:
+        """Sample a spatial transform (rotation or flip)."""
+        spatial_options = []
+
+        if self.spatial_dims == 2:
             if self.rotation:
                 spatial_options.extend([
                     ('rot90', {'k': 1}),
@@ -398,87 +426,83 @@ class ScoreAugTransform:
                     ('rot90_hflip', {'k': 1}),  # rot90 then hflip
                     ('rot90_hflip', {'k': 3}),  # rot270 then hflip
                 ])
+        else:  # 3D
+            if self.rotation:
+                # Rotations around each axis: 90, 180, 270 degrees
+                for axis in ['d', 'h', 'w']:
+                    for k in [1, 2, 3]:
+                        spatial_options.append(('rot90_3d', {'axis': axis, 'k': k}))
+            if self.flip:
+                spatial_options.extend([
+                    ('flip_d', {}),
+                    ('flip_h', {}),
+                    ('flip_w', {}),
+                ])
 
-            if not spatial_options:
-                return 'identity', {}
+        if not spatial_options:
+            return 'identity', {}
 
-            return random.choice(spatial_options)
-        elif transform_type == 'translate':
+        return random.choice(spatial_options)
+
+    def _sample_translation(self) -> Tuple[str, Dict[str, Any]]:
+        """Sample a translation transform."""
+        if self.spatial_dims == 2:
             # Asymmetric: ±40% X, ±20% Y (brain is oval, more vertical space taken)
-            # Aggressive is fine for ScoreAug - doesn't affect output distribution
             dx = random.uniform(-0.4, 0.4)
             dy = random.uniform(-0.2, 0.2)
             return 'translate', {'dx': dx, 'dy': dy}
-        elif transform_type == 'cutout':
+        else:  # 3D
+            # ±40% W, ±20% H, 0% D (brain centered in Z)
+            dd = 0.0
+            dh = random.uniform(-0.2, 0.2)
+            dw = random.uniform(-0.4, 0.4)
+            return 'translate', {'dd': dd, 'dh': dh, 'dw': dw}
+
+    def _sample_cutout(self) -> Tuple[str, Dict[str, Any]]:
+        """Sample a cutout transform."""
+        if self.spatial_dims == 2:
             # Random rectangle (not square) - sample width/height independently
             size_x = random.uniform(0.1, 0.3)  # 10-30% of width
             size_y = random.uniform(0.1, 0.3)  # 10-30% of height
             cx = random.uniform(size_x / 2, 1 - size_x / 2)
             cy = random.uniform(size_y / 2, 1 - size_y / 2)
             return 'cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y}
-        elif transform_type == 'brightness':
-            # Sample scale factor uniformly in log space for symmetric distribution
-            log_scale = random.uniform(-1, 1) * abs(self.brightness_range - 1)
-            scale = 1.0 + log_scale
-            # Clamp to valid range
-            scale = max(1.0 / self.brightness_range, min(self.brightness_range, scale))
-            return 'brightness', {'scale': scale}
-
-        return 'identity', {}
+        else:  # 3D
+            size_d = random.uniform(0.1, 0.3)
+            size_h = random.uniform(0.1, 0.3)
+            size_w = random.uniform(0.1, 0.3)
+            cd = random.uniform(size_d / 2, 1 - size_d / 2)
+            ch = random.uniform(size_h / 2, 1 - size_h / 2)
+            cw = random.uniform(size_w / 2, 1 - size_w / 2)
+            return 'cutout', {'cd': cd, 'ch': ch, 'cw': cw,
+                             'size_d': size_d, 'size_h': size_h, 'size_w': size_w}
 
     def sample_compose_transforms(self) -> List[Tuple[str, Dict[str, Any]]]:
         """Sample multiple transforms independently for compose mode.
 
         Each enabled transform has compose_prob chance of being applied.
-        Order: spatial → translate → cutout → brightness
+        Order: spatial → translate → cutout
 
         Returns:
             List of (transform_type, params) tuples to apply in sequence
         """
         transforms = []
 
-        # Spatial (rotation/flip) - sample one from D4 if triggered
+        # Spatial (rotation/flip) - sample one from D4/D8 if triggered
         if (self.rotation or self.flip) and random.random() < self.compose_prob:
-            spatial_options = []
-            if self.rotation:
-                spatial_options.extend([
-                    ('rot90', {'k': 1}),
-                    ('rot90', {'k': 2}),
-                    ('rot90', {'k': 3}),
-                ])
-            if self.flip:
-                spatial_options.extend([
-                    ('hflip', {}),
-                    ('vflip', {}),
-                ])
-            if self.rotation and self.flip:
-                spatial_options.extend([
-                    ('rot90_hflip', {'k': 1}),
-                    ('rot90_hflip', {'k': 3}),
-                ])
-            if spatial_options:
-                transforms.append(random.choice(spatial_options))
+            t, p = self._sample_spatial_transform()
+            if t != 'identity':
+                transforms.append((t, p))
 
         # Translation
         if self.translation and random.random() < self.compose_prob:
-            dx = random.uniform(-0.4, 0.4)
-            dy = random.uniform(-0.2, 0.2)
-            transforms.append(('translate', {'dx': dx, 'dy': dy}))
+            t, p = self._sample_translation()
+            transforms.append((t, p))
 
         # Cutout
         if self.cutout and random.random() < self.compose_prob:
-            size_x = random.uniform(0.1, 0.3)
-            size_y = random.uniform(0.1, 0.3)
-            cx = random.uniform(size_x / 2, 1 - size_x / 2)
-            cy = random.uniform(size_y / 2, 1 - size_y / 2)
-            transforms.append(('cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y}))
-
-        # Brightness
-        if self.brightness and random.random() < self.compose_prob:
-            log_scale = random.uniform(-1, 1) * abs(self.brightness_range - 1)
-            scale = 1.0 + log_scale
-            scale = max(1.0 / self.brightness_range, min(self.brightness_range, scale))
-            transforms.append(('brightness', {'scale': scale}))
+            t, p = self._sample_cutout()
+            transforms.append((t, p))
 
         return transforms
 
@@ -498,31 +522,14 @@ class ScoreAugTransform:
         # Sample non-destructive transforms (each with nondestructive_prob)
         # Spatial (rotation/flip)
         if (self.rotation or self.flip) and random.random() < self.nondestructive_prob:
-            spatial_options = []
-            if self.rotation:
-                spatial_options.extend([
-                    ('rot90', {'k': 1}),
-                    ('rot90', {'k': 2}),
-                    ('rot90', {'k': 3}),
-                ])
-            if self.flip:
-                spatial_options.extend([
-                    ('hflip', {}),
-                    ('vflip', {}),
-                ])
-            if self.rotation and self.flip:
-                spatial_options.extend([
-                    ('rot90_hflip', {'k': 1}),
-                    ('rot90_hflip', {'k': 3}),
-                ])
-            if spatial_options:
-                nondestructive.append(random.choice(spatial_options))
+            t, p = self._sample_spatial_transform()
+            if t != 'identity':
+                nondestructive.append((t, p))
 
         # Translation (non-destructive since brain is centered)
         if self.translation and random.random() < self.nondestructive_prob:
-            dx = random.uniform(-0.4, 0.4)
-            dy = random.uniform(-0.2, 0.2)
-            nondestructive.append(('translate', {'dx': dx, 'dy': dy}))
+            t, p = self._sample_translation()
+            nondestructive.append((t, p))
 
         # Sample destructive transform (with destructive_prob)
         destructive = None
@@ -530,11 +537,8 @@ class ScoreAugTransform:
             # Choose between cutout and fixed patterns
             if random.random() < self.cutout_vs_pattern:
                 # Random cutout
-                size_x = random.uniform(0.1, 0.3)
-                size_y = random.uniform(0.1, 0.3)
-                cx = random.uniform(size_x / 2, 1 - size_x / 2)
-                cy = random.uniform(size_y / 2, 1 - size_y / 2)
-                destructive = ('cutout', {'cx': cx, 'cy': cy, 'size_x': size_x, 'size_y': size_y})
+                _, p = self._sample_cutout()
+                destructive = ('cutout', p)
             elif self._enabled_patterns:
                 # Fixed pattern (uniform over enabled patterns)
                 pattern_id = random.choice(self._enabled_patterns)
@@ -542,38 +546,49 @@ class ScoreAugTransform:
 
         return nondestructive, destructive
 
-    def _get_pattern_mask(self, pattern_id: int, H: int, W: int, device: torch.device) -> torch.Tensor:
+    def _get_pattern_mask(self, pattern_id: int, x: torch.Tensor) -> torch.Tensor:
         """Get cached pattern mask, generating if needed.
 
         Args:
             pattern_id: Pattern index (0-15)
-            H, W: Image dimensions
-            device: Target device
+            x: Input tensor to get dimensions and device from
 
         Returns:
-            Mask tensor [H, W] with 0=keep, 1=drop
+            Mask tensor [H, W] or [D, H, W] with 0=keep, 1=drop
         """
-        cache_key = (pattern_id, H, W)
-        if cache_key not in self._pattern_cache:
-            mask = generate_pattern_mask(pattern_id, H, W)
-            self._pattern_cache[cache_key] = mask
-        return self._pattern_cache[cache_key].to(device)
+        if self.spatial_dims == 2:
+            H, W = x.shape[-2], x.shape[-1]
+            cache_key = (pattern_id, H, W)
+            if cache_key not in self._pattern_cache:
+                mask = generate_pattern_mask(pattern_id, H, W, spatial_dims=2)
+                self._pattern_cache[cache_key] = mask
+        else:
+            D, H, W = x.shape[-3], x.shape[-2], x.shape[-1]
+            cache_key = (pattern_id, D, H, W)
+            if cache_key not in self._pattern_cache:
+                mask = generate_pattern_mask(pattern_id, H, W, D=D, spatial_dims=3)
+                self._pattern_cache[cache_key] = mask
+
+        return self._pattern_cache[cache_key].to(x.device)
 
     def _apply_pattern(self, x: torch.Tensor, pattern_id: int) -> torch.Tensor:
         """Apply fixed pattern mask to tensor.
 
         Args:
-            x: Input tensor [B, C, H, W]
+            x: Input tensor [B, C, H, W] or [B, C, D, H, W]
             pattern_id: Pattern index (0-15)
 
         Returns:
             Tensor with pattern regions zeroed
         """
-        B, C, H, W = x.shape
-        mask = self._get_pattern_mask(pattern_id, H, W, x.device)
+        mask = self._get_pattern_mask(pattern_id, x)
 
-        # Expand mask to [1, 1, H, W] for broadcasting
-        mask = mask.unsqueeze(0).unsqueeze(0)
+        if self.spatial_dims == 2:
+            # Expand mask to [1, 1, H, W] for broadcasting
+            mask = mask.unsqueeze(0).unsqueeze(0)
+        else:
+            # Expand mask to [1, 1, D, H, W] for broadcasting
+            mask = mask.unsqueeze(0).unsqueeze(0)
 
         # Zero out masked regions
         return x * (1 - mask)
@@ -584,10 +599,10 @@ class ScoreAugTransform:
         transform_type: str,
         params: Dict[str, Any],
     ) -> torch.Tensor:
-        """Apply transform to tensor [B, C, H, W].
+        """Apply transform to tensor.
 
         Args:
-            x: Input tensor
+            x: Input tensor [B, C, H, W] or [B, C, D, H, W]
             transform_type: Type of transform to apply
             params: Transform parameters
 
@@ -596,6 +611,8 @@ class ScoreAugTransform:
         """
         if transform_type == 'identity':
             return x
+
+        # 2D transforms
         elif transform_type == 'rot90':
             return torch.rot90(x, k=params['k'], dims=(-2, -1))
         elif transform_type == 'hflip':
@@ -606,84 +623,62 @@ class ScoreAugTransform:
             # Rotate then flip horizontally (diagonal/anti-diagonal reflections)
             rotated = torch.rot90(x, k=params['k'], dims=(-2, -1))
             return torch.flip(rotated, dims=[-1])
+
+        # 3D transforms
+        elif transform_type == 'rot90_3d':
+            return self._rotate_3d(x, params['axis'], params['k'])
+        elif transform_type == 'flip_d':
+            return torch.flip(x, dims=[2])  # D dimension
+        elif transform_type == 'flip_h':
+            return torch.flip(x, dims=[3])  # H dimension
+        elif transform_type == 'flip_w':
+            return torch.flip(x, dims=[4])  # W dimension
+
+        # Common transforms
         elif transform_type == 'translate':
-            return self._translate(x, params['dx'], params['dy'])
+            if self.spatial_dims == 2:
+                return self._translate_2d(x, params['dx'], params['dy'])
+            else:
+                return self._translate_3d(x, params['dd'], params['dh'], params['dw'])
         elif transform_type == 'cutout':
-            return self._cutout(x, params['cx'], params['cy'], params['size_x'], params['size_y'])
-        elif transform_type == 'brightness':
-            return self._brightness(x, params['scale'])
+            if self.spatial_dims == 2:
+                return self._cutout_2d(x, params['cx'], params['cy'], params['size_x'], params['size_y'])
+            else:
+                return self._cutout_3d(x, params['cd'], params['ch'], params['cw'],
+                                       params['size_d'], params['size_h'], params['size_w'])
         elif transform_type == 'pattern':
             return self._apply_pattern(x, params['pattern_id'])
+
+        return x
+
+    def _rotate_3d(self, x: torch.Tensor, axis: str, k: int) -> torch.Tensor:
+        """Rotate 3D tensor by k*90 degrees around axis.
+
+        Args:
+            x: Input tensor [B, C, D, H, W]
+            axis: Rotation axis ('d', 'h', or 'w')
+            k: Number of 90-degree rotations (1, 2, or 3)
+
+        Returns:
+            Rotated tensor
+        """
+        # Determine which dimensions to rotate
+        if axis == 'd':
+            # Rotate around D axis = rotate H-W plane
+            dims = (3, 4)  # H, W
+        elif axis == 'h':
+            # Rotate around H axis = rotate D-W plane
+            dims = (2, 4)  # D, W
+        elif axis == 'w':
+            # Rotate around W axis = rotate D-H plane
+            dims = (2, 3)  # D, H
         else:
             return x
 
-    def inverse_apply(
-        self,
-        x: torch.Tensor,
-        omega: Optional[Dict[str, Any]],
-    ) -> Optional[torch.Tensor]:
-        """Apply inverse transform to tensor.
+        return torch.rot90(x, k=k, dims=dims)
 
-        For invertible transforms (rotation, brightness), applies the inverse to
-        recover original values. For non-invertible transforms (translation,
-        cutout), returns None since information is lost.
-
-        Args:
-            x: Transformed tensor [B, C, H, W]
-            omega: Transform parameters from __call__
-
-        Returns:
-            Inverse-transformed tensor, or None if not invertible
-        """
-        if omega is None:
-            return x
-
-        transform_type = omega['type']
-        params = omega['params']
-
-        if transform_type == 'rot90':
-            # Inverse of rot90(k) is rot90(4-k)
-            inv_k = 4 - params['k']
-            return torch.rot90(x, k=inv_k, dims=(-2, -1))
-        elif transform_type == 'hflip':
-            # Flip is self-inverse: flip(flip(x)) = x
-            return torch.flip(x, dims=[-1])
-        elif transform_type == 'vflip':
-            # Flip is self-inverse
-            return torch.flip(x, dims=[-2])
-        elif transform_type == 'rot90_hflip':
-            # Inverse: flip first, then inverse rotate
-            flipped = torch.flip(x, dims=[-1])
-            inv_k = 4 - params['k']
-            return torch.rot90(flipped, k=inv_k, dims=(-2, -1))
-        elif transform_type == 'brightness':
-            # Inverse of multiply by scale is divide by scale
-            return x / params['scale']
-        elif transform_type in ('translate', 'cutout', 'pattern'):
-            # Non-invertible transforms (zero-padded/masked regions lose info)
-            return None
-        else:
-            return x
-
-    def requires_omega(self, omega: Optional[Dict[str, Any]]) -> bool:
-        """Check if transform requires omega conditioning.
-
-        Per paper: rotation requires conditioning because noise is rotation-invariant.
-        Flip uses omega conditioning for consistency (same reasoning applies).
-
-        Args:
-            omega: Transform parameters
-
-        Returns:
-            True if omega conditioning is required for this transform
-        """
-        if omega is None:
-            return False
-        # All spatial transforms (D4 symmetries) require omega conditioning
-        return omega['type'] in ('rot90', 'hflip', 'vflip', 'rot90_hflip')
-
-    def _translate(self, x: torch.Tensor, dx: float, dy: float) -> torch.Tensor:
-        """Translate tensor by (dx, dy) fraction, zero-pad edges.
+    def _translate_2d(self, x: torch.Tensor, dx: float, dy: float) -> torch.Tensor:
+        """Translate 2D tensor by (dx, dy) fraction, zero-pad edges.
 
         Args:
             x: Input tensor [B, C, H, W]
@@ -712,7 +707,44 @@ class ScoreAugTransform:
 
         return result
 
-    def _cutout(self, x: torch.Tensor, cx: float, cy: float, size_x: float, size_y: float) -> torch.Tensor:
+    def _translate_3d(
+        self, x: torch.Tensor, dd: float, dh: float, dw: float
+    ) -> torch.Tensor:
+        """Translate 3D tensor, zero-pad edges.
+
+        Args:
+            x: Input tensor [B, C, D, H, W]
+            dd, dh, dw: Shifts as fractions of dimension sizes
+
+        Returns:
+            Translated tensor with zero-padded edges
+        """
+        B, C, D, H, W = x.shape
+        shift_d = int(dd * D)
+        shift_h = int(dh * H)
+        shift_w = int(dw * W)
+
+        result = torch.roll(x, shifts=(shift_d, shift_h, shift_w), dims=(2, 3, 4))
+
+        # Zero out wrapped regions
+        if shift_d > 0:
+            result[:, :, :shift_d, :, :] = 0
+        elif shift_d < 0:
+            result[:, :, shift_d:, :, :] = 0
+
+        if shift_h > 0:
+            result[:, :, :, :shift_h, :] = 0
+        elif shift_h < 0:
+            result[:, :, :, shift_h:, :] = 0
+
+        if shift_w > 0:
+            result[:, :, :, :, :shift_w] = 0
+        elif shift_w < 0:
+            result[:, :, :, :, shift_w:] = 0
+
+        return result
+
+    def _cutout_2d(self, x: torch.Tensor, cx: float, cy: float, size_x: float, size_y: float) -> torch.Tensor:
         """Apply rectangular cutout centered at (cx, cy) with given size fractions.
 
         Args:
@@ -741,22 +773,127 @@ class ScoreAugTransform:
         result[:, :, y1:y2, x1:x2] = 0
         return result
 
-    def _brightness(self, x: torch.Tensor, scale: float) -> torch.Tensor:
-        """Scale tensor by brightness factor.
-
-        WARNING: Output is NOT clamped to [0,1] to preserve invertibility
-        for score matching. If scale > 1.0, output values may exceed 1.0.
-        This is intentional per the ScoreAug paper - clamping would break
-        the inverse transform needed for proper score matching.
+    def _cutout_3d(
+        self, x: torch.Tensor,
+        cd: float, ch: float, cw: float,
+        size_d: float, size_h: float, size_w: float,
+    ) -> torch.Tensor:
+        """Apply 3D rectangular cutout.
 
         Args:
-            x: Input tensor [B, C, H, W] in [0, 1] range.
-            scale: Brightness scale factor (typically 0.8-1.2).
+            x: Input tensor [B, C, D, H, W]
+            cd, ch, cw: Center coordinates as fractions
+            size_d, size_h, size_w: Size fractions for each dimension
 
         Returns:
-            Scaled tensor (may have values outside [0,1] if scale != 1.0).
+            Tensor with 3D rectangular region zeroed
         """
-        return x * scale
+        B, C, D, H, W = x.shape
+
+        half_d = int(size_d * D / 2)
+        half_h = int(size_h * H / 2)
+        half_w = int(size_w * W / 2)
+        center_d = int(cd * D)
+        center_h = int(ch * H)
+        center_w = int(cw * W)
+
+        d1 = max(0, center_d - half_d)
+        d2 = min(D, center_d + half_d)
+        h1 = max(0, center_h - half_h)
+        h2 = min(H, center_h + half_h)
+        w1 = max(0, center_w - half_w)
+        w2 = min(W, center_w + half_w)
+
+        result = x.clone()
+        result[:, :, d1:d2, h1:h2, w1:w2] = 0
+        return result
+
+    def inverse_apply(
+        self,
+        x: torch.Tensor,
+        omega: Optional[Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        """Apply inverse transform to tensor.
+
+        For invertible transforms (rotation, flip), applies the inverse to
+        recover original values. For non-invertible transforms (translation,
+        cutout), returns None since information is lost.
+
+        Args:
+            x: Transformed tensor [B, C, H, W] or [B, C, D, H, W]
+            omega: Transform parameters from __call__
+
+        Returns:
+            Inverse-transformed tensor, or None if not invertible
+        """
+        if omega is None:
+            return x
+
+        transform_type = omega['type']
+        params = omega['params']
+
+        # 2D inverse transforms
+        if transform_type == 'rot90':
+            # Inverse of rot90(k) is rot90(4-k)
+            inv_k = 4 - params['k']
+            return torch.rot90(x, k=inv_k, dims=(-2, -1))
+        elif transform_type == 'hflip':
+            # Flip is self-inverse: flip(flip(x)) = x
+            return torch.flip(x, dims=[-1])
+        elif transform_type == 'vflip':
+            # Flip is self-inverse
+            return torch.flip(x, dims=[-2])
+        elif transform_type == 'rot90_hflip':
+            # Inverse: flip first, then inverse rotate
+            flipped = torch.flip(x, dims=[-1])
+            inv_k = 4 - params['k']
+            return torch.rot90(flipped, k=inv_k, dims=(-2, -1))
+
+        # 3D inverse transforms
+        elif transform_type == 'rot90_3d':
+            axis = params['axis']
+            inv_k = 4 - params['k']
+            return self._rotate_3d(x, axis, inv_k)
+        elif transform_type == 'flip_d':
+            return torch.flip(x, dims=[2])
+        elif transform_type == 'flip_h':
+            return torch.flip(x, dims=[3])
+        elif transform_type == 'flip_w':
+            return torch.flip(x, dims=[4])
+
+        # Non-invertible transforms
+        elif transform_type in ('translate', 'cutout', 'pattern'):
+            return None
+
+        return x
+
+    def requires_omega(self, omega: Optional[Dict[str, Any]]) -> bool:
+        """Check if transform requires omega conditioning.
+
+        Per paper: rotation requires conditioning because noise is rotation-invariant.
+        Flip uses omega conditioning for consistency (same reasoning applies).
+
+        Args:
+            omega: Transform parameters
+
+        Returns:
+            True if omega conditioning is required for this transform
+        """
+        if omega is None:
+            return False
+
+        # Check for v2 or compose mode
+        if omega.get('v2', False) or omega.get('compose', False):
+            transforms = omega.get('transforms', [])
+            for t, _ in transforms:
+                if t in ('rot90', 'hflip', 'vflip', 'rot90_hflip',
+                         'rot90_3d', 'flip_d', 'flip_h', 'flip_w'):
+                    return True
+            return False
+
+        # Single transform mode
+        return omega.get('type') in ('rot90', 'hflip', 'vflip', 'rot90_hflip',
+                                     'rot90_3d', 'flip_d', 'flip_h', 'flip_w')
 
     def apply_omega(
         self,
@@ -768,7 +905,7 @@ class ScoreAugTransform:
         Handles both single-transform and compose mode omega formats.
 
         Args:
-            x: Input tensor [B, C, H, W]
+            x: Input tensor [B, C, H, W] or [B, C, D, H, W]
             omega: Transform parameters (single or compose format), or None for identity
 
         Returns:
@@ -777,8 +914,8 @@ class ScoreAugTransform:
         if omega is None:
             return x
 
-        if omega.get('compose', False):
-            # Compose mode: apply all transforms in sequence
+        if omega.get('compose', False) or omega.get('v2', False):
+            # Compose/v2 mode: apply all transforms in sequence
             result = x
             for transform_type, params in omega['transforms']:
                 result = self.apply(result, transform_type, params)
@@ -798,7 +935,7 @@ class ScoreAugTransform:
         For compose mode, applies inverses in reverse order.
 
         Args:
-            x: Transformed tensor [B, C, H, W]
+            x: Transformed tensor [B, C, H, W] or [B, C, D, H, W]
             omega: Transform parameters (single or compose format), or None for identity
 
         Returns:
@@ -807,8 +944,8 @@ class ScoreAugTransform:
         if omega is None:
             return x
 
-        if omega.get('compose', False):
-            # Compose mode: apply inverse transforms in REVERSE order
+        if omega.get('compose', False) or omega.get('v2', False):
+            # Compose/v2 mode: apply inverse transforms in REVERSE order
             result = x
             for transform_type, params in reversed(omega['transforms']):
                 single_omega = {'type': transform_type, 'params': params}
@@ -828,8 +965,8 @@ class ScoreAugTransform:
         """Apply ScoreAug transform to noisy input and target.
 
         Args:
-            noisy_input: [B, C, H, W] - concatenated [noisy_images, seg_mask]
-            target: [B, C_out, H, W] - velocity target for RFlow (or noise for DDPM)
+            noisy_input: [B, C, H, W] or [B, C, D, H, W] - concatenated [noisy_images, seg_mask]
+            target: [B, C_out, H, W] or [B, C_out, D, H, W] - velocity target for RFlow
 
         Returns:
             aug_input: Transformed noisy input
@@ -932,6 +1069,7 @@ MODE_INTENSITY_SCALE_INV = {k: 1.0 / v for k, v in MODE_INTENSITY_SCALE.items()}
 def apply_mode_intensity_scale(
     x: torch.Tensor,
     mode_id: Optional[torch.Tensor],
+    spatial_dims: int = 2,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Apply modality-specific intensity scaling to input (per-sample).
 
@@ -942,13 +1080,14 @@ def apply_mode_intensity_scale(
     scale factor based on its mode_id.
 
     Args:
-        x: Input tensor [B, C, H, W]
+        x: Input tensor [B, C, H, W] or [B, C, D, H, W]
         mode_id: Mode ID tensor [B] or None (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+        spatial_dims: Number of spatial dimensions (2 or 3)
 
     Returns:
         Tuple of (scaled_input, scale_factors)
         - scaled_input: x * scale_factors (per-sample scaling)
-        - scale_factors: Tensor [B, 1, 1, 1] with per-sample scales (or [1] if mode_id is None)
+        - scale_factors: Tensor [B, 1, 1, 1] or [B, 1, 1, 1, 1] with per-sample scales
     """
     if mode_id is None:
         return x, torch.ones(1, device=x.device, dtype=x.dtype)
@@ -965,8 +1104,12 @@ def apply_mode_intensity_scale(
         device=x.device,
         dtype=x.dtype,
     )
-    # Reshape for broadcasting [B, 1, 1, 1]
-    scales = scales.view(-1, 1, 1, 1)
+    # Reshape for broadcasting
+    if spatial_dims == 2:
+        scales = scales.view(-1, 1, 1, 1)  # [B, 1, 1, 1]
+    else:
+        scales = scales.view(-1, 1, 1, 1, 1)  # [B, 1, 1, 1, 1]
+
     return x * scales, scales
 
 
@@ -977,8 +1120,8 @@ def inverse_mode_intensity_scale(
     """Inverse the mode intensity scaling (per-sample).
 
     Args:
-        x: Scaled tensor [B, C, H, W]
-        scale: The scale factors that were applied [B, 1, 1, 1] or [1]
+        x: Scaled tensor [B, C, H, W] or [B, C, D, H, W]
+        scale: The scale factors that were applied [B, 1, ...] or [1]
 
     Returns:
         Unscaled tensor: x / scale
@@ -994,28 +1137,23 @@ def inverse_mode_intensity_scale(
 
 # Omega encoding format (36 dims total):
 #
-# Legacy mode (compose=False, v2=False) - uses dims 0-15:
-#   [type_onehot(8), rot_k_norm, dx, dy, cx, cy, size_x, size_y, brightness_scale]
-#   Types: 0=identity, 1=rotation, 2=hflip, 3=vflip, 4=rot90_hflip, 5=translation, 6=cutout, 7=brightness
-#
-# Compose mode (compose=True) - uses dims 0-15:
-#   [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, brightness]
-#   Active mask: spatial, translation, cutout, brightness (1=active)
-#
-# v2 mode (v2=True) - uses dims 0-31:
-#   Dims 0-15: Same as compose mode for non-destructive + cutout
+# Layout:
+#   Dims 0-3: Active mask (spatial, translation, cutout, pattern)
+#   Dims 4-9: Spatial type (rot90, hflip, vflip, rot90_hflip/flip_d, flip_h, flip_w)
+#   Dim 10: rot_k normalized (0-1)
+#   Dims 11-13: translation params (dx/dd, dy/dh, dw)
+#   Dims 14-15: reserved
 #   Dims 16-31: Pattern ID one-hot (16 patterns)
+#   Dims 32-35: Mode one-hot (4 modalities) - for mode intensity scaling
 #
-# Mode intensity scaling - dims 32-35:
-#   Dims 32-35: Mode one-hot (4 modalities) - indicates which scale was applied
-#
-OMEGA_ENCODING_DIM = 36  # Extended to accommodate pattern IDs + mode scaling
+OMEGA_ENCODING_DIM = 36
 
 
 def encode_omega(
     omega: Optional[Dict[str, Any]],
     device: torch.device,
     mode_id: Optional[torch.Tensor] = None,
+    spatial_dims: int = 2,
 ) -> torch.Tensor:
     """Encode omega dict into tensor format for MLP.
 
@@ -1029,6 +1167,7 @@ def encode_omega(
         omega: Transform parameters dict or None
         device: Target device
         mode_id: Optional mode ID tensor for intensity scaling (0=bravo, 1=flair, etc.)
+        spatial_dims: Number of spatial dimensions (2 or 3)
 
     Returns:
         Tensor [1, OMEGA_ENCODING_DIM] encoding the transform + mode
@@ -1053,109 +1192,115 @@ def encode_omega(
 
     # Check for v2 mode
     if omega.get('v2', False):
-        # v2 mode: encode all transforms (non-destructive + destructive)
-        # Format: [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, _, pattern_onehot(16)]
         transforms = omega['transforms']
-
         for t, p in transforms:
-            if t in ('rot90', 'hflip', 'vflip', 'rot90_hflip'):
-                enc[0, 0] = 1.0  # spatial active
-                if t == 'rot90':
-                    enc[0, 4] = 1.0  # rot90 type
-                    enc[0, 8] = p['k'] / 3.0
-                elif t == 'hflip':
-                    enc[0, 5] = 1.0  # hflip type
-                elif t == 'vflip':
-                    enc[0, 6] = 1.0  # vflip type
-                elif t == 'rot90_hflip':
-                    enc[0, 7] = 1.0  # rot90_hflip type
-                    enc[0, 8] = p['k'] / 3.0
-            elif t == 'translate':
-                enc[0, 1] = 1.0  # translation active
-                enc[0, 9] = p['dx']
-                enc[0, 10] = p['dy']
-            elif t == 'cutout':
-                enc[0, 2] = 1.0  # cutout active
-                enc[0, 11] = p['cx']
-                enc[0, 12] = p['cy']
-                enc[0, 13] = p['size_x']
-                enc[0, 14] = p['size_y']
-            elif t == 'pattern':
-                # Fixed pattern: encode as one-hot in dims 16-31
-                pattern_id = p['pattern_id']
-                enc[0, 3] = 1.0  # pattern active (replaces brightness in v2)
-                enc[0, 16 + pattern_id] = 1.0  # pattern one-hot
-
+            _encode_single_transform(enc, t, p, spatial_dims, is_v2=True)
         return enc
 
     # Check for compose mode (legacy)
     if omega.get('compose', False):
-        # Compose mode: encode all active transforms
-        # Format: [active_mask(4), spatial_type(4), rot_k, dx, dy, cx, cy, size_x, size_y, brightness]
         transforms = omega['transforms']
-
         for t, p in transforms:
-            if t in ('rot90', 'hflip', 'vflip', 'rot90_hflip'):
-                enc[0, 0] = 1.0  # spatial active
-                if t == 'rot90':
-                    enc[0, 4] = 1.0  # rot90 type
-                    enc[0, 8] = p['k'] / 3.0
-                elif t == 'hflip':
-                    enc[0, 5] = 1.0  # hflip type
-                elif t == 'vflip':
-                    enc[0, 6] = 1.0  # vflip type
-                elif t == 'rot90_hflip':
-                    enc[0, 7] = 1.0  # rot90_hflip type
-                    enc[0, 8] = p['k'] / 3.0
-            elif t == 'translate':
-                enc[0, 1] = 1.0  # translation active
-                enc[0, 9] = p['dx']
-                enc[0, 10] = p['dy']
-            elif t == 'cutout':
-                enc[0, 2] = 1.0  # cutout active
-                enc[0, 11] = p['cx']
-                enc[0, 12] = p['cy']
-                enc[0, 13] = p['size_x']
-                enc[0, 14] = p['size_y']
-            elif t == 'brightness':
-                enc[0, 3] = 1.0  # brightness active
-                enc[0, 15] = p['scale'] - 1.0
-
+            _encode_single_transform(enc, t, p, spatial_dims, is_v2=True)
         return enc
 
     # Single transform mode (legacy)
-    t = omega['type']
-    p = omega['params']
-
-    if t == 'rot90':
-        enc[0, 1] = 1.0  # rotation type
-        enc[0, 8] = p['k'] / 3.0  # normalized k (1,2,3 -> 0.33, 0.67, 1.0)
-    elif t == 'hflip':
-        enc[0, 2] = 1.0  # hflip type (no extra params)
-    elif t == 'vflip':
-        enc[0, 3] = 1.0  # vflip type (no extra params)
-    elif t == 'rot90_hflip':
-        enc[0, 4] = 1.0  # rot90_hflip type
-        enc[0, 8] = p['k'] / 3.0  # normalized k (1 or 3 -> 0.33 or 1.0)
-    elif t == 'translate':
-        enc[0, 5] = 1.0  # translation type
-        enc[0, 9] = p['dx']  # in [-0.4, 0.4]
-        enc[0, 10] = p['dy']  # in [-0.2, 0.2]
-    elif t == 'cutout':
-        enc[0, 6] = 1.0  # cutout type
-        enc[0, 11] = p['cx']  # in [0, 1]
-        enc[0, 12] = p['cy']
-        enc[0, 13] = p['size_x']  # in [0.1, 0.3]
-        enc[0, 14] = p['size_y']  # in [0.1, 0.3]
-    elif t == 'brightness':
-        enc[0, 7] = 1.0  # brightness type
-        enc[0, 15] = p['scale'] - 1.0  # centered around 0
-
+    _encode_single_transform_legacy(enc, omega['type'], omega['params'], spatial_dims)
     return enc
+
+
+def _encode_single_transform(
+    enc: torch.Tensor,
+    transform_type: str,
+    params: Dict[str, Any],
+    spatial_dims: int,
+    is_v2: bool = True,
+) -> None:
+    """Encode a single transform for v2/compose mode (in-place).
+
+    Layout:
+        Dims 0-3: Active mask (spatial, translation, cutout, pattern)
+        Dims 4-9: Spatial type (rot90/rot90_d, hflip/rot90_h, vflip/rot90_w, rot90_hflip/flip_d, flip_h, flip_w)
+        Dim 10: rot_k normalized
+        Dims 11-13: dx/dd, dy/dh, (dw for 3D) (translation)
+        Dims 14-15: reserved
+        Dims 16-31: Pattern ID one-hot
+    """
+    # 2D spatial transforms
+    if transform_type == 'rot90':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 4] = 1.0  # rot90 type
+        enc[0, 10] = params['k'] / 3.0  # normalized k
+    elif transform_type == 'hflip':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 5] = 1.0  # hflip type
+    elif transform_type == 'vflip':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 6] = 1.0  # vflip type
+    elif transform_type == 'rot90_hflip':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 7] = 1.0  # rot90_hflip type
+        enc[0, 10] = params['k'] / 3.0
+
+    # 3D spatial transforms
+    elif transform_type == 'rot90_3d':
+        enc[0, 0] = 1.0  # spatial active
+        axis = params['axis']
+        k = params['k']
+        if axis == 'd':
+            enc[0, 4] = 1.0  # rot90_d
+        elif axis == 'h':
+            enc[0, 5] = 1.0  # rot90_h
+        elif axis == 'w':
+            enc[0, 6] = 1.0  # rot90_w
+        enc[0, 10] = k / 3.0  # normalized k
+    elif transform_type == 'flip_d':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 7] = 1.0  # flip_d type
+    elif transform_type == 'flip_h':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 8] = 1.0  # flip_h type
+    elif transform_type == 'flip_w':
+        enc[0, 0] = 1.0  # spatial active
+        enc[0, 9] = 1.0  # flip_w type
+
+    # Translation
+    elif transform_type == 'translate':
+        enc[0, 1] = 1.0  # translation active
+        if 'dx' in params:  # 2D
+            enc[0, 11] = params['dx']
+            enc[0, 12] = params['dy']
+        else:  # 3D
+            enc[0, 11] = params['dd']
+            enc[0, 12] = params['dh']
+            enc[0, 13] = params['dw']
+
+    # Cutout
+    elif transform_type == 'cutout':
+        enc[0, 2] = 1.0  # cutout active
+
+    # Fixed pattern
+    elif transform_type == 'pattern':
+        enc[0, 3] = 1.0  # pattern active
+        pattern_id = params['pattern_id']
+        enc[0, 16 + pattern_id] = 1.0  # pattern one-hot
+
+
+def _encode_single_transform_legacy(
+    enc: torch.Tensor,
+    transform_type: str,
+    params: Dict[str, Any],
+    spatial_dims: int,
+) -> None:
+    """Encode a single transform for legacy single-transform mode (in-place)."""
+    # Use same layout as v2 for consistency
+    _encode_single_transform(enc, transform_type, params, spatial_dims, is_v2=False)
 
 
 class OmegaTimeEmbed(nn.Module):
     """Wrapper around time_embed that adds omega conditioning.
+
+    Supports both 2D and 3D models.
 
     This is compile-compatible because:
     - No hooks, just module replacement
@@ -1212,22 +1357,26 @@ class OmegaTimeEmbed(nn.Module):
 class ScoreAugModelWrapper(nn.Module):
     """Wrapper to inject omega conditioning into MONAI UNet.
 
+    Supports both 2D and 3D models.
+
     This implementation is compile-compatible:
     - Replaces time_embed with OmegaTimeEmbed (no hooks)
     - Sets omega encoding before forward (outside traced graph)
     - Forward has fixed control flow (no data-dependent branches)
     """
 
-    def __init__(self, model: nn.Module, embed_dim: int = 256):
+    def __init__(self, model: nn.Module, embed_dim: int = 256, spatial_dims: int = 2):
         """Initialize wrapper.
 
         Args:
             model: MONAI DiffusionModelUNet to wrap
             embed_dim: Embedding dimension (should match model's time_embed output)
+            spatial_dims: Number of spatial dimensions (2 or 3)
         """
         super().__init__()
         self.model = model
         self.embed_dim = embed_dim
+        self.spatial_dims = spatial_dims
 
         # Replace time_embed with omega-aware version
         if not hasattr(model, 'time_embed'):
@@ -1249,17 +1398,17 @@ class ScoreAugModelWrapper(nn.Module):
         """Forward pass with omega conditioning.
 
         Args:
-            x: Noisy input tensor [B, C, H, W]
+            x: Noisy input tensor [B, C, H, W] or [B, C, D, H, W]
             timesteps: Timestep tensor [B]
             omega: Optional augmentation parameters for conditioning
             mode_id: Optional mode ID for intensity scaling (0=bravo, 1=flair, etc.)
 
         Returns:
-            Model prediction [B, C_out, H, W]
+            Model prediction [B, C_out, H, W] or [B, C_out, D, H, W]
         """
         # Encode omega + mode_id as (1, 36) - broadcasts to batch in MLP
         # Using fixed shape keeps torch.compile happy
-        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id)
+        omega_encoding = encode_omega(omega, x.device, mode_id=mode_id, spatial_dims=self.spatial_dims)
         self.omega_time_embed.set_omega_encoding(omega_encoding)
 
         # Call model normally
@@ -1278,3 +1427,83 @@ class ScoreAugModelWrapper(nn.Module):
         # Get all params except omega_mlp
         omega_param_ids = {id(p) for p in self.omega_time_embed.omega_mlp.parameters()}
         return (p for p in self.model.parameters() if id(p) not in omega_param_ids)
+
+
+# =============================================================================
+# Backwards Compatibility Aliases
+# =============================================================================
+
+# OmegaTimeEmbed doesn't depend on spatial_dims, so simple alias is fine
+OmegaTimeEmbed3D = OmegaTimeEmbed
+
+
+class ScoreAugTransform3D(ScoreAugTransform):
+    """3D ScoreAug transform (backwards compatibility wrapper).
+
+    Equivalent to ScoreAugTransform(spatial_dims=3, ...).
+    """
+
+    def __init__(self, **kwargs):
+        # Force spatial_dims=3 for 3D compatibility
+        kwargs['spatial_dims'] = 3
+        super().__init__(**kwargs)
+
+
+class ScoreAugModelWrapper3D(ScoreAugModelWrapper):
+    """3D ScoreAug model wrapper (backwards compatibility wrapper).
+
+    Equivalent to ScoreAugModelWrapper(..., spatial_dims=3).
+    """
+
+    def __init__(self, model: nn.Module, embed_dim: int = 256, **kwargs):
+        # Force spatial_dims=3 for 3D compatibility
+        super().__init__(model, embed_dim, spatial_dims=3, **kwargs)
+
+# 3D pattern names alias
+PATTERN_NAMES_3D = PATTERN_NAMES
+NUM_PATTERNS_3D = NUM_PATTERNS
+
+# 3D mode intensity scale aliases
+MODE_INTENSITY_SCALE_3D = MODE_INTENSITY_SCALE
+MODE_INTENSITY_SCALE_INV_3D = MODE_INTENSITY_SCALE_INV
+
+
+def apply_mode_intensity_scale_3d(
+    x: torch.Tensor,
+    mode_id: Optional[torch.Tensor],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply modality-specific intensity scaling to 3D input (per-sample).
+
+    Backwards compatibility alias for apply_mode_intensity_scale with spatial_dims=3.
+    """
+    return apply_mode_intensity_scale(x, mode_id, spatial_dims=3)
+
+
+def inverse_mode_intensity_scale_3d(
+    x: torch.Tensor,
+    scale: torch.Tensor,
+) -> torch.Tensor:
+    """Inverse the mode intensity scaling for 3D (per-sample).
+
+    Backwards compatibility alias for inverse_mode_intensity_scale.
+    """
+    return inverse_mode_intensity_scale(x, scale)
+
+
+def encode_omega_3d(
+    omega: Optional[Dict[str, Any]],
+    device: torch.device,
+    mode_id: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Encode 3D omega dict into tensor format for MLP.
+
+    Backwards compatibility alias for encode_omega with spatial_dims=3.
+    """
+    return encode_omega(omega, device, mode_id=mode_id, spatial_dims=3)
+
+
+# Alias for dimension constant
+OMEGA_ENCODING_DIM_3D = OMEGA_ENCODING_DIM
+
+# 2D-specific pattern generators (backwards compat)
+generate_pattern_mask_3d = generate_pattern_mask

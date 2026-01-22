@@ -30,8 +30,11 @@ Usage:
 """
 
 from .losses import PerceptualLoss, LPIPSLoss, SegmentationLoss, LPIPS_AVAILABLE
-from .regional_weighting import RegionalWeightComputer, create_regional_weight_computer
-from .regional_weighting_3d import RegionalWeightComputer3D
+from .regional_weighting import (
+    RegionalWeightComputer,
+    create_regional_weight_computer,
+    RegionalWeightComputer3D,  # Backwards compatibility alias
+)
 
 __all__ = [
     'PerceptualLoss',

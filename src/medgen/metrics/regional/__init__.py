@@ -4,8 +4,7 @@ Provides per-region loss analysis based on RANO-BM tumor size categories.
 """
 
 from .base import BaseRegionalMetricsTracker
-from .tracker_2d import RegionalMetricsTracker
-from .tracker_3d import RegionalMetricsTracker3D
+from .tracker import RegionalMetricsTracker, RegionalMetricsTracker3D
 from .tracker_seg import SegRegionalMetricsTracker
 
 __all__ = [

@@ -59,8 +59,8 @@ from .score_aug import (
     OMEGA_ENCODING_DIM,
 )
 
-# ScoreAug (3D)
-from .score_aug_3d import (
+# ScoreAug (3D) - now unified in score_aug.py
+from .score_aug import (
     ScoreAugTransform3D,
     ScoreAugModelWrapper3D,
     OmegaTimeEmbed3D,

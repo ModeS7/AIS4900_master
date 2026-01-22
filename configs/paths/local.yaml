@@ -7,6 +7,7 @@ paths:
   model_dir: /home/mode/NTNU/AIS4900_master/runs
   log_dir: /home/mode/NTNU/AIS4900_master/runs
   cache_dir: /home/mode/.cache/medgen
+  generated_dir: /home/mode/NTNU/MedicalDataSets/generated
 
   # Dataset-specific parameters (BrainMetShare: 256x256 @ 0.94mm/pixel)
   fov_mm: 240.0  # Field of view in mm

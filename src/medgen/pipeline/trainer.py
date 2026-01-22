@@ -223,35 +223,30 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self._cached_train_batch: Optional[Dict[str, torch.Tensor]] = None
 
         # ScoreAug initialization (applies transforms to noisy data)
-        # Uses dimension-appropriate transform class (ScoreAugTransform or ScoreAugTransform3D)
         self.score_aug = None
         self.use_omega_conditioning = False
         self.use_mode_intensity_scaling = False
         self._apply_mode_intensity_scale = None  # Function reference (lazy import)
         score_aug_cfg = cfg.training.get('score_aug', {})
         if score_aug_cfg.get('enabled', False):
-            if spatial_dims == 2:
-                from medgen.augmentation import ScoreAugTransform
-                self.score_aug = ScoreAugTransform(
-                    rotation=score_aug_cfg.get('rotation', True),
-                    flip=score_aug_cfg.get('flip', True),
-                    translation=score_aug_cfg.get('translation', False),
-                    cutout=score_aug_cfg.get('cutout', False),
-                    brightness=score_aug_cfg.get('brightness', False),
-                    brightness_range=score_aug_cfg.get('brightness_range', 1.2),
-                    compose=score_aug_cfg.get('compose', False),
-                    compose_prob=score_aug_cfg.get('compose_prob', 0.5),
-                )
-            else:
-                from medgen.augmentation import ScoreAugTransform3D
-                self.score_aug = ScoreAugTransform3D(
-                    rotation=score_aug_cfg.get('rotation', True),
-                    flip=score_aug_cfg.get('flip', True),
-                    translation=score_aug_cfg.get('translation', False),
-                    cutout=score_aug_cfg.get('cutout', False),
-                    compose=score_aug_cfg.get('compose', False),
-                    compose_prob=score_aug_cfg.get('compose_prob', 0.5),
-                )
+            from medgen.augmentation import ScoreAugTransform
+            self.score_aug = ScoreAugTransform(
+                spatial_dims=spatial_dims,
+                rotation=score_aug_cfg.get('rotation', True),
+                flip=score_aug_cfg.get('flip', True),
+                translation=score_aug_cfg.get('translation', False),
+                cutout=score_aug_cfg.get('cutout', False),
+                compose=score_aug_cfg.get('compose', False),
+                compose_prob=score_aug_cfg.get('compose_prob', 0.5),
+                v2_mode=score_aug_cfg.get('v2_mode', False),
+                nondestructive_prob=score_aug_cfg.get('nondestructive_prob', 0.5),
+                destructive_prob=score_aug_cfg.get('destructive_prob', 0.5),
+                cutout_vs_pattern=score_aug_cfg.get('cutout_vs_pattern', 0.5),
+                patterns_checkerboard=score_aug_cfg.get('patterns_checkerboard', True),
+                patterns_grid_dropout=score_aug_cfg.get('patterns_grid_dropout', True),
+                patterns_coarse_dropout=score_aug_cfg.get('patterns_coarse_dropout', True),
+                patterns_patch_dropout=score_aug_cfg.get('patterns_patch_dropout', True),
+            )
 
             self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
 

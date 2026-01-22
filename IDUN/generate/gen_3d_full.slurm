@@ -31,43 +31,24 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 # Memory optimization
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-# ============================================================================
-# Full Pipeline: size_bins -> seg_mask (exp2) -> bravo (exp1)
-# ============================================================================
-#
-# IMPORTANT: Update checkpoint paths to your trained models!
-#
-# exp1 (bravo): Generates bravo images conditioned on seg masks
-# exp2 (seg_conditioned): Generates seg masks conditioned on size bins
-#
-# ============================================================================
-
 # === UPDATE THESE PATHS ===
-SEG_CHECKPOINT="runs/exp2_pixel_seg_sizebin_.../checkpoint_best.pt"
-BRAVO_CHECKPOINT="runs/exp1_pixel_bravo_.../checkpoint_best.pt"
-OUTPUT_DIR="generated/3d_full_pipeline"
+SEG_CHECKPOINT="runs/diffusion_3d/seg_conditioned/exp2_pixel_seg_sizebin_rflow_128x160_20260121-163331/checkpoint_best.pt"
+BRAVO_CHECKPOINT="runs/bravo/diffusion_3d/exp1_pixel_bravo_rflow_128x160_20260119-212710/checkpoint_best.pt"
 # ==========================
 
-NUM_SAMPLES=100
-NUM_STEPS=50
-
-# Volume dimensions (should match training)
-HEIGHT=128
-WIDTH=128
-DEPTH=160
-
 time python -m medgen.scripts.generate \
-    --spatial_dims 3 \
-    --mode bravo \
-    --seg_model ${SEG_CHECKPOINT} \
-    --image_model ${BRAVO_CHECKPOINT} \
-    --output_dir ${OUTPUT_DIR} \
-    --num_images ${NUM_SAMPLES} \
-    --num_steps ${NUM_STEPS} \
-    --image_size ${HEIGHT} \
-    --depth ${DEPTH} \
-    --min_tumors 1 \
-    --max_tumors 5 \
-    --no_progress
+    paths=cluster \
+    spatial_dims=3 \
+    mode=bravo \
+    seg_model=${SEG_CHECKPOINT} \
+    image_model=${BRAVO_CHECKPOINT} \
+    output_subdir=3d_128_50_baseline \
+    num_images=100 \
+    num_steps=50 \
+    image_size=128 \
+    depth=160 \
+    min_tumors=1 \
+    max_tumors=10 \
+    verbose=false
 
 conda deactivate

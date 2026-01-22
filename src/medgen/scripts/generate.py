@@ -7,36 +7,36 @@ Supports both 2D images and 3D volumes, with multiple generation modes:
 - seg_conditioned: Generate seg masks conditioned on size bins (3D only)
 
 Usage:
-    # 2D: seg -> bravo pipeline
-    python -m medgen.scripts.generate --strategy rflow --mode bravo \\
-        --seg_model seg/model.pt --image_model bravo/model.pt \\
-        --num_images 15000 --output_dir gen_bravo
+    # 2D: seg -> bravo pipeline (local, default)
+    python -m medgen.scripts.generate mode=bravo \\
+        seg_model=runs/seg/model.pt image_model=runs/bravo/model.pt
 
-    # 3D: size_bins -> seg -> bravo pipeline
-    python -m medgen.scripts.generate --spatial_dims 3 --mode bravo \\
-        --seg_model exp2/checkpoint.pt --image_model exp1/checkpoint.pt \\
-        --depth 160 --num_images 1000 --output_dir gen_3d
+    # 3D: size_bins -> seg -> bravo pipeline (cluster)
+    python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \\
+        seg_model=runs/seg/checkpoint.pt image_model=runs/bravo/checkpoint.pt
+
+    # Custom output subdirectory
+    python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \\
+        seg_model=... image_model=...
 """
-import argparse
 import logging
-import os
 import random
-import time
 from pathlib import Path
-from typing import Callable, List, Literal, Optional, Tuple
+from typing import List, Optional, Tuple
 
+import hydra
 import nibabel as nib
 import numpy as np
 import torch
+from omegaconf import DictConfig
 from torch.amp import autocast
 from tqdm import tqdm
 
 from medgen.core import (
     MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
-    ModeType, setup_cuda_optimizations,
+    setup_cuda_optimizations,
 )
 from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy, load_diffusion_model
-from medgen.pipeline.utils import get_vram_usage
 from medgen.data import make_binary
 
 setup_cuda_optimizations()
@@ -46,90 +46,6 @@ logging.basicConfig(
     format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
 )
 log = logging.getLogger(__name__)
-
-
-def parse_arguments() -> argparse.Namespace:
-    """Parse command line arguments for generation."""
-    parser = argparse.ArgumentParser(
-        description='Generate synthetic medical images/volumes using trained diffusion models'
-    )
-    # Core settings
-    parser.add_argument(
-        '--spatial_dims', type=int, choices=[2, 3], default=2,
-        help='Spatial dimensions: 2 for images, 3 for volumes (default: 2)'
-    )
-    parser.add_argument(
-        '--strategy', type=str, choices=['ddpm', 'rflow'], default='rflow',
-        help='Generation strategy (default: rflow)'
-    )
-    parser.add_argument(
-        '--mode', type=str, choices=['bravo', 'dual', 'seg_conditioned'], default='bravo',
-        help='Generation mode (default: bravo)'
-    )
-
-    # Model paths
-    parser.add_argument(
-        '--seg_model', type=str,
-        help='Path to trained segmentation model (generates seg masks)'
-    )
-    parser.add_argument(
-        '--image_model', type=str,
-        help='Path to trained image model (bravo or dual, conditioned on seg)'
-    )
-
-    # Dimensions
-    parser.add_argument(
-        '--image_size', type=int, default=128,
-        help='Image height/width (default: 128)'
-    )
-    parser.add_argument(
-        '--depth', type=int, default=160,
-        help='Volume depth for 3D (default: 160)'
-    )
-
-    # Generation settings
-    parser.add_argument(
-        '--batch_size', type=int, default=8,
-        help='Batch size (default: 8 for 2D, auto-reduced for 3D)'
-    )
-    parser.add_argument(
-        '--num_images', type=int, default=1000,
-        help='Number of samples to generate (default: 1000)'
-    )
-    parser.add_argument(
-        '--num_steps', type=int, default=50,
-        help='Number of diffusion steps (default: 50)'
-    )
-    parser.add_argument(
-        '--current_image', type=int, default=0,
-        help='Starting counter for resuming (default: 0)'
-    )
-
-    # Size bin settings (for seg_conditioned or 3D seg generation)
-    parser.add_argument(
-        '--size_bins', type=str, default=None,
-        help='Fixed size bins as comma-separated ints, e.g., "0,0,1,0,0,0,1"'
-    )
-    parser.add_argument(
-        '--min_tumors', type=int, default=1,
-        help='Minimum tumors when random sampling (default: 1)'
-    )
-    parser.add_argument(
-        '--max_tumors', type=int, default=5,
-        help='Maximum tumors when random sampling (default: 5)'
-    )
-
-    # Output
-    parser.add_argument(
-        '--output_dir', type=str, required=True,
-        help='Output directory for generated images'
-    )
-    parser.add_argument(
-        '--no_progress', action='store_true',
-        help='Disable progress bars (for cluster)'
-    )
-
-    return parser.parse_args()
 
 
 def sample_random_size_bins(min_tumors: int = 1, max_tumors: int = 5) -> List[int]:
@@ -223,50 +139,48 @@ def generate_batch(
             )
 
 
-def run_2d_pipeline(args: argparse.Namespace) -> None:
+def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     """Run 2D generation pipeline: seg -> bravo/dual."""
     device = torch.device("cuda")
-    batch_size = auto_adjust_batch_size(args.batch_size, 2, device)
+    batch_size = auto_adjust_batch_size(cfg.batch_size, 2, device)
 
     # Initialize strategy
-    strategy: DiffusionStrategy = RFlowStrategy() if args.strategy == 'rflow' else DDPMStrategy()
-    strategy.setup_scheduler(1000, args.image_size)
+    strategy: DiffusionStrategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
+    strategy.setup_scheduler(1000, cfg.image_size)
 
     # Load models
     log.info("Loading segmentation model...")
     seg_model = load_diffusion_model(
-        args.seg_model, device=device,
+        cfg.seg_model, device=device,
         in_channels=1, out_channels=1, compile_model=True
     )
 
-    log.info(f"Loading image model ({args.mode})...")
-    if args.mode == 'bravo':
+    log.info(f"Loading image model ({cfg.mode})...")
+    if cfg.mode == 'bravo':
         in_ch, out_ch = 2, 1
     else:  # dual
         in_ch, out_ch = 3, 2
 
     image_model = load_diffusion_model(
-        args.image_model, device=device,
+        cfg.image_model, device=device,
         in_channels=in_ch, out_channels=out_ch, compile_model=True
     )
 
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Generating {cfg.num_images} samples...")
 
-    log.info(f"Generating {args.num_images} samples...")
-
-    current_image = args.current_image
+    current_image = cfg.current_image
     mask_cache: List[Tuple[np.ndarray, int]] = []
-    use_progress = not args.no_progress
+    use_progress = cfg.verbose
 
-    while current_image < args.num_images:
+    while current_image < cfg.num_images:
         # Generate seg masks
-        noise = torch.randn(get_noise_shape(batch_size, 1, 2, args.image_size, 0), device=device)
-        seg_masks = generate_batch(seg_model, strategy, noise, args.num_steps, device)
+        noise = torch.randn(get_noise_shape(batch_size, 1, 2, cfg.image_size, 0), device=device)
+        seg_masks = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
 
         # Validate and cache masks
         for j in range(len(seg_masks)):
-            if current_image >= args.num_images:
+            if current_image >= cfg.num_images:
                 break
 
             mask = seg_masks[j, 0].cpu().numpy()
@@ -289,14 +203,14 @@ def run_2d_pipeline(args: argparse.Namespace) -> None:
             ], dim=0).to(device, dtype=torch.float32)
 
             # Generate images
-            out_ch = 1 if args.mode == 'bravo' else 2
-            noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, args.image_size, 0), device=device)
-            images = generate_batch(image_model, strategy, noise, args.num_steps, device, masks_tensor)
+            out_ch = 1 if cfg.mode == 'bravo' else 2
+            noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, cfg.image_size, 0), device=device)
+            images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
 
             # Save
             for i, counter in enumerate(batch_counters):
                 output_path = output_dir / f"{counter:05d}.nii.gz"
-                if args.mode == 'bravo':
+                if cfg.mode == 'bravo':
                     combined = np.stack([images[i, 0].cpu().numpy(), batch_masks[i]], axis=-1)
                 else:
                     combined = np.stack([
@@ -312,12 +226,12 @@ def run_2d_pipeline(args: argparse.Namespace) -> None:
     if mask_cache:
         for mask, counter in mask_cache:
             masks_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).to(device, dtype=torch.float32)
-            out_ch = 1 if args.mode == 'bravo' else 2
-            noise = torch.randn(get_noise_shape(1, out_ch, 2, args.image_size, 0), device=device)
-            images = generate_batch(image_model, strategy, noise, args.num_steps, device, masks_tensor)
+            out_ch = 1 if cfg.mode == 'bravo' else 2
+            noise = torch.randn(get_noise_shape(1, out_ch, 2, cfg.image_size, 0), device=device)
+            images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
 
             output_path = output_dir / f"{counter:05d}.nii.gz"
-            if args.mode == 'bravo':
+            if cfg.mode == 'bravo':
                 combined = np.stack([images[0, 0].cpu().numpy(), mask], axis=-1)
             else:
                 combined = np.stack([images[0, 0].cpu().numpy(), images[0, 1].cpu().numpy(), mask], axis=-1)
@@ -326,75 +240,100 @@ def run_2d_pipeline(args: argparse.Namespace) -> None:
     log.info(f"Saved {current_image} samples to {output_dir}")
 
 
-def run_3d_pipeline(args: argparse.Namespace) -> None:
-    """Run 3D generation pipeline: size_bins -> seg -> bravo."""
-    device = torch.device("cuda")
-    batch_size = auto_adjust_batch_size(args.batch_size, 3, device)
+def save_bins_csv(bins_data: List[Tuple[int, List[int]]], output_path: Path) -> None:
+    """Save all bins information to a single CSV file.
 
-    strategy = RFlowStrategy() if args.strategy == 'rflow' else DDPMStrategy()
-    strategy.setup_scheduler(1000, args.image_size)
+    Args:
+        bins_data: List of (sample_id, bins) tuples
+        output_path: Path to save CSV file
+    """
+    with open(output_path, 'w') as f:
+        # Header: id, bin_0, bin_1, ..., bin_6, total_tumors
+        f.write('id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors\n')
+        for sample_id, bins in bins_data:
+            bins_str = ','.join(map(str, bins))
+            total = sum(bins)
+            f.write(f'{sample_id:05d},{bins_str},{total}\n')
+
+
+def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
+    """Run 3D generation pipeline: size_bins -> seg -> bravo.
+
+    Output format:
+        - bins.csv: All size bin information for all samples
+        - {id}.nii.gz: Combined volume [D, H, W, 2] where channel 0=seg, channel 1=bravo
+          (or just [D, H, W] for seg_conditioned mode)
+    """
+    device = torch.device("cuda")
+    batch_size = auto_adjust_batch_size(cfg.batch_size, 3, device)
+
+    strategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
+    strategy.setup_scheduler(1000, cfg.image_size)
 
     # Parse fixed size bins if provided
     fixed_bins = None
-    if args.size_bins:
-        fixed_bins = [int(x) for x in args.size_bins.split(',')]
+    if cfg.size_bins:
+        fixed_bins = [int(x) for x in cfg.size_bins.split(',')]
         assert len(fixed_bins) == 7, "Size bins must have exactly 7 values"
         log.info(f"Using fixed size bins: {fixed_bins}")
 
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Collect all bins info for CSV
+    all_bins: List[Tuple[int, List[int]]] = []
+
     # Mode: seg_conditioned only (just generate seg masks)
-    if args.mode == 'seg_conditioned':
+    if cfg.mode == 'seg_conditioned':
         log.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
-            args.seg_model, device=device,
+            cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
         )
 
-        log.info(f"Generating {args.num_images} seg masks...")
-        for i in tqdm(range(args.num_images), disable=args.no_progress):
-            bins = fixed_bins if fixed_bins else sample_random_size_bins(args.min_tumors, args.max_tumors)
+        log.info(f"Generating {cfg.num_images} seg masks...")
+        for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
+            bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
             set_size_bins_on_model(seg_model, size_bins)
 
-            noise = torch.randn(get_noise_shape(1, 1, 3, args.image_size, args.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, args.num_steps, device)
+            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
 
             # Binarize and save
             seg_np = seg[0, 0].cpu().numpy()
             seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
             seg_binary = make_binary(seg_np, threshold=0.5)
 
-            save_nifti(seg_binary, str(output_dir / f"{i:05d}_seg.nii.gz"))
-            (output_dir / f"{i:05d}_bins.txt").write_text(','.join(map(str, bins)))
+            # Save single-channel seg volume
+            save_nifti(seg_binary, str(output_dir / f"{i:05d}.nii.gz"))
+            all_bins.append((i, bins))
 
             if i % 10 == 0:
                 torch.cuda.empty_cache()
 
     # Mode: bravo (full pipeline: seg -> bravo)
-    elif args.mode == 'bravo':
+    elif cfg.mode == 'bravo':
         log.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
-            args.seg_model, device=device,
+            cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
         )
 
         log.info("Loading bravo model...")
         bravo_model = load_diffusion_model(
-            args.image_model, device=device,
+            cfg.image_model, device=device,
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
         )
 
-        log.info(f"Generating {args.num_images} seg+bravo pairs...")
-        for i in tqdm(range(args.num_images), disable=args.no_progress):
-            bins = fixed_bins if fixed_bins else sample_random_size_bins(args.min_tumors, args.max_tumors)
+        log.info(f"Generating {cfg.num_images} seg+bravo pairs...")
+        for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
+            bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
             set_size_bins_on_model(seg_model, size_bins)
 
             # Generate seg
-            noise = torch.randn(get_noise_shape(1, 1, 3, args.image_size, args.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, args.num_steps, device)
+            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
 
             # Binarize seg
             seg_np = seg[0, 0].cpu().numpy()
@@ -403,42 +342,55 @@ def run_3d_pipeline(args: argparse.Namespace) -> None:
             seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
 
             # Generate bravo
-            noise = torch.randn(get_noise_shape(1, 1, 3, args.image_size, args.depth), device=device)
-            bravo = generate_batch(bravo_model, strategy, noise, args.num_steps, device, seg_tensor)
+            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+            bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device, seg_tensor)
+            bravo_np = bravo[0, 0].cpu().numpy()
 
-            # Save
-            save_nifti(seg_binary, str(output_dir / f"{i:05d}_seg.nii.gz"))
-            save_nifti(bravo[0, 0].cpu().numpy(), str(output_dir / f"{i:05d}_bravo.nii.gz"))
-            (output_dir / f"{i:05d}_bins.txt").write_text(','.join(map(str, bins)))
+            # Stack seg + bravo into combined volume [D, H, W, 2]
+            # Channel 0 = seg (binary), Channel 1 = bravo (continuous)
+            combined = np.stack([seg_binary, bravo_np], axis=-1)
+            save_nifti(combined, str(output_dir / f"{i:05d}.nii.gz"))
+            all_bins.append((i, bins))
 
             if i % 10 == 0:
                 torch.cuda.empty_cache()
 
     else:
-        raise ValueError(f"Mode '{args.mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
+        raise ValueError(f"Mode '{cfg.mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
 
-    log.info(f"Saved samples to {output_dir}")
+    # Save all bins to single CSV file
+    save_bins_csv(all_bins, output_dir / "bins.csv")
+    log.info(f"Saved {len(all_bins)} samples to {output_dir}")
+    log.info(f"Bins info saved to {output_dir / 'bins.csv'}")
 
 
-def main() -> None:
+@hydra.main(version_base=None, config_path="../../../configs", config_name="generate")
+def main(cfg: DictConfig) -> None:
     """Main entry point for generation."""
-    args = parse_arguments()
-
-    log.info("=" * 60)
-    log.info(f"Generation: {args.spatial_dims}D | Mode: {args.mode} | Strategy: {args.strategy}")
-    log.info(f"Output: {args.output_dir}")
-    log.info("=" * 60)
-
-    if args.spatial_dims == 2:
-        if not args.seg_model or not args.image_model:
-            raise ValueError("2D mode requires --seg_model and --image_model")
-        run_2d_pipeline(args)
+    # Build output directory from paths config
+    generated_dir = Path(cfg.paths.generated_dir)
+    if cfg.output_subdir:
+        output_dir = generated_dir / cfg.output_subdir
     else:
-        if args.mode == 'seg_conditioned' and not args.seg_model:
-            raise ValueError("seg_conditioned mode requires --seg_model")
-        if args.mode == 'bravo' and (not args.seg_model or not args.image_model):
-            raise ValueError("3D bravo mode requires --seg_model and --image_model")
-        run_3d_pipeline(args)
+        # Default subdirectory based on mode and spatial dims
+        output_dir = generated_dir / f"{cfg.spatial_dims}d_{cfg.mode}"
+
+    log.info("=" * 60)
+    log.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.mode} | Strategy: {cfg.strategy}")
+    log.info(f"Output: {output_dir}")
+    log.info(f"Paths: {cfg.paths.name}")
+    log.info("=" * 60)
+
+    if cfg.spatial_dims == 2:
+        if not cfg.seg_model or not cfg.image_model:
+            raise ValueError("2D mode requires seg_model and image_model")
+        run_2d_pipeline(cfg, output_dir)
+    else:
+        if cfg.mode == 'seg_conditioned' and not cfg.seg_model:
+            raise ValueError("seg_conditioned mode requires seg_model")
+        if cfg.mode == 'bravo' and (not cfg.seg_model or not cfg.image_model):
+            raise ValueError("3D bravo mode requires seg_model and image_model")
+        run_3d_pipeline(cfg, output_dir)
 
     log.info("Generation complete!")
 

@@ -1,0 +1,54 @@
+# Generation Configuration
+#
+# Generate synthetic medical images/volumes using trained diffusion models.
+#
+# Usage:
+#   # 2D: seg -> bravo pipeline (local)
+#   python -m medgen.scripts.generate mode=bravo \
+#       seg_model=runs/seg/model.pt image_model=runs/bravo/model.pt
+#
+#   # 3D: size_bins -> seg -> bravo pipeline (cluster)
+#   python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \
+#       seg_model=runs/seg/checkpoint.pt image_model=runs/bravo/checkpoint.pt
+#
+#   # Generate only seg masks (3D)
+#   python -m medgen.scripts.generate spatial_dims=3 mode=seg_conditioned \
+#       seg_model=runs/seg_conditioned/checkpoint.pt
+
+defaults:
+  - paths: local
+  - _self_
+
+# Core settings
+spatial_dims: 2           # 2 for images, 3 for volumes
+strategy: rflow           # ddpm or rflow
+mode: bravo               # bravo, dual, seg_conditioned
+
+# Model paths (relative to working dir or absolute)
+seg_model: null           # Path to trained segmentation model
+image_model: null         # Path to trained image model (bravo or dual)
+
+# Dimensions
+image_size: 128           # Image height/width
+depth: 160                # Volume depth for 3D
+
+# Generation settings
+batch_size: 8             # Batch size (auto-reduced for 3D)
+num_images: 1000          # Number of samples to generate
+num_steps: 50             # Number of diffusion steps
+current_image: 0          # Starting counter for resuming
+
+# Size bin settings (for seg_conditioned or 3D seg generation)
+size_bins: null           # Fixed size bins as comma-separated ints, e.g., "0,0,1,0,0,0,1"
+min_tumors: 1             # Minimum tumors when random sampling
+max_tumors: 5             # Maximum tumors when random sampling
+
+# Output settings
+output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")
+verbose: true             # Enable progress bars (false for cluster)
+
+# Hydra configuration
+hydra:
+  run:
+    dir: .                # Don't create Hydra output dirs for generation
+  output_subdir: null     # Disable .hydra subdirectory

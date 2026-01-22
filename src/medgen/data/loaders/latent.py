@@ -3,6 +3,8 @@ Latent space dataloaders for latent diffusion training.
 
 Provides dataloaders that load pre-encoded latent tensors from cache,
 plus utilities for building and validating the latent cache.
+
+Supports both 2D images and 3D volumes via spatial_dims parameter.
 """
 import hashlib
 import json
@@ -27,18 +29,28 @@ logger = logging.getLogger(__name__)
 class LatentDataset(Dataset):
     """Dataset that loads pre-encoded latent tensors from cache.
 
+    Supports both 2D and 3D latents:
+    - 2D: [C_latent, H_latent, W_latent]
+    - 3D: [C_latent, D_latent, H_latent, W_latent]
+
     Each .pt file contains:
-    - 'latent': Encoded image tensor [C_latent, H_latent, W_latent]
-    - 'seg_mask': Original pixel-space segmentation mask [1, H, W] (if conditional)
+    - 'latent': Encoded tensor
+    - 'seg_mask': Original pixel-space segmentation mask (if conditional)
     - 'patient_id': Patient identifier string
-    - 'slice_idx': Slice index within the volume
+    - 'slice_idx': Slice index within the volume (2D only)
 
     Args:
         cache_dir: Directory containing pre-encoded .pt files.
         mode: Training mode ('bravo', 'dual', 'seg', 'multi', 'multi_modality').
+        spatial_dims: Number of spatial dimensions (2 or 3). Auto-detected if None.
     """
 
-    def __init__(self, cache_dir: str, mode: str) -> None:
+    def __init__(
+        self,
+        cache_dir: str,
+        mode: str,
+        spatial_dims: Optional[int] = None,
+    ) -> None:
         self.cache_dir = cache_dir
         self.mode = mode
 
@@ -48,7 +60,34 @@ class LatentDataset(Dataset):
         if len(self.files) == 0:
             raise ValueError(f"No .pt files found in cache directory: {cache_dir}")
 
-        logger.info(f"LatentDataset: Found {len(self.files)} samples in {cache_dir}")
+        # Auto-detect spatial dims from metadata if not specified
+        if spatial_dims is None:
+            spatial_dims = self._detect_spatial_dims()
+        self.spatial_dims = spatial_dims
+
+        name = "LatentDataset" if spatial_dims == 2 else "Latent3DDataset"
+        logger.info(f"{name}: Found {len(self.files)} samples in {cache_dir}")
+
+    def _detect_spatial_dims(self) -> int:
+        """Detect spatial dimensions from cache metadata or first sample."""
+        metadata_path = os.path.join(self.cache_dir, "metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                return metadata.get('spatial_dims', 2)
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        # Fallback: check first sample's latent shape
+        if self.files:
+            data = torch.load(self.files[0], weights_only=False)
+            if 'latent' in data:
+                # 4D = [C, D, H, W] = 3D spatial
+                # 3D = [C, H, W] = 2D spatial
+                return 3 if data['latent'].dim() == 4 else 2
+
+        return 2  # Default to 2D
 
     def __len__(self) -> int:
         return len(self.files)
@@ -72,18 +111,27 @@ class LatentDataset(Dataset):
         return data
 
 
+# Backwards compatibility alias
+Latent3DDataset = LatentDataset
+
+
 class LatentCacheBuilder:
     """Builds and validates latent cache from pixel-space datasets.
 
-    Encodes images using a compression model (VAE/DC-AE/VQ-VAE) and saves
+    Encodes images/volumes using a compression model (VAE/DC-AE/VQ-VAE) and saves
     them as .pt files for fast loading during diffusion training.
+
+    Supports both 2D (batched encoding) and 3D (single-volume encoding due to memory).
 
     Args:
         compression_model: Trained compression model with encode() method.
         device: Device for encoding.
         mode: Training mode for determining what to encode.
-        image_size: Original image size (for metadata).
+        spatial_dims: Number of spatial dimensions (2 or 3).
+        image_size: Original image size for 2D (e.g., 256).
+        volume_shape: Original volume shape (D, H, W) for 3D.
         compression_type: Type of compression model ('vae', 'dcae', 'vqvae').
+        verbose: Whether to show progress bars.
     """
 
     def __init__(
@@ -91,14 +139,18 @@ class LatentCacheBuilder:
         compression_model: torch.nn.Module,
         device: torch.device,
         mode: str,
-        image_size: int,
+        spatial_dims: int = 2,
+        image_size: Optional[int] = None,
+        volume_shape: Optional[Tuple[int, int, int]] = None,
         compression_type: str = "vae",
         verbose: bool = True,
     ) -> None:
         self.model = compression_model.eval()
         self.device = device
         self.mode = mode
+        self.spatial_dims = spatial_dims
         self.image_size = image_size
+        self.volume_shape = volume_shape
         self.compression_type = compression_type
         self.verbose = verbose
 
@@ -163,6 +215,12 @@ class LatentCacheBuilder:
             logger.info(f"Cache mode mismatch: cached={cached_mode}, expected={self.mode}")
             return False
 
+        # Check spatial dims match
+        cached_dims = metadata.get('spatial_dims', 2)
+        if cached_dims != self.spatial_dims:
+            logger.info(f"Cache spatial_dims mismatch: cached={cached_dims}, expected={self.spatial_dims}")
+            return False
+
         # Check number of samples
         num_samples = metadata.get('num_samples', 0)
         actual_files = len(glob(os.path.join(cache_dir, "*.pt")))
@@ -186,15 +244,32 @@ class LatentCacheBuilder:
     ) -> None:
         """Encode entire dataset and save as .pt files.
 
+        For 2D: Uses batched encoding for efficiency.
+        For 3D: Processes one volume at a time due to memory constraints.
+
         Args:
-            pixel_dataset: Dataset returning pixel-space images.
+            pixel_dataset: Dataset returning pixel-space images/volumes.
             cache_dir: Directory to save encoded latents.
             checkpoint_path: Path to compression checkpoint (for hash).
-            batch_size: Batch size for encoding.
-            num_workers: Number of dataloader workers.
+            batch_size: Batch size for encoding (2D only).
+            num_workers: Number of dataloader workers (2D only).
         """
         os.makedirs(cache_dir, exist_ok=True)
 
+        if self.spatial_dims == 2:
+            self._build_cache_2d(pixel_dataset, cache_dir, checkpoint_path, batch_size, num_workers)
+        else:
+            self._build_cache_3d(pixel_dataset, cache_dir, checkpoint_path)
+
+    def _build_cache_2d(
+        self,
+        pixel_dataset: Dataset,
+        cache_dir: str,
+        checkpoint_path: str,
+        batch_size: int,
+        num_workers: int,
+    ) -> None:
+        """Build 2D cache with batched encoding."""
         # Create temporary dataloader for encoding
         temp_loader = DataLoader(
             pixel_dataset,
@@ -207,12 +282,12 @@ class LatentCacheBuilder:
         sample_idx = 0
         latent_shape = None
 
-        logger.info(f"Encoding {len(pixel_dataset)} samples to {cache_dir}...")
+        logger.info(f"Encoding {len(pixel_dataset)} 2D samples to {cache_dir}...")
 
         with torch.no_grad():
             for batch in tqdm(temp_loader, desc="Encoding latents", disable=not self.verbose):
                 # Handle different batch formats
-                images, seg_masks, patient_ids, slice_indices = self._parse_batch(batch)
+                images, seg_masks, patient_ids, slice_indices = self._parse_batch_2d(batch)
 
                 # Move to device and encode
                 images = images.to(self.device, non_blocking=True)
@@ -245,6 +320,7 @@ class LatentCacheBuilder:
             'compression_checkpoint': checkpoint_path,
             'checkpoint_hash': self.compute_checkpoint_hash(checkpoint_path),
             'compression_type': self.compression_type,
+            'spatial_dims': 2,
             'latent_shape': latent_shape,
             'mode': self.mode,
             'image_size': self.image_size,
@@ -255,24 +331,74 @@ class LatentCacheBuilder:
         with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)
 
-        logger.info(f"Cache built: {sample_idx} samples, latent shape {latent_shape}")
+        logger.info(f"2D cache built: {sample_idx} samples, latent shape {latent_shape}")
 
-    def _parse_batch(
+    def _build_cache_3d(
+        self,
+        volume_dataset: Dataset,
+        cache_dir: str,
+        checkpoint_path: str,
+    ) -> None:
+        """Build 3D cache with single-volume encoding."""
+        latent_shape = None
+        sample_idx = 0
+
+        logger.info(f"Encoding {len(volume_dataset)} 3D volumes to {cache_dir}...")
+
+        with torch.no_grad():
+            for idx in tqdm(range(len(volume_dataset)), desc="Encoding 3D volumes", disable=not self.verbose):
+                # Get single volume
+                batch = volume_dataset[idx]
+
+                # Parse batch format
+                volume, seg_mask, patient_id = self._parse_batch_3d(batch)
+
+                # Move to device and add batch dimension
+                volume = volume.unsqueeze(0).to(self.device)  # [1, C, D, H, W]
+
+                # Encode
+                latent = self._encode(volume)  # [1, C_lat, D', H', W']
+
+                if latent_shape is None:
+                    latent_shape = list(latent.shape[1:])
+
+                # Save sample
+                sample_data = {
+                    'latent': latent.squeeze(0).cpu(),
+                    'patient_id': patient_id if patient_id else f"volume_{idx}",
+                }
+
+                # Include seg mask if available (keep in pixel space)
+                if seg_mask is not None:
+                    sample_data['seg_mask'] = seg_mask.cpu()
+
+                # Save to file
+                filename = f"volume_{sample_idx:06d}.pt"
+                torch.save(sample_data, os.path.join(cache_dir, filename))
+                sample_idx += 1
+
+        # Save metadata
+        metadata = {
+            'compression_checkpoint': checkpoint_path,
+            'checkpoint_hash': self.compute_checkpoint_hash(checkpoint_path),
+            'compression_type': self.compression_type,
+            'spatial_dims': 3,
+            'latent_shape': latent_shape,
+            'pixel_shape': list(self.volume_shape) if self.volume_shape else None,
+            'mode': self.mode,
+            'num_samples': sample_idx,
+            'created_at': datetime.now().isoformat(),
+        }
+
+        with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(f"3D cache built: {sample_idx} volumes, latent shape {latent_shape}")
+
+    def _parse_batch_2d(
         self, batch: Any
     ) -> Tuple[Tensor, Optional[Tensor], Optional[List[str]], Optional[List[int]]]:
-        """Parse batch into images, seg masks, and metadata.
-
-        Handles different dataset formats:
-        - Tuple: (images, seg_masks) from extract_slices_dual
-        - Tensor: just images from extract_slices_single
-        - Array: numpy array to convert
-
-        Args:
-            batch: Batch from dataloader.
-
-        Returns:
-            Tuple of (images, seg_masks, patient_ids, slice_indices).
-        """
+        """Parse 2D batch into images, seg masks, and metadata."""
         import numpy as np
 
         patient_ids = None
@@ -307,13 +433,36 @@ class LatentCacheBuilder:
 
         return images, seg_masks, patient_ids, slice_indices
 
+    def _parse_batch_3d(
+        self, batch: Any
+    ) -> Tuple[Tensor, Optional[Tensor], Optional[str]]:
+        """Parse 3D batch into volume, seg mask, and patient ID."""
+        seg_mask = None
+        patient_id = None
+
+        if isinstance(batch, dict):
+            volume = batch.get('image', batch.get('volume'))
+            seg_mask = batch.get('seg_mask', batch.get('seg'))
+            patient_id = batch.get('patient_id', batch.get('patient'))
+        elif isinstance(batch, tuple):
+            if len(batch) >= 2:
+                volume, seg_mask = batch[0], batch[1]
+                if len(batch) >= 3:
+                    patient_id = batch[2]
+            else:
+                volume = batch[0]
+        else:
+            volume = batch
+
+        return volume, seg_mask, patient_id
+
     def _encode(self, images: Tensor) -> Tensor:
-        """Encode images to latent space.
+        """Encode images/volumes to latent space.
 
         Handles different compression model types.
 
         Args:
-            images: Images [B, C, H, W].
+            images: Images [B, C, H, W] or volumes [B, C, D, H, W].
 
         Returns:
             Latent representation.
@@ -336,6 +485,23 @@ class LatentCacheBuilder:
             return result
 
 
+# Backwards compatibility alias
+class LatentCacheBuilder3D(LatentCacheBuilder):
+    """3D latent cache builder (backwards compatibility wrapper).
+
+    Equivalent to LatentCacheBuilder(..., spatial_dims=3).
+    """
+
+    def __init__(self, compression_model, device, mode, volume_shape=None, **kwargs):
+        kwargs['spatial_dims'] = 3
+        kwargs['volume_shape'] = volume_shape
+        super().__init__(compression_model, device, mode, **kwargs)
+
+
+# =============================================================================
+# Dataloader Factory Functions
+# =============================================================================
+
 def create_latent_dataloader(
     cfg: DictConfig,
     cache_dir: str,
@@ -346,8 +512,11 @@ def create_latent_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
+    spatial_dims: Optional[int] = None,
 ) -> Tuple[DataLoader, LatentDataset]:
     """Create dataloader for pre-encoded latents.
+
+    Supports both 2D and 3D latents (auto-detected from cache metadata).
 
     Args:
         cfg: Hydra configuration.
@@ -359,6 +528,7 @@ def create_latent_dataloader(
         use_distributed: Whether to use distributed sampling.
         rank: Process rank for distributed training.
         world_size: Total number of processes.
+        spatial_dims: Override spatial dimensions (auto-detected if None).
 
     Returns:
         Tuple of (DataLoader, LatentDataset).
@@ -368,7 +538,7 @@ def create_latent_dataloader(
     if not os.path.exists(split_cache_dir):
         raise ValueError(f"Cache directory not found: {split_cache_dir}")
 
-    dataset = LatentDataset(split_cache_dir, mode)
+    dataset = LatentDataset(split_cache_dir, mode, spatial_dims=spatial_dims)
 
     batch_size = batch_size or cfg.training.batch_size
 
@@ -400,6 +570,7 @@ def create_latent_validation_dataloader(
     mode: str,
     batch_size: Optional[int] = None,
     world_size: int = 1,
+    spatial_dims: Optional[int] = None,
 ) -> Optional[Tuple[DataLoader, LatentDataset]]:
     """Create validation dataloader for pre-encoded latents.
 
@@ -409,6 +580,7 @@ def create_latent_validation_dataloader(
         mode: Training mode.
         batch_size: Override batch size.
         world_size: Number of GPUs for DDP.
+        spatial_dims: Override spatial dimensions (auto-detected if None).
 
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if val cache doesn't exist.
@@ -424,7 +596,7 @@ def create_latent_validation_dataloader(
     if world_size > 1:
         batch_size = max(1, batch_size // world_size)
 
-    dataset = LatentDataset(val_cache_dir, mode)
+    dataset = LatentDataset(val_cache_dir, mode, spatial_dims=spatial_dims)
 
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
@@ -450,6 +622,7 @@ def create_latent_test_dataloader(
     cache_dir: str,
     mode: str,
     batch_size: Optional[int] = None,
+    spatial_dims: Optional[int] = None,
 ) -> Optional[Tuple[DataLoader, LatentDataset]]:
     """Create test dataloader for pre-encoded latents.
 
@@ -458,6 +631,7 @@ def create_latent_test_dataloader(
         cache_dir: Base cache directory.
         mode: Training mode.
         batch_size: Override batch size.
+        spatial_dims: Override spatial dimensions (auto-detected if None).
 
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if test cache doesn't exist.
@@ -469,7 +643,7 @@ def create_latent_test_dataloader(
 
     batch_size = batch_size or cfg.training.batch_size
 
-    dataset = LatentDataset(test_cache_dir, mode)
+    dataset = LatentDataset(test_cache_dir, mode, spatial_dims=spatial_dims)
 
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
 
@@ -485,6 +659,15 @@ def create_latent_test_dataloader(
 
     return dataloader, dataset
 
+
+# Backwards compatibility aliases for 3D
+create_latent_3d_dataloader = create_latent_dataloader
+create_latent_3d_validation_dataloader = create_latent_validation_dataloader
+
+
+# =============================================================================
+# Compression Model Utilities
+# =============================================================================
 
 def detect_compression_type(checkpoint_path: str) -> str:
     """Detect compression model type from checkpoint.

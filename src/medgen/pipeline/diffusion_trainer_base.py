@@ -752,24 +752,25 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         if not cfg.get('enabled', False):
             return None
 
-        if self.spatial_dims == 2:
-            from medgen.augmentation import ScoreAugTransform
-            return ScoreAugTransform(
-                noise_std=cfg.get('noise_std', 0.05),
-                blur_sigma=cfg.get('blur_sigma', 0.5),
-                noise_prob=cfg.get('noise_prob', 0.5),
-                blur_prob=cfg.get('blur_prob', 0.5),
-                scale_intensity=cfg.get('scale_intensity', False),
-                mode_intensities=cfg.get('mode_intensities', {}),
-            )
-        else:
-            from medgen.augmentation import ScoreAugTransform3D
-            return ScoreAugTransform3D(
-                noise_std=cfg.get('noise_std', 0.05),
-                blur_sigma=cfg.get('blur_sigma', 0.5),
-                noise_prob=cfg.get('noise_prob', 0.5),
-                blur_prob=cfg.get('blur_prob', 0.5),
-            )
+        from medgen.augmentation import ScoreAugTransform
+
+        return ScoreAugTransform(
+            spatial_dims=self.spatial_dims,
+            rotation=cfg.get('rotation', True),
+            flip=cfg.get('flip', True),
+            translation=cfg.get('translation', False),
+            cutout=cfg.get('cutout', False),
+            compose=cfg.get('compose', False),
+            compose_prob=cfg.get('compose_prob', 0.5),
+            v2_mode=cfg.get('v2_mode', False),
+            nondestructive_prob=cfg.get('nondestructive_prob', 0.5),
+            destructive_prob=cfg.get('destructive_prob', 0.5),
+            cutout_vs_pattern=cfg.get('cutout_vs_pattern', 0.5),
+            patterns_checkerboard=cfg.get('patterns_checkerboard', True),
+            patterns_grid_dropout=cfg.get('patterns_grid_dropout', True),
+            patterns_coarse_dropout=cfg.get('patterns_coarse_dropout', True),
+            patterns_patch_dropout=cfg.get('patterns_patch_dropout', True),
+        )
 
     def _create_sda(self, cfg: Optional[Dict] = None):
         """Create dimension-appropriate SDA transform.

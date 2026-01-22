@@ -404,8 +404,8 @@ def _train_3d(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object.
     """
-    from medgen.data.loaders.latent import load_compression_model
-    from medgen.data.loaders.latent_3d import (
+    from medgen.data.loaders.latent import (
+        load_compression_model,
         LatentCacheBuilder3D,
         create_latent_3d_dataloader,
         create_latent_3d_validation_dataloader,
