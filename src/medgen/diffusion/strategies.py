@@ -406,6 +406,7 @@ class DDPMStrategy(DiffusionStrategy):
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
+        cfg_scale_end: Optional[float] = None,
     ):
         """
         Generate using DDPM sampling
@@ -425,9 +426,14 @@ class DDPMStrategy(DiffusionStrategy):
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
             size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
             cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
+                       For dynamic CFG, this is the starting scale (at t=T, high noise).
+            cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
         """
         batch_size = model_input.shape[0]
-        use_cfg = cfg_scale > 1.0 and size_bins is not None
+        use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
+
+        # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
+        use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
 
         # Set timesteps for inference
         self.scheduler.set_timesteps(num_inference_steps=num_steps)
@@ -440,18 +446,30 @@ class DDPMStrategy(DiffusionStrategy):
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
-        # Prepare unconditional size_bins for CFG (zeros)
-        if use_cfg:
+        # CFG for conditioning (seg mask) - only for non-dual with conditioning
+        use_cfg_conditioning = cfg_scale > 1.0 and conditioning is not None and not is_dual
+
+        # Prepare unconditional inputs for CFG
+        if use_cfg_size_bins:
             uncond_size_bins = torch.zeros_like(size_bins)
+        if use_cfg_conditioning:
+            uncond_conditioning = torch.zeros_like(conditioning)
 
         # Sampling loop
-        timesteps = self.scheduler.timesteps
+        timesteps = list(self.scheduler.timesteps)
+        total_steps = len(timesteps)
         if use_progress_bars:
-            timesteps_iter = tqdm(timesteps, desc="DDPM sampling")
+            timesteps_iter = tqdm(enumerate(timesteps), total=total_steps, desc="DDPM sampling")
         else:
-            timesteps_iter = timesteps
+            timesteps_iter = enumerate(timesteps)
 
-        for t in timesteps_iter:
+        for step_idx, t in timesteps_iter:
+            # Compute current CFG scale (dynamic or constant)
+            if use_dynamic_cfg:
+                progress = step_idx / max(total_steps - 1, 1)
+                current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
+            else:
+                current_cfg = cfg_scale
             timesteps_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
             if is_dual:
@@ -474,18 +492,29 @@ class DDPMStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg:
-                    # Classifier-free guidance: combine conditional and unconditional predictions
-                    # pred_cond = model(x, t, size_bins=condition)
-                    # pred_uncond = model(x, t, size_bins=zeros)
-                    # pred_guided = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                if use_cfg_size_bins:
+                    # CFG for size_bins conditioning
                     noise_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
                     )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    noise_pred_cond = noise_pred_cond.clone()
                     noise_pred_uncond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
                     )
-                    noise_pred = noise_pred_uncond + cfg_scale * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
+                elif use_cfg_conditioning:
+                    # CFG for image conditioning (seg mask)
+                    uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
+                    noise_pred_cond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    noise_pred_cond = noise_pred_cond.clone()
+                    noise_pred_uncond = self._call_model(
+                        model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
                 else:
                     noise_pred = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
@@ -641,6 +670,7 @@ class RFlowStrategy(DiffusionStrategy):
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
+        cfg_scale_end: Optional[float] = None,
     ):
         """
         Generate using RFlow sampling
@@ -664,9 +694,15 @@ class RFlowStrategy(DiffusionStrategy):
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
             size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
             cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
+                       Works with both size_bins and image conditioning (seg mask).
+                       For dynamic CFG, this is the starting scale (at t=T, high noise).
+            cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
+                          Set to 1.0 for "high CFG early, no CFG late" schedule.
         """
+        # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
+        use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
         batch_size = model_input.shape[0]
-        use_cfg = cfg_scale > 1.0 and size_bins is not None
+        use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
 
         # Calculate numel based on spatial dimensions
         if model_input.dim() == 5:
@@ -684,9 +720,14 @@ class RFlowStrategy(DiffusionStrategy):
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
-        # Prepare unconditional size_bins for CFG (zeros)
-        if use_cfg:
+        # CFG for conditioning (seg mask) - only for non-dual with conditioning
+        use_cfg_conditioning = cfg_scale > 1.0 and conditioning is not None and not is_dual
+
+        # Prepare unconditional inputs for CFG
+        if use_cfg_size_bins:
             uncond_size_bins = torch.zeros_like(size_bins)
+        if use_cfg_conditioning:
+            uncond_conditioning = torch.zeros_like(conditioning)
 
         # Setup scheduler
         self.scheduler.set_timesteps(
@@ -701,11 +742,19 @@ class RFlowStrategy(DiffusionStrategy):
         ))
 
         # Sampling loop
-        timestep_pairs = zip(self.scheduler.timesteps, all_next_timesteps)
+        timestep_pairs = list(zip(self.scheduler.timesteps, all_next_timesteps))
+        total_steps = len(timestep_pairs)
         if use_progress_bars:
-            timestep_pairs = tqdm(list(timestep_pairs), desc="RFlow sampling")
+            timestep_pairs = tqdm(timestep_pairs, desc="RFlow sampling")
 
-        for t, next_t in timestep_pairs:
+        for step_idx, (t, next_t) in enumerate(timestep_pairs):
+            # Compute current CFG scale (dynamic or constant)
+            if use_dynamic_cfg:
+                # Linear interpolation: cfg_scale at step 0, cfg_scale_end at last step
+                progress = step_idx / max(total_steps - 1, 1)
+                current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
+            else:
+                current_cfg = cfg_scale
             timesteps_batch = t.unsqueeze(0).repeat(batch_size).to(device)
             next_timestep = next_t.to(device) if isinstance(next_t, torch.Tensor) else torch.tensor(next_t,
                                                                                                     device=device)
@@ -730,18 +779,31 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg:
-                    # Classifier-free guidance: combine conditional and unconditional predictions
-                    # pred_cond = model(x, t, size_bins=condition)
-                    # pred_uncond = model(x, t, size_bins=zeros)
-                    # pred_guided = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                if use_cfg_size_bins:
+                    # CFG for size_bins conditioning
                     velocity_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
                     )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    velocity_pred_cond = velocity_pred_cond.clone()
                     velocity_pred_uncond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
                     )
-                    velocity_pred = velocity_pred_uncond + cfg_scale * (velocity_pred_cond - velocity_pred_uncond)
+                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
+                elif use_cfg_conditioning:
+                    # CFG for image conditioning (seg mask)
+                    # Conditional: noisy + seg_mask
+                    # Unconditional: noisy + zeros
+                    uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
+                    velocity_pred_cond = self._call_model(
+                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    velocity_pred_cond = velocity_pred_cond.clone()
+                    velocity_pred_uncond = self._call_model(
+                        model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
+                    )
+                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
                 else:
                     velocity_pred = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins

@@ -30,7 +30,8 @@ image_model: null         # Path to trained image model (bravo or dual)
 
 # Dimensions
 image_size: 128           # Image height/width
-depth: 160                # Volume depth for 3D
+depth: 160                # Volume depth for 3D (generation depth)
+trim_slices: 10           # Trim last N slices from 3D output (training pads 10, so remove them)
 
 # Voxel spacing in mm (for correct NIfTI display)
 # Default: 256->128 downsampled (0.94*2=1.88mm XY), 1mm Z
@@ -46,6 +47,19 @@ current_image: 0          # Starting counter for resuming
 size_bins: null           # Fixed size bins as comma-separated ints, e.g., "0,0,1,0,0,0,1"
 min_tumors: 1             # Minimum tumors when random sampling
 max_tumors: 5             # Maximum tumors when random sampling
+
+# Classifier-free guidance scales (1.0 = no guidance, >1.0 = stronger conditioning)
+cfg_scale_seg: 1.0        # CFG for seg generation (size bin conditioning)
+cfg_scale_bravo: 1.0      # CFG for bravo generation (seg mask conditioning)
+
+# Dynamic CFG: linearly interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
+# Set to null to use constant CFG, or set to 1.0 for "high CFG early, no CFG late"
+cfg_scale_seg_end: null   # Ending CFG for seg (null = constant)
+cfg_scale_bravo_end: null # Ending CFG for bravo (null = constant)
+
+# Seg mask validation (3D: per-slice check, same threshold as 2D)
+max_white_percentage: 0.04   # Max tumor percentage per slice (4%)
+max_retries: 10              # Max retries for invalid seg masks
 
 # Output settings
 output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")

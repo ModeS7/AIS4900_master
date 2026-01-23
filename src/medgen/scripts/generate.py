@@ -82,11 +82,31 @@ def auto_adjust_batch_size(base_batch_size: int, spatial_dims: int, device: torc
 
 
 def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHITE_PERCENTAGE) -> bool:
-    """Check if segmentation mask is valid (not empty, not too large)."""
-    white_pixels = np.sum(binary_mask == 1.0)
-    total_pixels = binary_mask.size
-    white_percentage = white_pixels / total_pixels
-    return 0.0 < white_percentage < max_white_percentage
+    """Check if segmentation mask is valid (not empty, not too large).
+
+    For 2D masks: checks overall percentage.
+    For 3D masks: checks per-slice to maintain consistency with 2D threshold.
+    """
+    if binary_mask.ndim == 2:
+        # 2D: simple percentage check
+        white_percentage = np.mean(binary_mask)
+        return 0.0 < white_percentage < max_white_percentage
+    elif binary_mask.ndim == 3:
+        # 3D: check per-slice (assumes [D, H, W] format)
+        # Must have some tumor overall
+        overall_pct = np.mean(binary_mask)
+        if overall_pct == 0.0:
+            return False
+        # No single slice should exceed the threshold
+        for d in range(binary_mask.shape[0]):
+            slice_pct = np.mean(binary_mask[d])
+            if slice_pct >= max_white_percentage:
+                return False
+        return True
+    else:
+        # Fallback for other dimensions
+        white_percentage = np.mean(binary_mask)
+        return 0.0 < white_percentage < max_white_percentage
 
 
 def save_nifti(data: np.ndarray, output_path: str,
@@ -121,6 +141,8 @@ def generate_batch(
     device: torch.device,
     conditioning: Optional[torch.Tensor] = None,
     size_bins: Optional[torch.Tensor] = None,
+    cfg_scale: float = 1.0,
+    cfg_scale_end: Optional[float] = None,
     use_progress: bool = False,
 ) -> torch.Tensor:
     """Generate a batch using diffusion model.
@@ -133,6 +155,9 @@ def generate_batch(
         device: Torch device.
         conditioning: Optional conditioning tensor (e.g., seg mask for bravo).
         size_bins: Optional size bin tensor [B, num_bins] for seg_conditioned mode.
+        cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger).
+                   For dynamic CFG, this is the starting scale (at t=T).
+        cfg_scale_end: Optional ending CFG scale (at t=0). If None, uses constant cfg_scale.
         use_progress: Show progress bar.
 
     Returns:
@@ -148,6 +173,8 @@ def generate_batch(
             return strategy.generate(
                 model, model_input, num_steps, device,
                 size_bins=size_bins,
+                cfg_scale=cfg_scale,
+                cfg_scale_end=cfg_scale_end,
                 use_progress_bars=use_progress
             )
 
@@ -327,6 +354,11 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Log output dimensions
+    trim_slices = cfg.get('trim_slices', 10)
+    output_depth = cfg.depth - trim_slices if trim_slices > 0 else cfg.depth
+    log.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
+
     # Collect all bins info for CSV
     all_bins: List[Tuple[int, List[int]]] = []
 
@@ -344,7 +376,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device, size_bins=size_bins)
+            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                                 size_bins=size_bins,
+                                 cfg_scale=cfg.cfg_scale_seg,
+                                 cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
             # Binarize and save
             seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
@@ -353,6 +388,11 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
+
+            # Trim last N slices to match training data (training pads, so we remove padding)
+            trim_slices = cfg.get('trim_slices', 10)
+            if trim_slices > 0:
+                seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
             # Save in subdirectory: 00000/seg.nii.gz
             sample_dir = output_dir / f"{i:05d}"
@@ -378,41 +418,88 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
         )
 
+        # Validation thresholds for 3D seg masks (per-slice, same as 2D)
+        max_white_pct = cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
+        max_retries = cfg.get('max_retries', 10)
+
         log.info(f"Generating {cfg.num_images} seg+bravo pairs...")
-        for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
+        log.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
+
+        generated = 0
+        total_retries = 0
+        pbar = tqdm(total=cfg.num_images, disable=not cfg.verbose)
+
+        while generated < cfg.num_images:
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
-            # Generate seg with size bin conditioning
-            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device, size_bins=size_bins)
+            # Retry loop for valid seg mask
+            valid_mask = False
+            retries = 0
+            while not valid_mask and retries < max_retries:
+                # Generate seg with size bin conditioning
+                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                                     size_bins=size_bins,
+                                     cfg_scale=cfg.cfg_scale_seg,
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
-            # Binarize seg
-            seg_np = seg[0, 0].cpu().numpy()
-            seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-            seg_binary = make_binary(seg_np, threshold=0.5)
+                # Binarize seg
+                seg_np = seg[0, 0].cpu().numpy()
+                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
+                seg_binary = make_binary(seg_np, threshold=0.5)
+
+                # Validate mask (per-slice check for 3D)
+                if is_valid_mask(seg_binary, max_white_pct):
+                    valid_mask = True
+                else:
+                    retries += 1
+                    total_retries += 1
+                    if cfg.verbose and retries == 1:
+                        overall_pct = np.mean(seg_binary)
+                        log.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
+
+            if not valid_mask:
+                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+
             seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
 
-            # Generate bravo
+            # Generate bravo with seg mask conditioning (CFG if enabled)
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device, seg_tensor)
+            bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device,
+                                   conditioning=seg_tensor,
+                                   cfg_scale=cfg.cfg_scale_bravo,
+                                   cfg_scale_end=cfg.get('cfg_scale_bravo_end', None))
             # Clamp to [0, 1] like working 2D code does
             bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
-            seg_binary = np.transpose(seg_binary, (1, 2, 0))
+            seg_binary_save = np.transpose(seg_binary, (1, 2, 0))
             bravo_np = np.transpose(bravo_np, (1, 2, 0))
 
+            # Trim last N slices to match training data (training pads, so we remove padding)
+            trim_slices = cfg.get('trim_slices', 10)
+            if trim_slices > 0:
+                seg_binary_save = seg_binary_save[:, :, :-trim_slices]  # [H, W, D-trim]
+                bravo_np = bravo_np[:, :, :-trim_slices]
+
             # Save in subdirectory: 00000/seg.nii.gz and 00000/bravo.nii.gz
-            sample_dir = output_dir / f"{i:05d}"
+            sample_dir = output_dir / f"{generated:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = tuple(cfg.voxel_size)
-            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            save_nifti(seg_binary_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
-            all_bins.append((i, bins))
+            all_bins.append((generated, bins))
 
-            if i % 10 == 0:
+            generated += 1
+            pbar.update(1)
+
+            if generated % 10 == 0:
                 torch.cuda.empty_cache()
+
+        pbar.close()
+        if total_retries > 0:
+            log.info(f"Total retries due to invalid masks: {total_retries}")
 
     else:
         raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
