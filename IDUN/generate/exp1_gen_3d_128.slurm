@@ -42,7 +42,7 @@ time python -m medgen.scripts.generate \
     gen_mode=bravo \
     seg_model=${SEG_CHECKPOINT} \
     image_model=${BRAVO_CHECKPOINT} \
-    output_subdir=exp1_3d_128_50_baseline \
+    output_subdir=exp1_3d_128_100_baseline \
     num_images=100 \
     num_steps=100 \
     image_size=128 \
@@ -50,7 +50,7 @@ time python -m medgen.scripts.generate \
     cfg_scale_seg=2.0 \
     cfg_scale_bravo=2.0 \
     min_tumors=1 \
-    max_tumors=10 \
+    max_tumors=5 \
     verbose=false
 
 conda deactivate
