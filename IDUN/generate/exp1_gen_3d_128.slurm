@@ -47,10 +47,8 @@ time python -m medgen.scripts.generate \
     num_steps=100 \
     image_size=128 \
     depth=160 \
-    cfg_scale_seg=3.0 \
-    cfg_scale_bravo=3.0 \
-    cfg_scale_seg_end=1.0 \
-    cfg_scale_bravo_end=1.0 \
+    cfg_scale_seg=2.0 \
+    cfg_scale_bravo=2.0 \
     min_tumors=1 \
     max_tumors=10 \
     verbose=false
