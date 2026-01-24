@@ -542,6 +542,7 @@ class GenerationMetrics:
         # Fixed conditioning masks (loaded once, used every epoch)
         self.fixed_conditioning_masks: Optional[torch.Tensor] = None
         self.fixed_gt_images: Optional[torch.Tensor] = None
+        self.fixed_size_bins: Optional[torch.Tensor] = None  # For seg_conditioned mode
 
         if self.is_seg_mode:
             logger.info(f"GenerationMetrics: {mode_name} mode - will threshold output at 0.5")
@@ -565,6 +566,7 @@ class GenerationMetrics:
 
         masks = []
         gt_images = []
+        size_bins_list = []  # For seg_conditioned mode
         attempts = 0
         max_attempts = len(train_dataset)
 
@@ -577,6 +579,8 @@ class GenerationMetrics:
             data = train_dataset[idx]
 
             # Handle dict, tuple, or tensor format
+            is_seg_conditioned = False  # Track if this sample uses size_bins conditioning
+            current_size_bins = None
             if isinstance(data, dict):
                 # Dict format: {'image': ..., 'seg': ...}
                 image = data.get('image', data.get('images'))
@@ -610,9 +614,11 @@ class GenerationMetrics:
 
                 # Check if this is seg_conditioned mode: (seg, size_bins)
                 # size_bins is 1D, seg is 3D [C, H, W] or 4D [C, D, H, W]
-                if second.dim() == 1 and first.dim() >= 3:
+                is_seg_conditioned = second.dim() == 1 and first.dim() >= 3
+                if is_seg_conditioned:
                     # seg_conditioned mode: first element is the seg mask
                     tensor = first
+                    current_size_bins = second.long()  # Store size_bins
                     # Override seg_channel_idx for this mode
                     local_seg_idx = 0
                 else:
@@ -635,6 +641,9 @@ class GenerationMetrics:
                 masks.append(seg)
                 if local_seg_idx > 0:
                     gt_images.append(tensor[0:local_seg_idx, ...])
+                # Save size_bins for seg_conditioned mode
+                if isinstance(data, tuple) and is_seg_conditioned:
+                    size_bins_list.append(current_size_bins)
             attempts += 1
 
         if len(masks) < num_masks:
@@ -643,6 +652,9 @@ class GenerationMetrics:
         self.fixed_conditioning_masks = torch.stack(masks).to(self.device)
         if gt_images:
             self.fixed_gt_images = torch.stack(gt_images).to(self.device)
+        if size_bins_list:
+            self.fixed_size_bins = torch.stack(size_bins_list).to(self.device)
+            logger.info(f"Loaded {len(size_bins_list)} fixed size_bins for seg_conditioned mode")
 
         logger.info(f"Loaded {len(masks)} fixed conditioning masks")
 
@@ -732,10 +744,16 @@ class GenerationMetrics:
             else:  # Conditional single channel modes (bravo)
                 model_input = torch.cat([noise, masks], dim=1)
 
+            # Get size_bins for this batch if in seg_conditioned mode
+            batch_size_bins = None
+            if self.fixed_size_bins is not None:
+                batch_size_bins = self.fixed_size_bins[start_idx:end_idx]
+
             # Generate samples
             with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                 samples = strategy.generate(
-                    model, model_input, num_steps=num_steps, device=self.device
+                    model, model_input, num_steps=num_steps, device=self.device,
+                    size_bins=batch_size_bins
                 )
 
             # Move to CPU immediately to free GPU memory

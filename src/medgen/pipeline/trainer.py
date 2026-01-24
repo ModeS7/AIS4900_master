@@ -3057,18 +3057,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
         data_split: str = 'val',
         modality_override: Optional[str] = None,
     ) -> Optional[float]:
-        """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
+        """Compute 3D MS-SSIM by reconstructing full volumes.
 
-        For 2D diffusion models only. This:
+        For 2D diffusion models: processes slice-by-slice then stacks.
+        For 3D diffusion models: delegates to _compute_volume_3d_msssim_native.
+
+        2D approach:
         1. Loads full 3D volumes
         2. Processes each 2D slice: add noise at mid-range timestep → denoise → get predicted clean
         3. Stacks slices back into a volume
         4. Computes 3D MS-SSIM between reconstructed and original volumes
 
         This measures cross-slice consistency of the 2D diffusion model's denoising quality.
-
-        Note: Returns None for 3D diffusion models (spatial_dims=3) since they process
-        volumes natively and this slice-by-slice approach is incompatible.
 
         Args:
             epoch: Current epoch number.
@@ -3082,11 +3082,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if not self.log_msssim:
             return None
 
-        # Skip for 3D diffusion models - this function processes 2D slices which is
-        # incompatible with 3D models that expect 5D input [B, C, D, H, W]
+        # For 3D diffusion models, use native 3D volume processing
         spatial_dims = self.cfg.model.get('spatial_dims', 2)
         if spatial_dims == 3:
-            return None
+            return self._compute_volume_3d_msssim_native(epoch, data_split, modality_override)
 
         # Import here to avoid circular imports
         from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
@@ -3203,6 +3202,105 @@ class DiffusionTrainer(DiffusionTrainerBase):
         model_to_use.train()
 
         # Restore random state to not affect subsequent training epochs
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, self.device)
+
+        if n_volumes == 0:
+            return None
+
+        return total_msssim_3d / n_volumes
+
+    def _compute_volume_3d_msssim_native(
+        self,
+        epoch: int,
+        data_split: str = 'val',
+        modality_override: Optional[str] = None,
+    ) -> Optional[float]:
+        """Compute 3D MS-SSIM for 3D diffusion models (native volume processing).
+
+        For 3D diffusion models, this:
+        1. Loads full 3D volumes
+        2. Adds noise at mid-range timestep to the whole volume
+        3. Denoises the whole volume at once
+        4. Computes 3D MS-SSIM between reconstructed and original volumes
+
+        Args:
+            epoch: Current epoch number.
+            data_split: Which data split to use ('val' or 'test_new').
+            modality_override: Optional specific modality to compute for
+                (e.g., 'bravo', 't1_pre'). If None, uses mode from config.
+
+        Returns:
+            Average 3D MS-SSIM across all volumes, or None if unavailable.
+        """
+        from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
+
+        # Determine modality
+        if modality_override is not None:
+            modality = modality_override
+        else:
+            mode_name = self.cfg.mode.get('name', 'bravo')
+            out_channels = self.cfg.mode.get('out_channels', 1)
+            modality = 'dual' if out_channels > 1 else mode_name
+            if modality == 'seg_conditioned':
+                modality = 'seg'
+
+        # Skip for multi_modality mode
+        if modality == 'multi_modality':
+            return None
+
+        # Create 3D volume loader for this modality
+        loader = create_vae_3d_single_modality_validation_loader(self.cfg, modality)
+        if loader is None:
+            return None
+
+        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+        model_to_use.eval()
+
+        total_msssim_3d = 0.0
+        n_volumes = 0
+
+        # Use mid-range timestep for reconstruction quality
+        mid_timestep = self.num_timesteps // 2
+
+        # Save RNG state
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state(self.device) if torch.cuda.is_available() else None
+
+        with torch.inference_mode():
+            for batch in loader:
+                # batch['image'] is [1, C, D, H, W] for 3D volumes
+                volume = batch['image'].to(self.device, non_blocking=True)
+
+                # Get conditioning if available
+                labels = batch.get('seg')
+                if labels is not None:
+                    labels = labels.to(self.device, non_blocking=True)
+                labels_dict = {'labels': labels}
+
+                # Create timestep tensor
+                timesteps = torch.full(
+                    (volume.shape[0],), mid_timestep, device=self.device, dtype=torch.long
+                )
+
+                # Add noise
+                noise = torch.randn_like(volume)
+                noisy_volume = self.strategy.add_noise(volume, noise, timesteps)
+
+                # Format input and denoise
+                model_input = self.mode.format_model_input(noisy_volume, labels_dict)
+                prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                _, predicted_clean = self.strategy.compute_loss(prediction, volume, noise, noisy_volume, timesteps)
+
+                # Compute 3D MS-SSIM
+                msssim_3d = compute_msssim(predicted_clean.float(), volume.float(), spatial_dims=3)
+                total_msssim_3d += msssim_3d
+                n_volumes += 1
+
+        model_to_use.train()
+
+        # Restore RNG state
         torch.set_rng_state(rng_state)
         if cuda_rng_state is not None:
             torch.cuda.set_rng_state(cuda_rng_state, self.device)
