@@ -216,7 +216,6 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     current_image = cfg.current_image
     mask_cache: List[Tuple[np.ndarray, int]] = []
-    use_progress = cfg.verbose
 
     # Infinite loop protection
     MAX_CONSECUTIVE_FAILURES = 100
@@ -335,7 +334,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 3D. Valid: {VALID_3D_MODES}")
 
     device = torch.device("cuda")
-    batch_size = auto_adjust_batch_size(cfg.batch_size, 3, device)
 
     strategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
     strategy.setup_scheduler(

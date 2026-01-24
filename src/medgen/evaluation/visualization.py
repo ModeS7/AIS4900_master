@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from medgen.core import ModeType
 from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
 from medgen.metrics import create_reconstruction_figure
-from medgen.models import ControlNetConditionedUNet, ControlNetGenerationWrapper
+from medgen.models import ControlNetGenerationWrapper
 
 logger = logging.getLogger(__name__)
 

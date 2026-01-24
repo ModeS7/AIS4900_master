@@ -15,7 +15,7 @@ Based on:
 - DC-VideoGen: https://arxiv.org/abs/2509.25182
 """
 import math
-from typing import List, Optional, Tuple, Union
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -23,8 +23,6 @@ import torch.nn as nn
 from .dcae_3d_ops import (
     DCDownBlock3D,
     DCUpBlock3D,
-    PixelUnshuffle3D,
-    PixelShuffle3D,
     ResBlock3D,
     RMSNorm3D,
 )

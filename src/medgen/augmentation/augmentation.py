@@ -877,5 +877,3 @@ def create_seg_collate_fn(
         return torch.from_numpy(stacked).float()
 
     return collate_fn
-
-

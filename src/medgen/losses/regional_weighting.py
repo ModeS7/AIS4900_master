@@ -24,7 +24,7 @@ Usage:
     weight_map = weight_computer(seg_mask)  # [B, 1, D, H, W]
 """
 import logging
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch

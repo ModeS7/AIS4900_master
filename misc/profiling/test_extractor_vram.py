@@ -31,7 +31,7 @@ def test_resnet50_default(batch_size: int = 16):
     baseline = get_vram_gb()
 
     print(f"\n{'='*60}")
-    print(f"ResNet50 (DEFAULT - no compile_model arg)")
+    print("ResNet50 (DEFAULT - no compile_model arg)")
     print(f"{'='*60}")
     print(f"Baseline VRAM: {baseline:.2f} GB")
 
@@ -109,7 +109,7 @@ def test_biomedclip_default(batch_size: int = 16):
     baseline = get_vram_gb()
 
     print(f"\n{'='*60}")
-    print(f"BiomedCLIP (DEFAULT - no compile_model arg)")
+    print("BiomedCLIP (DEFAULT - no compile_model arg)")
     print(f"{'='*60}")
     print(f"Baseline VRAM: {baseline:.2f} GB")
 
@@ -322,7 +322,6 @@ def test_3d_workload(compile_model: bool, num_volumes: int = 4, depth: int = 64)
 
 def test_lpips(use_compile: bool, batch_size: int = 16):
     """Test LPIPS VRAM usage."""
-    from medgen.metrics.quality import _get_lpips_metric
 
     reset_cuda()
     baseline = get_vram_gb()
@@ -386,7 +385,7 @@ def test_all_compiled_models(batch_size: int = 16):
     baseline = get_vram_gb()
 
     print(f"\n{'='*60}")
-    print(f"ALL COMPILED MODELS (bravo mode simulation)")
+    print("ALL COMPILED MODELS (bravo mode simulation)")
     print(f"{'='*60}")
     print(f"Baseline VRAM: {baseline:.2f} GB")
 

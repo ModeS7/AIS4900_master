@@ -10,7 +10,6 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 import nibabel as nib
 import numpy as np

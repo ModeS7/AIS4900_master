@@ -110,13 +110,13 @@ def create_conditioning_wrapper(
             return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"
         elif mode_strategy == 'dropout':
             raise ValueError(
-                f"mode_embedding_strategy='dropout' is not supported with omega conditioning. "
-                f"Use 'full' or 'film' instead, or disable score_aug.use_omega_conditioning."
+                "mode_embedding_strategy='dropout' is not supported with omega conditioning. "
+                "Use 'full' or 'film' instead, or disable score_aug.use_omega_conditioning."
             )
         elif mode_strategy == 'late':
             raise ValueError(
-                f"mode_embedding_strategy='late' is not supported with omega conditioning. "
-                f"Use 'full' or 'film' instead, or disable score_aug.use_omega_conditioning."
+                "mode_embedding_strategy='late' is not supported with omega conditioning. "
+                "Use 'full' or 'film' instead, or disable score_aug.use_omega_conditioning."
             )
         else:
             return CombinedModelWrapper(model, embed_dim=embed_dim), "combined"

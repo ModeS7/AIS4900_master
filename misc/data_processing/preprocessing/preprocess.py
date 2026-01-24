@@ -531,7 +531,7 @@ def cmd_trim_manual(args):
         print(f"{patient_dir.name} ({n_slices} slices, shape {shape})")
 
         try:
-            user_input = input(f"  Remove from start [0]: ").strip()
+            user_input = input("  Remove from start [0]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n\nAborted by user.")
             return
@@ -555,7 +555,7 @@ def cmd_trim_manual(args):
             else:
                 print(f"  [DRY RUN] Would remove first {remove_start} slices")
         else:
-            print(f"  [SKIP] No changes")
+            print("  [SKIP] No changes")
 
     print_header("SUMMARY", args.dry_run)
     print(f"Patients modified: {len(changes)}")
@@ -581,10 +581,10 @@ def cmd_split(args):
         print(f"Error: Test directory not found: {test_dir}")
         return
     if val_dir.exists():
-        print(f"Error: val/ directory already exists. Remove it first.")
+        print("Error: val/ directory already exists. Remove it first.")
         return
     if test_new_dir.exists():
-        print(f"Error: test_new/ directory already exists. Remove it first.")
+        print("Error: test_new/ directory already exists. Remove it first.")
         return
 
     # Get and split patients
@@ -657,7 +657,7 @@ def cmd_resize(args):
     print_header("IMAGE PREPROCESSING")
     print(f"Input:  {input_base}")
     print(f"Output: {output_base}")
-    print(f"Pipeline: Pad to 240x240 (centered) -> Resize to 256x256")
+    print("Pipeline: Pad to 240x240 (centered) -> Resize to 256x256")
 
     # Count patients
     for split in ['test', 'train']:

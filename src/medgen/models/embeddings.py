@@ -8,7 +8,6 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from typing import Optional
 
 
 class PatchEmbed2D(nn.Module):

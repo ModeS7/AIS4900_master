@@ -188,7 +188,7 @@ def sample_and_convert(dataset_path: Path, output_dir: Path, num_samples: int,
         f.write(f"Seed: {seed}\n")
         f.write(f"Total images in dataset: {len(all_images)}\n")
         f.write(f"Sampled: {num_samples}\n")
-        f.write(f"\n")
+        f.write("\n")
         f.write("\n".join(manifest))
 
     print(f"\n✓ Converted {num_samples} images to {output_dir}")

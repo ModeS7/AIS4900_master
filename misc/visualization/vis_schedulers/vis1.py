@@ -19,7 +19,6 @@ from monai.transforms import (
     Compose,
     EnsureChannelFirst,
     LoadImage,
-    Resize,
     ScaleIntensity,
     SpatialCrop,
     ToTensor,
@@ -290,7 +289,7 @@ def save_individual_diffusion_images(image, patient_name, mode, patient_index, s
 def main():
     """Main execution function."""
 
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"- Data directory: {DATA_DIR}")
     print(f"- Mode: {MODE}")
     print(f"- Patient index: {PATIENT_INDEX}")

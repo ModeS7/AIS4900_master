@@ -105,11 +105,11 @@ def analyze_dataset_split(data_dir: str, split_name: str) -> None:
 
     # Print statistics
     slices_array = np.array(slices_per_patient)
-    print(f"\nSlice Statistics:")
+    print("\nSlice Statistics:")
     print(f"  Total slices: {total_slices}")
     print(f"  Slices per patient: min={np.min(slices_array)}, max={np.max(slices_array)}, mean={np.mean(slices_array):.1f}")
 
-    print(f"\nSlice Distribution:")
+    print("\nSlice Distribution:")
     print(f"  Slices with brain tissue: {total_brain_slices} ({100*total_brain_slices/total_slices:.1f}%)")
     print(f"  Positive slices (with metastases): {total_positive_slices} ({100*total_positive_slices/total_brain_slices:.1f}% of brain slices)")
     print(f"  Negative slices (no metastases): {total_negative_slices} ({100*total_negative_slices/total_brain_slices:.1f}% of brain slices)")

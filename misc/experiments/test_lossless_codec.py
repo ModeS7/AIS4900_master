@@ -4,8 +4,7 @@ import torch
 import pytest
 from medgen.data.lossless_mask_codec import (
     encode_mask_lossless, decode_mask_lossless, get_latent_shape,
-    encode_f32, decode_f32, encode_f64, decode_f64, encode_f128, decode_f128,
-    FORMATS
+    encode_f32, decode_f32, encode_f64, decode_f64, encode_f128, decode_f128
 )
 
 

@@ -123,7 +123,7 @@ def _create_single_reconstruction_figure(
         axes[1, i].axis('off')
 
         # Row 3: Difference heatmap
-        im = axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
+        axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
         axes[2, i].axis('off')
 
     # Add row labels on the left side
@@ -237,7 +237,7 @@ def _create_dual_reconstruction_figure(
             axes[4, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
         axes[4, i].axis('off')
 
-        im = axes[5, i].imshow(diff2[i], cmap='hot', vmin=0, vmax=diff2.max())
+        axes[5, i].imshow(diff2[i], cmap='hot', vmin=0, vmax=diff2.max())
         axes[5, i].axis('off')
 
     # Add row labels on the left side

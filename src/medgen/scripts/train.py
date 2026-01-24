@@ -61,7 +61,6 @@ from medgen.data.loaders.latent import (
 )
 from medgen.pipeline import DiffusionTrainer
 from medgen.diffusion import PixelSpace, LatentSpace
-from medgen.data.loaders.unified import create_diffusion_dataloader
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -427,7 +426,7 @@ def _train_3d(cfg: DictConfig) -> None:
 
     log.info("")
     log.info("=" * 60)
-    log.info(f"3D Volumetric Diffusion Training")
+    log.info("3D Volumetric Diffusion Training")
     log.info(f"Mode: {mode} | Strategy: {strategy}")
     log.info(f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width}")
     log.info("=" * 60)

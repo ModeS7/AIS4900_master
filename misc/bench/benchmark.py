@@ -66,7 +66,6 @@ from torch.utils.data import DataLoader, Dataset
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from config import PathConfig
 from monai.networks.nets import DiffusionModelUNet
 from monai.losses import PerceptualLoss
 
@@ -481,7 +480,7 @@ def benchmark_training(
             'estimated_full_training_hours': estimated_training_hours,
         }
 
-        print(f"\nFinal Results:")
+        print("\nFinal Results:")
         if use_multi_gpu:
             print(f"  Iterations/sec (per GPU): {it_per_sec:.2f}")
             print(f"  Total throughput ({world_size} GPUs): {total_it_per_sec:.2f} it/s")
@@ -601,7 +600,7 @@ def benchmark_generation(
         'estimated_full_generation_hours': estimated_hours
     }
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Samples/sec: {samples_per_sec:.2f}")
     print(f"  VRAM peak: {memory_stats['peak_gb']:.2f} GB")
     print(f"  Estimated {total_images:,} images: {estimated_hours:.1f} hours")
@@ -647,7 +646,7 @@ def main() -> None:
 
     if is_main:
         print(f"\n{'=' * 80}")
-        print(f"PERFORMANCE BENCHMARK")
+        print("PERFORMANCE BENCHMARK")
         print(f"{'=' * 80}")
         print(f"Device: {torch.cuda.get_device_name(local_rank)}")
         print(f"CUDA: {torch.version.cuda}, PyTorch: {torch.__version__}")

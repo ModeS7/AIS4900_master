@@ -10,10 +10,13 @@ import logging
 import os
 import random
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Optional, Tuple
+from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from omegaconf import DictConfig
-from torch.utils.data import Dataset, DistributedSampler, Sampler
+from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
+
+if TYPE_CHECKING:
+    pass  # DataLoader imported above for both runtime and type checking
 
 from medgen.core.constants import DEFAULT_NUM_WORKERS
 
@@ -230,7 +233,7 @@ def create_dataloader(
     distributed_args: Optional[DistributedArgs] = None,
     loader_config: Optional[DataLoaderConfig] = None,
     scale_batch_for_distributed: bool = True,
-) -> 'DataLoader':
+) -> DataLoader:
     """Create DataLoader with standard configuration.
 
     This is the unified DataLoader creation function that extracts ~20 lines

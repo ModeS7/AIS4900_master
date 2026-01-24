@@ -13,21 +13,19 @@ All compression trainers share:
 - Worst batch tracking and visualization
 - Regional metrics (tumor vs background)
 """
-import json
 import logging
 import os
 import time
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
-from tqdm import tqdm
+if TYPE_CHECKING:
+    from medgen.evaluation import ValidationRunner
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
-import torch.distributed as dist
-import torch.nn.functional as F
 from ema_pytorch import EMA
 from omegaconf import DictConfig
 from torch import nn
@@ -49,8 +47,6 @@ from medgen.metrics import (
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
-    compute_dice,
-    compute_iou,
     UnifiedMetrics,
     SimpleLossAccumulator,
 )
@@ -350,7 +346,6 @@ class BaseCompressionTrainer(BaseTrainer):
         Args:
             trainer_type: One of 'vae', 'vqvae', 'dcae'.
         """
-        seg_mode = getattr(self, 'seg_mode', False)
         spatial_dims = getattr(self, 'spatial_dims', 2)
         mode_name = getattr(self, 'mode_name', 'multi_modality')
 

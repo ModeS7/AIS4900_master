@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
-from monai.data import DataLoader, Dataset
+from monai.data import DataLoader
 from omegaconf import DictConfig
 from scipy import ndimage
 from scipy.spatial.distance import pdist

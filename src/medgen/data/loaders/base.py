@@ -22,7 +22,7 @@ and ensures consistent behavior between 2D and 3D training.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 
 import numpy as np
 import torch

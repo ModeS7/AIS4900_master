@@ -373,7 +373,7 @@ def main(cfg: DictConfig) -> None:
 
     mode_name = cfg.mode.name
     strategy_name = cfg.get('strategy', {}).get('name', 'ddpm')
-    log.info(f"LR Finder Configuration:")
+    log.info("LR Finder Configuration:")
     log.info(f"  Model type: {model_type}")
     log.info(f"  Mode: {mode_name}")
     log.info(f"  LR range: {min_lr:.2e} - {max_lr:.2e}")

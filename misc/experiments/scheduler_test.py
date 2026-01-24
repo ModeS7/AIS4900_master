@@ -438,7 +438,7 @@ def main() -> None:
         for _ in range(3)
     ]
 
-    print(f"\n=== MASK GENERATION COMPARISON ===")
+    print("\n=== MASK GENERATION COMPARISON ===")
 
     # Storage for all results
     mask_results = {}
@@ -475,7 +475,7 @@ def main() -> None:
 
             torch.cuda.empty_cache()
 
-    print(f"\n=== BRAVO GENERATION COMPARISON ===")
+    print("\n=== BRAVO GENERATION COMPARISON ===")
 
     # Generate bravo images
     for pair_idx in range(3):
@@ -502,7 +502,7 @@ def main() -> None:
 
             torch.cuda.empty_cache()
 
-    print(f"\n=== GENERATING GRID IMAGES ===")
+    print("\n=== GENERATING GRID IMAGES ===")
 
     # Create and save mask comparison grid
     print("Creating mask comparison grid...")
@@ -520,7 +520,7 @@ def main() -> None:
     plt.close(bravo_fig)
     print(f"Bravo comparison grid saved: {bravo_path}")
 
-    print(f"\n=== STUDY COMPLETE ===")
+    print("\n=== STUDY COMPLETE ===")
     print(f"Grid images saved to: {save_dir}")
     print(f"Final {get_vram_usage()}")
 

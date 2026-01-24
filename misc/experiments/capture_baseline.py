@@ -21,10 +21,9 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -333,7 +332,7 @@ def compare_baselines(baseline: Dict[str, Any], current: Dict[str, Any], toleran
 
     # Compare final state hash
     if baseline['final_state_hash'] != current['final_state_hash']:
-        logger.error(f"Final state hash mismatch!")
+        logger.error("Final state hash mismatch!")
         logger.error(f"  Baseline: {baseline['final_state_hash']}")
         logger.error(f"  Current:  {current['final_state_hash']}")
         all_match = False

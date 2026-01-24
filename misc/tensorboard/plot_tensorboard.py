@@ -4,13 +4,11 @@ Plot TensorBoard training logs.
 Reads TensorBoard event files and creates visualizations of training metrics.
 """
 
-import sys
 from pathlib import Path
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-from collections import defaultdict
 
 # Configuration
 TENSORBOARD_ROOT = Path(__file__).parent.parent / 'tensorboard_logs' / 'successful'

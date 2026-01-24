@@ -9,7 +9,7 @@ Monitors codebook health by tracking:
 Reference: https://arxiv.org/abs/1711.00937 (VQ-VAE paper)
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict
 
 import torch
 from torch.utils.tensorboard import SummaryWriter

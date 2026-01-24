@@ -7,8 +7,6 @@ diffusion, supporting both 2D images and 3D volumes.
 Reference: https://arxiv.org/abs/2401.08740 (SiT paper)
 """
 
-import math
-import numpy as np
 import torch
 import torch.nn as nn
 from typing import Optional, Literal

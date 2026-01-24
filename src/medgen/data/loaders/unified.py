@@ -213,7 +213,6 @@ def _create_2d_loader(
 
     Wraps existing loaders to return dict format batches.
     """
-    from medgen.data.loaders import single, dual, multi_diffusion, seg_conditioned
     from medgen.data.loaders.common import DataLoaderConfig
 
     augment_type = cfg.training.get('augment_type', 'diffusion')
@@ -340,7 +339,7 @@ def _get_raw_2d_loader(
                 raise ValueError("No validation data found")
             return result
         else:
-            raise ValueError(f"seg_conditioned test loader not yet supported")
+            raise ValueError("seg_conditioned test loader not yet supported")
 
     raise ValueError(f"Unknown mode: {mode}")
 
@@ -404,7 +403,7 @@ def _create_3d_seg_loader(
             raise ValueError("No 3D validation data found")
         return result
     else:
-        raise ValueError(f"3D seg test loader not yet supported")
+        raise ValueError("3D seg test loader not yet supported")
 
 
 def _create_3d_bravo_loader(
@@ -432,7 +431,7 @@ def _create_3d_bravo_loader(
             raise ValueError("No 3D validation data found")
         return result
     else:
-        raise ValueError(f"3D bravo test loader not yet supported")
+        raise ValueError("3D bravo test loader not yet supported")
 
 
 def _create_3d_seg_conditioned_loader(
@@ -462,7 +461,7 @@ def _create_3d_seg_conditioned_loader(
             raise ValueError("No 3D validation data found")
         return result
     else:
-        raise ValueError(f"3D seg_conditioned test loader not yet supported")
+        raise ValueError("3D seg_conditioned test loader not yet supported")
 
 
 def get_dataloader_info(loader: DataLoader) -> Dict[str, Any]:
@@ -562,7 +561,6 @@ def _create_compression_2d_loader(
     Routes to the appropriate underlying loader based on mode,
     then wraps with DictDatasetWrapper for consistent dict output.
     """
-    from medgen.data.loaders import vae, seg_compression, multi_modality
     from medgen.data.loaders.common import DataLoaderConfig
 
     # Get raw loader and dataset from underlying implementation

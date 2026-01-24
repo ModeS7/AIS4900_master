@@ -16,10 +16,8 @@ from omegaconf import DictConfig
 
 from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
 from medgen.data.loaders.common import (
-    DataLoaderConfig,
     DistributedArgs,
     create_dataloader,
-    setup_distributed_sampler,
 )
 from medgen.data.dataset import (
     NiFTIDataset,
@@ -63,7 +61,6 @@ def create_vae_dataloader(
     """
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size
-    batch_size = cfg.training.batch_size
 
     # Validate modalities exist before loading
     if modality == 'dual':
@@ -379,7 +376,6 @@ class DualVolumeDataset(Dataset):
             t1_gd_dataset: Dataset of t1_gd volumes.
             seg_dataset: Optional dataset of segmentation masks.
         """
-        import torch
         self.t1_pre_dataset = t1_pre_dataset
         self.t1_gd_dataset = t1_gd_dataset
         self.seg_dataset = seg_dataset

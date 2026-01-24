@@ -152,7 +152,7 @@ def write_tensorboard_logs(epochs, log_dir, training_type='seg'):
     writer.flush()
     writer.close()
 
-    print(f"✓ TensorBoard logs written successfully!")
+    print("✓ TensorBoard logs written successfully!")
     print(f"✓ Written {written_count} epochs to TensorBoard")
     print(f"Run: tensorboard --logdir {log_dir}")
 
@@ -202,7 +202,7 @@ def recreate_tensorboard_from_log(log_file_path, output_dir, training_type=None)
     write_tensorboard_logs(epochs, log_dir, training_type)
 
     # Print summary
-    print(f"\nTraining Summary:")
+    print("\nTraining Summary:")
     print(f"- Training type: {training_type}")
     print(f"- Total epochs: {len(epochs)}")
     if 'total_hours' in metadata:
@@ -314,7 +314,7 @@ if __name__ == "__main__":
     log_dir = recreate_from_text_directly_debug(seg_log_text, output_directory, 'seg')
 
     if log_dir:
-        print(f"\nTo view the logs, run:")
+        print("\nTo view the logs, run:")
         print(f"tensorboard --logdir {log_dir}")
     else:
         print("Failed to create TensorBoard logs. Check the debug output above.")

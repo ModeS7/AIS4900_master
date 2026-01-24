@@ -9,7 +9,6 @@ This module provides the core building blocks for the 3D DC-AE architecture:
 The key innovation is asymmetric compression where spatial and depth factors
 can differ (e.g., 2x2 spatial with 1x depth for spatial-only compression).
 """
-from typing import Optional
 
 import torch
 import torch.nn as nn

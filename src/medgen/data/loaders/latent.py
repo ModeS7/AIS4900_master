@@ -12,7 +12,7 @@ import logging
 import os
 from datetime import datetime
 from glob import glob
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from monai.data import DataLoader

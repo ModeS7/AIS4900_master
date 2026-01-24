@@ -18,7 +18,6 @@ Supported formats: .tar.gz, .tar.bz2, .tar.xz, .zip
 import argparse
 import tarfile
 import zipfile
-import os
 from pathlib import Path
 from typing import List
 import sys
@@ -95,7 +94,7 @@ def pack_folders_zip(folders: List[Path], output_file: Path, dry_run: bool = Fal
     """Pack folders into zip archive."""
 
     print(f"\nPacking {len(folders)} folder(s) into {output_file}")
-    print(f"Compression: zip")
+    print("Compression: zip")
     print("="*60)
 
     # Calculate total size

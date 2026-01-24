@@ -288,7 +288,6 @@ class DCAETrainer(BaseCompressionTrainer):
 
     def _setup_model_2d(self, n_channels: int, pretrained_checkpoint: Optional[str] = None) -> nn.Module:
         """Setup 2D DC-AE model."""
-        from diffusers import AutoencoderDC
 
         if self.pretrained:
             raw_model = self._create_pretrained_model_2d(n_channels)

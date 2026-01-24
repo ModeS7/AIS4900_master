@@ -21,7 +21,6 @@ import torch.nn as nn
 
 from medgen.data.mode_embed import (
     MODE_ENCODING_DIM,
-    MODE_ID_MAP,
     encode_mode_id,
     ModeTimeEmbed,
     ModeEmbedModelWrapper,
@@ -508,7 +507,6 @@ class TestCombinedTimeEmbed:
         embed_dim = 256
         combined = CombinedTimeEmbed(mock_time_embed, embed_dim)
 
-        from medgen.data.score_aug import OMEGA_ENCODING_DIM
 
         # Wrong shape for omega (should be [1, OMEGA_ENCODING_DIM])
         wrong_encoding = torch.zeros(4, 10)  # Wrong both dims

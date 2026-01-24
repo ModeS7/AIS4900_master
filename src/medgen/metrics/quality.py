@@ -15,9 +15,12 @@ Caching:
 import logging
 import traceback
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from monai.metrics import MultiScaleSSIMMetric
 
 logger = logging.getLogger(__name__)
 

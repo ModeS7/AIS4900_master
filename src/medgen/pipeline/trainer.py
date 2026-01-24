@@ -24,19 +24,17 @@ import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from ema_pytorch import EMA
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch import nn
 from torch.nn import functional as F
 from torch.amp import autocast
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from monai.networks.nets import DiffusionModelUNet
 
-from medgen.core import ModeType, setup_distributed, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler, wrap_model_for_training
+from medgen.core import ModeType, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler, wrap_model_for_training
 from .diffusion_trainer_base import DiffusionTrainerBase
 from .optimizers import SAM
 from .results import TrainingStepResult
@@ -50,7 +48,7 @@ from medgen.diffusion import (
     SegmentationMode,
     TrainingMode,
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
-    DiffusionSpace, PixelSpace,
+    DiffusionSpace,
 )
 from medgen.evaluation import ValidationVisualizer
 from .utils import (
@@ -72,13 +70,11 @@ from medgen.metrics import (
     # Unified metrics system
     UnifiedMetrics,
 )
-from medgen.metrics import FLOPsTracker
 from medgen.losses import RegionalWeightComputer, create_regional_weight_computer
 from medgen.models import (
     create_controlnet_for_unet,
     freeze_unet_for_controlnet,
     ControlNetConditionedUNet,
-    ControlNetGenerationWrapper,
 )
 
 logger = logging.getLogger(__name__)
@@ -1864,12 +1860,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
             total_loss_val = total_loss.item()
             mse_loss_val = mse_loss.item()
             p_loss_val = p_loss.item()
-            # Clone predicted_clean for metrics tracking (may be dict for dual mode)
-            if isinstance(predicted_clean, dict):
-                predicted_clean_saved = {k: v.detach().clone() for k, v in predicted_clean.items()}
-            else:
-                predicted_clean_saved = predicted_clean.detach().clone()
-
             # First pass: compute gradient and perturb weights
             total_loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -2759,7 +2749,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.val_loader = val_loader
 
         # Initialize unified metrics system
-        is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
             mode=self.mode_name,

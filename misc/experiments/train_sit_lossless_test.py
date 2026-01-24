@@ -9,7 +9,6 @@ Usage:
 """
 
 import argparse
-import os
 from pathlib import Path
 import nibabel as nib
 import numpy as np
@@ -235,7 +234,7 @@ def main():
             print(f'Epoch {epoch+1:3d}: loss={avg_loss:.4f}, best={best_loss:.4f}, lr={lr:.2e}')
 
     print()
-    print(f'=== Training Complete ===')
+    print('=== Training Complete ===')
     print(f'Final loss: {epoch_losses[-1]:.4f}')
     print(f'Best loss: {best_loss:.4f}')
     print(f'Loss reduction: {epoch_losses[0]:.4f} -> {epoch_losses[-1]:.4f}')

@@ -7,7 +7,6 @@ and utility functions for building transform pipelines.
 import os
 from typing import Any, List, Optional, Tuple
 
-import numpy as np
 from monai.data import Dataset
 from monai.transforms import (
     Compose,

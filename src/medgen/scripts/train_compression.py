@@ -27,7 +27,7 @@ Usage:
     python -m medgen.scripts.train_compression --config-name=vae_3d paths=cluster
 """
 import logging
-from typing import Callable, Dict, Optional, Tuple, Type
+from typing import Callable, Dict, Type
 
 import hydra
 from omegaconf import DictConfig, OmegaConf

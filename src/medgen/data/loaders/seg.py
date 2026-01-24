@@ -18,13 +18,11 @@ from scipy.spatial.distance import pdist
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 
 from .volume_3d import (
-    Base3DVolumeDataset,
     VolumeConfig,
     build_3d_transform,
     build_3d_augmentation,
     _create_loader,
 )
-from .common import DataLoaderConfig
 
 logger = logging.getLogger(__name__)
 

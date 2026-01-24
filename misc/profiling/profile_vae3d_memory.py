@@ -219,7 +219,7 @@ def profile_vae3d(
         print(f"{'='*60}")
 
         # Estimate for different batch sizes
-        print(f"\nEstimated VRAM for different batch sizes:")
+        print("\nEstimated VRAM for different batch sizes:")
         # Rough estimate: memory scales ~linearly with batch size for activations
         activation_mem = final_peak - peak_after_opt
         base_mem = peak_after_opt
@@ -231,7 +231,7 @@ def profile_vae3d(
         return final_peak
 
     except torch.cuda.OutOfMemoryError as e:
-        print(f"\n   *** OUT OF MEMORY ***")
+        print("\n   *** OUT OF MEMORY ***")
         print(f"   {e}")
         _, peak_at_oom = get_gpu_memory_gb()
         print(f"   Peak before OOM: {peak_at_oom:.2f} GB")

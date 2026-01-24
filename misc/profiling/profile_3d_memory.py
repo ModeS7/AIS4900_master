@@ -85,7 +85,7 @@ def profile_config(channels, num_res_blocks, attention_levels, volume_size, name
     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
         output = model(x, t)
     forward_peak = get_peak_memory_mb() - baseline
-    print(f"\n[2] FORWARD PASS")
+    print("\n[2] FORWARD PASS")
     print(f"    Peak: {forward_peak:.0f} MB ({forward_peak/1024:.2f} GB)")
 
     # 4. Backward pass
@@ -95,7 +95,7 @@ def profile_config(channels, num_res_blocks, attention_levels, volume_size, name
     loss.backward()
     backward_peak = get_peak_memory_mb() - baseline
     after_backward = get_memory_mb() - baseline
-    print(f"\n[3] BACKWARD PASS")
+    print("\n[3] BACKWARD PASS")
     print(f"    Peak: {backward_peak:.0f} MB ({backward_peak/1024:.2f} GB)")
     print(f"    After: {after_backward:.0f} MB ({after_backward/1024:.2f} GB)")
 
@@ -109,7 +109,7 @@ def profile_config(channels, num_res_blocks, attention_levels, volume_size, name
     optimizer.zero_grad()
     after_opt_step = get_memory_mb() - baseline
     opt_step_peak = get_peak_memory_mb() - baseline
-    print(f"\n[4] OPTIMIZER (AdamW)")
+    print("\n[4] OPTIMIZER (AdamW)")
     print(f"    After creation: {after_opt_create:.0f} MB")
     print(f"    After first step: {after_opt_step:.0f} MB ({after_opt_step/1024:.2f} GB)")
     print(f"    Optimizer states: {after_opt_step - after_backward:.0f} MB")
@@ -126,7 +126,7 @@ def profile_config(channels, num_res_blocks, attention_levels, volume_size, name
 
     full_iter_peak = get_peak_memory_mb() - baseline
     steady_state = get_memory_mb() - baseline
-    print(f"\n[5] FULL TRAINING ITERATION")
+    print("\n[5] FULL TRAINING ITERATION")
     print(f"    Peak: {full_iter_peak:.0f} MB ({full_iter_peak/1024:.2f} GB)")
     print(f"    Steady state: {steady_state:.0f} MB ({steady_state/1024:.2f} GB)")
 
@@ -139,7 +139,7 @@ def profile_config(channels, num_res_blocks, attention_levels, volume_size, name
     print(f"  Forward peak:      {forward_peak/1024:.2f} GB")
     print(f"  Backward peak:     {backward_peak/1024:.2f} GB")
     print(f"  + Optimizer:       {after_opt_step/1024:.2f} GB")
-    print(f"  ════════════════════════════════════")
+    print("  ════════════════════════════════════")
     print(f"  FULL TRAINING:     {full_iter_peak/1024:.2f} GB")
 
     result = {

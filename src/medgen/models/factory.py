@@ -5,7 +5,6 @@ Provides unified creation of diffusion backbones (UNet or SiT) based on config.
 """
 
 import logging
-from typing import Any, Dict
 from omegaconf import DictConfig
 
 import torch
