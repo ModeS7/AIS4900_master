@@ -33,9 +33,9 @@ image_size: 128           # Image height/width
 depth: 160                # Volume depth for 3D (generation depth)
 trim_slices: 10           # Trim last N slices from 3D output (training pads 10, so remove them)
 
-# Voxel spacing in mm (for correct NIfTI display)
-# Default: 256->128 downsampled (0.94*2=1.88mm XY), 1mm Z
-voxel_size: [1.88, 1.88, 1.0]
+# Field of view in mm (used to compute voxel spacing)
+# Voxel spacing = fov_mm / image_size (e.g., 240/128 = 1.875mm)
+fov_mm: 240.0
 
 # Generation settings
 batch_size: 8             # Batch size (auto-reduced for 3D)

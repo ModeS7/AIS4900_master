@@ -109,6 +109,22 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
         return 0.0 < white_percentage < max_white_percentage
 
 
+def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
+                       z_spacing_mm: float = 1.0) -> Tuple[float, float, float]:
+    """Compute voxel size based on resolution and field of view.
+
+    Args:
+        image_size: Image height/width in pixels.
+        fov_mm: Field of view in millimeters (default 240.0).
+        z_spacing_mm: Z-axis spacing in mm (default 1.0).
+
+    Returns:
+        Tuple of (x_mm, y_mm, z_mm) voxel dimensions.
+    """
+    xy_spacing = fov_mm / image_size
+    return (xy_spacing, xy_spacing, z_spacing_mm)
+
+
 def save_nifti(data: np.ndarray, output_path: str,
                voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
     """Save numpy array as NIfTI file with correct voxel spacing.
@@ -395,7 +411,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Save in subdirectory: 00000/seg.nii.gz
             sample_dir = output_dir / f"{i:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
-            voxel = tuple(cfg.voxel_size)
+            voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
             save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             all_bins.append((i, bins))
 
@@ -484,7 +500,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Save in subdirectory: 00000/seg.nii.gz and 00000/bravo.nii.gz
             sample_dir = output_dir / f"{generated:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
-            voxel = tuple(cfg.voxel_size)
+            voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
             save_nifti(seg_binary_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
             all_bins.append((generated, bins))
@@ -519,8 +535,13 @@ def main(cfg: DictConfig) -> None:
         # Default subdirectory based on mode and spatial dims
         output_dir = generated_dir / f"{cfg.spatial_dims}d_{cfg.gen_mode}"
 
+    # Compute voxel size from resolution
+    fov_mm = cfg.get('fov_mm', 240.0)
+    voxel = compute_voxel_size(cfg.image_size, fov_mm)
+
     log.info("=" * 60)
     log.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.gen_mode} | Strategy: {cfg.strategy}")
+    log.info(f"Resolution: {cfg.image_size}x{cfg.image_size} | FOV: {fov_mm}mm | Voxel: {voxel[0]:.3f}mm")
     log.info(f"Output: {output_dir}")
     log.info(f"Paths: {cfg.paths.name}")
     log.info("=" * 60)
