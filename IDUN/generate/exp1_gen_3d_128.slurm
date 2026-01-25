@@ -44,7 +44,7 @@ time python -m medgen.scripts.generate \
     image_model=${BRAVO_CHECKPOINT} \
     output_subdir=exp1_3d_128_100_baseline \
     num_images=100 \
-    num_steps=50 \
+    num_steps=100 \
     image_size=128 \
     depth=160 \
     cfg_scale_seg=2.0 \
