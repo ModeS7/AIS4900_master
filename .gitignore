@@ -34,9 +34,16 @@ misc/bench/benchmark_results/
 htmlcov/
 coverage.xml
 
+# Hypothesis (property-based testing cache)
+.hypothesis/
+
+# pytest-benchmark results
+.benchmarks/
+
 # IDE
 .idea/
 *.iml
 /papers/
 /bundles/
 /.cache/
+/docs/

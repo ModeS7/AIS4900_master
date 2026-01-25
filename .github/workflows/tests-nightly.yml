@@ -1,0 +1,222 @@
+name: Nightly Tests
+
+# Run comprehensive tests nightly - includes slow tests and E2E tests
+# These tests are too slow/resource-intensive for PR checks
+
+on:
+  schedule:
+    # Run at 3 AM UTC daily
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    # Allow manual triggers
+
+jobs:
+  # E2E tests require GPU and golden checkpoints
+  e2e-tests:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true  # Fetch large files if any
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout nibabel
+
+      - name: Check for golden checkpoints
+        id: check_checkpoints
+        run: |
+          if [ -d "tests/fixtures/golden_checkpoint/bravo" ]; then
+            echo "checkpoints_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "checkpoints_exist=false" >> $GITHUB_OUTPUT
+            echo "Golden checkpoints not found. Run: ./tests/fixtures/create_golden_checkpoint.sh"
+          fi
+
+      - name: Create golden checkpoints (if missing)
+        if: steps.check_checkpoints.outputs.checkpoints_exist == 'false'
+        run: |
+          ./tests/fixtures/create_golden_checkpoint.sh
+        continue-on-error: true
+
+      - name: Run E2E tests
+        run: |
+          pytest tests/e2e -v --tb=short --timeout=600 -m "e2e"
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-artifacts
+          path: |
+            tests/fixtures/golden_checkpoint/**/checkpoint*.pt
+          retention-days: 7
+
+  # Slow integration tests
+  slow-integration-tests:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout
+
+      - name: Run slow integration tests
+        run: |
+          pytest tests/integration -m "slow" -v --tb=short --timeout=300
+
+  # Baseline regression tests (compare against saved baselines)
+  baseline-tests:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout
+
+      - name: Run baseline tests
+        run: |
+          pytest tests/integration -m "baseline" -v --tb=short --timeout=300
+        continue-on-error: true  # Don't fail nightly on baseline drift
+
+      - name: Upload baseline diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-diffs
+          path: tests/integration/baselines/
+          retention-days: 7
+
+  # CPU-only comprehensive test
+  comprehensive-cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-nightly-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements.txt
+          pip install pytest pytest-timeout pytest-cov
+
+      - name: Run all non-GPU tests
+        run: |
+          pytest tests/ -m "not gpu and not baseline" \
+            -v --tb=short --timeout=120 \
+            --cov=src/medgen \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: nightly
+          fail_ci_if_error: false
+
+  # Notify on failure
+  notify-failure:
+    needs: [e2e-tests, slow-integration-tests, baseline-tests, comprehensive-cpu]
+    if: failure()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create failure summary
+        run: |
+          echo "## Nightly Test Failures" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "One or more nightly tests failed. Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Jobs status:**" >> $GITHUB_STEP_SUMMARY
+          echo "- E2E Tests: ${{ needs.e2e-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Slow Integration: ${{ needs.slow-integration-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Baseline Tests: ${{ needs.baseline-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Comprehensive CPU: ${{ needs.comprehensive-cpu.result }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create GitHub Issue on failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Nightly Tests Failed - ${new Date().toISOString().split('T')[0]}`;
+            const body = `## Nightly Test Failure Report
+
+            **Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+
+            ### Job Results
+            | Job | Status |
+            |-----|--------|
+            | E2E Tests | ${{ needs.e2e-tests.result }} |
+            | Slow Integration | ${{ needs.slow-integration-tests.result }} |
+            | Baseline Tests | ${{ needs.baseline-tests.result }} |
+            | Comprehensive CPU | ${{ needs.comprehensive-cpu.result }} |
+
+            ---
+            *Automatically created by nightly workflow.*`;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nightly-failure'
+            });
+
+            const today = new Date().toISOString().split('T')[0];
+            const existingIssue = issues.data.find(i => i.title.includes(today));
+
+            if (!existingIssue) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['nightly-failure', 'automated', 'tests']
+              });
+            }
