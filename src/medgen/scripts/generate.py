@@ -30,8 +30,6 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.amp import autocast
-from tqdm import tqdm
-
 from medgen.core import (
     MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
     setup_cuda_optimizations,
@@ -385,7 +383,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         )
 
         log.info(f"Generating {cfg.num_images} seg masks...")
-        for i in tqdm(range(cfg.num_images), disable=not cfg.verbose):
+        for i in range(cfg.num_images):
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
@@ -415,7 +413,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             all_bins.append((i, bins))
 
-            if i % 10 == 0:
+            # Log progress and clear cache periodically
+            if (i + 1) % 10 == 0 or i == cfg.num_images - 1:
+                log.info(f"Progress: {i + 1}/{cfg.num_images}")
                 torch.cuda.empty_cache()
 
     # Mode: bravo (full pipeline: seg -> bravo)
@@ -441,7 +441,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         generated = 0
         total_retries = 0
-        pbar = tqdm(total=cfg.num_images, disable=not cfg.verbose)
 
         while generated < cfg.num_images:
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
@@ -506,12 +505,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             all_bins.append((generated, bins))
 
             generated += 1
-            pbar.update(1)
 
-            if generated % 10 == 0:
+            # Log progress and clear cache periodically
+            if generated % 10 == 0 or generated == cfg.num_images:
+                log.info(f"Progress: {generated}/{cfg.num_images}")
                 torch.cuda.empty_cache()
 
-        pbar.close()
         if total_retries > 0:
             log.info(f"Total retries due to invalid masks: {total_retries}")
 
