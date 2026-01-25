@@ -24,6 +24,13 @@
 # Master switch
 enabled: false
 
+# Two-stage training:
+#   Stage 1: Train UNet without conditioning (stage1=true, enabled=false)
+#            UNet learns unconditional denoising with in_channels=out_channels
+#   Stage 2: Freeze UNet, train ControlNet (stage1=false, enabled=true, freeze_unet=true)
+#            Load Stage 1 checkpoint, ControlNet provides conditioning
+stage1: false
+
 # Architecture (must match UNet for compatibility)
 # These are auto-populated from model config when null
 channels: null                      # Auto-match UNet channels
@@ -39,6 +46,7 @@ conditioning_embedding_num_channels: [16, 32, 96, 256]
 # Training configuration
 freeze_unet: true                   # Freeze UNet weights (Stage 2 training)
 conditioning_scale: 1.0             # Scale factor for ControlNet output (1.0 = full control)
+cfg_dropout_prob: 0.15              # CFG dropout probability (enables classifier-free guidance)
 
 # Gradient checkpointing for memory efficiency (recommended for 3D)
 gradient_checkpointing: false

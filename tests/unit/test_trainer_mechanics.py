@@ -417,3 +417,142 @@ class TestLossScaling:
 
         assert torch.isfinite(valid_loss), "Valid loss should be finite"
         assert not torch.isfinite(inf_loss), "Inf loss should be detected as non-finite"
+
+
+# =============================================================================
+# TestConditioningDropout - Verify CFG dropout for ControlNet
+# =============================================================================
+
+
+class TestConditioningDropout:
+    """Test CFG conditioning dropout for ControlNet training."""
+
+    def _apply_conditioning_dropout(
+        self,
+        conditioning: torch.Tensor,
+        batch_size: int,
+        dropout_prob: float,
+        training: bool = True,
+    ) -> torch.Tensor:
+        """Standalone implementation of conditioning dropout for testing.
+
+        Mirrors the trainer's _apply_conditioning_dropout method.
+        """
+        if conditioning is None or dropout_prob <= 0:
+            return conditioning
+
+        if not training:
+            return conditioning
+
+        # Per-sample dropout mask
+        dropout_mask = torch.rand(batch_size, device=conditioning.device)
+        keep_mask = (dropout_mask >= dropout_prob).float()
+
+        # Expand to match conditioning dims
+        for _ in range(conditioning.dim() - 1):
+            keep_mask = keep_mask.unsqueeze(-1)
+
+        return conditioning * keep_mask
+
+    def test_dropout_zeros_entire_samples(self):
+        """Dropout zeros entire samples, not individual pixels."""
+        torch.manual_seed(42)
+        batch_size = 8
+        conditioning = torch.ones(batch_size, 1, 64, 64)
+        dropout_prob = 0.5
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size, dropout_prob
+        )
+
+        # Each sample should be either all zeros or all ones
+        for i in range(batch_size):
+            sample = result[i]
+            is_all_zero = (sample == 0).all()
+            is_all_one = (sample == 1).all()
+            assert is_all_zero or is_all_one, \
+                f"Sample {i} should be entirely zero or entirely one, not mixed"
+
+    def test_dropout_respects_probability(self):
+        """Dropout rate approximately matches specified probability."""
+        torch.manual_seed(123)
+        batch_size = 1000
+        conditioning = torch.ones(batch_size, 1, 8, 8)
+        dropout_prob = 0.15
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size, dropout_prob
+        )
+
+        # Count dropped samples (all zeros)
+        dropped = sum(1 for i in range(batch_size) if (result[i] == 0).all())
+        dropout_rate = dropped / batch_size
+
+        # Should be approximately 15% (allow 5% tolerance for randomness)
+        assert 0.10 <= dropout_rate <= 0.20, \
+            f"Dropout rate {dropout_rate:.2%} should be ~{dropout_prob:.0%}"
+
+    def test_dropout_disabled_when_prob_zero(self):
+        """Zero dropout probability leaves conditioning unchanged."""
+        conditioning = torch.randn(4, 1, 64, 64)
+        original = conditioning.clone()
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size=4, dropout_prob=0.0
+        )
+
+        assert_tensors_close(result, original, name="Zero dropout")
+
+    def test_dropout_disabled_during_eval(self):
+        """Dropout is not applied during evaluation (training=False)."""
+        torch.manual_seed(42)
+        conditioning = torch.randn(4, 1, 64, 64)
+        original = conditioning.clone()
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size=4, dropout_prob=0.5, training=False
+        )
+
+        assert_tensors_close(result, original, name="Eval mode dropout")
+
+    def test_dropout_works_with_3d_volumes(self):
+        """Dropout works correctly with 3D volumes [B, C, D, H, W]."""
+        torch.manual_seed(42)
+        batch_size = 8
+        conditioning = torch.ones(batch_size, 1, 16, 32, 32)  # 3D volume
+        dropout_prob = 0.5
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size, dropout_prob
+        )
+
+        # Verify shape preserved
+        assert result.shape == conditioning.shape, \
+            f"Shape should be preserved: {conditioning.shape} vs {result.shape}"
+
+        # Each sample should be entirely zero or entirely one
+        for i in range(batch_size):
+            sample = result[i]
+            is_all_zero = (sample == 0).all()
+            is_all_one = (sample == 1).all()
+            assert is_all_zero or is_all_one, \
+                f"3D sample {i} should be entirely zero or entirely one"
+
+    def test_dropout_preserves_non_dropped_values(self):
+        """Non-dropped samples retain their exact original values."""
+        torch.manual_seed(0)
+        batch_size = 4
+        conditioning = torch.randn(batch_size, 1, 64, 64)
+        original = conditioning.clone()
+
+        result = self._apply_conditioning_dropout(
+            conditioning, batch_size, dropout_prob=0.5
+        )
+
+        # For non-dropped samples, values should be identical
+        for i in range(batch_size):
+            if not (result[i] == 0).all():  # Not dropped
+                assert_tensors_close(
+                    result[i], original[i],
+                    name=f"Non-dropped sample {i}"
+                )

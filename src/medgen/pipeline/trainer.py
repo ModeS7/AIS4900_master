@@ -503,11 +503,23 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.use_controlnet: bool = controlnet_cfg.get('enabled', False)
         self.controlnet_freeze_unet: bool = controlnet_cfg.get('freeze_unet', True)
         self.controlnet_scale: float = controlnet_cfg.get('conditioning_scale', 1.0)
+        self.controlnet_cfg_dropout_prob: float = controlnet_cfg.get('cfg_dropout_prob', 0.15)
         self.controlnet: Optional[nn.Module] = None
+
+        # Stage 1 mode: Train UNet without conditioning (in_channels=out_channels)
+        # This prepares the UNet for Stage 2 ControlNet training
+        # The model learns unconditional denoising, then ControlNet adds conditioning
+        self.controlnet_stage1: bool = controlnet_cfg.get('stage1', False)
+
+        if self.controlnet_stage1 and self.is_main_process:
+            logger.info(
+                "ControlNet Stage 1: Training unconditional UNet (in_channels=out_channels). "
+                "Use this checkpoint for Stage 2 with controlnet.enabled=true"
+            )
 
         if self.use_controlnet and self.is_main_process:
             logger.info(
-                f"ControlNet enabled: freeze_unet={self.controlnet_freeze_unet}, "
+                f"ControlNet Stage 2: freeze_unet={self.controlnet_freeze_unet}, "
                 f"conditioning_scale={self.controlnet_scale}"
             )
 
@@ -649,12 +661,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
         in_channels = self.space.get_latent_channels(model_cfg['in_channels'])
         out_channels = self.space.get_latent_channels(model_cfg['out_channels'])
 
-        # For ControlNet: conditioning goes through ControlNet, not concatenation
+        # For ControlNet Stage 1 or Stage 2: conditioning goes through ControlNet, not concatenation
         # UNet in_channels = out_channels (no +1 for conditioning)
-        if self.use_controlnet:
+        if self.use_controlnet or self.controlnet_stage1:
             in_channels = out_channels
             if self.is_main_process:
-                logger.info(f"ControlNet mode: UNet in_channels={in_channels} (no conditioning concatenation)")
+                stage = "Stage 1 (prep)" if self.controlnet_stage1 else "Stage 2"
+                logger.info(f"ControlNet {stage}: UNet in_channels={in_channels} (no conditioning concatenation)")
 
         if self.is_main_process and self.space.scale_factor > 1:
             logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
@@ -802,7 +815,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 unet=self.model_raw,
                 cfg=self.cfg,
                 device=self.device,
-                spatial_dims=2,
+                spatial_dims=self.spatial_dims,
                 latent_channels=latent_channels,
             )
 
@@ -1116,6 +1129,40 @@ class DiffusionTrainer(DiffusionTrainerBase):
             perturbation = torch.randn_like(noise) * std
             perturbed = noise + perturbation
             return perturbed / perturbed.std() * noise.std()
+
+    def _apply_conditioning_dropout(
+        self,
+        conditioning: Optional[torch.Tensor],
+        batch_size: int,
+    ) -> Optional[torch.Tensor]:
+        """Apply per-sample CFG dropout to conditioning tensor.
+
+        Used for ControlNet conditioning to enable classifier-free guidance
+        at inference time. Sets entire samples to zero with probability
+        `controlnet_cfg_dropout_prob`.
+
+        Args:
+            conditioning: Conditioning tensor [B, C, ...] or None.
+            batch_size: Batch size for dropout mask.
+
+        Returns:
+            Conditioning with per-sample dropout applied, or None if input is None.
+        """
+        if conditioning is None or self.controlnet_cfg_dropout_prob <= 0:
+            return conditioning
+
+        if not self.training:
+            return conditioning
+
+        # Per-sample dropout mask
+        dropout_mask = torch.rand(batch_size, device=conditioning.device)
+        keep_mask = (dropout_mask >= self.controlnet_cfg_dropout_prob).float()
+
+        # Expand to match conditioning dims [B, C, H, W] or [B, C, D, H, W]
+        for _ in range(conditioning.dim() - 1):
+            keep_mask = keep_mask.unsqueeze(-1)
+
+        return conditioning * keep_mask
 
     def _setup_feature_perturbation(self) -> None:
         """Setup forward hooks for feature perturbation."""
@@ -1485,6 +1532,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Store pixel-space labels for ControlNet (before any encoding)
             controlnet_cond = labels if self.use_controlnet else None
 
+            # Apply CFG dropout to ControlNet conditioning (enables CFG at inference)
+            if controlnet_cond is not None:
+                batch_size = images.shape[0] if not isinstance(images, dict) else next(iter(images.values())).shape[0]
+                controlnet_cond = self._apply_conditioning_dropout(controlnet_cond, batch_size)
+
             # Encode to diffusion space (identity for PixelSpace)
             images = self.space.encode_batch(images)
             # For ControlNet: keep labels in pixel space (conditioning through ControlNet)
@@ -1526,10 +1578,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     noise = noise * aug_diff_mask
                     noisy_images = noisy_images * aug_diff_mask
 
-            # For ControlNet: use only noisy images (no concatenation)
+            # For ControlNet (Stage 1 or 2): use only noisy images (no concatenation)
             # For standard: concatenate noisy images with labels
-            if self.use_controlnet:
-                model_input = noisy_images  # Labels passed via controlnet_cond
+            if self.use_controlnet or self.controlnet_stage1:
+                model_input = noisy_images  # Stage 1: unconditional, Stage 2: via controlnet_cond
             else:
                 model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
@@ -2124,7 +2176,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                 timesteps = self.strategy.sample_timesteps(images)
                 noisy_images = self.strategy.add_noise(images, noise, timesteps)
-                model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                # For ControlNet (Stage 1 or 2): use only noisy images (no concatenation)
+                if self.use_controlnet or self.controlnet_stage1:
+                    model_input = noisy_images
+                else:
+                    model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
                 # Apply mode intensity scaling for validation consistency
                 if self.use_mode_intensity_scaling and mode_id is not None:
@@ -2481,7 +2538,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 noise = torch.randn_like(cached_images[:batch_size])
 
             # Build model input with real conditioning
-            if self.use_size_bin_embedding:
+            # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
+            if self.use_controlnet or self.controlnet_stage1:
+                model_input = noise
+                size_bins = None
+            elif self.use_size_bin_embedding:
                 model_input = noise
                 size_bins = cached_size_bins[:batch_size] if cached_size_bins is not None else None
             elif self.mode.is_conditional and cached_labels is not None:
@@ -2570,7 +2631,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
             noise = torch.randn_like(cached_images[:1])
 
         # Build model input with conditioning
-        if self.use_size_bin_embedding and cached_size_bins is not None:
+        # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
+        if self.use_controlnet or self.controlnet_stage1:
+            trajectory = self._generate_trajectory_3d(model, noise, num_steps=25, capture_every=5)
+        elif self.use_size_bin_embedding and cached_size_bins is not None:
             size_bins = cached_size_bins[:1]
             trajectory = self._generate_trajectory_with_size_bins_3d(
                 noise, size_bins, num_steps=25, capture_every=5
@@ -2941,7 +3005,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             timesteps = self.strategy.sample_timesteps(images)
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
-            model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+            # For ControlNet (Stage 1 or 2): use only noisy images
+            if self.use_controlnet or self.controlnet_stage1:
+                model_input = noisy_images
+            else:
+                model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
             self._flops_tracker.measure(
                 self.model_raw,
@@ -3287,7 +3356,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 noisy_volume = self.strategy.add_noise(volume, noise, timesteps)
 
                 # Format input and denoise
-                model_input = self.mode.format_model_input(noisy_volume, labels_dict)
+                # For ControlNet (Stage 1 or 2): use only noisy images
+                if self.use_controlnet or self.controlnet_stage1:
+                    model_input = noisy_volume
+                else:
+                    model_input = self.mode.format_model_input(noisy_volume, labels_dict)
                 prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                 _, predicted_clean = self.strategy.compute_loss(prediction, volume, noise, noisy_volume, timesteps)
 
@@ -3427,7 +3500,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                 timesteps = self.strategy.sample_timesteps(images)
                 noisy_images = self.strategy.add_noise(images, noise, timesteps)
-                model_input = self.mode.format_model_input(noisy_images, labels_dict)
+
+                # For ControlNet (Stage 1 or 2): use only noisy images
+                if self.use_controlnet or self.controlnet_stage1:
+                    model_input = noisy_images
+                else:
+                    model_input = self.mode.format_model_input(noisy_images, labels_dict)
 
                 # Apply mode intensity scaling for test consistency
                 if self.use_mode_intensity_scaling and mode_id is not None:
