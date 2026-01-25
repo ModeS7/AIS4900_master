@@ -40,15 +40,16 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Rationale: In 3D with small datasets (63 samples), high augmentation
 # probability caused training-generation distribution mismatch. The model
 # spent too much capacity learning omega-conditioned (augmented) cases,
-# undertaining for omega=zeros (used during generation). Reducing prob
-# means more training on the non-augmented path.
+# undertaining for omega=zeros (used during generation). Using compose mode
+# with lower prob means each transform applied independently with 25% chance.
 #
 # ScoreAug Config (3D transforms):
 #   - rotation: 90/180/270 around D/H/W axes
 #   - translation: +/-40% W, +/-20% H, 0% D (brain centered in Z)
 #   - cutout: 3D rectangular regions (10-30%)
 #   - omega_conditioning: enabled (required for non-invertible transforms)
-#   - prob: 0.25 (REDUCED from 0.5) - only 25% of batches use augmentation
+#   - compose: true (apply transforms independently)
+#   - compose_prob: 0.25 (REDUCED from default 0.5)
 #
 # Architecture: 270M UNet (default_3d)
 # Mode: bravo (in=2, out=1)
@@ -73,7 +74,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.score_aug.translation=true \
     training.score_aug.cutout=true \
     training.score_aug.use_omega_conditioning=true \
-    training.score_aug.prob=0.25 \
+    training.score_aug.compose=true \
+    training.score_aug.compose_prob=0.25 \
     training.name=exp5_3_pixel_bravo_scoreaug_
 
 conda deactivate
