@@ -7,7 +7,6 @@ import os
 import pytest
 import torch
 from hydra import compose, initialize_config_dir
-from omegaconf import OmegaConf
 
 
 # =============================================================================
@@ -236,6 +235,7 @@ class TestVAETrainer:
         assert result.total_loss > 0
         assert result.reconstruction_loss >= 0
 
+    @pytest.mark.timeout(120)
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.slow
     def test_train_step_3d(self, vae_3d_cfg):
@@ -323,6 +323,7 @@ class TestVQVAETrainer:
         assert result.total_loss > 0
         assert result.reconstruction_loss >= 0
 
+    @pytest.mark.timeout(120)
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.slow
     def test_train_step_3d(self, vqvae_3d_cfg):
@@ -410,6 +411,7 @@ class TestDCAETrainer:
         assert result.total_loss > 0
         assert result.reconstruction_loss >= 0
 
+    @pytest.mark.timeout(120)
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.slow
     def test_train_step_3d(self, dcae_3d_cfg):

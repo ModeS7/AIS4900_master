@@ -55,7 +55,7 @@ if [ ! -f "$COMPRESSION_CHECKPOINT" ]; then
     echo "ERROR: Compression checkpoint not found at:"
     echo "  $COMPRESSION_CHECKPOINT"
     echo ""
-    echo "Please update COMPRESSION_CHECKPOINT to point to your exp8_1 checkpoint."
+    echo "Please update COMPRESSION_CHECKPOINT to point to the exp8_1 checkpoint."
     echo "Example: find /cluster/work/modestas/AIS4900_master/runs/compression_3d -name 'checkpoint_best.pt' | grep exp8_1"
     exit 1
 fi

@@ -92,8 +92,7 @@ def calculate_timestamps(epochs, total_seconds, start_time=None):
     """
     if start_time is None:
         # Use a reasonable default based on the log date
-        # You can adjust this to match your actual training time
-        start_time = datetime(2025, 9, 19, 13, 27, 22)  # From your log
+        start_time = datetime(2025, 9, 19, 13, 27, 22)
 
     num_epochs = len(epochs)
     if num_epochs == 0:
@@ -269,7 +268,7 @@ def recreate_from_text_directly_debug(log_text, output_dir, training_type='seg')
 
     print(f"Parsed epochs: {len(epochs)}")
     if len(epochs) == 0:
-        print("ERROR: No epochs parsed! Check your log format.")
+        print("ERROR: No epochs parsed! Check log format.")
         return None
 
     # Calculate timestamps if total time is available
@@ -297,16 +296,15 @@ def recreate_from_text_directly_debug(log_text, output_dir, training_type='seg')
     return log_dir
 
 
-# Example usage with your actual seg training data
+# Example usage
 if __name__ == "__main__":
-    # Your complete seg training log (use the complete text from your document)
     with open('seg_training_log.txt', 'r') as f:
         seg_log_text = f.read()
 
-    # Alternative: paste directly if you prefer
+    # Alternative: paste directly
     # seg_log_text = """Starting training for seg images...
     # Epoch 0: Total Loss = 0.084550, MSE = 0.082721, Perceptual = 1.829062
-    # ... [your complete log text here] ...
+    # ...
     # Training for seg images completed."""
 
     # Recreate TensorBoard logs with debugging

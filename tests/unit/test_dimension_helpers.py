@@ -6,7 +6,6 @@ Tests the new unified dimension-aware helper methods that enable
 
 import pytest
 import torch
-from unittest.mock import Mock, patch, MagicMock
 
 
 class MockTrainer2D:

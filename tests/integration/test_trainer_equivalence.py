@@ -118,6 +118,7 @@ class TestTrainer3DEquivalence:
         """Set up deterministic state."""
         set_deterministic(42)
 
+    @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -138,6 +139,7 @@ class TestTrainer3DEquivalence:
         assert compare_baselines(baseline, current, tolerance=TOLERANCE), \
             "3D bravo trainer results differ from baseline"
 
+    @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
     @pytest.mark.skipif(
@@ -183,6 +185,7 @@ class TestTrainerDeterminism:
             assert abs(s1['total_loss'] - s2['total_loss']) < 1e-6, \
                 f"Step {i} loss differs between runs"
 
+    @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.skipif(
         not torch.cuda.is_available(),

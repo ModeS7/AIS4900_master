@@ -1,0 +1,3 @@
+# This file ensures the directory exists in git.
+# Actual checkpoints are NOT stored in git (too large).
+# Run ./tests/fixtures/create_golden_checkpoint.sh to generate them.

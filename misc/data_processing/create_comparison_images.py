@@ -128,7 +128,7 @@ if __name__ == "__main__":
         input_dir=input_directory,
         output_dir=output_directory,
         threshold_value=0.1,
-        num_workers=4  # Adjust based on your CPU cores
+        num_workers=4
     )
 
     print("\nComparison creation complete!")

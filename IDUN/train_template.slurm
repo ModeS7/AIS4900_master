@@ -13,7 +13,6 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# Change to submission directory
 WORKDIR=${SLURM_SUBMIT_DIR}
 cd ${WORKDIR}
 
@@ -55,7 +54,7 @@ time python -m medgen.scripts.train paths=cluster
 # time python -m medgen.scripts.train paths=cluster training.epochs=1000 training.batch_size=32
 
 # ============================================================================
-# MULTI-GPU (change SBATCH to: --gres=gpu:4, --ntasks-per-node=4, --mem=128G)
+# MULTI-GPU (requires: --gres=gpu:4, --ntasks-per-node=4, --mem=128G)
 # ============================================================================
 # time srun python -m medgen.scripts.train paths=cluster training.use_multi_gpu=true model=unet_256
 

@@ -8,8 +8,6 @@ Run with: pytest tests/integration/test_3d_modes.py -v
 
 import pytest
 import torch
-import numpy as np
-from unittest.mock import MagicMock, patch
 from omegaconf import OmegaConf
 
 

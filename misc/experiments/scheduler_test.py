@@ -39,7 +39,7 @@ device = torch.device("cuda")
 # Configuration
 STEP_COUNTS = [1000, 500, 250, 100, 50, 30, 10, 5]
 IMAGE_SIZE = 128
-COMPUTE = "local"  # Change to "cluster" if needed
+COMPUTE = "local"
 OUTPUT_DIR = "step_comparison_study"
 
 # Model paths

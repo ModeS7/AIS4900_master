@@ -33,7 +33,7 @@ from config import PathConfig
 # CONFIGURATION - Using PathConfig for data path
 path_config = PathConfig()
 DATA_DIR = str(path_config.brainmet_train_dir)
-MODE = "bravo"  # Change to "bravo" or "seg"
+MODE = "bravo"
 PATIENT_INDEX = 13  # Which patient folder to use
 SLICE_INDEX = 76  # Which slice from the 3D volume
 DEVICE = torch.device("cpu")  # Use CPU - much simpler for this task!

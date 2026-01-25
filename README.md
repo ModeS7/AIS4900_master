@@ -1,5 +1,10 @@
 # MedGen - Synthetic Medical Image Generation
 
+[![Tests](https://github.com/ModeS7/AIS4900_master/actions/workflows/test.yml/badge.svg)](https://github.com/ModeS7/AIS4900_master/actions/workflows/test.yml)
+[![Nightly](https://github.com/ModeS7/AIS4900_master/actions/workflows/tests-nightly.yml/badge.svg)](https://github.com/ModeS7/AIS4900_master/actions/workflows/tests-nightly.yml)
+[![codecov](https://codecov.io/gh/ModeS7/AIS4900_master/branch/main/graph/badge.svg)](https://codecov.io/gh/ModeS7/AIS4900_master)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
 A modular framework for generating synthetic brain MRI images using diffusion models. Supports both pixel-space and latent-space diffusion with VAE compression.
 
 ## Quick Start

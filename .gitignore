@@ -28,6 +28,12 @@ misc/bench/benchmark_results/
 /runs/
 *.log
 
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # IDE
 .idea/
 *.iml

@@ -80,9 +80,15 @@ def synthetic_masks_3d():
 
 @pytest.fixture
 def mock_diffusion_model():
-    """Mock diffusion model for testing."""
-    model = Mock()
-    model.return_value = torch.randn(4, 1, 64, 64)
+    """Mock diffusion model for testing.
+
+    Returns dynamic batch size matching input rather than fixed size.
+    """
+    def forward(x, *args, **kwargs):
+        # Match input batch and return single channel (noise/velocity prediction)
+        return torch.randn_like(x[:, :1])
+
+    model = Mock(side_effect=forward)
     model.eval = Mock(return_value=model)
     model.to = Mock(return_value=model)
     return model
@@ -90,10 +96,15 @@ def mock_diffusion_model():
 
 @pytest.fixture
 def mock_size_bin_model():
-    """Mock model with size_bin_time_embed attribute (SizeBinModelWrapper)."""
-    model = Mock()
+    """Mock model with size_bin_time_embed attribute (SizeBinModelWrapper).
+
+    Returns dynamic batch size matching input rather than fixed size.
+    """
+    def forward(x, *args, **kwargs):
+        return torch.randn_like(x[:, :1])
+
+    model = Mock(side_effect=forward)
     model.size_bin_time_embed = Mock()  # Key attribute for detection
-    model.return_value = torch.randn(4, 1, 64, 64)
     model.eval = Mock(return_value=model)
     model.to = Mock(return_value=model)
     return model
@@ -202,3 +213,120 @@ def mock_dict_dataset():
             }
 
     return MockDataset()
+
+
+# ============================================================================
+# Factory Fixtures (Dynamic Tensor Creation)
+# ============================================================================
+
+@pytest.fixture
+def make_images():
+    """Factory for synthetic images with configurable dimensions."""
+    def _make(batch_size=4, channels=1, height=64, width=64, depth=None):
+        if depth is not None:
+            return torch.rand(batch_size, channels, depth, height, width)
+        return torch.rand(batch_size, channels, height, width)
+    return _make
+
+
+@pytest.fixture
+def make_masks():
+    """Factory for binary masks with configurable sparsity."""
+    def _make(batch_size=4, channels=1, height=64, width=64, depth=None, threshold=0.7):
+        shape = (batch_size, channels, depth, height, width) if depth else \
+                (batch_size, channels, height, width)
+        return (torch.rand(*shape) > threshold).float()
+    return _make
+
+
+# ============================================================================
+# Auto-Skip GPU Tests
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def skip_gpu_tests_without_cuda(request):
+    """Auto-skip @pytest.mark.gpu tests when CUDA unavailable."""
+    if request.node.get_closest_marker('gpu'):
+        if not torch.cuda.is_available():
+            pytest.skip('GPU not available')
+
+
+# =============================================================================
+# State Isolation Fixtures (autouse - run for every test)
+# =============================================================================
+
+@pytest.fixture(autouse=True)
+def isolate_test_state():
+    """Ensure each test starts with clean metric caches.
+
+    Runs before and after EVERY test automatically.
+    """
+    from medgen.metrics.quality import clear_metric_caches
+    clear_metric_caches()
+    yield
+    clear_metric_caches()
+
+
+@pytest.fixture(autouse=True)
+def isolate_cuda_state():
+    """Clear CUDA state after each test."""
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+@pytest.fixture(autouse=True)
+def isolate_rng_state():
+    """Preserve RNG state across tests.
+
+    Prevents one test's random usage from affecting another.
+    """
+    cpu_state = torch.get_rng_state()
+    cuda_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    yield
+    torch.set_rng_state(cpu_state)
+    if cuda_state is not None:
+        torch.cuda.set_rng_state(cuda_state)
+
+
+@pytest.fixture(autouse=True)
+def isolate_environment():
+    """Preserve environment variables."""
+    import os
+    original_env = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(original_env)
+
+
+# =============================================================================
+# Temporary Directory Fixtures
+# =============================================================================
+
+@pytest.fixture
+def temp_output_dir(tmp_path):
+    """Temporary directory for test outputs.
+
+    Automatically cleaned up after test.
+    """
+    output_dir = tmp_path / "test_output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+@pytest.fixture
+def temp_checkpoint_dir(tmp_path):
+    """Temporary directory for checkpoints."""
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    return checkpoint_dir
+
+
+@pytest.fixture(scope="session")
+def shared_temp_dir(tmp_path_factory):
+    """Shared temp directory for session-scoped resources.
+
+    Use sparingly - only for expensive-to-create resources.
+    """
+    return tmp_path_factory.mktemp("shared")

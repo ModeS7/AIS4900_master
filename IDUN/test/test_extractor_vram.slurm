@@ -8,7 +8,6 @@
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=4
 
-# Change to submit directory
 cd ${SLURM_SUBMIT_DIR}
 
 # Load modules
