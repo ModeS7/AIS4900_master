@@ -450,6 +450,253 @@ class Test3DSpecificMetrics:
         )
 
 
+class TestRegionalMetricsConfiguration:
+    """
+    Regression tests for regional metrics configuration.
+
+    These tests catch bugs where volume_size or mm_per_pixel are misconfigured,
+    leading to incorrect tumor size classification.
+
+    Bug fixed: volume_size was not passed to UnifiedMetrics for 3D, causing
+    regional tracker to use wrong default dimensions and misclassify tumor sizes.
+    """
+
+    def test_3d_regional_tracker_uses_correct_volume_size(self):
+        """
+        REGRESSION: 3D regional tracker must use actual volume dimensions.
+
+        Bug: volume_size was not passed from trainer to UnifiedMetrics,
+        causing mm_per_pixel to be calculated with wrong default (256, 256, 160).
+        This made tumors appear smaller than actual, breaking size classification.
+        """
+        from medgen.metrics.unified import UnifiedMetrics
+        from unittest.mock import MagicMock
+
+        # Simulate a 3D trainer with small volume (64x64x32)
+        actual_volume_size = (64, 64, 32)
+        fov_mm = 240.0
+
+        mock_writer = MagicMock()
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=3,
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=True,
+            volume_size=actual_volume_size,
+            fov_mm=fov_mm,
+        )
+
+        # Verify the regional tracker was initialized
+        assert metrics._regional_tracker is not None, (
+            "REGRESSION: Regional tracker not initialized for 3D mode"
+        )
+
+        # Verify mm_per_pixel uses actual volume dimensions
+        expected_mm_per_pixel = fov_mm / max(actual_volume_size[0], actual_volume_size[1])
+        actual_mm_per_pixel = metrics._regional_tracker.mm_per_pixel
+
+        assert actual_mm_per_pixel == expected_mm_per_pixel, (
+            f"REGRESSION: mm_per_pixel incorrect!\n"
+            f"Expected: {expected_mm_per_pixel} (from volume {actual_volume_size})\n"
+            f"Actual: {actual_mm_per_pixel}\n"
+            f"This means volume_size is not being passed correctly."
+        )
+
+    def test_3d_regional_tracker_not_using_default_256(self):
+        """
+        Verify 3D tracker doesn't silently use default 256x256 dimensions.
+        """
+        from medgen.metrics.unified import UnifiedMetrics
+        from unittest.mock import MagicMock
+
+        # Use non-256 dimensions to detect if defaults are used
+        volume_size = (128, 128, 64)
+        fov_mm = 240.0
+
+        mock_writer = MagicMock()
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=3,
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=True,
+            volume_size=volume_size,
+            fov_mm=fov_mm,
+        )
+
+        # If default 256 were used: mm_per_pixel = 240/256 = 0.9375
+        wrong_mm_per_pixel = fov_mm / 256
+
+        # Correct: mm_per_pixel = 240/128 = 1.875
+        correct_mm_per_pixel = fov_mm / max(volume_size[0], volume_size[1])
+
+        actual = metrics._regional_tracker.mm_per_pixel
+
+        assert actual != wrong_mm_per_pixel, (
+            f"REGRESSION: Regional tracker using default 256 dimensions!\n"
+            f"Got mm_per_pixel={actual}, which equals 240/256\n"
+            f"Expected mm_per_pixel={correct_mm_per_pixel} from volume {volume_size}"
+        )
+
+        assert actual == correct_mm_per_pixel, (
+            f"REGRESSION: mm_per_pixel mismatch\n"
+            f"Expected: {correct_mm_per_pixel}\n"
+            f"Actual: {actual}"
+        )
+
+    def test_tumor_size_classification_large_threshold(self):
+        """
+        Verify 'large' tumor classification works with correct mm_per_pixel.
+
+        A tumor with Feret diameter >= 30mm should be classified as 'large'.
+        """
+        from medgen.metrics.regional import RegionalMetricsTracker
+
+        # Small volume: 64x64 with 240mm FOV
+        # mm_per_pixel = 240/64 = 3.75
+        tracker = RegionalMetricsTracker(
+            spatial_dims=2,
+            image_size=64,
+            fov_mm=240.0,
+            device=torch.device('cpu'),
+        )
+
+        mm_per_pixel = tracker.mm_per_pixel
+        assert mm_per_pixel == 240.0 / 64, "mm_per_pixel calculation wrong"
+
+        # For large tumor (>=30mm), need feret_px >= 30/3.75 = 8 pixels
+        min_large_pixels = 30.0 / mm_per_pixel
+
+        # Classify a tumor that's exactly at the threshold
+        size_cat = tracker._classify_tumor_size(30.0)
+        assert size_cat == 'large', (
+            f"30mm tumor should be 'large', got '{size_cat}'"
+        )
+
+        # Classify a tumor just below threshold
+        size_cat = tracker._classify_tumor_size(29.9)
+        assert size_cat == 'medium', (
+            f"29.9mm tumor should be 'medium', got '{size_cat}'"
+        )
+
+    def test_regional_metrics_all_size_categories_logged(self):
+        """
+        Verify all tumor size categories are logged (even if 0.0).
+        """
+        from medgen.metrics.unified import UnifiedMetrics
+        from unittest.mock import MagicMock
+
+        logged = {'scalars': {}}
+
+        def capture_scalar(tag, value, step=None):
+            logged['scalars'][tag] = value
+
+        mock_writer = MagicMock()
+        mock_writer.add_scalar = capture_scalar
+
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=2,
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=True,
+            image_size=256,
+            fov_mm=240.0,
+        )
+
+        # Create simple test data with a tumor
+        pred = torch.rand(1, 1, 256, 256)
+        gt = torch.rand(1, 1, 256, 256)
+        # Create a mask with a small "tumor" region
+        mask = torch.zeros(1, 1, 256, 256)
+        mask[0, 0, 100:120, 100:120] = 1.0  # 20x20 pixel tumor
+
+        metrics.update_regional(pred, gt, mask)
+        metrics.log_validation(epoch=1)
+
+        # All size categories should be logged
+        expected_categories = ['tiny', 'small', 'medium', 'large']
+        for cat in expected_categories:
+            tag = f'regional_bravo/{cat}'
+            assert tag in logged['scalars'], (
+                f"REGRESSION: {tag} not logged!\n"
+                f"Logged: {list(logged['scalars'].keys())}"
+            )
+
+    def test_json_history_serialization_with_numpy_types(self, tmp_path):
+        """
+        REGRESSION: JSON history must handle numpy float32/int types.
+
+        Bug: regional_history contained numpy.float32 values which caused
+        TypeError: Object of type float32 is not JSON serializable
+        when saving at end of training (after 20+ hours of training!).
+        """
+        import json
+        import numpy as np
+        from medgen.metrics.unified import UnifiedMetrics
+        from unittest.mock import MagicMock
+
+        mock_writer = MagicMock()
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=2,
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=True,
+            image_size=256,
+            fov_mm=240.0,
+        )
+
+        # Simulate what happens during training - regional_history gets numpy types
+        metrics._regional_history = {
+            '1': {
+                'tumor': np.float32(0.5),
+                'background': np.float64(0.1),
+                'ratio': np.float32(5.0),
+                'tumor_size_tiny': np.float32(0.3),
+                'tumor_size_small': np.float32(0.4),
+                'tumor_size_medium': np.float32(0.0),
+                'tumor_size_large': np.float32(0.0),
+            },
+            '2': {
+                'tumor': np.float32(0.45),
+                'background': np.float64(0.09),
+                'ratio': np.float32(5.0),
+                'tumor_size_tiny': np.float32(0.25),
+                'tumor_size_small': np.float32(0.35),
+                'tumor_size_medium': np.float32(0.0),
+                'tumor_size_large': np.float32(0.0),
+            },
+        }
+
+        # This should NOT raise TypeError
+        try:
+            metrics.save_json_histories(str(tmp_path))
+        except TypeError as e:
+            if 'not JSON serializable' in str(e):
+                pytest.fail(
+                    f"REGRESSION: JSON serialization failed with numpy types!\n"
+                    f"Error: {e}\n"
+                    f"This bug causes training to fail at the very end after hours of work."
+                )
+            raise
+
+        # Verify file was created and is valid JSON
+        json_path = tmp_path / 'regional_losses.json'
+        assert json_path.exists(), "regional_losses.json not created"
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        assert '1' in data
+        assert data['1']['tumor'] == pytest.approx(0.5, abs=0.01)
+
+
 class TestEndToEndMetricLogging:
     """
     End-to-end test: Run actual trainer and verify metrics appear.

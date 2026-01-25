@@ -1294,21 +1294,36 @@ class UnifiedMetrics:
         """
         import json
         import os
+        import numpy as np
+
+        def convert_to_native(obj):
+            """Recursively convert numpy types to native Python types for JSON."""
+            if isinstance(obj, dict):
+                return {k: convert_to_native(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_native(v) for v in obj]
+            elif isinstance(obj, (np.floating, np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, (np.integer, np.int32, np.int64)):
+                return int(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return obj
 
         if self._regional_history:
             filepath = os.path.join(save_dir, 'regional_losses.json')
             with open(filepath, 'w') as f:
-                json.dump(self._regional_history, f, indent=2)
+                json.dump(convert_to_native(self._regional_history), f, indent=2)
 
         if self._timestep_history:
             filepath = os.path.join(save_dir, 'timestep_losses.json')
             with open(filepath, 'w') as f:
-                json.dump(self._timestep_history, f, indent=2)
+                json.dump(convert_to_native(self._timestep_history), f, indent=2)
 
         if self._timestep_region_history:
             filepath = os.path.join(save_dir, 'timestep_region_losses.json')
             with open(filepath, 'w') as f:
-                json.dump(self._timestep_region_history, f, indent=2)
+                json.dump(convert_to_native(self._timestep_region_history), f, indent=2)
 
     # =========================================================================
     # Visualization Methods
