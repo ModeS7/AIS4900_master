@@ -240,6 +240,69 @@ class TestCompressionTrainerMetrics:
         )
 
 
+class TestFigureLogging:
+    """Verify important figures/visualizations are logged."""
+
+    REQUIRED_FIGURES = [
+        'denoising_trajectory/progression',  # Denoising process visualization
+    ]
+
+    OPTIONAL_FIGURES = [
+        'reconstruction/worst_batch',      # Worst reconstructions
+        'samples/generated',               # Generated samples
+        'timestep_losses/heatmap',         # Loss by timestep
+    ]
+
+    @pytest.fixture
+    def captured_figures(self):
+        """Capture figures logged to TensorBoard."""
+        logged = {'figures': set(), 'images': set()}
+
+        def capture_figure(tag, fig, global_step=None):
+            logged['figures'].add(tag)
+
+        def capture_image(tag, img, global_step=None):
+            logged['images'].add(tag)
+
+        mock_writer = MagicMock()
+        mock_writer.add_figure = capture_figure
+        mock_writer.add_image = capture_image
+        mock_writer.add_scalar = MagicMock()
+
+        return mock_writer, logged
+
+    def test_denoising_trajectory_logged(self, captured_figures):
+        """Denoising trajectory figure must be logged."""
+        from medgen.metrics.unified import UnifiedMetrics
+
+        mock_writer, logged = captured_figures
+
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=2,
+            modality='bravo',
+            device=torch.device('cpu'),
+        )
+
+        # Create fake trajectory: list of tensors at different timesteps
+        trajectory = [
+            torch.rand(1, 1, 64, 64) for _ in range(5)
+        ]
+
+        metrics.log_denoising_trajectory(
+            trajectory=trajectory,
+            epoch=1,
+            tag='denoising_trajectory'
+        )
+
+        assert 'denoising_trajectory/progression' in logged['figures'], (
+            f"REGRESSION: Denoising trajectory figure not logged!\n"
+            f"Logged figures: {logged['figures']}\n"
+            f"This visualization shows the denoising process and is critical for debugging."
+        )
+
+
 class TestMetricNamingConsistency:
     """Verify metric names follow consistent conventions."""
 
@@ -271,6 +334,120 @@ class TestMetricNamingConsistency:
             assert metric.startswith('Validation/'), (
                 f"Quality metric '{metric}' should start with 'Validation/'"
             )
+
+
+class Test3DSpecificMetrics:
+    """Verify 3D-specific metrics are logged correctly."""
+
+    REQUIRED_3D_METRICS = [
+        'Validation/MS-SSIM-3D',  # 3D MS-SSIM (with modality suffix)
+    ]
+
+    @pytest.fixture
+    def captured_metrics_3d(self):
+        """Capture metrics for 3D trainer."""
+        logged = {'scalars': {}}
+
+        def capture_scalar(tag, value, global_step=None):
+            logged['scalars'][tag] = value
+
+        mock_writer = MagicMock()
+        mock_writer.add_scalar = capture_scalar
+
+        return mock_writer, logged
+
+    def test_3d_msssim_logged_for_bravo(self, captured_metrics_3d):
+        """3D bravo mode must log Validation/MS-SSIM-3D_bravo."""
+        from medgen.metrics.unified import UnifiedMetrics
+
+        mock_writer, logged = captured_metrics_3d
+
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=3,  # 3D mode
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=False,
+        )
+
+        # Simulate 3D validation: update_msssim_3d accumulates values
+        # Create small 3D tensors: (B, C, D, H, W)
+        pred = torch.rand(1, 1, 16, 32, 32)
+        gt = torch.rand(1, 1, 16, 32, 32)
+        metrics.update_msssim_3d(pred, gt)
+
+        # log_validation logs all accumulated metrics
+        metrics.log_validation(epoch=1)
+
+        # Check MS-SSIM-3D_bravo was logged
+        assert 'Validation/MS-SSIM-3D_bravo' in logged['scalars'], (
+            f"REGRESSION: 3D MS-SSIM not logged for bravo mode!\n"
+            f"Expected: Validation/MS-SSIM-3D_bravo\n"
+            f"Logged: {list(logged['scalars'].keys())}"
+        )
+
+        # Verify value is a valid number
+        value = logged['scalars']['Validation/MS-SSIM-3D_bravo']
+        assert 0.0 <= value <= 1.0, (
+            f"REGRESSION: 3D MS-SSIM value out of range: {value}"
+        )
+
+    def test_3d_msssim_not_logged_for_seg_mode(self, captured_metrics_3d):
+        """3D seg mode should NOT log MS-SSIM-3D (seg doesn't use image quality)."""
+        from medgen.metrics.unified import UnifiedMetrics
+
+        mock_writer, logged = captured_metrics_3d
+
+        # For seg mode, uses_image_quality=False, so no MS-SSIM is computed
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='seg',
+            spatial_dims=3,
+            modality='seg',
+            device=torch.device('cpu'),
+            enable_regional=False,
+        )
+
+        # update_msssim_3d should return 0.0 and not accumulate for seg mode
+        pred = torch.rand(1, 1, 16, 32, 32)
+        gt = torch.rand(1, 1, 16, 32, 32)
+        result = metrics.update_msssim_3d(pred, gt)
+
+        assert result == 0.0, (
+            f"seg mode should skip MS-SSIM computation, got {result}"
+        )
+
+        metrics.log_validation(epoch=1)
+
+        # MS-SSIM-3D should NOT be in logged metrics for seg mode
+        assert 'Validation/MS-SSIM-3D_seg' not in logged['scalars'], (
+            f"REGRESSION: 3D MS-SSIM should NOT be logged for seg mode!\n"
+            f"Logged: {list(logged['scalars'].keys())}"
+        )
+
+    def test_3d_msssim_requires_3d_spatial_dims(self, captured_metrics_3d):
+        """update_msssim_3d should skip computation for 2D mode."""
+        from medgen.metrics.unified import UnifiedMetrics
+
+        mock_writer, logged = captured_metrics_3d
+
+        metrics = UnifiedMetrics(
+            writer=mock_writer,
+            mode='bravo',
+            spatial_dims=2,  # 2D mode - should skip 3D MS-SSIM
+            modality='bravo',
+            device=torch.device('cpu'),
+        )
+
+        # update_msssim_3d should return 0.0 for 2D mode
+        pred = torch.rand(1, 1, 64, 64)
+        gt = torch.rand(1, 1, 64, 64)
+        result = metrics.update_msssim_3d(pred, gt)
+
+        assert result == 0.0, (
+            f"2D mode should skip 3D MS-SSIM computation, got {result}"
+        )
 
 
 class TestEndToEndMetricLogging:

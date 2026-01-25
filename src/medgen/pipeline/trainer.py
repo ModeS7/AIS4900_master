@@ -2433,6 +2433,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if self.spatial_dims == 3:
             # 3D: Generate samples using cached training batch for real conditioning
             self._visualize_samples_3d(model, epoch)
+            # 3D: Also log denoising trajectory if enabled
+            if self.log_intermediate_steps:
+                self._visualize_denoising_trajectory_3d(model, epoch)
         else:
             # 2D: Delegate to ValidationVisualizer
             if self.visualizer is not None and train_dataset is not None:
@@ -2749,6 +2752,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.val_loader = val_loader
 
         # Initialize unified metrics system
+        # Build volume_size for 3D regional tracking
+        volume_size = None
+        if self.spatial_dims == 3:
+            volume_size = (self.volume_height, self.volume_width, self.volume_depth)
+
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
             mode=self.mode_name,
@@ -2758,6 +2766,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             enable_regional=self.log_regional_losses,
             num_timestep_bins=10,
             image_size=self.image_size,
+            volume_size=volume_size,
             fov_mm=self.cfg.paths.get('fov_mm', 240.0),
             # Logging config flags
             log_grad_norm=self.log_grad_norm,
