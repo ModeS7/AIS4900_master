@@ -109,7 +109,7 @@ def _create_sit(
             f"SiT variant must be one of {valid_variants}, got '{variant}'"
         )
 
-    valid_patch_sizes = (2, 4, 8)
+    valid_patch_sizes = (2, 4, 8, 16)
     if patch_size not in valid_patch_sizes:
         raise ValueError(
             f"SiT patch_size must be one of {valid_patch_sizes}, got {patch_size}"
