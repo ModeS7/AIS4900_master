@@ -27,6 +27,42 @@ logger = logging.getLogger(__name__)
 # Last bin is 30+mm (no upper bound needed)
 DEFAULT_BIN_EDGES = [0, 3, 6, 10, 15, 20, 30]
 
+# Default CFG dropout probability for input conditioning
+DEFAULT_CFG_DROPOUT = 0.15
+
+
+def create_size_bin_maps(
+    size_bins: torch.Tensor,
+    spatial_shape: Tuple[int, ...],
+    normalize: bool = True,
+    max_count: int = 10,
+) -> torch.Tensor:
+    """Create spatial maps from size bin counts for input conditioning.
+
+    Each size bin count becomes a constant-valued spatial map that gets
+    concatenated with the noise input to the diffusion model.
+
+    Args:
+        size_bins: [num_bins] tensor of counts per bin.
+        spatial_shape: Target spatial dimensions (H, W) or (D, H, W).
+        normalize: If True, divide counts by max_count to get [0, 1] range.
+        max_count: Maximum expected count per bin for normalization.
+
+    Returns:
+        [num_bins, *spatial_shape] tensor where each channel is filled
+        with the (normalized) count for that bin.
+    """
+    num_bins = len(size_bins)
+    bin_maps = torch.zeros(num_bins, *spatial_shape, dtype=torch.float32)
+
+    for i in range(num_bins):
+        count = size_bins[i].float()
+        if normalize:
+            count = count / max_count
+        bin_maps[i].fill_(count.item())
+
+    return bin_maps
+
 
 def compute_feret_diameter(binary_mask: np.ndarray, pixel_spacing_mm: float) -> float:
     """Compute Feret diameter (longest axis) of a binary region.
@@ -132,6 +168,8 @@ class SegConditionedDataset(TorchDataset):
         positive_only: bool = True,
         cfg_dropout_prob: float = 0.0,
         augmentation: Optional[any] = None,
+        return_bin_maps: bool = False,
+        max_count: int = 10,
     ):
         """Initialize the dataset wrapper.
 
@@ -142,15 +180,20 @@ class SegConditionedDataset(TorchDataset):
             fov_mm: Field of view in mm.
             image_size: Image size in pixels.
             positive_only: If True, only include slices with tumors (default: True).
-            cfg_dropout_prob: Probability of dropping conditioning for CFG (default: 0.0).
+            cfg_dropout_prob: Probability of dropping conditioning for CFG (default: 0.15).
             augmentation: Albumentations Compose for lazy augmentation (applied in __getitem__).
+            return_bin_maps: If True, return spatial bin maps for input conditioning.
+            max_count: Max count per bin for normalization (default: 10).
         """
         self.slice_dataset = slice_dataset
         self.bin_edges = bin_edges or DEFAULT_BIN_EDGES
         self.pixel_spacing_mm = fov_mm / image_size
+        self.image_size = image_size
         self.num_bins = num_bins if num_bins is not None else len(self.bin_edges) - 1
         self.cfg_dropout_prob = cfg_dropout_prob
         self.augmentation = augmentation
+        self.return_bin_maps = return_bin_maps
+        self.max_count = max_count
 
         # Filter to positive slices only (on raw data, before augmentation)
         if positive_only:
@@ -175,7 +218,7 @@ class SegConditionedDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.positive_indices)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         """Get seg slice and size bins.
 
         Augmentation is applied HERE (lazily) to ensure:
@@ -183,10 +226,15 @@ class SegConditionedDataset(TorchDataset):
         2. Size bins computed on augmented mask (conditioning matches output)
 
         Returns:
-            Tuple of:
+            If return_bin_maps=False:
+                Tuple of (seg, size_bins)
+            If return_bin_maps=True:
+                Tuple of (seg, size_bins, bin_maps)
+
+            Where:
                 - seg: [1, H, W] segmentation mask tensor (augmented, binarized)
-                - size_bins: [num_bins] integer tensor of tumor counts on augmented mask
-                  (zeros if CFG dropout is applied)
+                - size_bins: [num_bins] integer tensor of tumor counts
+                - bin_maps: [num_bins, H, W] spatial maps for input conditioning
         """
         # Map to actual dataset index
         actual_idx = self.positive_indices[idx]
@@ -228,14 +276,29 @@ class SegConditionedDataset(TorchDataset):
             seg = seg.unsqueeze(0)
 
         # Classifier-free guidance dropout: randomly zero out conditioning
-        if self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob:
+        is_dropout = self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob
+        if is_dropout:
             size_bins = torch.zeros_like(size_bins)
 
-        return seg, size_bins
+        if not self.return_bin_maps:
+            return seg, size_bins
+
+        # Create spatial bin maps for input conditioning
+        spatial_shape = (self.image_size, self.image_size)
+        if is_dropout:
+            # Dropout: zero maps
+            bin_maps = torch.zeros(self.num_bins, *spatial_shape, dtype=torch.float32)
+        else:
+            bin_maps = create_size_bin_maps(
+                size_bins, spatial_shape, normalize=True, max_count=self.max_count
+            )
+
+        return seg, size_bins, bin_maps
 
 
 def create_seg_conditioned_dataloader(
     cfg: DictConfig,
+    size_bin_config: Optional[dict] = None,
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
@@ -245,6 +308,13 @@ def create_seg_conditioned_dataloader(
 
     Args:
         cfg: Hydra configuration with paths, model, and training settings.
+        size_bin_config: Optional override for size bin settings. Keys:
+            - edges: List of bin edges in mm
+            - num_bins: Number of bins
+            - fov_mm: Field of view in mm
+            - return_bin_maps: If True, return spatial bin maps (for input conditioning)
+            - cfg_dropout_prob: CFG dropout probability
+            - max_count: Max count per bin for normalization
         use_distributed: Whether to use distributed training.
         rank: Process rank for distributed training.
         world_size: Total number of processes for distributed training.
@@ -257,15 +327,24 @@ def create_seg_conditioned_dataloader(
     image_size = cfg.model.image_size
     batch_size = cfg.training.batch_size
 
-    # Get size bin config from mode config
+    # Get size bin config from mode config, with optional override
     # Convert OmegaConf to Python types to avoid recursion in MONAI's set_rnd
     size_bin_cfg = cfg.mode.get('size_bins', {})
+    if size_bin_config:
+        # Merge override config
+        size_bin_cfg = {**dict(size_bin_cfg), **size_bin_config}
+
     bin_edges = list(size_bin_cfg.get('edges', DEFAULT_BIN_EDGES))
     num_bins = int(size_bin_cfg.get('num_bins', len(bin_edges) - 1))
     fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
 
+    # Input conditioning options
+    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
+    max_count = int(size_bin_cfg.get('max_count', 10))
+
     # Classifier-free guidance dropout (only for training)
-    cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.0))
+    # Default: 0.0 for FiLM mode, 0.15 for input conditioning mode
+    cfg_dropout_prob = float(size_bin_cfg.get('cfg_dropout_prob', cfg.mode.get('cfg_dropout_prob', 0.0)))
 
     validate_modality_exists(data_dir, 'seg')
 
@@ -287,6 +366,7 @@ def create_seg_conditioned_dataloader(
     # positive_only=True: train only on slices with tumors
     # cfg_dropout_prob: randomly drop conditioning for classifier-free guidance
     # augmentation: applied lazily so bins are computed on augmented mask
+    # return_bin_maps: if True, return spatial bin maps for input conditioning
     train_dataset = SegConditionedDataset(
         slice_dataset,
         bin_edges=bin_edges,
@@ -296,6 +376,8 @@ def create_seg_conditioned_dataloader(
         positive_only=True,
         cfg_dropout_prob=cfg_dropout_prob,
         augmentation=aug,
+        return_bin_maps=return_bin_maps,
+        max_count=max_count,
     )
 
     # Setup distributed sampler
@@ -321,6 +403,7 @@ def create_seg_conditioned_dataloader(
 
 def create_seg_conditioned_validation_dataloader(
     cfg: DictConfig,
+    size_bin_config: Optional[dict] = None,
     batch_size: Optional[int] = None,
     world_size: int = 1,
 ) -> Optional[Tuple[DataLoader, TorchDataset]]:
@@ -328,6 +411,7 @@ def create_seg_conditioned_validation_dataloader(
 
     Args:
         cfg: Hydra configuration.
+        size_bin_config: Optional override for size bin settings.
         batch_size: Optional batch size override.
         world_size: Number of GPUs for DDP.
 
@@ -347,9 +431,14 @@ def create_seg_conditioned_validation_dataloader(
 
     # Get size bin config (convert OmegaConf to Python types)
     size_bin_cfg = cfg.mode.get('size_bins', {})
+    if size_bin_config:
+        size_bin_cfg = {**dict(size_bin_cfg), **size_bin_config}
+
     bin_edges = list(size_bin_cfg.get('edges', DEFAULT_BIN_EDGES))
     num_bins = int(size_bin_cfg.get('num_bins', len(bin_edges) - 1))
     fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
+    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
+    max_count = int(size_bin_cfg.get('max_count', 10))
 
     try:
         validate_modality_exists(val_dir, 'seg')
@@ -374,6 +463,8 @@ def create_seg_conditioned_validation_dataloader(
         image_size=image_size,
         positive_only=False,
         cfg_dropout_prob=0.0,
+        return_bin_maps=return_bin_maps,
+        max_count=max_count,
     )
 
     dl_cfg = DataLoaderConfig.from_cfg(cfg)

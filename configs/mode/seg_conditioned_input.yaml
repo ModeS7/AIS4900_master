@@ -1,0 +1,38 @@
+# Segmentation Conditioned Input Mode - Input channel conditioning for mask generation
+#
+# Stronger conditioning than FiLM: size bins are converted to spatial maps and
+# concatenated with the noise input. This provides conditioning at every layer.
+#
+# Size bins (mm): [0-3, 3-6, 6-10, 10-15, 15-20, 20-30, 30+]
+# Example: [0, 0, 2, 0, 0, 0, 1] = 2 tumors 6-10mm + 1 tumor 30+mm
+#
+# For DIFFUSION training:
+#   in_channels: 8 = 1 noisy_seg + 7 bin_maps
+#   out_channels: 1 = predicted seg
+#   conditioning: 7 spatial maps concatenated with input
+#   Dataloader: create_seg_conditioned_dataloader() with return_bin_maps=True
+
+name: seg_conditioned_input
+is_conditional: true
+in_channels: 8   # noisy_seg (1) + bin_maps (7) concatenated
+out_channels: 1  # predicted noise/velocity for seg
+image_keys: [seg]
+description: "Segmentation mask generation with input channel conditioning"
+
+# Size bin configuration
+# Bins aligned with RANO-BM thresholds: 10mm, 20mm, 30mm
+# Last bin is 30+mm (no upper bound)
+size_bins:
+  edges: [0, 3, 6, 10, 15, 20, 30]  # mm boundaries (7 bins, last is explicit 30+)
+  num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
+  max_count: 10  # Max count for normalization (count/max_count -> [0,1])
+  fov_mm: 240.0  # Field of view for pixel-to-mm conversion
+  image_size: 256  # Image size in pixels
+  return_bin_maps: true  # Enable spatial bin maps output
+
+# Classifier-free guidance (CFG) training
+# Higher dropout than FiLM since input conditioning is stronger
+cfg_dropout_prob: 0.15  # Probability of zeroing bin_maps (15% = unconditional)
+
+# Generation with CFG (used during validation denoising)
+cfg_scale: 2.0  # CFG scale for conditional guidance

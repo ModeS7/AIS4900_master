@@ -36,6 +36,8 @@ from medgen.core import (
 )
 from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy, load_diffusion_model
 from medgen.data import make_binary
+from medgen.data.loaders.seg import compute_size_bins_3d, DEFAULT_BIN_EDGES
+from medgen.data.loaders.seg_conditioned import create_size_bin_maps
 from medgen.metrics.brain_mask import is_seg_inside_brain
 
 setup_cuda_optimizations()
@@ -156,6 +158,7 @@ def generate_batch(
     device: torch.device,
     conditioning: Optional[torch.Tensor] = None,
     size_bins: Optional[torch.Tensor] = None,
+    bin_maps: Optional[torch.Tensor] = None,
     cfg_scale: float = 1.0,
     cfg_scale_end: Optional[float] = None,
     use_progress: bool = False,
@@ -169,7 +172,9 @@ def generate_batch(
         num_steps: Number of denoising steps.
         device: Torch device.
         conditioning: Optional conditioning tensor (e.g., seg mask for bravo).
-        size_bins: Optional size bin tensor [B, num_bins] for seg_conditioned mode.
+        size_bins: Optional size bin tensor [B, num_bins] for seg_conditioned mode (FiLM).
+        bin_maps: Optional spatial bin maps [B, num_bins, ...] for seg_conditioned_input mode.
+                  These are concatenated with noise for input channel conditioning.
         cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger).
                    For dynamic CFG, this is the starting scale (at t=T).
         cfg_scale_end: Optional ending CFG scale (at t=0). If None, uses constant cfg_scale.
@@ -188,6 +193,7 @@ def generate_batch(
             return strategy.generate(
                 model, model_input, num_steps, device,
                 size_bins=size_bins,
+                bin_maps=bin_maps,
                 cfg_scale=cfg_scale,
                 cfg_scale_end=cfg_scale_end,
                 use_progress_bars=use_progress
@@ -344,7 +350,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         - {id}/bravo.nii.gz: BRAVO image volume [H, W, D] (bravo mode only)
     """
     # Validate gen_mode (fail-fast before loading models)
-    VALID_3D_MODES = {'bravo', 'seg_conditioned'}
+    VALID_3D_MODES = {'bravo', 'seg_conditioned', 'seg_conditioned_input'}
     if cfg.gen_mode not in VALID_3D_MODES:
         raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 3D. Valid: {VALID_3D_MODES}")
 
@@ -383,21 +389,54 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
         )
 
+        # Size bin validation settings
+        validate_size_bins = cfg.get('validate_size_bins', True)
+        voxel_spacing = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
+        bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
+        num_bins = cfg.get('num_bins', 7)
+        max_retries = cfg.get('max_retries', 10)
+
         log.info(f"Generating {cfg.num_images} seg masks...")
-        for i in range(cfg.num_images):
+        if validate_size_bins:
+            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
+
+        generated = 0
+        total_retries = 0
+
+        while generated < cfg.num_images:
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
-            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
-                                 size_bins=size_bins,
-                                 cfg_scale=cfg.cfg_scale_seg,
-                                 cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
+            # Retry loop for valid seg mask
+            valid_mask = False
+            retries = 0
+            while not valid_mask and retries < max_retries:
+                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                                     size_bins=size_bins,
+                                     cfg_scale=cfg.cfg_scale_seg,
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
-            # Binarize and save
-            seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
-            seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-            seg_binary = make_binary(seg_np, threshold=0.5)
+                # Binarize
+                seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
+                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
+                seg_binary = make_binary(seg_np, threshold=0.5)
+
+                # Validate size bins match conditioning
+                if validate_size_bins:
+                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                    if not np.array_equal(actual_bins, np.array(bins)):
+                        retries += 1
+                        total_retries += 1
+                        if cfg.verbose and retries == 1:
+                            log.warning(f"Sample {generated}: size bins mismatch "
+                                       f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                        continue
+
+                valid_mask = True
+
+            if not valid_mask:
+                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
@@ -408,16 +447,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
             # Save in subdirectory: 00000/seg.nii.gz
-            sample_dir = output_dir / f"{i:05d}"
+            sample_dir = output_dir / f"{generated:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
             save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
-            all_bins.append((i, bins))
+            all_bins.append((generated, bins))
+            generated += 1
 
             # Log progress and clear cache periodically
-            if (i + 1) % 10 == 0 or i == cfg.num_images - 1:
-                log.info(f"Progress: {i + 1}/{cfg.num_images}")
+            if generated % 10 == 0 or generated == cfg.num_images:
+                log.info(f"Progress: {generated}/{cfg.num_images}")
                 torch.cuda.empty_cache()
+
+        if total_retries > 0:
+            log.info(f"Generation complete. Total retries: {total_retries}")
 
     # Mode: bravo (full pipeline: seg -> bravo)
     elif cfg.gen_mode == 'bravo':
@@ -440,13 +483,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         # Brain mask validation settings
         validate_brain_mask = cfg.get('validate_brain_mask', True)
         brain_threshold = cfg.get('brain_threshold', 0.05)
-        brain_tolerance = cfg.get('brain_tolerance', 0.05)
-        brain_dilate = cfg.get('brain_dilate_pixels', 3)
+        brain_tolerance = cfg.get('brain_tolerance', 0.0)
+        brain_dilate = cfg.get('brain_dilate_pixels', 0)
+
+        # Size bin validation settings (verify generated seg matches conditioning)
+        validate_size_bins = cfg.get('validate_size_bins', True)
+        voxel_spacing = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
+        bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
+        num_bins = cfg.get('num_bins', 7)
 
         log.info(f"Generating {cfg.num_images} seg+bravo pairs...")
         log.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
         if validate_brain_mask:
             log.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
+        if validate_size_bins:
+            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -474,14 +525,26 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_binary = make_binary(seg_np, threshold=0.5)
 
                 # Validate mask (per-slice check for 3D)
-                if is_valid_mask(seg_binary, max_white_pct):
-                    valid_mask = True
-                else:
+                if not is_valid_mask(seg_binary, max_white_pct):
                     retries += 1
                     total_retries += 1
                     if cfg.verbose and retries == 1:
                         overall_pct = np.mean(seg_binary)
                         log.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
+                    continue
+
+                # Validate size bins match conditioning
+                if validate_size_bins:
+                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                    if not np.array_equal(actual_bins, np.array(bins)):
+                        retries += 1
+                        total_retries += 1
+                        if cfg.verbose and retries == 1:
+                            log.warning(f"Sample {generated}: size bins mismatch "
+                                       f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                        continue
+
+                valid_mask = True
 
             if not valid_mask:
                 log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
@@ -546,8 +609,97 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if total_retries > 0:
             log.info(f"Total retries: {total_retries} (seg validation + brain mask)")
 
+    # Mode: seg_conditioned_input (input channel conditioning - stronger than FiLM)
+    elif cfg.gen_mode == 'seg_conditioned_input':
+        log.info("Loading seg_conditioned_input model...")
+        # Model has 8 input channels: 1 noisy_seg + 7 bin_maps
+        seg_model = load_diffusion_model(
+            cfg.seg_model, device=device,
+            in_channels=8, out_channels=1, compile_model=True, spatial_dims=3
+        )
+
+        # Size bin validation settings
+        validate_size_bins = cfg.get('validate_size_bins', True)
+        voxel_spacing = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
+        bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
+        num_bins = cfg.get('num_bins', 7)
+        max_count = cfg.get('max_count', 10)
+        max_retries = cfg.get('max_retries', 10)
+
+        log.info(f"Generating {cfg.num_images} seg masks with input conditioning...")
+        if validate_size_bins:
+            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
+
+        generated = 0
+        total_retries = 0
+
+        while generated < cfg.num_images:
+            bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
+            size_bins_tensor = torch.tensor(bins, dtype=torch.long, device=device)
+
+            # Convert size_bins to spatial bin_maps [1, 7, D, H, W]
+            spatial_shape = (cfg.depth, cfg.image_size, cfg.image_size)
+            bin_maps = create_size_bin_maps(
+                size_bins_tensor, spatial_shape, normalize=True, max_count=max_count
+            ).unsqueeze(0).to(device)  # [1, 7, D, H, W]
+
+            # Retry loop for valid seg mask
+            valid_mask = False
+            retries = 0
+            while not valid_mask and retries < max_retries:
+                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                                     bin_maps=bin_maps,
+                                     cfg_scale=cfg.cfg_scale_seg,
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
+
+                # Binarize
+                seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
+                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
+                seg_binary = make_binary(seg_np, threshold=0.5)
+
+                # Validate size bins match conditioning
+                if validate_size_bins:
+                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                    if not np.array_equal(actual_bins, np.array(bins)):
+                        retries += 1
+                        total_retries += 1
+                        if cfg.verbose and retries == 1:
+                            log.warning(f"Sample {generated}: size bins mismatch "
+                                       f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                        continue
+
+                valid_mask = True
+
+            if not valid_mask:
+                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+
+            # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
+            seg_binary = np.transpose(seg_binary, (1, 2, 0))
+
+            # Trim last N slices to match training data (training pads, so we remove padding)
+            trim_slices = cfg.get('trim_slices', 10)
+            if trim_slices > 0:
+                seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
+
+            # Save in subdirectory: 00000/seg.nii.gz
+            sample_dir = output_dir / f"{generated:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            all_bins.append((generated, bins))
+            generated += 1
+
+            # Log progress and clear cache periodically
+            if generated % 10 == 0 or generated == cfg.num_images:
+                log.info(f"Progress: {generated}/{cfg.num_images}")
+                torch.cuda.empty_cache()
+
+        if total_retries > 0:
+            log.info(f"Generation complete. Total retries: {total_retries}")
+
     else:
-        raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")
+        raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned', 'seg_conditioned_input', or 'bravo'.")
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")

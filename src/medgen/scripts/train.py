@@ -128,17 +128,27 @@ def main(cfg: DictConfig) -> None:
 
         device = torch.device("cuda")
 
-        # Load compression model
+        # Load compression model (returns model, type, spatial_dims, scale_factor, latent_channels)
         compression_type_config = latent_cfg.get('compression_type', 'auto')
-        compression_model, compression_type = load_compression_model(
+        compression_model, compression_type, _, detected_scale, detected_latent_ch = load_compression_model(
             compression_checkpoint,
             compression_type_config,
             device,
         )
 
-        # Create LatentSpace wrapper
-        space = LatentSpace(compression_model, device, deterministic=True)
-        space_name = f"latent ({compression_type})"
+        # Allow config overrides for scale_factor and latent_channels
+        scale_factor = latent_cfg.get('scale_factor') or detected_scale
+        latent_channels = latent_cfg.get('latent_channels') or detected_latent_ch
+
+        # Create LatentSpace wrapper with detected/configured parameters
+        space = LatentSpace(
+            compression_model, device,
+            deterministic=True,
+            compression_type=compression_type,
+            scale_factor=scale_factor,
+            latent_channels=latent_channels,
+        )
+        space_name = f"latent ({compression_type}, {scale_factor}x)"
 
         # Determine cache directory
         cache_dir = latent_cfg.get('cache_dir')
@@ -146,6 +156,7 @@ def main(cfg: DictConfig) -> None:
             cache_dir = f"{cfg.paths.data_dir}-latents-{compression_type}"
 
         log.info(f"Loaded {compression_type} compression model from {compression_checkpoint}")
+        log.info(f"Scale factor: {scale_factor}x, Latent channels: {latent_channels}")
         log.info(f"Latent cache directory: {cache_dir}")
     else:
         space = PixelSpace()
@@ -447,9 +458,9 @@ def _train_3d(cfg: DictConfig) -> None:
         compression_type = latent_cfg.get('compression_type', 'auto')
         spatial_dims_cfg = latent_cfg.get('spatial_dims', 'auto')
 
-        # Load 3D compression model
+        # Load 3D compression model (returns model, type, dims, scale_factor, latent_channels)
         log.info(f"Loading compression model from: {checkpoint_path}")
-        compression_model, comp_type, detected_dims = load_compression_model(
+        compression_model, comp_type, detected_dims, detected_scale, detected_latent_ch = load_compression_model(
             checkpoint_path,
             compression_type,
             device,
@@ -462,7 +473,13 @@ def _train_3d(cfg: DictConfig) -> None:
                 f"Expected 3D compression model for spatial_dims=3, got {detected_dims}D."
             )
 
+        # Allow config overrides
+        scale_factor = latent_cfg.get('scale_factor') or detected_scale
+        depth_scale_factor = latent_cfg.get('depth_scale_factor') or scale_factor
+        latent_channels = latent_cfg.get('latent_channels') or detected_latent_ch
+
         log.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
+        log.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
 
         # Setup cache directory
         cache_dir = latent_cfg.get('cache_dir')
@@ -527,12 +544,16 @@ def _train_3d(cfg: DictConfig) -> None:
             val_loader = None
             log.warning("No validation dataset found")
 
-        # Create LatentSpace
+        # Create LatentSpace with detected/configured parameters
         space = LatentSpace(
             compression_model,
             device,
             deterministic=True,
             spatial_dims=3,
+            compression_type=comp_type,
+            scale_factor=scale_factor,
+            depth_scale_factor=depth_scale_factor,
+            latent_channels=latent_channels,
         )
 
     else:

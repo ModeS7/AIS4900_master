@@ -23,6 +23,7 @@ from .volume_3d import (
     build_3d_augmentation,
     _create_loader,
 )
+from .seg_conditioned import create_size_bin_maps
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,8 @@ class SegDataset(TorchDataset):
         positive_only: bool = True,
         cfg_dropout_prob: float = 0.0,
         augmentation: Optional[Callable] = None,
+        return_bin_maps: bool = False,
+        max_count: int = 10,
     ):
         """Initialize the 3D seg conditioned dataset.
 
@@ -168,6 +171,8 @@ class SegDataset(TorchDataset):
             positive_only: If True, only include volumes with tumors.
             cfg_dropout_prob: Probability of dropping conditioning for CFG.
             augmentation: Optional MONAI augmentation transform.
+            return_bin_maps: If True, return spatial bin maps for input conditioning.
+            max_count: Max count per bin for normalization (default: 10).
         """
         self.data_dir = data_dir
         self.bin_edges = bin_edges
@@ -180,6 +185,8 @@ class SegDataset(TorchDataset):
         self.slice_step = slice_step
         self.cfg_dropout_prob = cfg_dropout_prob
         self.augmentation = augmentation
+        self.return_bin_maps = return_bin_maps
+        self.max_count = max_count
 
         # Build transform for loading
         self.transform = build_3d_transform(height, width)
@@ -257,14 +264,20 @@ class SegDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.positive_patients)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         """Get segmentation volume and size bins.
 
         Returns:
-            Tuple of:
+            If return_bin_maps=False:
+                Tuple of (seg_volume, size_bins)
+            If return_bin_maps=True:
+                Tuple of (seg_volume, size_bins, bin_maps)
+
+            Where:
                 - seg_volume: [1, D, H, W] binary segmentation tensor
                 - size_bins: [num_bins] integer tensor of tumor counts
                   (zeros if CFG dropout is applied)
+                - bin_maps: [num_bins, D, H, W] spatial maps for input conditioning
         """
         patient = self.positive_patients[idx]
         seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
@@ -293,10 +306,24 @@ class SegDataset(TorchDataset):
         size_bins = torch.from_numpy(size_bins).long()
 
         # Classifier-free guidance dropout: randomly zero out conditioning
-        if self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob:
+        is_dropout = self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob
+        if is_dropout:
             size_bins = torch.zeros_like(size_bins)
 
-        return seg_volume, size_bins
+        if not self.return_bin_maps:
+            return seg_volume, size_bins
+
+        # Create spatial bin maps for input conditioning [num_bins, D, H, W]
+        spatial_shape = seg_volume.shape[1:]  # (D, H, W)
+        if is_dropout:
+            # Dropout: zero maps for unconditional
+            bin_maps = torch.zeros(self.num_bins, *spatial_shape, dtype=torch.float32)
+        else:
+            bin_maps = create_size_bin_maps(
+                size_bins, spatial_shape, normalize=True, max_count=self.max_count
+            )
+
+        return seg_volume, size_bins, bin_maps
 
 
 def create_seg_dataloader(
@@ -333,6 +360,10 @@ def create_seg_dataloader(
     # CFG dropout
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.0))
 
+    # Input conditioning options (for seg_conditioned_input mode)
+    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
+    max_count = int(size_bin_cfg.get('max_count', 10))
+
     # Check if augmentation is enabled
     augment = getattr(cfg.training, 'augment', False)
     aug = build_3d_augmentation(seg_mode=True) if augment else None
@@ -350,6 +381,8 @@ def create_seg_dataloader(
         positive_only=True,
         cfg_dropout_prob=cfg_dropout_prob,
         augmentation=aug,
+        return_bin_maps=return_bin_maps,
+        max_count=max_count,
     )
 
     logger.info(
@@ -391,6 +424,10 @@ def create_seg_validation_dataloader(
     voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
     voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
 
+    # Input conditioning options
+    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
+    max_count = int(size_bin_cfg.get('max_count', 10))
+
     val_dataset = SegDataset(
         data_dir=val_dir,
         bin_edges=bin_edges,
@@ -404,6 +441,8 @@ def create_seg_validation_dataloader(
         positive_only=False,  # Evaluate on all volumes
         cfg_dropout_prob=0.0,  # No dropout during validation
         augmentation=None,
+        return_bin_maps=return_bin_maps,
+        max_count=max_count,
     )
 
     loader = _create_loader(val_dataset, vcfg, shuffle=False)
@@ -436,6 +475,10 @@ def create_seg_test_dataloader(
     voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
     voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
 
+    # Input conditioning options
+    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
+    max_count = int(size_bin_cfg.get('max_count', 10))
+
     test_dataset = SegDataset(
         data_dir=test_dir,
         bin_edges=bin_edges,
@@ -449,6 +492,8 @@ def create_seg_test_dataloader(
         positive_only=False,
         cfg_dropout_prob=0.0,
         augmentation=None,
+        return_bin_maps=return_bin_maps,
+        max_count=max_count,
     )
 
     loader = _create_loader(test_dataset, vcfg, shuffle=False)

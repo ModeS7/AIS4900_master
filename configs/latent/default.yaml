@@ -21,6 +21,41 @@ compression_type: auto
 # 3 = 3D volumes [B, C, D, H, W]
 spatial_dims: auto
 
+# ============================================================================
+# Scale Factor and Latent Channels Configuration
+# ============================================================================
+# These values are AUTO-DETECTED from the compression checkpoint by default.
+# Only specify explicit values if:
+# 1. Auto-detection fails
+# 2. You need to override for custom models
+# 3. The checkpoint doesn't contain config metadata
+#
+# Detection priority:
+# 1. Explicit config value (if not null)
+# 2. Checkpoint saved config
+# 3. Fallback defaults (scale_factor=8, latent_channels=4)
+
+# Spatial compression ratio (H, W dimensions)
+# - VAE/VQ-VAE: typically 8 (2^3 downsampling stages)
+# - DC-AE: typically 32 (f32) or 64 (f64)
+# Set to null for auto-detection from checkpoint
+scale_factor: null
+
+# Depth compression ratio (3D only, D dimension)
+# May differ from spatial scale_factor for some 3D compression models
+# Set to null to use same as scale_factor
+depth_scale_factor: null
+
+# Number of channels in latent space
+# - VAE: typically 4
+# - DC-AE: varies by config (e.g., 32 for dc-ae-f32c32)
+# Set to null for auto-detection from checkpoint
+latent_channels: null
+
+# ============================================================================
+# Cache Configuration
+# ============================================================================
+
 # Directory to cache pre-encoded latents
 # Default: {data_dir}-latents-{compression_type}-{dims}d
 cache_dir: null

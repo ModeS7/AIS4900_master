@@ -230,7 +230,7 @@ def get_3d_sincos_pos_embed(
     """Generate 3D sinusoidal positional embeddings.
 
     Args:
-        embed_dim: Embedding dimension (must be divisible by 3, remainder goes to W)
+        embed_dim: Embedding dimension
         grid_size_d: Depth of the grid
         grid_size_h: Height of the grid
         grid_size_w: Width of the grid
@@ -238,10 +238,11 @@ def get_3d_sincos_pos_embed(
     Returns:
         [D*H*W, embed_dim] positional embeddings
     """
-    # Split dimensions: D gets 1/3, H gets 1/3, W gets remainder
-    dim_d = embed_dim // 3
-    dim_h = embed_dim // 3
-    dim_w = embed_dim - dim_d - dim_h
+    # Split dimensions into thirds, ensuring each is EVEN (required by sincos encoding)
+    # Round down to nearest even number using & ~1
+    dim_d = (embed_dim // 3) & ~1  # e.g., 341 -> 340
+    dim_h = (embed_dim // 3) & ~1
+    dim_w = embed_dim - dim_d - dim_h  # Remainder goes to W (will be even if embed_dim is even)
 
     # Create coordinate grids
     grid_d = np.arange(grid_size_d, dtype=np.float32)

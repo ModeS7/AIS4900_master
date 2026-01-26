@@ -275,6 +275,36 @@ class DictDatasetWrapper(Dataset):
             else:
                 return {'image': torch.from_numpy(np.array(item)).float()}
 
+        elif self.output_format == 'seg_conditioned_input':
+            # seg_conditioned_input mode: (seg, size_bins, bin_maps) tuple
+            # bin_maps are spatial conditioning maps for input channel conditioning
+            if isinstance(item, (tuple, list)) and len(item) >= 3:
+                seg, size_bins, bin_maps = item[0], item[1], item[2]
+                if isinstance(seg, np.ndarray):
+                    seg = torch.from_numpy(seg.copy()).float()
+                if isinstance(size_bins, np.ndarray):
+                    size_bins = torch.from_numpy(size_bins.copy()).float()
+                if isinstance(bin_maps, np.ndarray):
+                    bin_maps = torch.from_numpy(bin_maps.copy()).float()
+                return {
+                    'image': seg,  # seg is the image to generate
+                    'size_bins': size_bins,
+                    'bin_maps': bin_maps,  # [num_bins, H, W] spatial maps
+                }
+            elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                # Fallback: no bin_maps provided
+                seg, size_bins = item[0], item[1]
+                if isinstance(seg, np.ndarray):
+                    seg = torch.from_numpy(seg.copy()).float()
+                if isinstance(size_bins, np.ndarray):
+                    size_bins = torch.from_numpy(size_bins.copy()).float()
+                return {
+                    'image': seg,
+                    'size_bins': size_bins,
+                }
+            else:
+                return {'image': torch.from_numpy(np.array(item)).float()}
+
         # --- Compression output formats ---
         # These formats are for VAE/VQVAE/DC-AE training where we don't concatenate
         # seg with images for conditioning, but may want seg for regional metrics.

@@ -45,6 +45,7 @@ from medgen.diffusion import (
     ConditionalSingleMode,
     MultiModalityMode,
     SegmentationConditionedMode,
+    SegmentationConditionedInputMode,
     SegmentationMode,
     TrainingMode,
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
@@ -628,6 +629,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         modes: Dict[str, type] = {
             'seg': SegmentationMode,
             'seg_conditioned': SegmentationConditionedMode,
+            'seg_conditioned_input': SegmentationConditionedInputMode,
             'bravo': ConditionalSingleMode,
             'dual': ConditionalDualMode,
             'multi': MultiModalityMode,
@@ -646,6 +648,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if mode == 'seg_conditioned':
             size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
             return SegmentationConditionedMode(size_bin_config)
+
+        if mode == 'seg_conditioned_input':
+            size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
+            return SegmentationConditionedInputMode(size_bin_config)
 
         return modes[mode]()
 
@@ -1525,8 +1531,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
             size_bins = prepared.get('size_bins')  # For seg_conditioned mode
+            bin_maps = prepared.get('bin_maps')  # For seg_conditioned_input mode
 
-            # CFG dropout for size_bins is handled in dataloader (cfg_dropout_prob)
+            # CFG dropout for size_bins/bin_maps is handled in dataloader (cfg_dropout_prob)
             # No trainer-level dropout needed - dataloader applies per-sample dropout
 
             # Store pixel-space labels for ControlNet (before any encoding)
@@ -1544,7 +1551,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if labels is not None and not self.use_controlnet:
                 labels = self.space.encode(labels)
 
-            labels_dict = {'labels': labels}
+            labels_dict = {'labels': labels, 'bin_maps': bin_maps}
 
             if isinstance(images, dict):
                 noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
@@ -2161,6 +2168,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 else:
                     current_batch_size = images.shape[0]
 
+                # Keep original pixel-space labels for regional metrics (before encoding)
+                # Regional metrics need pixel-space masks to identify tumor/background regions
+                labels_pixel = labels
+
                 # Encode to diffusion space (identity for PixelSpace)
                 images = self.space.encode_batch(images)
                 if labels is not None:
@@ -2295,12 +2306,16 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 n_batches += 1
 
                 # Regional tracking via unified metrics (tumor vs background)
-                if self.log_regional_losses and labels is not None:
-                    self._unified_metrics.update_regional(predicted_clean, images, labels)
+                # IMPORTANT: Use DECODED tensors (metrics_pred, metrics_gt) and PIXEL-SPACE labels
+                # This ensures regional quality metrics are computed in pixel space for consistency
+                # with pixel-space diffusion (same PSNR/MSE interpretation regardless of latent vs pixel)
+                if self.log_regional_losses and labels_pixel is not None:
+                    self._unified_metrics.update_regional(metrics_pred, metrics_gt, labels_pixel)
 
                 # Timestep loss tracking (per-bin velocity/noise prediction MSE)
                 # Uses the actual training target (velocity for RFlow, noise for DDPM)
-                # to match 3D trainer and provide meaningful loss-by-timestep analysis
+                # Note: This is computed in TRAINING space (latent for latent diffusion)
+                # because we're measuring model prediction quality, not reconstruction quality
                 if self.log_timestep_losses:
                     # Compute target based on strategy (velocity for RFlow, noise for DDPM)
                     if isinstance(images, dict):
@@ -2320,20 +2335,29 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
                     # Timestep-region tracking (for heatmap) - split by tumor/background
-                    # Uses velocity/noise prediction error for consistency with timestep losses
-                    # For 3D: uses center slice for efficiency (matches 3D trainer)
-                    if self.log_timestep_region_losses and labels is not None:
+                    # For latent diffusion: compute error in PIXEL space for consistent interpretation
+                    # Uses decoded predictions and pixel-space labels for masking
+                    if self.log_timestep_region_losses and labels_pixel is not None:
+                        # Compute pixel-space error map for region tracking
+                        if self.space.scale_factor > 1:
+                            # Latent diffusion: decode prediction and compute pixel-space target
+                            # For pixel-space region analysis, we compare decoded x0 prediction vs ground truth
+                            error_for_region = ((metrics_pred.float() - metrics_gt.float()) ** 2)
+                            region_labels = labels_pixel
+                        else:
+                            # Pixel space: use training-space error
+                            error_for_region = ((prediction.float() - target.float()) ** 2)
+                            region_labels = labels
+
                         if self.spatial_dims == 3:
                             # 3D: extract center slice for efficiency
-                            center_idx = prediction.shape[2] // 2
-                            pred_slice = prediction[:, :, center_idx, :, :]
-                            target_slice = target[:, :, center_idx, :, :]
-                            error_map = ((pred_slice.float() - target_slice.float()) ** 2).mean(dim=1)  # [B, H, W]
-                            mask = labels[:, 0, center_idx, :, :] > 0.5  # [B, H, W]
+                            center_idx = error_for_region.shape[2] // 2
+                            error_map = error_for_region[:, :, center_idx, :, :].mean(dim=1)  # [B, H, W]
+                            mask = region_labels[:, 0, center_idx, :, :] > 0.5  # [B, H, W]
                         else:
                             # 2D: use full images
-                            error_map = ((prediction.float() - target.float()) ** 2).mean(dim=1)  # [B, H, W]
-                            mask = labels[:, 0] > 0.5  # [B, H, W]
+                            error_map = error_for_region.mean(dim=1)  # [B, H, W]
+                            mask = region_labels[:, 0] > 0.5  # [B, H, W]
 
                         for i in range(current_batch_size):
                             t_norm = timesteps[i].item() / self.num_timesteps

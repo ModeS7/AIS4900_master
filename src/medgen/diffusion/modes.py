@@ -633,3 +633,121 @@ class SegmentationConditionedMode(TrainingMode):
             [B, 1, H, W] - same as input.
         """
         return noisy_images
+
+
+class SegmentationConditionedInputMode(TrainingMode):
+    """Segmentation mask generation with input channel conditioning.
+
+    Instead of FiLM conditioning on time embedding, size bins are converted
+    to spatial maps and concatenated with the noise input. This provides
+    stronger conditioning as the information is present at every layer.
+
+    Input: tuple (seg [B,1,H,W], size_bins [B,7], bin_maps [B,7,H,W])
+    Model: [B, 1+7, H, W] -> [B, 1, H, W]
+
+    The bin_maps are normalized to [0, 1] (count / max_count).
+    """
+
+    def __init__(self, size_bin_config: Optional[Dict[str, Any]] = None) -> None:
+        """Initialize segmentation conditioned input mode.
+
+        Args:
+            size_bin_config: Configuration for size bins. Keys:
+                - num_bins: Number of size bins (default: 7)
+                - max_count: Max count per bin for normalization (default: 10)
+        """
+        self.size_bin_config = size_bin_config or {
+            'num_bins': 7,
+            'max_count': 10,
+        }
+        self.num_bins = self.size_bin_config.get('num_bins', 7)
+
+    @property
+    def is_conditional(self) -> bool:
+        """Input conditioning mode is conditional."""
+        return True
+
+    def prepare_batch(
+        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
+    ) -> Dict[str, Any]:
+        """Prepare batch with bin_maps for input conditioning.
+
+        Args:
+            batch: Tuple (seg, size_bins, bin_maps) where:
+                - seg: [B, 1, H, W] segmentation mask
+                - size_bins: [B, num_bins] tumor count per size bin
+                - bin_maps: [B, num_bins, H, W] spatial conditioning maps
+            device: Target device.
+
+        Returns:
+            Dictionary with images (seg), bin_maps, and size_bins.
+        """
+        if isinstance(batch, (tuple, list)):
+            if len(batch) == 3:
+                seg, size_bins, bin_maps = batch
+            else:
+                # Fallback: no bin_maps provided
+                seg, size_bins = batch
+                bin_maps = None
+
+            seg = _to_device(seg, device)
+            size_bins = size_bins.to(device)
+            if bin_maps is not None:
+                bin_maps = bin_maps.to(device)
+        else:
+            # Dict format (e.g., from 3D dataloader)
+            batch = _to_device(batch, device)
+            seg = batch.get('seg', batch.get('image'))
+            size_bins = batch.get('size_bins')
+            bin_maps = batch.get('bin_maps')
+
+        return {
+            'images': seg,
+            'labels': None,
+            'size_bins': size_bins,
+            'bin_maps': bin_maps,
+        }
+
+    def get_model_config(self) -> Dict[str, int]:
+        """Get model channel configuration.
+
+        Model takes: [noisy_seg, bin_maps] = 1 + num_bins input channels
+        Model outputs: [noise_pred] or [velocity_pred] = 1 output channel
+
+        Returns:
+            Channel configuration dictionary.
+        """
+        return {
+            'in_channels': 1 + self.num_bins,
+            'out_channels': 1
+        }
+
+    def format_model_input(
+        self,
+        noisy_images: torch.Tensor,
+        labels_dict: Dict[str, Optional[torch.Tensor]]
+    ) -> torch.Tensor:
+        """Format model input by concatenating bin_maps.
+
+        Args:
+            noisy_images: [B, 1, H, W] or [B, 1, D, H, W] noisy segmentation.
+            labels_dict: Dict containing 'bin_maps' [B, num_bins, H, W] or [B, num_bins, D, H, W].
+
+        Returns:
+            [B, 1+num_bins, H, W] or [B, 1+num_bins, D, H, W] concatenated input.
+        """
+        bin_maps = labels_dict.get('bin_maps')
+        if bin_maps is None:
+            # No conditioning - use zeros
+            if noisy_images.dim() == 4:
+                # 2D: [B, 1, H, W]
+                B, _, H, W = noisy_images.shape
+                bin_maps = torch.zeros(B, self.num_bins, H, W,
+                                       device=noisy_images.device, dtype=noisy_images.dtype)
+            else:
+                # 3D: [B, 1, D, H, W]
+                B, _, D, H, W = noisy_images.shape
+                bin_maps = torch.zeros(B, self.num_bins, D, H, W,
+                                       device=noisy_images.device, dtype=noisy_images.dtype)
+
+        return torch.cat([noisy_images, bin_maps], dim=1)

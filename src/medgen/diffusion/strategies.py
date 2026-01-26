@@ -405,6 +405,7 @@ class DDPMStrategy(DiffusionStrategy):
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
+        bin_maps: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
     ):
@@ -424,13 +425,16 @@ class DDPMStrategy(DiffusionStrategy):
             use_progress_bars: Whether to show progress bars.
             omega: Optional ScoreAug omega conditioning tensor [B, 5].
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
-            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
+            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode (FiLM).
+            bin_maps: Optional spatial bin maps [B, num_bins, ...] for seg_conditioned_input mode.
+                      These are concatenated with noise for input channel conditioning.
             cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
                        For dynamic CFG, this is the starting scale (at t=T, high noise).
             cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
         """
         batch_size = model_input.shape[0]
         use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
+        use_cfg_bin_maps = cfg_scale > 1.0 and bin_maps is not None
 
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
         use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
@@ -452,6 +456,8 @@ class DDPMStrategy(DiffusionStrategy):
         # Prepare unconditional inputs for CFG
         if use_cfg_size_bins:
             uncond_size_bins = torch.zeros_like(size_bins)
+        if use_cfg_bin_maps:
+            uncond_bin_maps = torch.zeros_like(bin_maps)
         if use_cfg_conditioning:
             uncond_conditioning = torch.zeros_like(conditioning)
 
@@ -487,13 +493,34 @@ class DDPMStrategy(DiffusionStrategy):
 
             else:
                 # Single image or unconditional
+                # Build base model input (without bin_maps - those are handled separately)
                 if conditioning is not None:
                     current_model_input = torch.cat([noisy_images, conditioning], dim=1)
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg_size_bins:
-                    # CFG for size_bins conditioning
+                if use_cfg_bin_maps:
+                    # CFG for bin_maps input conditioning (seg_conditioned_input mode)
+                    # bin_maps are spatial maps concatenated with noise
+                    input_cond = torch.cat([noisy_images, bin_maps], dim=1)
+                    input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
+                    noise_pred_cond = self._call_model(
+                        model, input_cond, timesteps_batch, omega, mode_id, None
+                    )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    noise_pred_cond = noise_pred_cond.clone()
+                    noise_pred_uncond = self._call_model(
+                        model, input_uncond, timesteps_batch, omega, mode_id, None
+                    )
+                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
+                elif bin_maps is not None:
+                    # bin_maps provided but no CFG - just concatenate and call model
+                    input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
+                    noise_pred = self._call_model(
+                        model, input_with_bin_maps, timesteps_batch, omega, mode_id, None
+                    )
+                elif use_cfg_size_bins:
+                    # CFG for size_bins conditioning (FiLM mode)
                     noise_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
                     )
@@ -669,6 +696,7 @@ class RFlowStrategy(DiffusionStrategy):
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
+        bin_maps: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
     ):
@@ -692,9 +720,11 @@ class RFlowStrategy(DiffusionStrategy):
             use_progress_bars: Whether to show progress bars.
             omega: Optional ScoreAug omega conditioning tensor [B, 5].
             mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
-            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode.
+            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode (FiLM).
+            bin_maps: Optional spatial bin maps [B, num_bins, ...] for seg_conditioned_input mode.
+                      These are concatenated with noise for input channel conditioning.
             cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
-                       Works with both size_bins and image conditioning (seg mask).
+                       Works with size_bins, bin_maps, and image conditioning (seg mask).
                        For dynamic CFG, this is the starting scale (at t=T, high noise).
             cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
                           Set to 1.0 for "high CFG early, no CFG late" schedule.
@@ -703,6 +733,7 @@ class RFlowStrategy(DiffusionStrategy):
         use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
         batch_size = model_input.shape[0]
         use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
+        use_cfg_bin_maps = cfg_scale > 1.0 and bin_maps is not None
 
         # Calculate numel based on spatial dimensions
         if model_input.dim() == 5:
@@ -726,6 +757,8 @@ class RFlowStrategy(DiffusionStrategy):
         # Prepare unconditional inputs for CFG
         if use_cfg_size_bins:
             uncond_size_bins = torch.zeros_like(size_bins)
+        if use_cfg_bin_maps:
+            uncond_bin_maps = torch.zeros_like(bin_maps)
         if use_cfg_conditioning:
             uncond_conditioning = torch.zeros_like(conditioning)
 
@@ -774,13 +807,34 @@ class RFlowStrategy(DiffusionStrategy):
 
             else:
                 # Single image or unconditional
+                # Build base model input (without bin_maps - those are handled separately)
                 if conditioning is not None:
                     current_model_input = torch.cat([noisy_images, conditioning], dim=1)
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg_size_bins:
-                    # CFG for size_bins conditioning
+                if use_cfg_bin_maps:
+                    # CFG for bin_maps input conditioning (seg_conditioned_input mode)
+                    # bin_maps are spatial maps concatenated with noise
+                    input_cond = torch.cat([noisy_images, bin_maps], dim=1)
+                    input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
+                    velocity_pred_cond = self._call_model(
+                        model, input_cond, timesteps_batch, omega, mode_id, None
+                    )
+                    # Clone to prevent CUDA graph from overwriting the tensor
+                    velocity_pred_cond = velocity_pred_cond.clone()
+                    velocity_pred_uncond = self._call_model(
+                        model, input_uncond, timesteps_batch, omega, mode_id, None
+                    )
+                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
+                elif bin_maps is not None:
+                    # bin_maps provided but no CFG - just concatenate and call model
+                    input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
+                    velocity_pred = self._call_model(
+                        model, input_with_bin_maps, timesteps_batch, omega, mode_id, None
+                    )
+                elif use_cfg_size_bins:
+                    # CFG for size_bins conditioning (FiLM mode)
                     velocity_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
                     )

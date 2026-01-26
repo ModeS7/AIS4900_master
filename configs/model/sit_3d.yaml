@@ -7,6 +7,12 @@
 #   - Smaller variants (S or B)
 #   - Gradient checkpointing
 #   - Smaller input sizes in latent space
+#
+# Variants:
+#   S:  hidden_size=384,  depth=12, heads=6  (~33M params)
+#   B:  hidden_size=768,  depth=12, heads=12 (~130M params)
+#   L:  hidden_size=1024, depth=24, heads=16 (~458M params)
+#   XL: hidden_size=1152, depth=28, heads=16 (~675M params)
 
 type: sit                            # Model type (sit for transformer)
 spatial_dims: 3                      # 3D volumes
@@ -17,3 +23,23 @@ variant: B                           # Model variant: S, B, L, XL
 mlp_ratio: 4.0                       # MLP expansion ratio
 conditioning: concat                 # Conditioning mode: concat or cross_attn
 drop_rate: 0.0                       # Dropout rate
+
+# ============================================================================
+# Stochastic Depth (DropPath)
+# ============================================================================
+# Randomly drops entire transformer blocks during training.
+# Rate increases linearly from 0 (first block) to drop_path_rate (last block).
+# Recommended values:
+#   - Small datasets (<10K): 0.1 - 0.2
+#   - Medium datasets (10-50K): 0.05 - 0.1
+#   - Large datasets (>50K): 0.0 - 0.05
+drop_path_rate: 0.0                  # Stochastic depth rate (0.0 = disabled)
+
+# ============================================================================
+# QK-Normalization
+# ============================================================================
+# Applies LayerNorm to query and key vectors before attention computation.
+# Prevents attention score explosion with high-variance inputs.
+# Critical for training stability with larger volumes/patches.
+# Reference: https://arxiv.org/abs/2302.05442 (Scaling Vision Transformers)
+qk_norm: true                        # QK-normalization (recommended: true)

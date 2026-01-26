@@ -185,7 +185,7 @@ def create_diffusion_dataloader(
     if spatial_dims not in (2, 3):
         raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
 
-    if mode not in ('seg', 'bravo', 'dual', 'multi', 'seg_conditioned'):
+    if mode not in ('seg', 'bravo', 'dual', 'multi', 'seg_conditioned', 'seg_conditioned_input'):
         raise ValueError(f"Unsupported mode: {mode}")
 
     # Determine augmentation setting
@@ -341,6 +341,24 @@ def _get_raw_2d_loader(
         else:
             raise ValueError("seg_conditioned test loader not yet supported")
 
+    elif mode == 'seg_conditioned_input':
+        # Input conditioning mode: returns bin_maps for concatenation with noise
+        size_bin_config = dict(cfg.mode.get('size_bins', {}))
+        size_bin_config['return_bin_maps'] = True  # Enable bin_maps output
+        size_bin_config['cfg_dropout_prob'] = cfg.mode.get('cfg_dropout_prob', 0.15)  # 15% default
+
+        if split == 'train':
+            return seg_conditioned.create_seg_conditioned_dataloader(
+                cfg, size_bin_config, use_distributed, rank, world_size, augment
+            )
+        elif split == 'val':
+            result = seg_conditioned.create_seg_conditioned_validation_dataloader(cfg, size_bin_config, batch_size, world_size)
+            if result is None:
+                raise ValueError("No validation data found")
+            return result
+        else:
+            raise ValueError("seg_conditioned_input test loader not yet supported")
+
     raise ValueError(f"Unknown mode: {mode}")
 
 
@@ -378,6 +396,10 @@ def _create_3d_loader(
         raise ValueError("3D multi mode not yet supported")
     elif mode == 'seg_conditioned':
         return _create_3d_seg_conditioned_loader(cfg, vol_cfg, split, augment, batch_size)
+    elif mode == 'seg_conditioned_input':
+        # Input conditioning mode: returns bin_maps for concatenation with noise
+        # Updates the size_bin_config to enable return_bin_maps in SegDataset
+        return _create_3d_seg_conditioned_input_loader(cfg, vol_cfg, split, augment, batch_size)
 
     raise ValueError(f"Unknown 3D mode: {mode}")
 
@@ -462,6 +484,83 @@ def _create_3d_seg_conditioned_loader(
         return result
     else:
         raise ValueError("3D seg_conditioned test loader not yet supported")
+
+
+def _create_3d_seg_conditioned_input_loader(
+    cfg: DictConfig,
+    vol_cfg: Any,
+    split: str,
+    augment: bool,
+    batch_size: Optional[int],
+) -> Tuple[DataLoader, Dataset]:
+    """Create 3D seg_conditioned_input mode loader.
+
+    This mode uses input channel conditioning where size bins are converted
+    to spatial volumes and concatenated with the noise input. This provides
+    stronger conditioning than FiLM (which only modulates the timestep embedding).
+
+    Returns batches with:
+        - 'image': [B, 1, D, H, W] segmentation volume
+        - 'size_bins': [B, num_bins] size bin counts
+        - 'bin_maps': [B, num_bins, D, H, W] spatial conditioning maps
+    """
+    from medgen.data.loaders import seg
+    from medgen.data.loaders.common import DataLoaderConfig
+
+    # Configure to enable bin_maps output
+    size_bin_config = dict(cfg.mode.get('size_bins', {}))
+    size_bin_config['return_bin_maps'] = True  # Enable spatial bin maps
+    cfg_dropout_prob = cfg.mode.get('cfg_dropout_prob', 0.15)
+
+    # Create a modified cfg with the updated size_bin_config
+    from omegaconf import OmegaConf
+    cfg_modified = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    cfg_modified.mode.size_bins = size_bin_config
+    cfg_modified.mode.cfg_dropout_prob = cfg_dropout_prob
+
+    if split == 'train':
+        loader, raw_dataset = seg.create_seg_dataloader(cfg_modified)
+    elif split == 'val':
+        result = seg.create_seg_validation_dataloader(cfg_modified)
+        if result is None:
+            raise ValueError("No 3D validation data found")
+        loader, raw_dataset = result
+    else:
+        result = seg.create_seg_test_dataloader(cfg_modified)
+        if result is None:
+            raise ValueError("No 3D test data found")
+        loader, raw_dataset = result
+
+    # Wrap dataset to return dict format with bin_maps
+    wrapped_dataset = DictDatasetWrapper(
+        raw_dataset, output_format='seg_conditioned_input', spatial_dims=3
+    )
+
+    # Create new DataLoader with dict_collate_fn
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
+    effective_batch_size = batch_size if batch_size else loader.batch_size
+
+    # Preserve distributed sampler if present
+    if hasattr(loader, 'sampler') and loader.sampler is not None:
+        sampler = loader.sampler
+        shuffle = False
+    else:
+        sampler = None
+        shuffle = (split == 'train')
+
+    new_loader = DataLoader(
+        wrapped_dataset,
+        batch_size=effective_batch_size,
+        sampler=sampler,
+        shuffle=shuffle if sampler is None else False,
+        collate_fn=dict_collate_fn,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor if dl_cfg.num_workers > 0 else None,
+        persistent_workers=dl_cfg.persistent_workers if dl_cfg.num_workers > 0 else False,
+    )
+
+    return new_loader, wrapped_dataset
 
 
 def get_dataloader_info(loader: DataLoader) -> Dict[str, Any]:

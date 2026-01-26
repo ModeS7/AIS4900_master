@@ -1,0 +1,39 @@
+# 3D Segmentation Input Conditioning Mode - Stronger conditioning for 3D mask generation
+#
+# Generates 3D segmentation volumes with INPUT CHANNEL conditioning.
+# Size bins are converted to spatial volumes and concatenated with noise.
+# This provides STRONGER conditioning than FiLM (present at every layer).
+#
+# Key difference from FiLM: conditioning is spatial, not just timestep embedding.
+#
+# Size bins (mm): [0-3, 3-6, 6-10, 10-15, 15-20, 20-30, 30+]
+# Example: [0, 0, 2, 0, 0, 0, 1] = 2 tumors 6-10mm + 1 tumor 30+mm
+#
+# For DIFFUSION training:
+#   in_channels: 8 = 1 noisy_seg + 7 bin_maps
+#   out_channels: 1 = predicted seg
+#   conditioning: 7 spatial volumes concatenated with input
+#   Dataloader: create_seg_conditioned_dataloader() with return_bin_maps=True
+
+name: seg_conditioned_input
+is_conditional: true
+in_channels: 8   # noisy_seg (1) + bin_maps (7) concatenated
+out_channels: 1  # predicted noise/velocity for seg
+image_keys: [seg]
+description: "3D segmentation volume generation with input channel conditioning"
+
+# Size bin configuration
+# Bins aligned with RANO-BM thresholds: 10mm, 20mm, 30mm
+size_bins:
+  edges: [0, 3, 6, 10, 15, 20, 30]  # mm boundaries
+  num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
+  max_count: 10  # Max count for normalization
+  # Voxel spacing for physical measurements [depth_mm, height_mm, width_mm]
+  voxel_spacing: [1.0, 0.9375, 0.9375]
+  return_bin_maps: true  # Enable spatial bin maps output
+
+# Classifier-free guidance (CFG) training
+cfg_dropout_prob: 0.15  # Probability of zeroing bin_maps (15% = unconditional)
+
+# Generation with CFG
+cfg_scale: 2.0  # CFG scale for conditional guidance

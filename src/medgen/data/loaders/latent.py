@@ -741,13 +741,87 @@ def detect_spatial_dims(checkpoint_path: str) -> int:
     return 2
 
 
+def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') -> int:
+    """Detect spatial scale factor from compression checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+
+    Returns:
+        Spatial scale factor (8 for VAE/VQ-VAE, 32/64 for DC-AE).
+    """
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    config = checkpoint.get('config', {})
+
+    # DC-AE: check for spatial_compression_ratio or f{N} naming
+    if compression_type == 'dcae' or (compression_type == 'auto' and 'dcae' in str(config).lower()):
+        # Explicit spatial_compression_ratio
+        if 'spatial_compression_ratio' in config:
+            return config['spatial_compression_ratio']
+        # Check nested dcae config
+        if 'dcae' in config and isinstance(config['dcae'], dict):
+            if 'spatial_compression_ratio' in config['dcae']:
+                return config['dcae']['spatial_compression_ratio']
+        # Check for f{N} naming pattern (e.g., 'dc-ae-f32c32')
+        if 'name' in config:
+            import re
+            match = re.search(r'f(\d+)', str(config['name']))
+            if match:
+                return int(match.group(1))
+        # DC-AE default
+        return 32
+
+    # VAE/VQ-VAE: count downsampling stages or use channels length
+    if 'channels' in config:
+        num_stages = len(config['channels'])
+        return 2 ** num_stages  # Typically 2^3 = 8
+
+    # Default for VAE/VQ-VAE
+    return 8
+
+
+def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto') -> int:
+    """Detect latent channels from compression checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+
+    Returns:
+        Number of latent channels.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    config = checkpoint.get('config', {})
+
+    # Check common attribute names
+    if 'latent_channels' in config:
+        return config['latent_channels']
+    if 'z_channels' in config:
+        return config['z_channels']
+    if 'embedding_dim' in config:  # VQ-VAE
+        return config['embedding_dim']
+
+    # Check nested configs
+    for key in ['vae', 'vqvae', 'dcae']:
+        if key in config and isinstance(config[key], dict):
+            nested = config[key]
+            if 'latent_channels' in nested:
+                return nested['latent_channels']
+            if 'z_channels' in nested:
+                return nested['z_channels']
+
+    # Default
+    return 4
+
+
 def load_compression_model(
     checkpoint_path: str,
     compression_type: str,
     device: torch.device,
     cfg: Optional[DictConfig] = None,
     spatial_dims: Any = 'auto',
-) -> Tuple[torch.nn.Module, str, int]:
+) -> Tuple[torch.nn.Module, str, int, int, int]:
     """Load compression model from checkpoint.
 
     Args:
@@ -758,7 +832,7 @@ def load_compression_model(
         spatial_dims: Spatial dimensions ('auto', 2, or 3).
 
     Returns:
-        Tuple of (model, detected_type, spatial_dims).
+        Tuple of (model, detected_type, spatial_dims, scale_factor, latent_channels).
     """
     # Auto-detect type if needed
     if compression_type == 'auto':
@@ -771,6 +845,10 @@ def load_compression_model(
         logger.info(f"Auto-detected spatial dimensions: {spatial_dims}D")
     else:
         spatial_dims = int(spatial_dims)
+
+    # Detect scale factor and latent channels
+    scale_factor = detect_scale_factor(checkpoint_path, compression_type)
+    latent_channels = detect_latent_channels(checkpoint_path, compression_type)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model_config = checkpoint.get('config', {})
@@ -819,6 +897,9 @@ def load_compression_model(
     for param in model.parameters():
         param.requires_grad = False
 
-    logger.info(f"Loaded {compression_type} compression model ({spatial_dims}D) from {checkpoint_path}")
+    logger.info(
+        f"Loaded {compression_type} compression model ({spatial_dims}D) from {checkpoint_path} "
+        f"[scale_factor={scale_factor}x, latent_channels={latent_channels}]"
+    )
 
-    return model, compression_type, spatial_dims
+    return model, compression_type, spatial_dims, scale_factor, latent_channels

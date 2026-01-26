@@ -38,6 +38,7 @@ from .modes import (
     ConditionalDualMode,
     MultiModalityMode,
     SegmentationConditionedMode,
+    SegmentationConditionedInputMode,
 )
 
 # Spaces
@@ -69,6 +70,7 @@ __all__ = [
     'ConditionalDualMode',
     'MultiModalityMode',
     'SegmentationConditionedMode',
+    'SegmentationConditionedInputMode',
     # Spaces
     'DiffusionSpace',
     'PixelSpace',

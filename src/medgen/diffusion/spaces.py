@@ -123,53 +123,140 @@ class PixelSpace(DiffusionSpace):
 
 
 class LatentSpace(DiffusionSpace):
-    """Latent space using AutoencoderKL for encoding/decoding.
+    """Latent space using a compression model for encoding/decoding.
 
-    Wraps a trained VAE to provide encode/decode operations for
-    latent diffusion model training. Supports both 2D and 3D.
+    Wraps a trained compression model (VAE, VQ-VAE, or DC-AE) to provide
+    encode/decode operations for latent diffusion model training.
+    Supports both 2D and 3D.
 
     Args:
-        vae: Trained AutoencoderKL model.
+        compression_model: Trained compression model (VAE, VQ-VAE, DC-AE).
         device: Device for computations.
         deterministic: If True, use mean only (no sampling). Default False.
         spatial_dims: Spatial dimensions (2 for images, 3 for volumes).
+        compression_type: Type of compression model ('vae', 'vqvae', 'dcae').
+            Used for encoding strategy. Default 'vae'.
+        scale_factor: Spatial downscale factor. If None, auto-detected from model.
+            VAE/VQ-VAE typically use 8x, DC-AE uses 32x or 64x.
+        depth_scale_factor: Depth downscale factor for 3D (may differ from spatial).
+            If None, uses same as scale_factor.
+        latent_channels: Number of channels in latent space. If None, auto-detected.
     """
 
     def __init__(
         self,
-        vae: torch.nn.Module,
+        compression_model: torch.nn.Module,
         device: torch.device,
         deterministic: bool = False,
         spatial_dims: int = 2,
+        compression_type: str = 'vae',
+        scale_factor: int = None,
+        depth_scale_factor: int = None,
+        latent_channels: int = None,
     ) -> None:
-        self.vae = vae.eval()
+        # Store as 'vae' for backward compatibility with existing code
+        self.vae = compression_model.eval()
         self.device = device
         self.deterministic = deterministic
         self.spatial_dims = spatial_dims
+        self.compression_type = compression_type
 
-        # Freeze VAE parameters
+        # Freeze model parameters
         for param in self.vae.parameters():
             param.requires_grad = False
 
-        # Get latent channels from VAE config
-        self._latent_channels = vae.latent_channels
+        # Auto-detect or use provided latent channels
+        if latent_channels is not None:
+            self._latent_channels = latent_channels
+        else:
+            self._latent_channels = self._detect_latent_channels(compression_model)
+
+        # Auto-detect or use provided scale factor
+        if scale_factor is not None:
+            self._scale_factor = scale_factor
+        else:
+            self._scale_factor = self._detect_scale_factor(compression_model, compression_type)
+
+        # Depth scale factor (3D only) - defaults to spatial scale factor
+        self._depth_scale_factor = depth_scale_factor if depth_scale_factor is not None else self._scale_factor
 
         # Expected tensor dimensions: batch + channels + spatial
         self._expected_dims = 2 + spatial_dims  # 4 for 2D, 5 for 3D
+
+    def _detect_latent_channels(self, model: torch.nn.Module) -> int:
+        """Detect latent channels from compression model."""
+        # Try common attribute names
+        if hasattr(model, 'latent_channels'):
+            return model.latent_channels
+        if hasattr(model, 'z_channels'):
+            return model.z_channels
+        if hasattr(model, 'embedding_dim'):
+            return model.embedding_dim
+        # DC-AE style
+        if hasattr(model, 'config') and isinstance(model.config, dict):
+            if 'latent_channels' in model.config:
+                return model.config['latent_channels']
+        # Default
+        return 4
+
+    def _detect_scale_factor(self, model: torch.nn.Module, compression_type: str) -> int:
+        """Detect spatial scale factor from compression model.
+
+        Args:
+            model: Compression model.
+            compression_type: Type of model ('vae', 'vqvae', 'dcae').
+
+        Returns:
+            Spatial downscale factor.
+        """
+        # Check for explicit config
+        if hasattr(model, 'config') and isinstance(model.config, dict):
+            config = model.config
+            # DC-AE uses spatial_compression_ratio
+            if 'spatial_compression_ratio' in config:
+                return config['spatial_compression_ratio']
+            # Some models use scale_factor directly
+            if 'scale_factor' in config:
+                return config['scale_factor']
+            # Check for f{N} notation (e.g., 'f32' -> 32)
+            if 'name' in config:
+                import re
+                match = re.search(r'f(\d+)', str(config['name']))
+                if match:
+                    return int(match.group(1))
+
+        # Check for num_down_blocks (MONAI VAE pattern: 2^num_down_blocks)
+        if hasattr(model, 'num_down_blocks'):
+            return 2 ** model.num_down_blocks
+
+        # Count encoder downsampling blocks by checking attribute names
+        if hasattr(model, 'encoder'):
+            encoder = model.encoder
+            # Count 'down' blocks
+            down_count = sum(1 for name in dir(encoder) if 'down' in name.lower() and not name.startswith('_'))
+            if down_count > 0:
+                return 2 ** min(down_count, 6)  # Cap at 64x
+
+        # Default based on compression type
+        if compression_type == 'dcae':
+            return 32  # DC-AE default
+        else:
+            return 8  # VAE/VQ-VAE default
 
     @torch.no_grad()
     def encode(self, x: Tensor) -> Tensor:
         """Encode images to latent space.
 
-        Uses reparameterization trick to sample from the latent distribution
-        unless deterministic mode is enabled.
+        Handles different compression model types:
+        - VAE: Returns mean (deterministic) or samples from latent distribution
+        - VQ-VAE: Returns quantized codes
+        - DC-AE: Returns deterministic encoding
 
         Args:
             x: Images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
 
         Returns:
-            Latent representation [B, latent_channels, H/8, W/8] (2D)
-            or [B, latent_channels, D/8, H/8, W/8] (3D).
+            Latent representation with shape based on scale_factor.
 
         Raises:
             ValueError: If input tensor doesn't have expected dimensions.
@@ -180,17 +267,34 @@ class LatentSpace(DiffusionSpace):
                 f"LatentSpace.encode expects {self._expected_dims}D input {shape_desc}, "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
-        z_mu, z_logvar = self.vae.encode(x)
 
-        if self.deterministic:
-            return z_mu
+        if self.compression_type == 'vae':
+            # VAE returns (mu, logvar)
+            z_mu, z_logvar = self.vae.encode(x)
 
-        # Reparameterization trick: z = mu + sigma * epsilon
-        std = torch.exp(0.5 * z_logvar)
-        eps = torch.randn_like(std)
-        z = z_mu + std * eps
+            if self.deterministic:
+                return z_mu
 
-        return z
+            # Reparameterization trick: z = mu + sigma * epsilon
+            std = torch.exp(0.5 * z_logvar)
+            eps = torch.randn_like(std)
+            z = z_mu + std * eps
+            return z
+
+        elif self.compression_type == 'vqvae':
+            # VQ-VAE returns quantized directly
+            return self.vae.encode(x)
+
+        elif self.compression_type == 'dcae':
+            # DC-AE is deterministic
+            return self.vae.encode(x)
+
+        else:
+            # Generic fallback: try to handle tuple returns
+            result = self.vae.encode(x)
+            if isinstance(result, tuple):
+                return result[0]  # Assume first element is the latent
+            return result
 
     @torch.no_grad()
     def decode(self, z: Tensor) -> Tensor:
@@ -220,8 +324,13 @@ class LatentSpace(DiffusionSpace):
 
     @property
     def scale_factor(self) -> int:
-        """Spatial downscale factor (8x for 3 downsampling stages)."""
-        return 8
+        """Spatial downscale factor (varies by compression model)."""
+        return self._scale_factor
+
+    @property
+    def depth_scale_factor(self) -> int:
+        """Depth downscale factor for 3D (may differ from spatial)."""
+        return self._depth_scale_factor
 
     @property
     def latent_channels(self) -> int:
@@ -236,6 +345,10 @@ def load_vae_for_latent_space(
     spatial_dims: int = 2,
 ) -> LatentSpace:
     """Load a trained VAE and create a LatentSpace wrapper.
+
+    Note: This function is for backward compatibility. For new code, prefer
+    using `load_compression_model` from `medgen.data.loaders.latent` which
+    supports VAE, VQ-VAE, and DC-AE.
 
     Args:
         checkpoint_path: Path to VAE checkpoint (.pt file).
@@ -288,4 +401,9 @@ def load_vae_for_latent_space(
         # Assume checkpoint is just the state dict
         vae.load_state_dict(checkpoint)
 
-    return LatentSpace(vae, device, spatial_dims=spatial_dims)
+    return LatentSpace(
+        vae, device,
+        spatial_dims=spatial_dims,
+        compression_type='vae',
+        latent_channels=vae_config['latent_channels'],
+    )
