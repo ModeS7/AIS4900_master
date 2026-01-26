@@ -1,0 +1,137 @@
+# Downstream Segmentation Training Configuration
+#
+# Train segmentation models to evaluate synthetic data utility.
+# Supports three training scenarios:
+#   - baseline: Train on real data only
+#   - synthetic: Train on synthetic data only
+#   - mixed: Train on real + synthetic data
+#
+# Usage:
+#   # 2D baseline (real data only)
+#   python -m medgen.scripts.train_segmentation scenario=baseline
+#
+#   # 2D synthetic (generated data only)
+#   python -m medgen.scripts.train_segmentation scenario=synthetic \
+#       data.synthetic_dir=runs/diffusion_2d/bravo/.../generated
+#
+#   # 2D mixed (real + synthetic)
+#   python -m medgen.scripts.train_segmentation scenario=mixed \
+#       data.synthetic_dir=runs/diffusion_2d/bravo/.../generated
+#
+#   # 3D training
+#   python -m medgen.scripts.train_segmentation model.spatial_dims=3
+
+defaults:
+  - paths: local
+  - _self_
+
+# Hydra output directory
+hydra:
+  run:
+    dir: ${paths.model_dir}/segmentation/${model.spatial_dims}d/${scenario}/${oc.select:training.name,""}${now:%Y%m%d-%H%M%S}
+  sweep:
+    dir: ${paths.model_dir}/segmentation/multirun/${now:%Y%m%d-%H%M%S}
+    subdir: ${hydra.job.num}
+
+# Training scenario: baseline, synthetic, or mixed
+scenario: baseline
+
+# Model architecture
+model:
+  # 2D or 3D
+  spatial_dims: 2
+
+  # SegResNet architecture (MONAI)
+  # Good balance of performance and efficiency for medical imaging
+  arch: segresnet
+
+  # SegResNet parameters
+  init_filters: 32
+  blocks_down: [1, 2, 2, 4]
+  blocks_up: [1, 1, 1]
+  dropout_prob: 0.2
+
+  # Input/output channels
+  in_channels: 1      # Single modality (BRAVO)
+  out_channels: 1     # Binary segmentation
+
+  # 2D image size
+  image_size: 256
+
+# Volume settings (3D only)
+volume:
+  height: 128
+  width: 128
+  pad_depth_to: 160
+
+# Data configuration
+data:
+  # Real data directory (brainmetshare-3 format)
+  real_dir: ${paths.data_dir}
+
+  # Synthetic data directory (generated NIfTI files)
+  # Required for scenario=synthetic or scenario=mixed
+  synthetic_dir: null
+
+  # For mixed scenario: ratio of synthetic to total
+  # 0.5 = 50% real, 50% synthetic
+  synthetic_ratio: 0.5
+
+  # Input modality for segmentation
+  modality: bravo
+
+  # Augmentation
+  augment: true
+
+# Training hyperparameters
+training:
+  name: ""
+  epochs: 100
+  batch_size: 16          # 2D
+  batch_size_3d: 2        # 3D (memory constrained)
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  warmup_epochs: 5
+  gradient_clip_norm: 1.0
+
+  # Loss function
+  loss: dice_ce          # dice, ce, dice_ce, focal
+  dice_weight: 1.0       # Weight for Dice loss in dice_ce
+  ce_weight: 1.0         # Weight for CE loss in dice_ce
+
+  # Validation frequency
+  val_every: 1           # Validate every N epochs
+
+  # Early stopping
+  patience: 20           # Epochs without improvement before stopping
+
+  # Checkpointing
+  save_best: true
+  save_last: true
+
+  # DataLoader settings
+  dataloader:
+    num_workers: 8
+    prefetch_factor: 4
+    pin_memory: true
+    persistent_workers: true
+
+# Evaluation metrics by tumor size
+# Uses RANO-BM clinical thresholds
+evaluation:
+  # Tumor size bins (Feret diameter in mm)
+  size_bins:
+    tiny: [0, 10]        # <10mm
+    small: [10, 20]      # 10-20mm
+    medium: [20, 30]     # 20-30mm
+    large: [30, 1000]    # >=30mm
+
+  # Field of view for pixel->mm conversion
+  fov_mm: 240.0
+
+  # Metrics to compute
+  metrics:
+    - dice
+    - hausdorff95
+    - sensitivity
+    - precision

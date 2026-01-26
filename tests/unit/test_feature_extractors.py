@@ -30,7 +30,7 @@ class TestResNet50Features:
     @pytest.mark.gpu
     def test_grayscale_input(self):
         """1-channel repeated to 3 channels."""
-        extractor = ResNet50Features(compile_model=False)
+        extractor = ResNet50Features(device=torch.device('cpu'), compile_model=False)
         images = torch.rand(2, 1, 224, 224)
         features = extractor.extract_features(images)
         assert features.shape == (2, 2048)
@@ -40,7 +40,7 @@ class TestResNet50Features:
     @pytest.mark.gpu
     def test_resize_to_224(self):
         """Input resized to 224x224."""
-        extractor = ResNet50Features(compile_model=False)
+        extractor = ResNet50Features(device=torch.device('cpu'), compile_model=False)
         images = torch.rand(2, 3, 64, 64)
         features = extractor.extract_features(images)
         assert features.shape == (2, 2048)
@@ -50,7 +50,7 @@ class TestResNet50Features:
     @pytest.mark.gpu
     def test_3d_input_takes_middle_slice(self):
         """5D input: middle slice extracted."""
-        extractor = ResNet50Features(compile_model=False)
+        extractor = ResNet50Features(device=torch.device('cpu'), compile_model=False)
         volumes = torch.rand(2, 1, 16, 64, 64)
         features = extractor.extract_features(volumes)
         assert features.shape == (2, 2048)
