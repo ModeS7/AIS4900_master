@@ -45,7 +45,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 #   - in_channels: 1 (unconditional)
 #   - out_channels: 1
 #
-# Resolution: 256x256x160 (full resolution - no ControlNet overhead)
+# Resolution: 128x128x160 (full resolution - no ControlNet overhead)
 # ============================================================================
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \

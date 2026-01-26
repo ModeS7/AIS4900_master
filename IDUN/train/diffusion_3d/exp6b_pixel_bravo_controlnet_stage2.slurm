@@ -49,7 +49,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 #   - ControlNet: takes seg_mask, injects via residuals
 #
 # Memory: ~40-50GB (only ControlNet gradients, UNet frozen)
-# Resolution: 256x256x160
+# Resolution: 128x128x160
 # ============================================================================
 
 # !!! UPDATE THIS PATH to your Stage 1 checkpoint !!!
