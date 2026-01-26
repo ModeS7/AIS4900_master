@@ -36,6 +36,7 @@ from medgen.core import (
 )
 from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy, load_diffusion_model
 from medgen.data import make_binary
+from medgen.metrics.brain_mask import is_seg_inside_brain
 
 setup_cuda_optimizations()
 
@@ -436,11 +437,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_white_pct = cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
         max_retries = cfg.get('max_retries', 10)
 
+        # Brain mask validation settings
+        validate_brain_mask = cfg.get('validate_brain_mask', True)
+        brain_threshold = cfg.get('brain_threshold', 0.05)
+        brain_tolerance = cfg.get('brain_tolerance', 0.05)
+        brain_dilate = cfg.get('brain_dilate_pixels', 3)
+
         log.info(f"Generating {cfg.num_images} seg+bravo pairs...")
         log.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
+        if validate_brain_mask:
+            log.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
 
         generated = 0
         total_retries = 0
+        brain_retries = 0
+        max_brain_retries = cfg.get('max_brain_retries', 5)
 
         while generated < cfg.num_images:
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
@@ -486,6 +497,27 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Clamp to [0, 1] like working 2D code does
             bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 
+            # Validate segmentation is inside brain
+            if validate_brain_mask:
+                if not is_seg_inside_brain(
+                    bravo_np, seg_binary,
+                    brain_threshold=brain_threshold,
+                    tolerance=brain_tolerance,
+                    dilate_pixels=brain_dilate,
+                ):
+                    brain_retries += 1
+                    total_retries += 1
+                    if cfg.verbose:
+                        log.warning(f"Sample {generated}: seg outside brain, discarding and retrying...")
+                    if brain_retries >= max_brain_retries:
+                        log.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+                        brain_retries = 0  # Reset for next sample
+                    else:
+                        continue  # Retry with new seg mask
+
+            # Reset brain retries on success
+            brain_retries = 0
+
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary_save = np.transpose(seg_binary, (1, 2, 0))
             bravo_np = np.transpose(bravo_np, (1, 2, 0))
@@ -512,7 +544,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 torch.cuda.empty_cache()
 
         if total_retries > 0:
-            log.info(f"Total retries due to invalid masks: {total_retries}")
+            log.info(f"Total retries: {total_retries} (seg validation + brain mask)")
 
     else:
         raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned' or 'bravo'.")

@@ -17,7 +17,7 @@ from medgen.data.dataset import (
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.utils import extract_slices_dual, merge_sequences
+from medgen.data.utils import extract_slices_dual, merge_sequences, CFGDropoutDataset
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ def create_dual_image_dataloader(
     world_size: int = 1,
     augment: bool = True,
     augment_type: AugmentType = "diffusion",
+    cfg_dropout_prob: float = 0.15,
 ) -> Tuple[DataLoader, Dataset]:
     """Create dataloader for dual-image training (T1 pre + T1 gd).
 
@@ -45,6 +46,7 @@ def create_dual_image_dataloader(
         world_size: Total number of processes for distributed training.
         augment: Whether to apply data augmentation.
         augment_type: Type of augmentation ('diffusion' or 'vae').
+        cfg_dropout_prob: CFG dropout probability for conditioning (default: 0.15).
 
     Returns:
         Tuple of (DataLoader, train_dataset).
@@ -91,6 +93,11 @@ def create_dual_image_dataloader(
     # Merge all sequences
     merged = merge_sequences(datasets_dict)
     train_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None), augmentation=aug)
+
+    # Wrap with CFG dropout for classifier-free guidance training
+    if conditioning is not None and cfg_dropout_prob > 0:
+        train_dataset = CFGDropoutDataset(train_dataset, cfg_dropout_prob=cfg_dropout_prob)
+        logger.info(f"CFG dropout enabled for dual mode: {cfg_dropout_prob:.0%} probability")
 
     # Setup distributed sampler and batch size
     sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(

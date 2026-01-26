@@ -68,6 +68,11 @@ from .tracking import (
     create_worst_batch_figure_3d,
     CodebookTracker,
 )
+from .brain_mask import (
+    create_brain_mask,
+    is_seg_inside_brain,
+    compute_outside_brain_ratio,
+)
 
 __all__ = [
     # Core
@@ -121,4 +126,8 @@ __all__ = [
     'create_worst_batch_figure',
     'create_worst_batch_figure_3d',
     'CodebookTracker',
+    # Brain mask validation
+    'create_brain_mask',
+    'is_seg_inside_brain',
+    'compute_outside_brain_ratio',
 ]

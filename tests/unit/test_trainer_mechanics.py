@@ -556,3 +556,88 @@ class TestConditioningDropout:
                     result[i], original[i],
                     name=f"Non-dropped sample {i}"
                 )
+
+
+# =============================================================================
+# TestCFGDropoutDataset - Verify dataset wrapper for 2D dataloaders
+# =============================================================================
+
+
+class TestCFGDropoutDataset:
+    """Test CFGDropoutDataset wrapper for 2D bravo/dual dataloaders."""
+
+    def test_tensor_format_dropout(self):
+        """Dropout works with tensor format [C, H, W]."""
+        from medgen.data.utils import CFGDropoutDataset
+        from torch.utils.data import Dataset as TorchDataset
+
+        # Create simple dataset returning tensors
+        class SimpleTensorDataset(TorchDataset):
+            def __len__(self):
+                return 100
+
+            def __getitem__(self, idx):
+                return torch.ones(2, 64, 64)  # [bravo, seg]
+
+        torch.manual_seed(42)
+        base_dataset = SimpleTensorDataset()
+        wrapped = CFGDropoutDataset(base_dataset, cfg_dropout_prob=0.5)
+
+        # Count how many have zeroed last channel
+        dropped = 0
+        for i in range(len(wrapped)):
+            item = wrapped[i]
+            if (item[-1] == 0).all():  # Last channel is zero
+                dropped += 1
+
+        # Should be approximately 50%
+        dropout_rate = dropped / len(wrapped)
+        assert 0.35 <= dropout_rate <= 0.65, \
+            f"Dropout rate {dropout_rate:.2%} should be ~50%"
+
+    def test_tuple_format_dropout(self):
+        """Dropout works with tuple format (image, seg)."""
+        from medgen.data.utils import CFGDropoutDataset
+        from torch.utils.data import Dataset as TorchDataset
+
+        class SimpleTupleDataset(TorchDataset):
+            def __len__(self):
+                return 100
+
+            def __getitem__(self, idx):
+                return (torch.ones(1, 64, 64), torch.ones(1, 64, 64))
+
+        torch.manual_seed(123)
+        base_dataset = SimpleTupleDataset()
+        wrapped = CFGDropoutDataset(base_dataset, cfg_dropout_prob=0.5)
+
+        dropped = 0
+        for i in range(len(wrapped)):
+            image, seg = wrapped[i]
+            if (seg == 0).all():
+                dropped += 1
+
+        dropout_rate = dropped / len(wrapped)
+        assert 0.35 <= dropout_rate <= 0.65, \
+            f"Dropout rate {dropout_rate:.2%} should be ~50%"
+
+    def test_zero_dropout_no_change(self):
+        """Zero dropout probability leaves data unchanged."""
+        from medgen.data.utils import CFGDropoutDataset
+        from torch.utils.data import Dataset as TorchDataset
+
+        class SimpleTensorDataset(TorchDataset):
+            def __len__(self):
+                return 10
+
+            def __getitem__(self, idx):
+                return torch.ones(2, 64, 64) * (idx + 1)
+
+        base_dataset = SimpleTensorDataset()
+        wrapped = CFGDropoutDataset(base_dataset, cfg_dropout_prob=0.0)
+
+        for i in range(len(wrapped)):
+            item = wrapped[i]
+            expected = torch.ones(2, 64, 64) * (i + 1)
+            assert torch.allclose(item, expected), \
+                f"Item {i} should be unchanged with zero dropout"

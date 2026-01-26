@@ -330,6 +330,7 @@ generation_metrics:
   steps_test: 50              # Denoising steps for test evaluation
   cache_dir: ".cache/generation_features"  # Feature cache location
   # feature_batch_size: null   # Defaults to training.batch_size for torch.compile consistency
+  cfg_scale: 2.0              # CFG scale for generation (requires CFG dropout during training)
 
 # Region-Weighted Loss (Diffusion only - conditional modes)
 # Applies per-pixel loss weighting based on tumor size using RANO-BM thresholds.

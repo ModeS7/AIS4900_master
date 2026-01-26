@@ -257,3 +257,68 @@ def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
         merged_data.append(merged_volume)
 
     return Dataset(merged_data)
+
+
+class CFGDropoutDataset(torch.utils.data.Dataset):
+    """Wrapper dataset that applies CFG dropout to conditioning channel.
+
+    Randomly zeros out the last channel (conditioning/seg mask) with
+    probability `cfg_dropout_prob` to enable classifier-free guidance
+    at inference time.
+
+    Args:
+        dataset: Base dataset to wrap.
+        cfg_dropout_prob: Probability of zeroing conditioning (default: 0.15).
+        conditioning_channel: Channel index to dropout (-1 for last channel).
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        cfg_dropout_prob: float = 0.15,
+        conditioning_channel: int = -1,
+    ) -> None:
+        self.dataset = dataset
+        self.cfg_dropout_prob = cfg_dropout_prob
+        self.conditioning_channel = conditioning_channel
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        item = self.dataset[idx]
+
+        # Handle different return formats
+        if isinstance(item, dict):
+            # Dict format: {'image': tensor, 'seg': tensor, ...}
+            if 'seg' in item and self.cfg_dropout_prob > 0:
+                if torch.rand(1).item() < self.cfg_dropout_prob:
+                    item = item.copy()  # Don't modify original
+                    item['seg'] = torch.zeros_like(item['seg'])
+            return item
+
+        elif isinstance(item, (tuple, list)):
+            # Tuple format: (image, seg) or (tensor,)
+            if len(item) == 2 and self.cfg_dropout_prob > 0:
+                image, seg = item
+                if torch.rand(1).item() < self.cfg_dropout_prob:
+                    if isinstance(seg, torch.Tensor):
+                        seg = torch.zeros_like(seg)
+                    else:
+                        seg = np.zeros_like(seg)
+                return (image, seg)
+            return item
+
+        elif isinstance(item, (torch.Tensor, np.ndarray)):
+            # Single tensor with channels: [C, H, W] where last channel is conditioning
+            if self.cfg_dropout_prob > 0 and item.shape[0] > 1:
+                if torch.rand(1).item() < self.cfg_dropout_prob:
+                    if isinstance(item, torch.Tensor):
+                        item = item.clone()
+                        item[self.conditioning_channel] = 0
+                    else:
+                        item = item.copy()
+                        item[self.conditioning_channel] = 0
+            return item
+
+        return item

@@ -2558,8 +2558,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 size_bins = None
 
         # Generate samples
+        # Use CFG scale from generation metrics config (default 2.0)
+        cfg_scale = self._gen_metrics_config.cfg_scale if self._gen_metrics_config is not None else 2.0
         if self.use_size_bin_embedding and size_bins is not None:
-            samples = self._generate_with_size_bins_3d(noise, size_bins, num_steps=25)
+            samples = self._generate_with_size_bins_3d(noise, size_bins, num_steps=25, cfg_scale=cfg_scale)
         else:
             samples = self.strategy.generate(
                 model,
@@ -2567,6 +2569,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 num_steps=25,
                 device=self.device,
                 use_progress_bars=False,
+                cfg_scale=cfg_scale,
             )
 
         # Decode if in latent space
@@ -2720,6 +2723,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         noise: torch.Tensor,
         size_bins: torch.Tensor,
         num_steps: int = 25,
+        cfg_scale: float = 1.0,
     ) -> torch.Tensor:
         """Generate 3D samples with size bin conditioning.
 
@@ -2727,6 +2731,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             noise: Starting noise tensor.
             size_bins: Size bin embedding tensor.
             num_steps: Number of denoising steps.
+            cfg_scale: Classifier-free guidance scale (1.0 = no guidance).
 
         Returns:
             Generated samples.
@@ -2734,14 +2739,25 @@ class DiffusionTrainer(DiffusionTrainerBase):
         x = noise.clone()
         dt = 1.0 / num_steps
         num_train_timesteps = self.scheduler.num_train_timesteps
+        use_cfg = cfg_scale > 1.0
+
+        # Prepare unconditional size_bins for CFG
+        if use_cfg:
+            uncond_size_bins = torch.zeros_like(size_bins)
 
         for i in range(num_steps):
             t = 1.0 - i * dt
             t_scaled = t * num_train_timesteps
             t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
 
-            # Model with size bin conditioning
-            v = self.model(x, t_tensor, size_bins=size_bins)
+            if use_cfg:
+                # CFG: compute both conditional and unconditional predictions
+                v_cond = self.model(x, t_tensor, size_bins=size_bins)
+                v_uncond = self.model(x, t_tensor, size_bins=uncond_size_bins)
+                v = v_uncond + cfg_scale * (v_cond - v_uncond)
+            else:
+                # No CFG: just conditional prediction
+                v = self.model(x, t_tensor, size_bins=size_bins)
 
             # Euler step
             x = x + dt * v

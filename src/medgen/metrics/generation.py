@@ -83,6 +83,7 @@ class GenerationMetricsConfig:
     steps_test: int = 50
     cache_dir: str = ".cache/generation_features"
     feature_batch_size: int = 16  # Set by trainer to match training.batch_size
+    cfg_scale: float = 2.0  # CFG scale for generation (requires CFG dropout during training)
 
 
 # =============================================================================
@@ -753,7 +754,8 @@ class GenerationMetrics:
             with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                 samples = strategy.generate(
                     model, model_input, num_steps=num_steps, device=self.device,
-                    size_bins=batch_size_bins
+                    size_bins=batch_size_bins,
+                    cfg_scale=self.config.cfg_scale,
                 )
 
             # Move to CPU immediately to free GPU memory
