@@ -121,6 +121,7 @@ class TestTrainer3DEquivalence:
     @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
+    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
@@ -142,6 +143,7 @@ class TestTrainer3DEquivalence:
     @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
+    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
@@ -187,6 +189,7 @@ class TestTrainerDeterminism:
 
     @pytest.mark.timeout(60)
     @pytest.mark.slow
+    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"

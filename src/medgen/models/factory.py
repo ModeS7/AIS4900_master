@@ -130,13 +130,22 @@ def _create_sit(
     is_latent_space = cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
     vae_scale = cfg.get('vae', {}).get('spatial_scale', 8) if is_latent_space else 1
 
-    # Get input size (depends on pixel vs latent space)
-    input_size = cfg.model.image_size // vae_scale
+    # Get input size - prefer volume config for 3D, fallback to model config
+    # This avoids redundant specification of dimensions
+    if spatial_dims == 3 and 'volume' in cfg:
+        # For 3D: derive from volume config (height/width should match)
+        base_size = cfg.volume.get('height', cfg.model.get('image_size', 256))
+        base_depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', base_size))
+    else:
+        # For 2D or when volume config not available: use model config
+        base_size = cfg.model.get('image_size', 256)
+        base_depth = cfg.model.get('depth_size', base_size)
+
+    input_size = base_size // vae_scale
 
     # 3D specific settings
     depth_size = None
     if spatial_dims == 3:
-        base_depth = cfg.model.get('depth_size', cfg.model.image_size)
         depth_size = base_depth // vae_scale
 
     model = create_sit(
