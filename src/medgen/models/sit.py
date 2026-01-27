@@ -209,11 +209,10 @@ class SiT(nn.Module):
                 nn.init.xavier_uniform_(block.cross_attn.kv.weight)
                 nn.init.xavier_uniform_(block.cross_attn.proj.weight)
 
-        # Final layer: zero-init adaLN modulation, but XAVIER for output projection
-        # (DiT zero-init is for residual gates, not final output)
+        # Zero-init final layer (matches DiT, SiT, Latte standard)
         nn.init.zeros_(self.final_layer.adaLN_modulation[-1].weight)
         nn.init.zeros_(self.final_layer.adaLN_modulation[-1].bias)
-        nn.init.xavier_uniform_(self.final_layer.linear.weight)
+        nn.init.zeros_(self.final_layer.linear.weight)
         nn.init.zeros_(self.final_layer.linear.bias)
 
     def unpatchify_2d(self, x: torch.Tensor) -> torch.Tensor:
