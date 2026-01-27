@@ -3,8 +3,20 @@ name: Tests
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      - 'IDUN/**'           # SLURM job scripts
+      - '*.md'              # Markdown documentation
+      - 'docs/**'           # Documentation folder
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - 'IDUN/**'
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
 
 jobs:
   test:
