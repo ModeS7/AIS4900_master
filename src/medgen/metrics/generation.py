@@ -700,7 +700,15 @@ class GenerationMetrics:
         if self.fixed_conditioning_masks is None:
             raise RuntimeError("Must call set_fixed_conditioning() first")
 
-        # Cap batch_size at available masks to avoid errors with small mask counts (e.g., 3D)
+        # Detect 3D from tensor dimensions: 3D is [N, C, D, H, W] with ndim=5
+        is_3d = self.fixed_conditioning_masks.ndim == 5
+
+        # 3D generation uses batch_size=1 to avoid OOM at high resolutions
+        # (256x256x160 with CFG requires ~50GB per batch of 2 due to dual forward passes)
+        if is_3d:
+            batch_size = 1
+
+        # Cap batch_size at available masks to avoid errors with small mask counts
         num_available = self.fixed_conditioning_masks.shape[0]
         batch_size = min(batch_size, num_available)
 
