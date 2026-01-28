@@ -23,40 +23,59 @@ logger = logging.getLogger(__name__)
 
 
 class EpochTimeEstimator:
-    """Track epoch times and estimate completion time.
+    """Track epoch times and estimate completion time with adaptive correction.
 
-    Uses total elapsed time for stable estimates. This approach:
-    - Naturally averages over all epochs including validation
-    - Becomes more stable as training progresses
-    - Is immune to individual epoch fluctuations
+    Uses a blend of overall average and exponential moving average (EMA):
+    - Overall average: stable, based on all epochs
+    - EMA: responsive, tracks recent trends and corrects for drift
+
+    This automatically corrects for systematic under/overestimation by
+    giving more weight to recent epoch times when they consistently
+    deviate from the historical average.
 
     Excludes first epoch from calculations since it includes warmup overhead.
     """
 
-    def __init__(self, total_epochs: int):
+    def __init__(self, total_epochs: int, ema_alpha: float = 0.2):
         """Initialize estimator.
 
         Args:
             total_epochs: Total number of epochs for training.
+            ema_alpha: EMA smoothing factor (0.1=slow adapt, 0.3=fast adapt).
         """
         self.total_epochs = total_epochs
         self.epoch_count = 0
         self.total_time = 0.0  # Total time excluding first epoch
         self.first_epoch_time: Optional[float] = None
 
+        # Adaptive correction using EMA
+        self.ema_alpha = ema_alpha
+        self.ema_epoch_time: Optional[float] = None
+
     def update(self, elapsed_time: float) -> None:
-        """Record time for completed epoch."""
+        """Record time for completed epoch and update EMA."""
         self.epoch_count += 1
 
         if self.epoch_count == 1:
             # Store first epoch separately (warmup overhead)
             self.first_epoch_time = elapsed_time
+            self.ema_epoch_time = elapsed_time
         else:
             # Accumulate total time (excluding first epoch warmup)
             self.total_time += elapsed_time
 
+            # Update EMA: responds to recent trends
+            # EMA = alpha * new_value + (1 - alpha) * old_EMA
+            if self.ema_epoch_time is not None:
+                self.ema_epoch_time = (
+                    self.ema_alpha * elapsed_time +
+                    (1 - self.ema_alpha) * self.ema_epoch_time
+                )
+            else:
+                self.ema_epoch_time = elapsed_time
+
     def get_eta_string(self) -> str:
-        """Get formatted ETA string.
+        """Get formatted ETA string with adaptive correction.
 
         Returns:
             String like "ETA: 2h 30m (Jan 20 15:30)" or empty if not enough data.
@@ -71,15 +90,23 @@ class EpochTimeEstimator:
 
         # Calculate average time per epoch (excluding first epoch warmup)
         if self.epoch_count >= 2:
-            # Use total accumulated time / epochs (excluding first)
             avg_time = self.total_time / (self.epoch_count - 1)
         elif self.first_epoch_time is not None:
-            # Only have first epoch, use it (likely overestimate)
             avg_time = self.first_epoch_time
         else:
             return ""
 
-        eta_seconds = avg_time * remaining_epochs
+        # Adaptive blending: use EMA to correct for systematic drift
+        # EMA tracks recent trends, average provides stability
+        # Blend ratio increases as we get more data (more confident in EMA)
+        if self.ema_epoch_time is not None and self.epoch_count >= 5:
+            # Gradually increase EMA weight: 20% at epoch 5, up to 40% at epoch 50+
+            ema_weight = min(0.4, 0.2 + (self.epoch_count - 5) * 0.005)
+            blended_avg = (1 - ema_weight) * avg_time + ema_weight * self.ema_epoch_time
+        else:
+            blended_avg = avg_time
+
+        eta_seconds = blended_avg * remaining_epochs
         completion_time = datetime.now() + timedelta(seconds=eta_seconds)
 
         # Format duration

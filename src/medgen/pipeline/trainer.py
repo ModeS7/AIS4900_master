@@ -2949,14 +2949,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
                     avg_loss, avg_mse, avg_perceptual = (loss_tensor / self.world_size).cpu().numpy()
 
-                epoch_time = time.time() - epoch_start
                 # Step non-plateau schedulers here (plateau needs val_loss, stepped later)
                 if self.scheduler_type != 'plateau':
                     self.lr_scheduler.step()
 
                 if self.is_main_process:
-                    log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time, time_estimator)
-
                     # Log training losses using unified system (DDP path)
                     if self.use_multi_gpu:
                         self._unified_metrics.update_loss('MSE', avg_mse)
@@ -3010,6 +3007,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         self._save_checkpoint(epoch, "best")
                         loss_type = "val" if val_metrics else "train"
                         logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
+
+                    # Log epoch summary with FULL epoch time (training + validation + viz + checkpointing)
+                    # This gives accurate ETA by including all epoch overhead, not just training
+                    epoch_time = time.time() - epoch_start
+                    log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time, time_estimator)
 
         finally:
             total_time = time.time() - total_start
