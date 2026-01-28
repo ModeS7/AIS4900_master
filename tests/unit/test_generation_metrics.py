@@ -328,3 +328,86 @@ class TestGenerateSamplesBasic:
             # Verify shape: [num_masks, 7] for 7 size bins
             assert metrics.fixed_size_bins.shape[1] == 7
             assert metrics.fixed_size_bins.dtype == torch.long
+
+
+class TestExtractFeaturesBatched3D:
+    """REGRESSION TEST: 3D feature extraction must use slice-wise approach.
+
+    Bug introduced in commit 49c5cc1 (2026-01-20) when 3D trainer was unified.
+    The unified trainer started using _extract_features_batched() directly,
+    which didn't handle 3D volumes, causing KID to fail with "Not enough samples".
+
+    Fix: _extract_features_batched() must detect 3D (ndim==5) and use
+    extract_features_3d() for slice-wise feature extraction.
+    """
+
+    def test_3d_returns_slice_features(self):
+        """REGRESSION: 3D volumes produce D features, not 1 feature per volume."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = GenerationMetricsConfig()
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='bravo'
+            )
+
+            # Mock extractor that returns 2048-dim features
+            mock_extractor = Mock()
+            mock_extractor.extract_features = Mock(
+                side_effect=lambda x: torch.randn(x.shape[0], 2048)
+            )
+
+            # 3D volume: [1, 1, 16, 64, 64] (1 volume, 16 depth slices)
+            samples_3d = torch.randn(1, 1, 16, 64, 64)
+
+            features = metrics._extract_features_batched(samples_3d, mock_extractor)
+
+            # CRITICAL: Must return 16 features (one per slice), NOT 1
+            assert features.shape[0] == 16, \
+                f"3D extraction should produce 16 features (one per slice), got {features.shape[0]}"
+            assert features.shape[1] == 2048
+
+    def test_3d_removes_padding(self):
+        """REGRESSION: Padded slices must be removed before feature extraction."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Config with original_depth=12 (meaning 4 slices are padding)
+            config = GenerationMetricsConfig(original_depth=12)
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='bravo'
+            )
+
+            # Mock extractor
+            mock_extractor = Mock()
+            mock_extractor.extract_features = Mock(
+                side_effect=lambda x: torch.randn(x.shape[0], 2048)
+            )
+
+            # 3D volume: [1, 1, 16, 64, 64] (padded to 16 from original 12)
+            samples_3d = torch.randn(1, 1, 16, 64, 64)
+
+            features = metrics._extract_features_batched(samples_3d, mock_extractor)
+
+            # Should return 12 features (original depth), not 16
+            assert features.shape[0] == 12, \
+                f"Should exclude padded slices: expected 12 features, got {features.shape[0]}"
+
+    def test_2d_unchanged(self):
+        """2D extraction behavior unchanged (no regression)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = GenerationMetricsConfig()
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='bravo'
+            )
+
+            # Mock extractor
+            mock_extractor = Mock()
+            mock_extractor.extract_features = Mock(
+                side_effect=lambda x: torch.randn(x.shape[0], 2048)
+            )
+
+            # 2D samples: [8, 1, 64, 64]
+            samples_2d = torch.randn(8, 1, 64, 64)
+
+            features = metrics._extract_features_batched(samples_2d, mock_extractor)
+
+            # Should return 8 features (one per image)
+            assert features.shape[0] == 8
+            assert features.shape[1] == 2048

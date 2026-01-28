@@ -477,6 +477,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 samples_extended = gen_cfg.get('samples_extended', 500)
                 samples_test = gen_cfg.get('samples_test', 1000)
 
+            # Get original_depth for 3D (used to exclude padded slices from metrics)
+            original_depth = None
+            if spatial_dims == 3:
+                original_depth = cfg.volume.get('original_depth', None)
+
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
                 samples_per_epoch=samples_per_epoch,
@@ -487,6 +492,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 steps_test=gen_cfg.get('steps_test', 50),
                 cache_dir=gen_cache_dir,
                 feature_batch_size=feature_batch_size,
+                original_depth=original_depth,
             )
             if self.is_main_process:
                 sample_type = "volumes" if spatial_dims == 3 else "samples"

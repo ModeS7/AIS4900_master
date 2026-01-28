@@ -73,6 +73,8 @@ class GenerationMetricsConfig:
         steps_test: Denoising steps for test evaluation.
         cache_dir: Directory for caching reference features.
         feature_batch_size: Batch size for feature extraction.
+        cfg_scale: CFG scale for generation (requires CFG dropout during training).
+        original_depth: Original depth before padding (for 3D). Padded slices excluded from metrics.
     """
     enabled: bool = True
     samples_per_epoch: int = 100
@@ -84,6 +86,7 @@ class GenerationMetricsConfig:
     cache_dir: str = ".cache/generation_features"
     feature_batch_size: int = 16  # Set by trainer to match training.batch_size
     cfg_scale: float = 2.0  # CFG scale for generation (requires CFG dropout during training)
+    original_depth: Optional[int] = None  # Original depth before padding (for 3D metrics)
 
 
 # =============================================================================
@@ -801,15 +804,31 @@ class GenerationMetrics:
         """Extract features from samples in batches.
 
         Args:
-            samples: Input samples [N, C, H, W].
+            samples: Input samples [N, C, H, W] or [N, C, D, H, W] for 3D.
             extractor: Feature extractor (ResNet50 or BiomedCLIP).
             batch_size: Batch size for extraction (default: config.feature_batch_size).
 
         Returns:
-            Feature tensor [N, D].
+            Feature tensor [N, D] for 2D or [N*D_orig, D] for 3D (slice-wise, padding removed).
         """
         if batch_size is None:
             batch_size = self.config.feature_batch_size
+
+        # Handle 3D volumes via slice-wise extraction (2.5D approach)
+        is_3d = samples.ndim == 5
+        if is_3d:
+            # Remove padded slices if original_depth is specified
+            if self.config.original_depth is not None:
+                original_depth = self.config.original_depth
+                current_depth = samples.shape[2]  # [N, C, D, H, W]
+                if current_depth > original_depth:
+                    # Remove last (current_depth - original_depth) slices
+                    samples = samples[:, :, :original_depth, :, :]
+                    logger.debug(f"Removed {current_depth - original_depth} padded slices for metrics")
+
+            return extract_features_3d(samples, extractor, chunk_size=batch_size)
+
+        # 2D: extract in sub-batches
         all_features = []
         for start_idx in range(0, samples.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, samples.shape[0])
