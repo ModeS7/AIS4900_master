@@ -7,9 +7,9 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp7_sit3d_b_128"
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp7_sit_b_128_patch8_%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp7_sit_b_128_patch8_%j.err
+#SBATCH --job-name="exp7_sit3d_b_128_2000"
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp7_sit_b_128_patch8_2000_%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp7_sit_b_128_patch8_2000_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
@@ -57,6 +57,6 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.pad_depth_to=160 \
     training.epochs=2000 \
     training.learning_rate=1e-4 \
-    training.name=exp7_sit_b_128_patch8_
+    training.name=exp7_sit_b_128_patch8_2000_
 
 conda deactivate
