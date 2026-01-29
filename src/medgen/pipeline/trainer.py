@@ -482,6 +482,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if spatial_dims == 3:
                 original_depth = cfg.volume.get('original_depth', None)
 
+            # Get size bin config for seg_conditioned mode
+            size_bin_edges = None
+            size_bin_fov_mm = 240.0
+            if self.mode_name == 'seg_conditioned':
+                size_bin_cfg = cfg.mode.get('size_bins', {})
+                size_bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+                size_bin_fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
+
             self._gen_metrics_config = GenerationMetricsConfig(
                 enabled=True,
                 samples_per_epoch=samples_per_epoch,
@@ -493,6 +501,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 cache_dir=gen_cache_dir,
                 feature_batch_size=feature_batch_size,
                 original_depth=original_depth,
+                size_bin_edges=size_bin_edges,
+                size_bin_fov_mm=size_bin_fov_mm,
             )
             if self.is_main_process:
                 sample_type = "volumes" if spatial_dims == 3 else "samples"

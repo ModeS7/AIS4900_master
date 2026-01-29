@@ -33,9 +33,9 @@ Reference:
 """
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -51,6 +51,7 @@ from .quality import (
     compute_lpips_diversity_3d,
     compute_msssim_diversity_3d,
 )
+from medgen.data.loaders.seg_conditioned import compute_size_bins, DEFAULT_BIN_EDGES
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,8 @@ class GenerationMetricsConfig:
         feature_batch_size: Batch size for feature extraction.
         cfg_scale: CFG scale for generation (requires CFG dropout during training).
         original_depth: Original depth before padding (for 3D). Padded slices excluded from metrics.
+        size_bin_edges: Bin edges in mm for size bin adherence (seg_conditioned mode).
+        size_bin_fov_mm: Field of view in mm for computing pixel spacing.
     """
     enabled: bool = True
     samples_per_epoch: int = 100
@@ -87,6 +90,9 @@ class GenerationMetricsConfig:
     feature_batch_size: int = 16  # Set by trainer to match training.batch_size
     cfg_scale: float = 2.0  # CFG scale for generation (requires CFG dropout during training)
     original_depth: Optional[int] = None  # Original depth before padding (for 3D metrics)
+    # Size bin adherence config (for seg_conditioned mode)
+    size_bin_edges: Optional[List[float]] = None  # Bin edges in mm (default from loader)
+    size_bin_fov_mm: float = 240.0  # Field of view in mm
 
 
 # =============================================================================
@@ -930,6 +936,70 @@ class GenerationMetrics:
 
         return results
 
+    def _compute_size_bin_adherence(
+        self,
+        generated_masks: torch.Tensor,
+        conditioning_bins: torch.Tensor,
+        prefix: str = "",
+    ) -> Dict[str, float]:
+        """Compute size bin adherence metrics for seg_conditioned mode.
+
+        Measures how well generated masks match their conditioning size bins.
+
+        Args:
+            generated_masks: Generated binary masks [N, 1, H, W].
+            conditioning_bins: Target size bin counts [N, num_bins].
+            prefix: Prefix for metric names (e.g., "extended_").
+
+        Returns:
+            Dictionary with metrics:
+            - SizeBin/{prefix}exact_match: % of bins that exactly match
+            - SizeBin/{prefix}MAE: Mean absolute error per bin
+            - SizeBin/{prefix}correlation: Spearman correlation
+        """
+        from scipy.stats import spearmanr
+
+        results = {}
+
+        # Get bin config
+        bin_edges = self.config.size_bin_edges or DEFAULT_BIN_EDGES
+        fov_mm = self.config.size_bin_fov_mm
+        image_size = generated_masks.shape[-1]  # H or W
+        pixel_spacing_mm = fov_mm / image_size
+
+        # Compute actual size bins from generated masks
+        actual_bins_list = []
+        for i in range(generated_masks.shape[0]):
+            mask_np = generated_masks[i].squeeze().cpu().numpy()
+            actual_bins = compute_size_bins(
+                mask_np, bin_edges, pixel_spacing_mm
+            )
+            actual_bins_list.append(actual_bins)
+
+        actual_bins = torch.tensor(np.stack(actual_bins_list), dtype=torch.long)
+        target_bins = conditioning_bins.cpu()
+
+        # 1. Exact match rate (per bin average)
+        exact_matches = (actual_bins == target_bins).float().mean().item()
+        results[f'SizeBin/{prefix}exact_match'] = exact_matches
+
+        # 2. Mean Absolute Error (per sample, then averaged)
+        mae = (actual_bins.float() - target_bins.float()).abs().mean().item()
+        results[f'SizeBin/{prefix}MAE'] = mae
+
+        # 3. Spearman correlation (flatten and compute)
+        actual_flat = actual_bins.flatten().numpy()
+        target_flat = target_bins.flatten().numpy()
+
+        # Handle edge case: constant arrays
+        if np.std(actual_flat) > 0 and np.std(target_flat) > 0:
+            corr, _ = spearmanr(actual_flat, target_flat)
+            results[f'SizeBin/{prefix}correlation'] = corr
+        else:
+            results[f'SizeBin/{prefix}correlation'] = 0.0
+
+        return results
+
     def compute_epoch_metrics(
         self,
         model: nn.Module,
@@ -967,6 +1037,13 @@ class GenerationMetrics:
             # Compute diversity metrics (2D - every epoch)
             diversity_metrics = self._compute_diversity_metrics(samples, prefix="")
 
+            # Compute size bin adherence for seg_conditioned mode
+            size_bin_metrics = {}
+            if self.mode_name == 'seg_conditioned' and self.fixed_size_bins is not None:
+                size_bin_metrics = self._compute_size_bin_adherence(
+                    samples, self.fixed_size_bins[:samples.shape[0]], prefix=""
+                )
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
@@ -975,6 +1052,9 @@ class GenerationMetrics:
 
             # Add diversity metrics
             results.update(diversity_metrics)
+
+            # Add size bin metrics
+            results.update(size_bin_metrics)
 
             # Metrics vs train
             train_metrics = self._compute_metrics_against_reference(
@@ -1038,6 +1118,13 @@ class GenerationMetrics:
             # Compute diversity metrics (2D - extended)
             diversity_metrics = self._compute_diversity_metrics(samples, prefix="extended_")
 
+            # Compute size bin adherence for seg_conditioned mode
+            size_bin_metrics = {}
+            if self.mode_name == 'seg_conditioned' and self.fixed_size_bins is not None:
+                size_bin_metrics = self._compute_size_bin_adherence(
+                    samples, self.fixed_size_bins[:samples.shape[0]], prefix="extended_"
+                )
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
@@ -1046,6 +1133,9 @@ class GenerationMetrics:
 
             # Add diversity metrics
             results.update(diversity_metrics)
+
+            # Add size bin metrics
+            results.update(size_bin_metrics)
 
             # Metrics vs train
             train_metrics = self._compute_metrics_against_reference(

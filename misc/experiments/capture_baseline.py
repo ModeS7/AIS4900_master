@@ -21,9 +21,10 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -62,20 +63,15 @@ def create_synthetic_batch_3d(batch_size: int = 1, depth: int = 32, height: int 
     """Create deterministic 3D batch.
 
     For bravo/dual: dict with 'image' [B, 1, D, H, W] and 'seg' [B, 1, D, H, W]
-    For seg: tuple (seg_tensor, size_bins) - SegmentationConditionedMode expects this
-
-    Note: 3D seg mode uses SegmentationConditionedMode which expects tuple format,
-    while 2D seg mode uses SegmentationMode which handles both dict and tensor.
-    This is one of the divergences being fixed in the refactor.
+    For seg: dict with 'image' [B, 1, D, H, W] (unconditional mask generation)
     """
     set_deterministic(seed)
 
     if mode == 'seg':
-        # 3D seg mode (SegmentationConditionedMode): expects tuple (seg, size_bins)
+        # 3D seg mode (SegmentationMode): unconditional mask generation
+        # Uses dict format with 'image' key, same as other 3D modes
         seg = (torch.randn(batch_size, 1, depth, height, width) > 0.5).float()
-        size_bins = torch.zeros(batch_size, 9)  # Placeholder size bins
-        size_bins[:, 0] = 1  # At least one tumor in first bin
-        return (seg, size_bins)
+        return {'image': seg}
     else:
         # Conditional modes: image to generate + seg conditioning
         batch = {
@@ -332,7 +328,7 @@ def compare_baselines(baseline: Dict[str, Any], current: Dict[str, Any], toleran
 
     # Compare final state hash
     if baseline['final_state_hash'] != current['final_state_hash']:
-        logger.error("Final state hash mismatch!")
+        logger.error(f"Final state hash mismatch!")
         logger.error(f"  Baseline: {baseline['final_state_hash']}")
         logger.error(f"  Current:  {current['final_state_hash']}")
         all_match = False

@@ -13,18 +13,18 @@ import torch
 from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
 
 
-def _to_device(batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device) -> Union[torch.Tensor, Dict[str, Any]]:
-    """Convert batch tensor or dict to device, handling MONAI MetaTensors.
+def _to_device(batch: Union[torch.Tensor, Dict[str, Any], tuple], device: torch.device) -> Union[torch.Tensor, Dict[str, Any], tuple]:
+    """Convert batch tensor, dict, or tuple to device, handling MONAI MetaTensors.
 
     MetaTensors from MONAI need to be converted to regular tensors
     before being moved to device to avoid metadata issues.
 
     Args:
-        batch: Input tensor (may be MetaTensor) or dict of tensors.
+        batch: Input tensor (may be MetaTensor), dict of tensors, or tuple of tensors.
         device: Target device.
 
     Returns:
-        Tensor or dict of tensors on target device.
+        Tensor, dict of tensors, or tuple of tensors on target device.
     """
     if isinstance(batch, dict):
         # Handle dict batch format (e.g., from 3D dataloaders)
@@ -38,6 +38,14 @@ def _to_device(batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device)
             else:
                 result[k] = v  # Keep non-tensor values as-is
         return result
+    elif isinstance(batch, tuple):
+        # Handle tuple batch format (e.g., 3D seg mode: (seg_tensor, size_bins))
+        return tuple(
+            v.as_tensor().to(device, non_blocking=True) if hasattr(v, 'as_tensor')
+            else v.to(device, non_blocking=True) if isinstance(v, torch.Tensor)
+            else v
+            for v in batch
+        )
     else:
         if hasattr(batch, 'as_tensor'):
             return batch.as_tensor().to(device)

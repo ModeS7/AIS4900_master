@@ -21,6 +21,7 @@ image_keys: [bravo]  # Which modalities to load
 description: "BRAVO image generation conditioned on segmentation mask"
 
 # Classifier-free guidance (CFG) dropout
-# - 2D: NOT used - ~65-75% natural dropout from tumor-free slices
-# - 3D: Used - every volume has tumors, no natural dropout
-cfg_dropout_prob: 0.15  # 15% CFG dropout (only affects 3D training)
+# - Disabled for bravo: dense seg mask conditioning doesn't benefit from CFG
+# - CFG amplifies weak conditioning (like text), but seg masks are already maximally informative
+# - Empirically: CFG dropout worsens CMMD without improving KID
+cfg_dropout_prob: 0.0  # Disabled - no benefit for dense spatial conditioning
