@@ -8,6 +8,7 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
+#SBATCH --exclude=idun-06-02
 #SBATCH --job-name="exp1_seg_baseline_3d"
 #SBATCH --output=IDUN/output/downstream/exp1_seg_baseline_3d_%j.out
 #SBATCH --error=IDUN/output/downstream/exp1_seg_baseline_3d_%j.err

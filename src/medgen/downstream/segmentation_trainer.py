@@ -163,7 +163,7 @@ class SegmentationTrainer(BaseTrainer):
             self.optimizer,
             warmup_epochs=self.warmup_epochs,
             total_epochs=self.n_epochs,
-            min_lr=1e-6,
+            eta_min=1e-6,
         )
 
         # Load checkpoint if provided

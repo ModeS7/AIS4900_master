@@ -7,6 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
+#SBATCH --exclude=idun-06-02
 #SBATCH --job-name="exp1_seg_baseline_2d"
 #SBATCH --output=IDUN/output/downstream/exp1_seg_baseline_2d_%j.out
 #SBATCH --error=IDUN/output/downstream/exp1_seg_baseline_2d_%j.err
