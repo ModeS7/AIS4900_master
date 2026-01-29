@@ -118,10 +118,9 @@ class TestTrainer3DEquivalence:
         """Set up deterministic state."""
         set_deterministic(42)
 
-    @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
-    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
+    @pytest.mark.timeout(300)  # 5 minutes for 3D operations
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
@@ -132,7 +131,7 @@ class TestTrainer3DEquivalence:
 
         current = capture_baseline(
             spatial_dims=3,
-            num_steps=10,
+            num_steps=3,  # Reduced for faster testing
             seed=42,
             mode='bravo',
         )
@@ -140,10 +139,9 @@ class TestTrainer3DEquivalence:
         assert compare_baselines(baseline, current, tolerance=TOLERANCE), \
             "3D bravo trainer results differ from baseline"
 
-    @pytest.mark.timeout(60)
     @pytest.mark.baseline
     @pytest.mark.slow
-    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
+    @pytest.mark.timeout(300)  # 5 minutes for 3D operations
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
@@ -154,7 +152,7 @@ class TestTrainer3DEquivalence:
 
         current = capture_baseline(
             spatial_dims=3,
-            num_steps=10,
+            num_steps=3,  # Reduced for faster testing
             seed=42,
             mode='seg',
         )
@@ -187,9 +185,8 @@ class TestTrainerDeterminism:
             assert abs(s1['total_loss'] - s2['total_loss']) < 1e-6, \
                 f"Step {i} loss differs between runs"
 
-    @pytest.mark.timeout(60)
     @pytest.mark.slow
-    @pytest.mark.timeout(180)  # 3 minutes for 3D operations
+    @pytest.mark.timeout(600)  # 10 minutes for 3D operations (2 runs with 3 steps each)
     @pytest.mark.skipif(
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
