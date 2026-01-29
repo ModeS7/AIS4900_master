@@ -102,8 +102,8 @@ training:
   # Validation frequency
   val_every: 1           # Validate every N epochs
 
-  # Early stopping
-  patience: 20           # Epochs without improvement before stopping
+  # Early stopping (disabled by default, set lower value to enable)
+  patience: 9999         # Epochs without improvement before stopping
 
   # Checkpointing
   save_best: true
