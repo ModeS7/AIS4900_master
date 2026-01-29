@@ -411,3 +411,155 @@ class TestExtractFeaturesBatched3D:
             # Should return 8 features (one per image)
             assert features.shape[0] == 8
             assert features.shape[1] == 2048
+
+
+class TestSizeBinAdherence:
+    """Tests for size bin adherence metrics (seg_conditioned mode).
+
+    REGRESSION: These tests ensure the size bin adherence metric continues
+    to work correctly for seg_conditioned mode.
+    """
+
+    def test_config_has_size_bin_fields(self):
+        """GenerationMetricsConfig has size bin config fields."""
+        config = GenerationMetricsConfig(
+            size_bin_edges=[0, 5, 10, 20],
+            size_bin_fov_mm=200.0,
+        )
+        assert config.size_bin_edges == [0, 5, 10, 20]
+        assert config.size_bin_fov_mm == 200.0
+
+    def test_config_default_size_bin_values(self):
+        """Default config has None/default for size bin fields."""
+        config = GenerationMetricsConfig()
+        assert config.size_bin_edges is None
+        assert config.size_bin_fov_mm == 240.0
+
+    def test_compute_size_bin_adherence_perfect_match(self):
+        """Perfect match between generated and conditioning returns 1.0 exact match."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from medgen.data.loaders.seg_conditioned import compute_size_bins, DEFAULT_BIN_EDGES
+            import numpy as np
+
+            config = GenerationMetricsConfig(
+                size_bin_edges=list(DEFAULT_BIN_EDGES),
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            # Create masks with known tumor sizes
+            masks = torch.zeros(2, 1, 256, 256)
+
+            # Add small circular tumor to mask 0 (~8mm diameter)
+            center, radius = 128, 4
+            y, x = torch.meshgrid(torch.arange(256), torch.arange(256), indexing='ij')
+            circle = ((x - center)**2 + (y - center)**2) < radius**2
+            masks[0, 0] = circle.float()
+
+            # Compute actual bins from masks
+            pixel_spacing = 240.0 / 256
+            actual_bins_list = []
+            for i in range(2):
+                mask_np = masks[i].squeeze().numpy()
+                bins = compute_size_bins(mask_np, DEFAULT_BIN_EDGES, pixel_spacing)
+                actual_bins_list.append(bins)
+
+            conditioning = torch.tensor(np.stack(actual_bins_list), dtype=torch.long)
+
+            # Compute adherence (should be perfect)
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="")
+
+            assert results['SizeBin/exact_match'] == 1.0
+            assert results['SizeBin/MAE'] == 0.0
+
+    def test_compute_size_bin_adherence_mismatch(self):
+        """Mismatch between generated and conditioning detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+
+            config = GenerationMetricsConfig(
+                size_bin_edges=list(DEFAULT_BIN_EDGES),
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            # Empty mask (all zeros)
+            masks = torch.zeros(1, 1, 256, 256)
+
+            # Conditioning that expects tumors
+            conditioning = torch.zeros(1, 6, dtype=torch.long)
+            conditioning[0, 2] = 3  # Expect 3 tumors in bin 2
+
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="")
+
+            # Should not be perfect match
+            assert results['SizeBin/exact_match'] < 1.0
+            assert results['SizeBin/MAE'] > 0.0
+
+    def test_compute_size_bin_adherence_extended_prefix(self):
+        """Extended prefix applied to metric names."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+
+            config = GenerationMetricsConfig(
+                size_bin_edges=list(DEFAULT_BIN_EDGES),
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            masks = torch.zeros(1, 1, 256, 256)
+            conditioning = torch.zeros(1, 6, dtype=torch.long)
+
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="extended_")
+
+            assert 'SizeBin/extended_exact_match' in results
+            assert 'SizeBin/extended_MAE' in results
+            assert 'SizeBin/extended_correlation' in results
+
+    def test_size_bin_adherence_uses_default_bins_when_none(self):
+        """Uses DEFAULT_BIN_EDGES when config.size_bin_edges is None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+
+            # Config with None size_bin_edges
+            config = GenerationMetricsConfig(size_bin_edges=None)
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            masks = torch.zeros(1, 1, 256, 256)
+            conditioning = torch.zeros(1, len(DEFAULT_BIN_EDGES) - 1, dtype=torch.long)
+
+            # Should not crash - uses DEFAULT_BIN_EDGES
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="")
+
+            assert 'SizeBin/exact_match' in results
+            assert 'SizeBin/MAE' in results
+
+    def test_correlation_handles_constant_arrays(self):
+        """Correlation returns 0.0 for constant arrays (no variance)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+
+            config = GenerationMetricsConfig(
+                size_bin_edges=list(DEFAULT_BIN_EDGES),
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            # All zeros - constant arrays
+            masks = torch.zeros(2, 1, 256, 256)
+            conditioning = torch.zeros(2, 6, dtype=torch.long)
+
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="")
+
+            # Correlation should be 0.0 for constant arrays (not NaN)
+            assert results['SizeBin/correlation'] == 0.0
