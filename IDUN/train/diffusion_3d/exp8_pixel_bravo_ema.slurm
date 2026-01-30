@@ -31,10 +31,12 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
-# 3D Pixel-Space Diffusion: Bravo with EMA
+# 3D Pixel-Space Diffusion: Bravo with EMA (128x128x160)
 # ============================================================================
 # Same as exp1 but with EMA enabled for better generation quality
-# EMA doubles memory usage - increased mem to 64G
+# Reduced to 128x128 spatial (from 256x256) to fit in 80GB with EMA
+# VRAM: 256x256 ~44GB training + 60GB CUDA graphs = OOM on validation
+#       128x128 ~11GB training = fits comfortably with validation
 # ============================================================================
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
@@ -42,8 +44,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     strategy=rflow \
     mode=bravo \
     model=default_3d \
-    volume.height=256 \
-    volume.width=256 \
+    volume.height=128 \
+    volume.width=128 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
     training.learning_rate=1e-4 \

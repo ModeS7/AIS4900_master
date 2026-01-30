@@ -36,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 seg masks -> Latent: 8x8x32 (32x compression)
 # Loss: BCE + Dice + Boundary (no perceptual, no GAN)
 # Tokens for transformer: 8*8 = 64 per slice
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=seg \
     dcae=f32 \

@@ -37,7 +37,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Loss: BCE + Dice + Boundary (no perceptual, no GAN)
 # Tokens for transformer: 2*2 = 4 (extremely efficient!)
 # Near-perfect reconstruction observed in previous experiments
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=seg \
     dcae=f128 \

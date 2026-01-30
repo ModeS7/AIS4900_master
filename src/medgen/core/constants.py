@@ -22,6 +22,7 @@ class ModeType(str, Enum):
     """
     SEG = "seg"               # Segmentation mask only
     SEG_CONDITIONED = "seg_conditioned"  # Seg mask generation conditioned on size bins
+    SEG_CONDITIONED_INPUT = "seg_conditioned_input"  # Seg conditioned via input channel concat
     BRAVO = "bravo"           # Single MRI modality (BRAVO/FLAIR)
     DUAL = "dual"             # Two MRI modalities (t1_pre + t1_gd)
     MULTI = "multi"           # Multi-modality diffusion with mode embedding

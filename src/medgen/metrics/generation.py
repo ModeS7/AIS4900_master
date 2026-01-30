@@ -966,13 +966,15 @@ class GenerationMetrics:
         fov_mm = self.config.size_bin_fov_mm
         image_size = generated_masks.shape[-1]  # H or W
         pixel_spacing_mm = fov_mm / image_size
+        # Get num_bins from the conditioning tensor shape
+        num_bins = conditioning_bins.shape[-1]
 
         # Compute actual size bins from generated masks
         actual_bins_list = []
         for i in range(generated_masks.shape[0]):
             mask_np = generated_masks[i].squeeze().cpu().numpy()
             actual_bins = compute_size_bins(
-                mask_np, bin_edges, pixel_spacing_mm
+                mask_np, bin_edges, pixel_spacing_mm, num_bins=num_bins
             )
             actual_bins_list.append(actual_bins)
 
