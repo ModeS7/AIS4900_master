@@ -36,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Compare with exp9.3 which uses RadImageNet perceptual loss
 # Input: 256x256x1 -> Latent: 2x2x512
 # Phase 1 training: L1 + LPIPS loss (no GAN)
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f128 \

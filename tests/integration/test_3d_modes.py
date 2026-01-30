@@ -15,10 +15,10 @@ class TestConfigValidation:
     """Test that config mode names match expected values."""
 
     def test_seg_conditioned_3d_mode_name(self):
-        """seg_diffusion_3d.yaml should have name=seg_conditioned."""
-        cfg = OmegaConf.load("configs/mode/seg_diffusion_3d.yaml")
+        """seg_conditioned_3d.yaml should have name=seg_conditioned."""
+        cfg = OmegaConf.load("configs/mode/seg_conditioned_3d.yaml")
         assert cfg.name == "seg_conditioned", (
-            f"seg_diffusion_3d.yaml has name={cfg.name}, expected 'seg_conditioned'. "
+            f"seg_conditioned_3d.yaml has name={cfg.name}, expected 'seg_conditioned'. "
             "This is required for SizeBinModelWrapper to be applied."
         )
 
@@ -29,7 +29,7 @@ class TestConfigValidation:
 
     def test_seg_conditioned_has_size_bins(self):
         """seg_conditioned modes should have size_bins config."""
-        for config_file in ["configs/mode/seg_conditioned.yaml", "configs/mode/seg_diffusion_3d.yaml"]:
+        for config_file in ["configs/mode/seg_conditioned.yaml", "configs/mode/seg_conditioned_3d.yaml"]:
             cfg = OmegaConf.load(config_file)
             assert "size_bins" in cfg, f"{config_file} missing size_bins config"
             assert "num_bins" in cfg.size_bins

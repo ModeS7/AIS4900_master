@@ -34,7 +34,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # Exp8: 3D VQ-VAE 256x256x160, 4x compression, all modalities
 # VQ-VAE uses less memory than KL-VAE (no mu/logvar branches)
-time python -m medgen.scripts.train_vqvae_3d \
+time python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \

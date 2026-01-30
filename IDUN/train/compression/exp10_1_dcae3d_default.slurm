@@ -38,7 +38,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # - 32 latent channels
 # - Deterministic (no KL/VQ), L1 + 2.5D perceptual loss
 # - Gradient checkpointing enabled by default
-time python -m medgen.scripts.train_dcae_3d \
+time python -m medgen.scripts.train_compression --config-name=dcae_3d \
     paths=cluster \
     mode=multi_modality \
     training.name=exp10_1_

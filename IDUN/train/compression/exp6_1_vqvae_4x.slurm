@@ -29,7 +29,7 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 # VQ-VAE 4x compression (matches exp4 VAE latent size)
-time python -m medgen.scripts.train_vqvae \
+time python -m medgen.scripts.train_compression --config-name=vqvae \
     paths=cluster \
     mode=multi_modality \
     model.image_size=256 \

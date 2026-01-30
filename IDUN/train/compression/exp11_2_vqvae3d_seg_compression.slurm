@@ -36,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Augmentation: 3D flips + 90° rotations (MONAI)
 # Loss: BCE + Dice + Boundary (seg_mode)
 # Metrics: Dice, IoU (not PSNR/LPIPS)
-time python -m medgen.scripts.train_vqvae_3d \
+time python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     paths=cluster \
     mode=seg \
     training.epochs=125 \

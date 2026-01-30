@@ -38,7 +38,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Metrics: Dice, IoU (not PSNR/LPIPS/MS-SSIM)
 # Regional: Per-tumor Dice by size category (RANO-BM thresholds)
 # Augmentation: Aggressive spatial + Mosaic + CutMix + CopyPaste
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=seg \
     dcae=f32 \

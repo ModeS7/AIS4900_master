@@ -35,7 +35,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 -> Latent: 4x4x128
 # Structured latent: channel_steps=[16, 20, 24, ..., 128] (29 options)
 # Per paper: DC-AE 1.5 recommended for c>=64
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f64 \

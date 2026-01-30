@@ -151,7 +151,7 @@ echo "# TEST 1: VAE 2D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vae \
+python -m medgen.scripts.train_compression --config-name=vae \
     mode=bravo \
     $COMMON_2D \
     training.logging.regional_losses=true \
@@ -181,7 +181,7 @@ echo "# TEST 2: VQVAE 2D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vqvae \
+python -m medgen.scripts.train_compression --config-name=vqvae \
     mode=bravo \
     $COMMON_2D \
     training.logging.regional_losses=true \
@@ -210,7 +210,7 @@ echo "# TEST 3: DCAE 2D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_dcae \
+python -m medgen.scripts.train_compression --config-name=dcae \
     mode=bravo \
     $COMMON_2D \
     training.logging.regional_losses=true \
@@ -239,7 +239,7 @@ echo "# TEST 4: DCAE 2D seg"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_dcae \
+python -m medgen.scripts.train_compression --config-name=dcae \
     mode=seg \
     dcae.seg_mode=true \
     $COMMON_2D \
@@ -299,7 +299,7 @@ echo "# TEST 6: VAE 2D multi_modality"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vae \
+python -m medgen.scripts.train_compression --config-name=vae \
     mode=multi_modality \
     $COMMON_2D \
     training.logging.regional_losses=true \
@@ -334,7 +334,7 @@ echo "# TEST 7: VAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vae_3d \
+python -m medgen.scripts.train_compression --config-name=vae_3d \
     mode=bravo \
     $COMMON_3D \
     vae_3d.disable_gan=true \
@@ -364,7 +364,7 @@ echo "# TEST 8: VQVAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vqvae_3d \
+python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     mode=bravo \
     $COMMON_3D \
     vqvae_3d.disable_gan=true \
@@ -394,7 +394,7 @@ echo "# TEST 9: VQVAE 3D seg"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_vqvae_3d \
+python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     mode=seg \
     vqvae_3d.seg_mode=true \
     vqvae_3d.disable_gan=true \
@@ -425,7 +425,7 @@ echo "# TEST 10: DCAE 3D bravo"
 echo "############################################################"
 TOTAL=$((TOTAL + 1))
 
-python -m medgen.scripts.train_dcae_3d \
+python -m medgen.scripts.train_compression --config-name=dcae_3d \
     mode=bravo \
     $COMMON_3D \
     dcae_3d.disable_gan=true \

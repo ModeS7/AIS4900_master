@@ -53,7 +53,7 @@ fi
 
 echo "Loading pretrained weights from: $PRETRAINED_CHECKPOINT"
 
-time python -m medgen.scripts.train_vae \
+time python -m medgen.scripts.train_compression --config-name=vae \
     paths=cluster \
     mode=bravo \
     model.image_size=256 \

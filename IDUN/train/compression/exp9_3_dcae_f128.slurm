@@ -35,7 +35,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 -> Latent: 2x2x512
 # Same latent capacity as f32/f64 (2048 values), max channel diversity
 # Phase 1 training: L1 + Perceptual loss (no GAN)
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f128 \

@@ -33,7 +33,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Exp8.11: 8x compression + larger codebook (1024 entries), 4 latent channels
 # 3 levels: 256->128->64->32 (8x spatial compression)
 # Latent shape: [4, 32, 32, 20]
-time python -m medgen.scripts.train_vqvae_3d \
+time python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \

@@ -36,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # - Training at lower resolution for speed
 # - Validation at full resolution for accurate metrics
 # - disable_gan=true skips discriminator creation entirely (saves ~15GB VRAM)
-time python -m medgen.scripts.train_vae_3d \
+time python -m medgen.scripts.train_compression --config-name=vae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \

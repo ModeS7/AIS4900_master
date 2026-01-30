@@ -3,6 +3,7 @@
 import pytest
 import torch
 import tempfile
+import numpy as np
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from dataclasses import asdict
@@ -563,3 +564,110 @@ class TestSizeBinAdherence:
 
             # Correlation should be 0.0 for constant arrays (not NaN)
             assert results['SizeBin/correlation'] == 0.0
+
+    def test_compute_size_bin_adherence_uses_conditioning_num_bins(self):
+        """Verify num_bins is derived from conditioning tensor, not defaulted.
+
+        REGRESSION: The num_bins parameter MUST be extracted from the
+        conditioning tensor shape, not hardcoded or defaulted. Otherwise,
+        if config uses 7 bins but default is 6, we get tensor shape mismatch.
+        """
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Config with 7 bin edges (produces 6 bins by default)
+            # But we'll pass 7-bin conditioning to test that the method
+            # correctly uses conditioning shape, not edge count
+            config = GenerationMetricsConfig(
+                size_bin_edges=[0, 3, 6, 10, 15, 20, 30],  # 7 edges = 6 bins normally
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            # 7-bin conditioning tensor (not 6!)
+            # This is the key: conditioning shape defines num_bins
+            conditioning_7bins = torch.zeros(1, 7, dtype=torch.long)
+            conditioning_7bins[0, 2] = 1  # 1 tumor in bin 2
+
+            # Empty mask - all zeros
+            masks = torch.zeros(1, 1, 256, 256)
+
+            # Track what num_bins is passed to compute_size_bins
+            captured_num_bins = []
+            original_compute_size_bins = None
+
+            from medgen.data.loaders import seg_conditioned as sc_module
+            original_compute_size_bins = sc_module.compute_size_bins
+
+            def tracking_compute_size_bins(mask, edges, spacing, num_bins=None):
+                captured_num_bins.append(num_bins)
+                return original_compute_size_bins(mask, edges, spacing, num_bins=num_bins)
+
+            # Patch and run
+            with patch.object(sc_module, 'compute_size_bins', tracking_compute_size_bins):
+                # Also need to patch the import in generation.py
+                with patch('medgen.metrics.generation.compute_size_bins', tracking_compute_size_bins):
+                    results = metrics._compute_size_bin_adherence(masks, conditioning_7bins, prefix="")
+
+            # Verify num_bins=7 was passed (from conditioning shape), not 6
+            assert len(captured_num_bins) > 0, "compute_size_bins was not called"
+            assert captured_num_bins[0] == 7, (
+                f"REGRESSION: Expected num_bins=7 (from conditioning tensor shape), "
+                f"got {captured_num_bins[0]}. This would cause tensor shape mismatch errors. "
+                f"The num_bins must be derived from conditioning_bins.shape[-1], not hardcoded."
+            )
+
+    def test_size_bin_tensor_shapes_match(self):
+        """Verify actual and target bin tensors have matching shapes.
+
+        REGRESSION: This is what happens when num_bins is wrong - tensor
+        operations fail with shape mismatch.
+        """
+        # Simulate the bug: 6 computed bins vs 7 target bins
+        actual_bins_wrong = torch.tensor([[1, 0, 2, 0, 0, 0]])  # 6 bins (BUG)
+        target_bins = torch.tensor([[1, 0, 2, 0, 0, 0, 1]])     # 7 bins
+
+        # This would fail with shape mismatch
+        with pytest.raises(RuntimeError):
+            _ = (actual_bins_wrong == target_bins)
+
+        # Correct version: both 7 bins
+        actual_bins_correct = torch.tensor([[1, 0, 2, 0, 0, 0, 0]])  # 7 bins
+        # This should work
+        match = (actual_bins_correct == target_bins)
+        assert match.shape == target_bins.shape
+
+    def test_size_bin_adherence_handles_7_bins(self):
+        """Full integration test: 7-bin conditioning works end-to-end.
+
+        REGRESSION: Verifies the full pipeline works with 7 bins (the actual
+        configuration used in seg_conditioned_input mode).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 7-bin config matching seg_conditioned_input.yaml
+            config = GenerationMetricsConfig(
+                size_bin_edges=[0, 3, 6, 10, 15, 20, 30],
+                size_bin_fov_mm=240.0,
+            )
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            # 7-bin conditioning
+            conditioning = torch.zeros(2, 7, dtype=torch.long)
+            conditioning[0, 3] = 2  # 2 tumors in bin 3 for sample 0
+
+            # Empty masks
+            masks = torch.zeros(2, 1, 256, 256)
+
+            # Should not crash
+            results = metrics._compute_size_bin_adherence(masks, conditioning, prefix="")
+
+            # Should have valid metrics
+            assert 'SizeBin/exact_match' in results
+            assert 'SizeBin/MAE' in results
+            assert 'SizeBin/correlation' in results
+            assert not np.isnan(results['SizeBin/exact_match'])
+            assert not np.isnan(results['SizeBin/MAE'])

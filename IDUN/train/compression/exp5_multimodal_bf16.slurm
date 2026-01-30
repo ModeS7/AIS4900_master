@@ -34,7 +34,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 # - Prepares for future NVIDIA 2:4 structured sparsity
 # - Single H100 GPU with torch.compile
 # - 125 epochs, 20 validations
-time python -m medgen.scripts.train_vae \
+time python -m medgen.scripts.train_compression --config-name=vae \
     paths=cluster \
     mode=multi_modality \
     model.image_size=256 \

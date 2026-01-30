@@ -40,7 +40,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 #
 CHECKPOINT="runs/compression_2d/multi_modality/exp9_f32_20251231-175024/latest.pt"
 
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f32 \

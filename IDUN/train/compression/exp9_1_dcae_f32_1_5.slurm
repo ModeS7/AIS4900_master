@@ -36,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 -> Latent: 8x8x32
 # Structured latent: channel_steps=[16, 20, 24, 28, 32]
 # WARNING: Paper shows DC-AE 1.5 is NOT recommended for c=32
-time python -m medgen.scripts.train_dcae \
+time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=multi_modality \
     dcae=f32 \

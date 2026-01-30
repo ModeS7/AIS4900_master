@@ -30,7 +30,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # 8x compression: 3 levels (256->128->64->32)
-time python -m medgen.scripts.train_vqvae_3d \
+time python -m medgen.scripts.train_compression --config-name=vqvae_3d \
     paths=cluster \
     mode=multi_modality \
     training.epochs=125 \

@@ -34,7 +34,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch
 # - 3-level VAE: channels=[64,128,256] for 4x compression instead of 8x
 # - Single H100 GPU with torch.compile
 # - 125 epochs, 20 validations
-time python -m medgen.scripts.train_vae \
+time python -m medgen.scripts.train_compression --config-name=vae \
     paths=cluster \
     mode=multi_modality \
     model.image_size=256 \

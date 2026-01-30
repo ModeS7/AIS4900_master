@@ -438,3 +438,130 @@ class TestRunValidation:
         error_msg = str(excinfo.value).lower()
         assert 'epochs' in error_msg, "Should mention epochs error"
         assert 'strategy' in error_msg, "Should mention strategy error"
+
+
+# =============================================================================
+# TestModeConfigSync - Mode configs match ModeType enum
+# =============================================================================
+
+
+class TestModeConfigSync:
+    """Verify mode configs and ModeType enum are synchronized.
+
+    REGRESSION: Catches errors where a mode config exists but the mode name
+    hasn't been added to ModeType enum (e.g., seg_conditioned_input).
+    """
+
+    def test_all_mode_configs_in_enum(self):
+        """Every configs/mode/*.yaml must have its name in ModeType.
+
+        REGRESSION: Catches the error where seg_conditioned_input.yaml was
+        created but seg_conditioned_input wasn't added to ModeType enum.
+        """
+        import yaml
+        from medgen.core.constants import ModeType
+
+        configs_dir = Path(__file__).parent.parent.parent / "configs" / "mode"
+        if not configs_dir.exists():
+            pytest.skip("configs/mode directory not found")
+
+        valid_modes = {m.value for m in ModeType}
+        errors = []
+
+        for config_file in configs_dir.glob("*.yaml"):
+            # Skip compression-only modes (they don't use ModeType)
+            if "compression" in config_file.name:
+                continue
+
+            with open(config_file) as f:
+                cfg = yaml.safe_load(f)
+
+            mode_name = cfg.get("name")
+            if mode_name and mode_name not in valid_modes:
+                # Generate the suggested enum entry
+                enum_name = mode_name.upper().replace("-", "_")
+                errors.append(
+                    f"{config_file.name}: mode '{mode_name}' not in ModeType enum.\n"
+                    f"    Add to src/medgen/core/constants.py:\n"
+                    f"    {enum_name} = \"{mode_name}\""
+                )
+
+        if errors:
+            pytest.fail(
+                f"Found {len(errors)} mode configs missing from ModeType enum:\n\n"
+                + "\n\n".join(errors)
+            )
+
+    def test_all_enum_modes_have_configs(self):
+        """Every ModeType value should have a corresponding config file.
+
+        This test is informational - not all enum values need config files
+        (some may be dynamically configured), but it helps catch orphaned enums.
+        """
+        from medgen.core.constants import ModeType
+
+        configs_dir = Path(__file__).parent.parent.parent / "configs" / "mode"
+        if not configs_dir.exists():
+            pytest.skip("configs/mode directory not found")
+
+        existing_configs = {f.stem for f in configs_dir.glob("*.yaml")}
+
+        missing = []
+        for mode in ModeType:
+            mode_name = mode.value
+            # Check for exact match or with _3d/_compression suffix
+            has_config = (
+                mode_name in existing_configs
+                or f"{mode_name}_3d" in existing_configs
+                or f"{mode_name}_compression" in existing_configs
+                or any(mode_name in c for c in existing_configs)
+            )
+            if not has_config:
+                missing.append(mode_name)
+
+        # This is informational, not a hard failure
+        if missing:
+            pytest.skip(
+                f"ModeType values without config files (may be intentional): {missing}"
+            )
+
+    def test_mode_config_names_match_filenames(self):
+        """Config 'name' field should match the filename (without .yaml).
+
+        REGRESSION: Catches copy-paste errors where a config file is copied
+        but the internal 'name' field isn't updated.
+        """
+        import yaml
+
+        configs_dir = Path(__file__).parent.parent.parent / "configs" / "mode"
+        if not configs_dir.exists():
+            pytest.skip("configs/mode directory not found")
+
+        errors = []
+
+        for config_file in configs_dir.glob("*.yaml"):
+            with open(config_file) as f:
+                cfg = yaml.safe_load(f)
+
+            mode_name = cfg.get("name")
+            expected_name = config_file.stem  # filename without .yaml
+
+            # Allow _3d suffix in filename but not in name
+            if expected_name.endswith("_3d"):
+                expected_base = expected_name[:-3]  # Remove _3d
+                if mode_name and mode_name not in (expected_name, expected_base):
+                    errors.append(
+                        f"{config_file.name}: name='{mode_name}' doesn't match "
+                        f"filename (expected '{expected_name}' or '{expected_base}')"
+                    )
+            elif mode_name and mode_name != expected_name:
+                errors.append(
+                    f"{config_file.name}: name='{mode_name}' doesn't match "
+                    f"filename (expected '{expected_name}')"
+                )
+
+        if errors:
+            pytest.fail(
+                f"Found {len(errors)} mode configs with mismatched names:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
