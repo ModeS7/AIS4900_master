@@ -1,5 +1,4 @@
-"""
-Downstream segmentation data loading.
+"""Downstream segmentation data loading.
 
 Provides dataloaders for three training scenarios:
 - baseline: Real data only (control)
@@ -7,42 +6,101 @@ Provides dataloaders for three training scenarios:
 - mixed: Real + synthetic data with configurable ratio
 
 Supports both 2D and 3D segmentation.
+
+Reuses infrastructure from medgen.data:
+- NiFTIDataset for volume loading
+- build_standard_transform / build_3d_transform for transforms
+- create_dataloader for DataLoader creation
 """
 import logging
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
-from monai.transforms import (
-    Compose,
-    EnsureChannelFirst,
-    LoadImage,
-    RandFlip,
-    RandRotate90,
-    Resize,
-    ScaleIntensity,
-    ToTensor,
-)
 from omegaconf import DictConfig
 
-from medgen.data.loaders.common import DataLoaderConfig
+from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
+from medgen.data.utils import make_binary
+from medgen.data.loaders.common import DataLoaderConfig, create_dataloader
+from medgen.data.loaders.volume_3d import build_3d_transform
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+@dataclass
+class SegmentationConfig:
+    """Configuration extracted from Hydra config for segmentation data loading."""
+    modality: Union[str, List[str]]
+    image_size: int
+    volume_depth: int
+    batch_size: int
+    augment: bool
+    real_dir: str
+    synthetic_dir: Optional[str]
+    synthetic_ratio: float
+
+    @classmethod
+    def from_cfg(cls, cfg: DictConfig, spatial_dims: int, split: str = 'train') -> 'SegmentationConfig':
+        """Extract segmentation config from Hydra config."""
+        return cls(
+            modality=cfg.data.get('modality', 'bravo'),
+            image_size=cfg.model.image_size,
+            volume_depth=cfg.volume.get('pad_depth_to', 160) if spatial_dims == 3 else 160,
+            batch_size=cfg.training.get('batch_size_3d', 2) if spatial_dims == 3 else cfg.training.batch_size,
+            augment=cfg.data.get('augment', True) and split == 'train',
+            real_dir=cfg.data.real_dir,
+            synthetic_dir=cfg.data.get('synthetic_dir'),
+            synthetic_ratio=cfg.data.get('synthetic_ratio', 0.5),
+        )
+
+
+def _to_tensor(data: Any) -> torch.Tensor:
+    """Convert numpy array or tensor to float tensor."""
+    if isinstance(data, torch.Tensor):
+        return data.float()
+    if isinstance(data, np.ndarray):
+        return torch.from_numpy(data).float()
+    return torch.from_numpy(np.array(data)).float()
+
+
+def _binarize_seg(seg: torch.Tensor) -> torch.Tensor:
+    """Binarize segmentation mask."""
+    return _to_tensor(make_binary(seg.numpy()))
+
+
+def _build_transform(spatial_dims: int, image_size: int):
+    """Build transform based on spatial dimensions."""
+    if spatial_dims == 2:
+        return build_standard_transform(image_size)
+    return build_3d_transform(image_size, image_size)
+
+
+# =============================================================================
+# Datasets
+# =============================================================================
 
 
 class SegmentationDataset(Dataset):
     """Dataset for paired image-segmentation loading.
 
     Loads images and corresponding segmentation masks from NIfTI files.
-    Returns dict format: {'image': [1, H, W], 'seg': [1, H, W]}
+    Returns dict format: {'image': [C, H, W], 'seg': [1, H, W]} where C is num modalities.
 
-    For 2D: Extracts slices from 3D volumes.
-    For 3D: Returns full volumes.
+    For 2D: Extracts tumor-positive slices from 3D volumes.
+    For 3D: Returns full volumes with depth padding.
 
     Args:
         data_dir: Directory containing patient subdirectories.
-        modality: Input modality name (e.g., 'bravo', 't1_gd').
+        modality: Input modality name(s). Can be a single string (e.g., 'bravo')
+            or a list of modalities (e.g., ['t1_pre', 't1_gd']) for multi-channel input.
         image_size: Target image size (2D: H=W, 3D: H=W).
         spatial_dims: 2 for 2D slices, 3 for 3D volumes.
         augment: Whether to apply data augmentation.
@@ -52,85 +110,58 @@ class SegmentationDataset(Dataset):
     def __init__(
         self,
         data_dir: str,
-        modality: str = 'bravo',
+        modality: Union[str, List[str]] = 'bravo',
         image_size: int = 256,
         spatial_dims: int = 2,
         augment: bool = False,
         volume_depth: int = 160,
     ) -> None:
         self.data_dir = data_dir
-        self.modality = modality
+        self.modalities = [modality] if isinstance(modality, str) else list(modality)
         self.image_size = image_size
         self.spatial_dims = spatial_dims
         self.augment = augment
         self.volume_depth = volume_depth
 
-        # Find all patients
-        self.patients = sorted([
-            p for p in os.listdir(data_dir)
-            if os.path.isdir(os.path.join(data_dir, p))
-        ])
+        # Validate modalities exist
+        for mod in self.modalities:
+            validate_modality_exists(data_dir, mod)
+        validate_modality_exists(data_dir, 'seg')
 
-        if len(self.patients) == 0:
-            raise ValueError(f"No patient directories found in {data_dir}")
+        # Build transform
+        self.transform = _build_transform(spatial_dims, image_size)
 
-        # Build transforms
-        self.transform = self._build_transform()
+        # Load datasets using NiFTIDataset
+        self._image_datasets = {
+            mod: NiFTIDataset(data_dir, mod, self.transform)
+            for mod in self.modalities
+        }
+        self._seg_dataset = NiFTIDataset(data_dir, 'seg', self.transform)
+        self.patients = self._seg_dataset.data
 
-        # For 2D: build slice index mapping
-        if spatial_dims == 2:
-            self.slice_indices = self._build_slice_indices()
-        else:
-            self.slice_indices = None
+        # For 2D: build slice index mapping (tumor-positive only)
+        self.slice_indices = self._build_slice_indices() if spatial_dims == 2 else None
 
         logger.info(
             f"SegmentationDataset: {len(self.patients)} patients, "
-            f"spatial_dims={spatial_dims}, augment={augment}"
+            f"modalities={self.modalities}, spatial_dims={spatial_dims}, augment={augment}"
         )
-
-    def _build_transform(self) -> Compose:
-        """Build MONAI transform pipeline."""
-        transforms = [
-            LoadImage(image_only=True),
-            EnsureChannelFirst(channel_dim="no_channel"),
-            ToTensor(),
-            ScaleIntensity(minv=0.0, maxv=1.0),
-        ]
-
-        if self.spatial_dims == 2:
-            # For 2D, resize spatial dimensions but keep depth
-            transforms.append(Resize(spatial_size=(self.image_size, self.image_size, -1)))
-        else:
-            # For 3D, resize all dimensions
-            transforms.append(Resize(spatial_size=(
-                self.image_size, self.image_size, self.volume_depth
-            )))
-
-        return Compose(transforms)
 
     def _build_slice_indices(self) -> List[Tuple[int, int]]:
         """Build mapping from linear index to (patient_idx, slice_idx).
 
-        Skips slices with no tumor (empty segmentation).
+        Only includes slices with tumor pixels (positive examples).
         """
         indices = []
-        loader = LoadImage(image_only=True)
+        for patient_idx in range(len(self._seg_dataset)):
+            seg_volume, _ = self._seg_dataset[patient_idx]
+            seg_np = seg_volume.numpy() if isinstance(seg_volume, torch.Tensor) else seg_volume
 
-        for patient_idx, patient in enumerate(self.patients):
-            seg_path = os.path.join(self.data_dir, patient, 'seg.nii.gz')
-            if not os.path.exists(seg_path):
-                continue
-
-            # Load seg to count slices and check for tumors
-            seg = loader(seg_path)
-            n_slices = seg.shape[-1] if len(seg.shape) == 3 else seg.shape[2]
-
-            for slice_idx in range(n_slices):
-                # Include slice if it has tumor pixels
-                slice_data = seg[..., slice_idx] if len(seg.shape) == 3 else seg[:, :, slice_idx]
-                if slice_data.sum() > 0:
+            for slice_idx in range(seg_np.shape[-1]):
+                if seg_np[..., slice_idx].sum() > 0:
                     indices.append((patient_idx, slice_idx))
 
+        logger.info(f"Built slice indices: {len(indices)} tumor-positive slices")
         return indices
 
     def __len__(self) -> int:
@@ -143,61 +174,69 @@ class SegmentationDataset(Dataset):
             return self._get_slice(idx)
         return self._get_volume(idx)
 
+    def _load_modalities(self, patient_idx: int) -> torch.Tensor:
+        """Load and concatenate all modalities for a patient."""
+        images = [
+            _to_tensor(self._image_datasets[mod][patient_idx][0])
+            for mod in self.modalities
+        ]
+        return torch.cat(images, dim=0)
+
     def _get_slice(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a 2D slice."""
         patient_idx, slice_idx = self.slice_indices[idx]
-        patient = self.patients[patient_idx]
 
-        # Load image and seg
-        img_path = os.path.join(self.data_dir, patient, f'{self.modality}.nii.gz')
-        seg_path = os.path.join(self.data_dir, patient, 'seg.nii.gz')
-
-        image = self.transform(img_path)  # [1, H, W, D]
-        seg = self.transform(seg_path)    # [1, H, W, D]
+        image = self._load_modalities(patient_idx)  # [C, H, W, D]
+        seg, _ = self._seg_dataset[patient_idx]
+        seg = _to_tensor(seg)
 
         # Extract slice
-        image_slice = image[..., slice_idx]  # [1, H, W]
-        seg_slice = seg[..., slice_idx]      # [1, H, W]
+        image_slice = image[..., slice_idx]  # [C, H, W]
+        seg_slice = _binarize_seg(seg[..., slice_idx])  # [1, H, W]
 
-        # Binarize segmentation
-        seg_slice = (seg_slice > 0.5).float()
-
-        # Apply augmentation
         if self.augment:
-            image_slice, seg_slice = self._apply_augmentation(image_slice, seg_slice)
+            image_slice, seg_slice = self._apply_augmentation(image_slice, seg_slice, rotate=True)
 
         return {'image': image_slice, 'seg': seg_slice}
 
     def _get_volume(self, idx: int) -> Dict[str, torch.Tensor]:
         """Get a 3D volume."""
-        patient = self.patients[idx]
+        image = self._load_modalities(idx)  # [C, H, W, D]
+        seg, _ = self._seg_dataset[idx]
+        seg = _binarize_seg(_to_tensor(seg))
 
-        # Load image and seg
-        img_path = os.path.join(self.data_dir, patient, f'{self.modality}.nii.gz')
-        seg_path = os.path.join(self.data_dir, patient, 'seg.nii.gz')
-
-        image = self.transform(img_path)  # [1, H, W, D]
-        seg = self.transform(seg_path)    # [1, H, W, D]
-
-        # Binarize segmentation
-        seg = (seg > 0.5).float()
-
-        # Transpose to [1, D, H, W] for 3D convolutions
+        # Transpose to [C, D, H, W] for 3D convolutions
         image = image.permute(0, 3, 1, 2)
         seg = seg.permute(0, 3, 1, 2)
 
-        # Apply augmentation
+        # Pad depth
+        image = self._pad_depth(image)
+        seg = self._pad_depth(seg)
+
         if self.augment:
-            image, seg = self._apply_augmentation_3d(image, seg)
+            image, seg = self._apply_augmentation(image, seg, rotate=False)
 
         return {'image': image, 'seg': seg}
 
+    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
+        """Pad volume depth to target size using replication."""
+        current_depth = volume.shape[1]  # [C, D, H, W]
+        if current_depth < self.volume_depth:
+            pad_total = self.volume_depth - current_depth
+            padding = volume[:, -1:, :, :].repeat(1, pad_total, 1, 1)
+            volume = torch.cat([volume, padding], dim=1)
+        return volume
+
     def _apply_augmentation(
-        self,
-        image: torch.Tensor,
-        seg: torch.Tensor,
+        self, image: torch.Tensor, seg: torch.Tensor, rotate: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply 2D augmentation to image and mask pair."""
+        """Apply augmentation to image and mask pair.
+
+        Args:
+            image: Image tensor.
+            seg: Segmentation tensor.
+            rotate: Whether to apply 90-degree rotation (2D only).
+        """
         # Random horizontal flip
         if torch.rand(1) > 0.5:
             image = torch.flip(image, dims=[-1])
@@ -208,29 +247,12 @@ class SegmentationDataset(Dataset):
             image = torch.flip(image, dims=[-2])
             seg = torch.flip(seg, dims=[-2])
 
-        # Random 90-degree rotation
-        k = torch.randint(0, 4, (1,)).item()
-        if k > 0:
-            image = torch.rot90(image, k, dims=[-2, -1])
-            seg = torch.rot90(seg, k, dims=[-2, -1])
-
-        return image, seg
-
-    def _apply_augmentation_3d(
-        self,
-        image: torch.Tensor,
-        seg: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply 3D augmentation to image and mask pair."""
-        # Random horizontal flip (W axis)
-        if torch.rand(1) > 0.5:
-            image = torch.flip(image, dims=[-1])
-            seg = torch.flip(seg, dims=[-1])
-
-        # Random vertical flip (H axis)
-        if torch.rand(1) > 0.5:
-            image = torch.flip(image, dims=[-2])
-            seg = torch.flip(seg, dims=[-2])
+        # Random 90-degree rotation (2D only)
+        if rotate:
+            k = torch.randint(0, 4, (1,)).item()
+            if k > 0:
+                image = torch.rot90(image, k, dims=[-2, -1])
+                seg = torch.rot90(seg, k, dims=[-2, -1])
 
         return image, seg
 
@@ -241,12 +263,6 @@ class SyntheticDataset(Dataset):
     Expects NIfTI files in the synthetic directory with naming:
     - {prefix}_image.nii.gz or image_{idx}.nii.gz
     - {prefix}_seg.nii.gz or seg_{idx}.nii.gz
-
-    Args:
-        data_dir: Directory containing synthetic NIfTI files.
-        image_size: Target image size.
-        spatial_dims: 2 for 2D, 3 for 3D.
-        volume_depth: Target depth for 3D volumes.
     """
 
     def __init__(
@@ -257,37 +273,26 @@ class SyntheticDataset(Dataset):
         volume_depth: int = 160,
     ) -> None:
         self.data_dir = data_dir
-        self.image_size = image_size
         self.spatial_dims = spatial_dims
         self.volume_depth = volume_depth
 
-        # Find all image-seg pairs
         self.pairs = self._find_pairs()
-
-        if len(self.pairs) == 0:
+        if not self.pairs:
             raise ValueError(f"No synthetic image-seg pairs found in {data_dir}")
 
-        # Build transform
-        self.transform = self._build_transform()
-
+        self.transform = _build_transform(spatial_dims, image_size)
         logger.info(f"SyntheticDataset: {len(self.pairs)} pairs from {data_dir}")
 
     def _find_pairs(self) -> List[Tuple[str, str]]:
         """Find all image-seg pairs in the directory."""
         pairs = []
         files = os.listdir(self.data_dir)
-
-        # Look for patterns like: sample_0_image.nii.gz, sample_0_seg.nii.gz
-        # Or: image_0.nii.gz, seg_0.nii.gz
         seg_files = [f for f in files if 'seg' in f.lower() and f.endswith('.nii.gz')]
 
         for seg_file in seg_files:
-            # Try to find matching image file
             if '_seg' in seg_file:
-                # Pattern: prefix_seg.nii.gz -> prefix_image.nii.gz
                 image_file = seg_file.replace('_seg', '_image')
             elif 'seg_' in seg_file:
-                # Pattern: seg_0.nii.gz -> image_0.nii.gz
                 image_file = seg_file.replace('seg_', 'image_')
             else:
                 continue
@@ -297,26 +302,7 @@ class SyntheticDataset(Dataset):
                     os.path.join(self.data_dir, image_file),
                     os.path.join(self.data_dir, seg_file),
                 ))
-
         return pairs
-
-    def _build_transform(self) -> Compose:
-        """Build MONAI transform pipeline."""
-        transforms = [
-            LoadImage(image_only=True),
-            EnsureChannelFirst(channel_dim="no_channel"),
-            ToTensor(),
-            ScaleIntensity(minv=0.0, maxv=1.0),
-        ]
-
-        if self.spatial_dims == 2:
-            transforms.append(Resize(spatial_size=(self.image_size, self.image_size)))
-        else:
-            transforms.append(Resize(spatial_size=(
-                self.image_size, self.image_size, self.volume_depth
-            )))
-
-        return Compose(transforms)
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -324,18 +310,63 @@ class SyntheticDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         img_path, seg_path = self.pairs[idx]
 
-        image = self.transform(img_path)
-        seg = self.transform(seg_path)
+        image = _to_tensor(self.transform(img_path))
+        seg = _binarize_seg(_to_tensor(self.transform(seg_path)))
 
-        # Binarize segmentation
-        seg = (seg > 0.5).float()
-
-        # For 3D, transpose to [1, D, H, W]
-        if self.spatial_dims == 3 and len(image.shape) == 4:
+        # For 3D, transpose to [C, D, H, W]
+        if self.spatial_dims == 3 and image.dim() == 4:
             image = image.permute(0, 3, 1, 2)
             seg = seg.permute(0, 3, 1, 2)
 
         return {'image': image, 'seg': seg}
+
+
+# =============================================================================
+# Dataloader factories
+# =============================================================================
+
+
+def _create_eval_dataloader(
+    cfg: DictConfig,
+    split: str,
+    spatial_dims: int,
+) -> Optional[Tuple[DataLoader, Dataset]]:
+    """Create evaluation (val/test) dataloader for segmentation.
+
+    Args:
+        cfg: Hydra configuration object.
+        split: 'val' or 'test_new'.
+        spatial_dims: 2 for 2D, 3 for 3D.
+
+    Returns:
+        Tuple of (DataLoader, Dataset) or None if directory doesn't exist.
+    """
+    seg_cfg = SegmentationConfig.from_cfg(cfg, spatial_dims, split='eval')
+    data_dir = os.path.join(seg_cfg.real_dir, split)
+
+    if not os.path.exists(data_dir):
+        logger.warning(f"Directory not found: {data_dir}")
+        return None
+
+    dataset = SegmentationDataset(
+        data_dir=data_dir,
+        modality=seg_cfg.modality,
+        image_size=seg_cfg.image_size,
+        spatial_dims=spatial_dims,
+        augment=False,
+        volume_depth=seg_cfg.volume_depth,
+    )
+
+    dataloader = create_dataloader(
+        dataset=dataset,
+        batch_size=seg_cfg.batch_size,
+        shuffle=False,
+        drop_last=False,
+        loader_config=DataLoaderConfig.from_cfg(cfg),
+    )
+
+    logger.info(f"Segmentation {split} dataloader: {len(dataset)} samples")
+    return dataloader, dataset
 
 
 def create_segmentation_dataloader(
@@ -343,7 +374,7 @@ def create_segmentation_dataloader(
     scenario: str,
     split: str,
     spatial_dims: int = 2,
-) -> Tuple[DataLoader, Dataset]:
+) -> Tuple[Optional[DataLoader], Optional[Dataset]]:
     """Create dataloader for downstream segmentation training.
 
     Args:
@@ -354,89 +385,63 @@ def create_segmentation_dataloader(
 
     Returns:
         Tuple of (DataLoader, Dataset).
-
-    Raises:
-        ValueError: If scenario is invalid or required directories don't exist.
     """
     if scenario not in ('baseline', 'synthetic', 'mixed'):
         raise ValueError(f"Invalid scenario: {scenario}. Must be 'baseline', 'synthetic', or 'mixed'")
 
-    # Extract config values
-    real_dir = cfg.data.real_dir
-    synthetic_dir = cfg.data.get('synthetic_dir')
-    synthetic_ratio = cfg.data.get('synthetic_ratio', 0.5)
-    modality = cfg.data.get('modality', 'bravo')
-    image_size = cfg.model.image_size
-    augment = cfg.data.get('augment', True) and split == 'train'
-    volume_depth = cfg.volume.get('pad_depth_to', 160) if spatial_dims == 3 else None
-
-    # Determine batch size
-    if spatial_dims == 3:
-        batch_size = cfg.training.get('batch_size_3d', 2)
-    else:
-        batch_size = cfg.training.batch_size
-
-    # Build dataset(s) based on scenario
+    seg_cfg = SegmentationConfig.from_cfg(cfg, spatial_dims, split)
     datasets = []
 
+    # Load real data for baseline/mixed
     if scenario in ('baseline', 'mixed'):
-        # Load real data
-        data_split_dir = os.path.join(real_dir, split)
+        data_split_dir = os.path.join(seg_cfg.real_dir, split)
         if not os.path.exists(data_split_dir):
             if split == 'train':
                 raise ValueError(f"Real training data not found: {data_split_dir}")
-            else:
-                logger.warning(f"Real {split} data not found: {data_split_dir}")
-                return None, None
+            logger.warning(f"Real {split} data not found: {data_split_dir}")
+            return None, None
 
         real_dataset = SegmentationDataset(
             data_dir=data_split_dir,
-            modality=modality,
-            image_size=image_size,
+            modality=seg_cfg.modality,
+            image_size=seg_cfg.image_size,
             spatial_dims=spatial_dims,
-            augment=augment,
-            volume_depth=volume_depth or 160,
+            augment=seg_cfg.augment,
+            volume_depth=seg_cfg.volume_depth,
         )
         datasets.append(('real', real_dataset))
 
+    # Load synthetic data for synthetic/mixed
     if scenario in ('synthetic', 'mixed'):
-        # Load synthetic data
-        if synthetic_dir is None:
+        if seg_cfg.synthetic_dir is None:
             raise ValueError(
                 f"synthetic_dir must be specified for scenario='{scenario}'. "
                 "Use data.synthetic_dir=/path/to/generated"
             )
-
-        if not os.path.exists(synthetic_dir):
-            raise ValueError(f"Synthetic data directory not found: {synthetic_dir}")
+        if not os.path.exists(seg_cfg.synthetic_dir):
+            raise ValueError(f"Synthetic data directory not found: {seg_cfg.synthetic_dir}")
 
         synthetic_dataset = SyntheticDataset(
-            data_dir=synthetic_dir,
-            image_size=image_size,
+            data_dir=seg_cfg.synthetic_dir,
+            image_size=seg_cfg.image_size,
             spatial_dims=spatial_dims,
-            volume_depth=volume_depth or 160,
+            volume_depth=seg_cfg.volume_depth,
         )
         datasets.append(('synthetic', synthetic_dataset))
 
-    # Combine datasets based on scenario
-    if scenario == 'baseline':
-        dataset = datasets[0][1]
-    elif scenario == 'synthetic':
+    # Combine datasets
+    if scenario in ('baseline', 'synthetic'):
         dataset = datasets[0][1]
     else:  # mixed
         real_dataset = datasets[0][1]
         synthetic_dataset = datasets[1][1]
 
-        # Calculate how many synthetic samples to use based on ratio
-        # ratio = synthetic / total -> synthetic = ratio * total = ratio * (real + synthetic)
-        # synthetic = ratio * real / (1 - ratio)
         n_real = len(real_dataset)
         n_synthetic_available = len(synthetic_dataset)
-        n_synthetic_target = int(n_real * synthetic_ratio / (1 - synthetic_ratio))
+        n_synthetic_target = int(n_real * seg_cfg.synthetic_ratio / (1 - seg_cfg.synthetic_ratio))
         n_synthetic = min(n_synthetic_target, n_synthetic_available)
 
         if n_synthetic < n_synthetic_available:
-            # Subsample synthetic data
             indices = torch.randperm(n_synthetic_available)[:n_synthetic].tolist()
             synthetic_subset = Subset(synthetic_dataset, indices)
             dataset = ConcatDataset([real_dataset, synthetic_subset])
@@ -449,25 +454,17 @@ def create_segmentation_dataloader(
         )
 
     # Create DataLoader
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    shuffle = split == 'train'
-    drop_last = split == 'train'
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        drop_last=drop_last,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+    dataloader = create_dataloader(
+        dataset=dataset,
+        batch_size=seg_cfg.batch_size,
+        shuffle=(split == 'train'),
+        drop_last=(split == 'train'),
+        loader_config=DataLoaderConfig.from_cfg(cfg),
     )
 
     logger.info(
         f"Segmentation dataloader ({split}): {len(dataset)} samples, "
-        f"batch_size={batch_size}, spatial_dims={spatial_dims}"
+        f"batch_size={seg_cfg.batch_size}, spatial_dims={spatial_dims}"
     )
 
     return dataloader, dataset
@@ -477,119 +474,13 @@ def create_segmentation_val_dataloader(
     cfg: DictConfig,
     spatial_dims: int = 2,
 ) -> Optional[Tuple[DataLoader, Dataset]]:
-    """Create validation dataloader for segmentation.
-
-    Always uses real validation data regardless of training scenario.
-
-    Args:
-        cfg: Hydra configuration object.
-        spatial_dims: 2 for 2D, 3 for 3D.
-
-    Returns:
-        Tuple of (DataLoader, Dataset) or None if val data doesn't exist.
-    """
-    real_dir = cfg.data.real_dir
-    val_dir = os.path.join(real_dir, 'val')
-
-    if not os.path.exists(val_dir):
-        logger.warning(f"Validation directory not found: {val_dir}")
-        return None
-
-    modality = cfg.data.get('modality', 'bravo')
-    image_size = cfg.model.image_size
-    volume_depth = cfg.volume.get('pad_depth_to', 160) if spatial_dims == 3 else None
-
-    # Determine batch size
-    if spatial_dims == 3:
-        batch_size = cfg.training.get('batch_size_3d', 2)
-    else:
-        batch_size = cfg.training.batch_size
-
-    dataset = SegmentationDataset(
-        data_dir=val_dir,
-        modality=modality,
-        image_size=image_size,
-        spatial_dims=spatial_dims,
-        augment=False,  # No augmentation for validation
-        volume_depth=volume_depth or 160,
-    )
-
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    # Use fixed seed generator for reproducible validation
-    generator = torch.Generator().manual_seed(42)
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        generator=generator,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
-    )
-
-    logger.info(f"Segmentation val dataloader: {len(dataset)} samples")
-
-    return dataloader, dataset
+    """Create validation dataloader for segmentation."""
+    return _create_eval_dataloader(cfg, 'val', spatial_dims)
 
 
 def create_segmentation_test_dataloader(
     cfg: DictConfig,
     spatial_dims: int = 2,
 ) -> Optional[Tuple[DataLoader, Dataset]]:
-    """Create test dataloader for segmentation.
-
-    Uses real test data from test_new/ directory.
-
-    Args:
-        cfg: Hydra configuration object.
-        spatial_dims: 2 for 2D, 3 for 3D.
-
-    Returns:
-        Tuple of (DataLoader, Dataset) or None if test data doesn't exist.
-    """
-    real_dir = cfg.data.real_dir
-    test_dir = os.path.join(real_dir, 'test_new')
-
-    if not os.path.exists(test_dir):
-        logger.warning(f"Test directory not found: {test_dir}")
-        return None
-
-    modality = cfg.data.get('modality', 'bravo')
-    image_size = cfg.model.image_size
-    volume_depth = cfg.volume.get('pad_depth_to', 160) if spatial_dims == 3 else None
-
-    # Determine batch size
-    if spatial_dims == 3:
-        batch_size = cfg.training.get('batch_size_3d', 2)
-    else:
-        batch_size = cfg.training.batch_size
-
-    dataset = SegmentationDataset(
-        data_dir=test_dir,
-        modality=modality,
-        image_size=image_size,
-        spatial_dims=spatial_dims,
-        augment=False,
-        volume_depth=volume_depth or 160,
-    )
-
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
-    )
-
-    logger.info(f"Segmentation test dataloader: {len(dataset)} samples")
-
-    return dataloader, dataset
+    """Create test dataloader for segmentation."""
+    return _create_eval_dataloader(cfg, 'test_new', spatial_dims)
