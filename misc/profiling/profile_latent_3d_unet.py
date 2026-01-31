@@ -4,11 +4,15 @@
 Tests various UNet configurations for 80GB GPU to find optimal architecture.
 Handles OOM gracefully and reports results for all tested configurations.
 
+Key insight: 4-level UNets require latent dimensions divisible by 16 (2^4).
+For 8x compression with small latents, use 3-level UNets instead.
+
 Usage:
     python misc/profiling/profile_latent_3d_unet.py
 """
 
 import gc
+import sys
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
@@ -24,11 +28,14 @@ class UNetConfig:
     attention_levels: List[bool]
     num_res_blocks: List[int]
     num_head_channels: int = 32
+    num_levels: int = 4  # Computed from channels length
+
+    def __post_init__(self):
+        self.num_levels = len(self.channels)
 
 
-# Comprehensive UNet configurations to test - from tiny to massive
-CONFIGS = [
-    # === TINY (baseline) ===
+# 4-level UNet configs (require latent dims divisible by 16)
+CONFIGS_4LEVEL = [
     UNetConfig(
         name="tiny",
         channels=[32, 64, 128, 256],
@@ -36,8 +43,6 @@ CONFIGS = [
         num_res_blocks=[1, 1, 1, 1],
         num_head_channels=32,
     ),
-
-    # === SMALL ===
     UNetConfig(
         name="small",
         channels=[64, 128, 256, 512],
@@ -45,8 +50,6 @@ CONFIGS = [
         num_res_blocks=[2, 2, 2, 2],
         num_head_channels=32,
     ),
-
-    # === MAISI (NVIDIA reference) ===
     UNetConfig(
         name="maisi",
         channels=[64, 128, 256, 512],
@@ -54,8 +57,6 @@ CONFIGS = [
         num_res_blocks=[2, 2, 2, 2],
         num_head_channels=32,
     ),
-
-    # === MEDIUM ===
     UNetConfig(
         name="medium",
         channels=[128, 256, 512, 1024],
@@ -63,8 +64,6 @@ CONFIGS = [
         num_res_blocks=[2, 2, 2, 2],
         num_head_channels=64,
     ),
-
-    # === MEDIUM-DEEP (more res blocks) ===
     UNetConfig(
         name="medium_deep",
         channels=[128, 256, 512, 1024],
@@ -72,8 +71,6 @@ CONFIGS = [
         num_res_blocks=[3, 3, 3, 3],
         num_head_channels=64,
     ),
-
-    # === LARGE ===
     UNetConfig(
         name="large",
         channels=[256, 512, 1024, 2048],
@@ -81,8 +78,6 @@ CONFIGS = [
         num_res_blocks=[2, 2, 2, 2],
         num_head_channels=64,
     ),
-
-    # === LARGE-DEEP (LDM_4x config) ===
     UNetConfig(
         name="large_deep",
         channels=[256, 512, 1024, 2048],
@@ -90,43 +85,31 @@ CONFIGS = [
         num_res_blocks=[3, 3, 3, 3],
         num_head_channels=64,
     ),
+]
 
-    # === XLARGE ===
+# 3-level UNet configs (work with smaller latents, dims divisible by 8)
+CONFIGS_3LEVEL = [
     UNetConfig(
-        name="xlarge",
-        channels=[384, 768, 1536, 3072],
-        attention_levels=[False, False, True, True],
-        num_res_blocks=[2, 2, 2, 2],
-        num_head_channels=64,
+        name="3lvl_tiny",
+        channels=[64, 128, 256],
+        attention_levels=[False, True, True],
+        num_res_blocks=[1, 1, 1],
+        num_head_channels=32,
     ),
-
-    # === XLARGE-DEEP ===
     UNetConfig(
-        name="xlarge_deep",
-        channels=[384, 768, 1536, 3072],
-        attention_levels=[False, False, True, True],
-        num_res_blocks=[3, 3, 3, 3],
-        num_head_channels=64,
-    ),
-
-    # === HUGE (LDM_8x config - user's original) ===
-    UNetConfig(
-        name="huge",
-        channels=[512, 1024, 2048, 4096],
-        attention_levels=[False, False, True, True],
-        num_res_blocks=[3, 3, 3, 3],
-        num_head_channels=64,
-    ),
-
-    # === 3-LEVEL variants (less downsampling) ===
-    UNetConfig(
-        name="3lvl_medium",
+        name="3lvl_small",
         channels=[128, 256, 512],
         attention_levels=[False, True, True],
         num_res_blocks=[2, 2, 2],
         num_head_channels=64,
     ),
-
+    UNetConfig(
+        name="3lvl_medium",
+        channels=[192, 384, 768],
+        attention_levels=[False, True, True],
+        num_res_blocks=[2, 2, 2],
+        num_head_channels=64,
+    ),
     UNetConfig(
         name="3lvl_large",
         channels=[256, 512, 1024],
@@ -134,9 +117,15 @@ CONFIGS = [
         num_res_blocks=[3, 3, 3],
         num_head_channels=64,
     ),
-
     UNetConfig(
         name="3lvl_xlarge",
+        channels=[384, 768, 1536],
+        attention_levels=[False, True, True],
+        num_res_blocks=[3, 3, 3],
+        num_head_channels=64,
+    ),
+    UNetConfig(
+        name="3lvl_huge",
         channels=[512, 1024, 2048],
         attention_levels=[False, True, True],
         num_res_blocks=[3, 3, 3],
@@ -144,20 +133,22 @@ CONFIGS = [
     ),
 ]
 
-# Latent shapes to test: [C, D, H, W]
-# Based on actual VQ-VAE outputs with different compression factors
+# Latent shapes to test: (name, (C, D, H, W), compatible_levels)
+# Based on actual VQ-VAE outputs
+# Original volumes: 160x256x256 (DxHxW)
 LATENT_SHAPES = [
-    # 4x compression from 160x256x256 input
-    ("4x_40x64x64", (4, 40, 64, 64)),
-    ("4x_40x40x32", (4, 40, 40, 32)),   # From 160x160x128
+    # 4x compression: 160x256x256 -> 40x64x64 (divisible by 16, supports 4-level)
+    ("4x_latent", (4, 40, 64, 64), [3, 4]),
 
-    # 8x compression from 160x256x256 input
-    ("8x_20x32x32", (4, 20, 32, 32)),
-    ("8x_20x20x16", (4, 20, 20, 16)),   # From 160x160x128
+    # 8x compression: 160x256x256 -> 20x32x32 (divisible by 8 but not 16, 3-level only)
+    ("8x_latent", (4, 20, 32, 32), [3]),
 
-    # bravo_seg_cond mode: 8 channels (bravo_latent + seg_latent)
-    ("8x_cond_20x32x32", (8, 20, 32, 32)),
-    ("8x_cond_20x20x16", (8, 20, 20, 16)),
+    # 8x with seg conditioning: 8 input channels (bravo_latent + seg_latent)
+    ("8x_cond", (8, 20, 32, 32), [3]),
+
+    # Smaller volume: 160x160x128 with 8x compression -> 20x20x16
+    ("8x_small", (4, 20, 20, 16), [3]),
+    ("8x_small_cond", (8, 20, 20, 16), [3]),
 ]
 
 
@@ -189,34 +180,18 @@ def count_parameters(model: nn.Module) -> int:
 
 
 def estimate_model_params(config: UNetConfig, in_channels: int, out_channels: int) -> float:
-    """Rough estimate of model parameters in millions.
-
-    This helps skip configs that would clearly OOM before even trying.
-    """
-    # Very rough estimate: sum of channel products + some overhead
+    """Rough estimate of model parameters in millions."""
     channels = config.channels
     total = 0
-
-    # Input conv
-    total += in_channels * channels[0] * 27  # 3x3x3 conv
-
-    # Each level: res blocks + possible attention
+    total += in_channels * channels[0] * 27
     for i, ch in enumerate(channels):
         num_res = config.num_res_blocks[i]
-        # Each res block has ~2 convs
         total += num_res * ch * ch * 27 * 2
-
-        # Attention at this level
         if config.attention_levels[i]:
-            total += ch * ch * 3  # Q, K, V projections
-
-        # Downsampling
+            total += ch * ch * 3
         if i < len(channels) - 1:
             total += ch * channels[i + 1] * 27
-
-    # Output conv
     total += channels[0] * out_channels * 27
-
     return total / 1e6
 
 
@@ -227,60 +202,47 @@ def profile_config(
     use_amp: bool = True,
     gradient_checkpointing: bool = True,
 ) -> Optional[dict]:
-    """Profile a single UNet configuration.
-
-    Returns dict with VRAM measurements or None if OOM.
-    """
+    """Profile a single UNet configuration."""
     reset_vram()
 
     in_channels, depth, height, width = latent_shape
+    # For conditioned mode (8ch input), output is 4ch (noise prediction for bravo only)
+    out_channels = 4 if in_channels == 8 else in_channels
 
     try:
-        # Create model
         model = DiffusionModelUNet(
             spatial_dims=3,
             in_channels=in_channels,
-            out_channels=in_channels // 2 if in_channels == 8 else in_channels,  # For cond mode, output is 4ch
+            out_channels=out_channels,
             channels=config.channels,
             attention_levels=config.attention_levels,
             num_res_blocks=config.num_res_blocks,
             num_head_channels=config.num_head_channels,
         ).to(device)
 
-        if gradient_checkpointing:
-            # Enable gradient checkpointing if available
-            if hasattr(model, 'enable_gradient_checkpointing'):
-                model.enable_gradient_checkpointing()
+        if gradient_checkpointing and hasattr(model, 'enable_gradient_checkpointing'):
+            model.enable_gradient_checkpointing()
 
         model.train()
-
         model_vram = get_vram_mb()
         num_params = count_parameters(model)
 
-        # Create dummy inputs
         x = torch.randn(1, in_channels, depth, height, width, device=device)
         timesteps = torch.randint(0, 1000, (1,), device=device)
 
-        # Forward pass with AMP
         with torch.amp.autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             output = model(x, timesteps)
             loss = output.mean()
 
         forward_vram = get_peak_vram_mb()
-
-        # Backward pass
         loss.backward()
-
         backward_vram = get_peak_vram_mb()
 
-        # Optimizer step simulation
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
         optimizer.step()
         optimizer.zero_grad()
-
         total_vram = get_peak_vram_mb()
 
-        # Cleanup
         del model, x, timesteps, output, loss, optimizer
         reset_vram()
 
@@ -294,11 +256,10 @@ def profile_config(
         }
 
     except torch.cuda.OutOfMemoryError:
-        # Handle OOM gracefully
         reset_vram()
         return None
     except RuntimeError as e:
-        if "out of memory" in str(e).lower():
+        if "out of memory" in str(e).lower() or "size" in str(e).lower():
             reset_vram()
             return None
         print(f"    RuntimeError: {e}")
@@ -329,22 +290,30 @@ def main():
 
     results = []
 
-    for latent_name, latent_shape in LATENT_SHAPES:
+    for latent_name, latent_shape, compatible_levels in LATENT_SHAPES:
         print(f"\n{'='*100}")
-        print(f"Latent Shape: {latent_name} -> {latent_shape} (C, D, H, W)")
+        print(f"Latent: {latent_name} -> {latent_shape} (C, D, H, W)")
+        print(f"Compatible UNet levels: {compatible_levels}")
         print(f"{'='*100}")
         print(f"{'Config':<15} {'Channels':<25} {'Params':>10} {'Model':>8} {'Fwd':>8} {'Bwd':>8} {'Total':>8} {'Status'}")
         print(f"{'-'*15} {'-'*25} {'-'*10} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*10}")
 
-        for config in CONFIGS:
-            channels_str = str(config.channels)
+        # Select configs based on compatible levels
+        configs_to_test = []
+        if 4 in compatible_levels:
+            configs_to_test.extend(CONFIGS_4LEVEL)
+        if 3 in compatible_levels:
+            configs_to_test.extend(CONFIGS_3LEVEL)
 
-            # Estimate if this config is likely to OOM (skip if > 2000M params estimated)
-            out_ch = latent_shape[0] // 2 if latent_shape[0] == 8 else latent_shape[0]
+        for config in configs_to_test:
+            channels_str = str(config.channels)
+            out_ch = 4 if latent_shape[0] == 8 else latent_shape[0]
             est_params = estimate_model_params(config, latent_shape[0], out_ch)
-            if est_params > 2000:
+
+            # Skip configs estimated >2500M params
+            if est_params > 2500:
                 print(f"{config.name:<15} {channels_str:<25} {'~'+str(int(est_params))+'M':>10} {'---':>8} {'---':>8} {'---':>8} {'SKIP':>8} ⏭ Too large")
-                import sys; sys.stdout.flush()
+                sys.stdout.flush()
                 continue
 
             result = profile_config(config, latent_shape, device)
@@ -364,57 +333,59 @@ def main():
                       f"{result['backward_vram_mb']/1024:>7.1f}G "
                       f"{result['total_vram_gb']:>7.1f}G "
                       f"{status}")
-                import sys; sys.stdout.flush()
+                sys.stdout.flush()
 
                 results.append({
                     'latent': latent_name,
                     'config': config.name,
                     'channels': channels_str,
+                    'num_levels': config.num_levels,
                     **result
                 })
             else:
                 print(f"{config.name:<15} {channels_str:<25} {'---':>10} {'---':>8} {'---':>8} {'---':>8} {'OOM':>8} ✗ OOM")
-                import sys; sys.stdout.flush()
+                sys.stdout.flush()
 
-    # Summary tables
+    # Summary
     print(f"\n{'='*100}")
     print("SUMMARY: Best configs for each latent shape (within 60GB budget)")
     print(f"{'='*100}")
 
-    for latent_name, _ in LATENT_SHAPES:
-        print(f"\n{latent_name}:")
+    for latent_name, latent_shape, _ in LATENT_SHAPES:
+        print(f"\n{latent_name} {latent_shape}:")
         matching = [r for r in results
                    if r['latent'] == latent_name
                    and r['total_vram_gb'] <= 60]
 
         if matching:
-            # Sort by params (largest first within budget)
             for r in sorted(matching, key=lambda x: -x['params_m'])[:5]:
                 print(f"  {r['config']:<15} {r['channels']:<25} {r['params_m']:>6.1f}M params, {r['total_vram_gb']:>5.1f}GB")
         else:
-            # Show smallest OOM
             all_for_latent = [r for r in results if r['latent'] == latent_name]
             if all_for_latent:
                 smallest = min(all_for_latent, key=lambda x: x['total_vram_gb'])
-                print(f"  Smallest tested: {smallest['config']} ({smallest['total_vram_gb']:.1f}GB) - need smaller config")
+                print(f"  Smallest: {smallest['config']} ({smallest['total_vram_gb']:.1f}GB)")
             else:
-                print(f"  All configs OOM - need even smaller configs")
+                print(f"  All configs failed")
 
-    # Recommendations
+    # Recommendations for 8x compression (the user's case)
     print(f"\n{'='*100}")
-    print("RECOMMENDATIONS for 80GB GPU (60GB training budget)")
+    print("RECOMMENDATIONS for 8x compression latent diffusion")
     print(f"{'='*100}")
 
-    for latent_name, _ in LATENT_SHAPES:
+    for latent_name, latent_shape, _ in LATENT_SHAPES:
+        if '8x' not in latent_name:
+            continue
         matching = [r for r in results
                    if r['latent'] == latent_name
-                   and 40 <= r['total_vram_gb'] <= 60]
+                   and 20 <= r['total_vram_gb'] <= 60]
         if matching:
             best = max(matching, key=lambda x: x['params_m'])
             print(f"\n{latent_name}:")
-            print(f"  Recommended: {best['config']}")
+            print(f"  Config: {best['config']}")
             print(f"  Channels: {best['channels']}")
             print(f"  Params: {best['params_m']:.1f}M, VRAM: {best['total_vram_gb']:.1f}GB")
+            print(f"  Hydra override: model.channels={best['channels']}")
 
 
 if __name__ == "__main__":
