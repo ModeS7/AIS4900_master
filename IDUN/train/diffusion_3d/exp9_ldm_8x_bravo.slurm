@@ -39,11 +39,12 @@ echo "Mode: bravo_seg_cond (Latent BRAVO conditioned on Latent SEG)"
 echo "  in_channels:  8 = [bravo_latent(4), seg_latent(4)]"
 echo "  out_channels: 4 = noise prediction for bravo_latent"
 echo ""
-echo "UNet Architecture: LDM_8x"
-echo "  channels:         [512, 1024, 2048, 4096]"
-echo "  attention_levels: [False, False, True, True]"
-echo "  num_res_blocks:   [3, 3, 3, 3]"
+echo "UNet Architecture: 3L_huge_d (3-level for 8x latent)"
+echo "  channels:         [512, 1024, 2048]"
+echo "  attention_levels: [False, True, True]"
+echo "  num_res_blocks:   [3, 3, 3]"
 echo "  num_head_channels: 64"
+echo "  Note: 3-level required because depth=20 not divisible by 16"
 echo ""
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
@@ -59,9 +60,9 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     latent.compression_type=vqvae \
     latent.auto_encode=true \
     latent.validate_cache=true \
-    'model.channels=[512, 1024, 2048, 4096]' \
-    'model.attention_levels=[false, false, true, true]' \
-    'model.num_res_blocks=[3, 3, 3, 3]' \
+    'model.channels=[512, 1024, 2048]' \
+    'model.attention_levels=[false, true, true]' \
+    'model.num_res_blocks=[3, 3, 3]' \
     model.num_head_channels=64 \
     model.norm_num_groups=32 \
     training.logging.regional_losses=true \
