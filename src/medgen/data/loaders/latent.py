@@ -890,14 +890,39 @@ def load_compression_model(
     elif compression_type == 'vqvae':
         from monai.networks.nets import VQVAE
 
+        # Get channels to compute default downsample/upsample parameters
+        channels = tuple(model_config.get('channels', [64, 128, 256]))
+        n_levels = len(channels)
+
+        # Default downsample/upsample parameters if not in config
+        # Format: (kernel_size, stride, padding, output_padding) for each level
+        default_downsample = tuple((4, 2, 1) for _ in range(n_levels))
+        default_upsample = tuple((4, 2, 1, 0) for _ in range(n_levels))
+
+        # Get parameters from config, converting lists to tuples
+        downsample_params = model_config.get('downsample_parameters', default_downsample)
+        upsample_params = model_config.get('upsample_parameters', default_upsample)
+
+        # Ensure they are tuples of tuples
+        if isinstance(downsample_params, list):
+            downsample_params = tuple(tuple(p) for p in downsample_params)
+        if isinstance(upsample_params, list):
+            upsample_params = tuple(tuple(p) for p in upsample_params)
+
         model = VQVAE(
             spatial_dims=spatial_dims,
             in_channels=model_config.get('in_channels', 1),
             out_channels=model_config.get('out_channels', 1),
-            channels=tuple(model_config.get('channels', [64, 128, 256])),
-            num_res_channels=tuple(model_config.get('num_res_channels', [64, 128, 256])),
+            channels=channels,
+            num_res_layers=model_config.get('num_res_layers', 2),
+            num_res_channels=tuple(model_config.get('num_res_channels', list(channels))),
+            downsample_parameters=downsample_params,
+            upsample_parameters=upsample_params,
             num_embeddings=model_config.get('num_embeddings', 512),
             embedding_dim=model_config.get('embedding_dim', 3),
+            commitment_cost=model_config.get('commitment_cost', 0.25),
+            decay=model_config.get('decay', 0.99),
+            epsilon=model_config.get('epsilon', 1e-5),
         ).to(device)
 
     elif compression_type == 'dcae':
@@ -911,6 +936,16 @@ def load_compression_model(
 
     # Load weights
     state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+
+    # Strip 'model.' prefix if present (trainer saves with this prefix)
+    keys_with_prefix = [k for k in state_dict.keys() if k.startswith('model.')]
+    if keys_with_prefix:
+        state_dict = {
+            k.replace('model.', '', 1) if k.startswith('model.') else k: v
+            for k, v in state_dict.items()
+        }
+        logger.debug(f"Stripped 'model.' prefix from {len(keys_with_prefix)} state_dict keys")
+
     model.load_state_dict(state_dict)
 
     model.eval()
