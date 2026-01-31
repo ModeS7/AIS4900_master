@@ -189,9 +189,14 @@ class ValidationVisualizer:
             idx = torch.randint(0, len(train_dataset), (1,)).item()
             data = train_dataset[idx]
 
-            # Handle tuple (images, seg) format from extract_slices_dual
+            # Handle tuple (images, seg) or (seg, size_bins, bin_maps) format
             if isinstance(data, tuple):
-                images, seg_arr = data
+                if len(data) == 2:
+                    images, seg_arr = data
+                elif len(data) == 3:
+                    images, seg_arr, _ = data  # Ignore bin_maps for visualization sampling
+                else:
+                    raise ValueError(f"Unexpected tuple length: {len(data)}")
                 if isinstance(images, np.ndarray):
                     images = torch.from_numpy(images).float()
                 else:

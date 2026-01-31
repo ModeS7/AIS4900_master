@@ -606,7 +606,15 @@ class GenerationMetrics:
                 tensor = torch.cat([image, seg_data], dim=0)
                 local_seg_idx = image.shape[0]  # seg follows image channels
             elif isinstance(data, tuple):
-                first, second = data
+                # Handle 2-element (images, seg) or 3-element (seg, size_bins, bin_maps) tuples
+                if len(data) == 2:
+                    first, second = data
+                    bin_maps = None
+                elif len(data) == 3:
+                    first, second, bin_maps = data
+                else:
+                    raise ValueError(f"Unexpected tuple length: {len(data)}")
+
                 # Convert first element to tensor
                 if isinstance(first, torch.Tensor):
                     first = first.float()
@@ -622,10 +630,17 @@ class GenerationMetrics:
                 else:
                     second = torch.tensor(second).float()
 
+                # seg_conditioned_input mode: (seg, size_bins, bin_maps)
+                is_seg_conditioned_input = bin_maps is not None and second.dim() == 1
+                if is_seg_conditioned_input:
+                    tensor = first
+                    current_size_bins = second.long()
+                    # bin_maps are for input conditioning, not needed for metrics sampling
+                    local_seg_idx = 0
                 # Check if this is seg_conditioned mode: (seg, size_bins)
                 # size_bins is 1D, seg is 3D [C, H, W] or 4D [C, D, H, W]
-                is_seg_conditioned = second.dim() == 1 and first.dim() >= 3
-                if is_seg_conditioned:
+                elif second.dim() == 1 and first.dim() >= 3:
+                    is_seg_conditioned = True
                     # seg_conditioned mode: first element is the seg mask
                     tensor = first
                     current_size_bins = second.long()  # Store size_bins

@@ -2092,6 +2092,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     'images': prepared['images'].detach().clone(),
                     'labels': prepared.get('labels').detach().clone() if prepared.get('labels') is not None else None,
                     'size_bins': prepared.get('size_bins').detach().clone() if prepared.get('size_bins') is not None else None,
+                    'bin_maps': prepared.get('bin_maps').detach().clone() if prepared.get('bin_maps') is not None else None,
                     'is_latent': prepared.get('is_latent', False),
                     'labels_is_latent': prepared.get('labels_is_latent', False),
                 }
@@ -2600,6 +2601,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self.use_controlnet or self.controlnet_stage1:
                 model_input = noise
                 size_bins = None
+            elif self.mode.name == 'seg_conditioned_input':
+                # Input channel conditioning: concatenate noise with bin_maps
+                cached_bin_maps = self._cached_train_batch.get('bin_maps')
+                if cached_bin_maps is not None:
+                    bin_maps = cached_bin_maps[:batch_size]
+                    model_input = torch.cat([noise, bin_maps], dim=1)
+                else:
+                    model_input = noise
+                size_bins = None
             elif self.use_size_bin_embedding:
                 model_input = noise
                 size_bins = cached_size_bins[:batch_size] if cached_size_bins is not None else None
@@ -2701,6 +2711,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
         if self.use_controlnet or self.controlnet_stage1:
             trajectory = self._generate_trajectory_3d(model, noise, num_steps=25, capture_every=5)
+        elif self.mode.name == 'seg_conditioned_input':
+            # Input channel conditioning: concatenate noise with bin_maps
+            cached_bin_maps = self._cached_train_batch.get('bin_maps')
+            if cached_bin_maps is not None:
+                bin_maps = cached_bin_maps[:1]
+                model_input = torch.cat([noise, bin_maps], dim=1)
+            else:
+                model_input = noise
+            trajectory = self._generate_trajectory_3d(model, model_input, num_steps=25, capture_every=5)
         elif self.use_size_bin_embedding and cached_size_bins is not None:
             size_bins = cached_size_bins[:1]
             trajectory = self._generate_trajectory_with_size_bins_3d(

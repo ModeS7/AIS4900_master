@@ -31,7 +31,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # VQ-VAE 8x compression checkpoint (exp8_14)
-COMPRESSION_CHECKPOINT=$/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_14_256x160_20260112-121110/checkpoint_latest.pt
+COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_14_256x160_20260112-121110/checkpoint_latest.pt
 
 echo "Using compression checkpoint: $COMPRESSION_CHECKPOINT"
 echo ""
