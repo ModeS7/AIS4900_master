@@ -579,6 +579,7 @@ class GenerationMetrics:
         size_bins_list = []  # For seg_conditioned mode
         attempts = 0
         max_attempts = len(train_dataset)
+        samples_without_seg = 0  # Track samples missing seg data
 
         # Use fixed seed for reproducibility
         rng = torch.Generator()
@@ -592,10 +593,16 @@ class GenerationMetrics:
             is_seg_conditioned = False  # Track if this sample uses size_bins conditioning
             current_size_bins = None
             if isinstance(data, dict):
-                # Dict format: {'image': ..., 'seg': ...}
-                image = data.get('image', data.get('images'))
-                seg_data = data.get('seg', data.get('mask', data.get('labels')))
+                # Dict format - check multiple key variants
+                # Latent dataset: {'latent': ..., 'seg_mask': ..., 'latent_seg': ...}
+                # Pixel dataset: {'image': ..., 'seg': ...}
+                image = data.get('image', data.get('images', data.get('latent')))
+                seg_data = data.get('seg', data.get('mask', data.get('labels', data.get('seg_mask'))))
+
+                # For latent bravo_seg_cond mode, use seg_mask (pixel-space) for conditioning
+                # since generation metrics compare actual tumor masks, not latent representations
                 if image is None or seg_data is None:
+                    samples_without_seg += 1
                     attempts += 1
                     continue
                 # Convert to tensors
@@ -673,6 +680,19 @@ class GenerationMetrics:
 
         if len(masks) < num_masks:
             logger.warning(f"Only found {len(masks)} positive masks (requested {num_masks})")
+
+        if len(masks) == 0:
+            error_msg = (
+                f"No positive masks found in dataset! "
+                f"Checked {attempts} samples, {samples_without_seg} had no seg data. "
+            )
+            if samples_without_seg > 0:
+                error_msg += (
+                    "This usually means the latent cache was built without regional_losses=true. "
+                    "Delete the cache directory and re-run with training.logging.regional_losses=true "
+                    "to rebuild it with segmentation masks."
+                )
+            raise RuntimeError(error_msg)
 
         self.fixed_conditioning_masks = torch.stack(masks).to(self.device)
         if gt_images:

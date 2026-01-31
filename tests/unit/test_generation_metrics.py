@@ -295,7 +295,7 @@ class TestSetFixedConditioning:
 
             dataset = DatasetWithEmptyMasks()
             # Should raise RuntimeError because no positive masks found
-            with pytest.raises(RuntimeError, match="stack expects a non-empty TensorList"):
+            with pytest.raises(RuntimeError, match="No positive masks found"):
                 metrics.set_fixed_conditioning(dataset, num_masks=10)
 
 

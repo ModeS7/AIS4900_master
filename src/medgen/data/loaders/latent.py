@@ -179,12 +179,16 @@ class LatentCacheBuilder:
                 sha256.update(chunk)
         return sha256.hexdigest()[:16]
 
-    def validate_cache(self, cache_dir: str, checkpoint_path: str) -> bool:
+    def validate_cache(
+        self, cache_dir: str, checkpoint_path: str, require_seg_mask: bool = False
+    ) -> bool:
         """Check if cache exists and matches checkpoint hash.
 
         Args:
             cache_dir: Directory containing cached latents.
             checkpoint_path: Path to compression model checkpoint.
+            require_seg_mask: If True, validates that cache has seg_mask data.
+                Required for regional_losses or modes like bravo_seg_cond.
 
         Returns:
             True if cache is valid, False otherwise.
@@ -234,6 +238,17 @@ class LatentCacheBuilder:
                 f"actual={actual_files}"
             )
             return False
+
+        # Check seg_mask presence if required
+        if require_seg_mask:
+            has_seg_mask = metadata.get('has_seg_mask', False)
+            if not has_seg_mask:
+                logger.info(
+                    f"Cache missing seg_mask (has_seg_mask={has_seg_mask}). "
+                    "Required for regional_losses or seg-conditioned modes. "
+                    "Rebuild cache with training.logging.regional_losses=true."
+                )
+                return False
 
         logger.info(f"Cache valid: {cache_dir} ({num_samples} samples)")
         return True
@@ -355,6 +370,7 @@ class LatentCacheBuilder:
         """Build 3D cache with single-volume encoding."""
         latent_shape = None
         sample_idx = 0
+        has_seg_mask = False  # Track if any sample has seg_mask
 
         logger.info(f"Encoding {len(volume_dataset)} 3D volumes to {cache_dir}...")
 
@@ -383,6 +399,7 @@ class LatentCacheBuilder:
 
                 # Include seg mask if available
                 if seg_mask is not None:
+                    has_seg_mask = True
                     # Keep pixel-space seg for regional metrics
                     sample_data['seg_mask'] = seg_mask.cpu()
 
@@ -407,6 +424,7 @@ class LatentCacheBuilder:
             'pixel_shape': list(self.volume_shape) if self.volume_shape else None,
             'mode': self.mode,
             'num_samples': sample_idx,
+            'has_seg_mask': has_seg_mask,
             'created_at': datetime.now().isoformat(),
         }
 

@@ -195,9 +195,18 @@ def main(cfg: DictConfig) -> None:
         compression_checkpoint = latent_cfg.get('compression_checkpoint')
         auto_encode = latent_cfg.get('auto_encode', True)
 
+        # Check if seg_mask is required in cache (for regional losses or seg-conditioned modes)
+        logging_cfg = cfg.training.get('logging', {})
+        require_seg_mask = (
+            logging_cfg.get('regional_losses', False) or
+            mode in ('bravo_seg_cond', 'seg', 'seg_conditioned', 'seg_conditioned_input')
+        )
+
         # Check and build cache for train split
         train_cache_dir = os.path.join(cache_dir, 'train')
-        if not cache_builder.validate_cache(train_cache_dir, compression_checkpoint):
+        if not cache_builder.validate_cache(
+            train_cache_dir, compression_checkpoint, require_seg_mask=require_seg_mask
+        ):
             if auto_encode:
                 log.info("Train cache invalid/missing, encoding dataset...")
                 # Create pixel dataloader temporarily for encoding
@@ -228,7 +237,9 @@ def main(cfg: DictConfig) -> None:
         val_cache_dir = os.path.join(cache_dir, 'val')
         val_pixel_dir = os.path.join(cfg.paths.data_dir, 'val')
         if os.path.exists(val_pixel_dir):
-            if not cache_builder.validate_cache(val_cache_dir, compression_checkpoint):
+            if not cache_builder.validate_cache(
+                val_cache_dir, compression_checkpoint, require_seg_mask=require_seg_mask
+            ):
                 if auto_encode:
                     log.info("Val cache invalid/missing, encoding dataset...")
                     if mode == 'multi':
@@ -502,12 +513,21 @@ def _train_3d(cfg: DictConfig) -> None:
         auto_encode = latent_cfg.get('auto_encode', True)
         validate_cache = latent_cfg.get('validate_cache', True)
 
+        # Check if seg_mask is required in cache (for regional losses or seg-conditioned modes)
+        logging_cfg = cfg.training.get('logging', {})
+        require_seg_mask = (
+            logging_cfg.get('regional_losses', False) or
+            mode in ('bravo_seg_cond', 'seg', 'seg_conditioned', 'seg_conditioned_input')
+        )
+
         for split in ['train', 'val']:
             split_cache = os.path.join(cache_dir, split)
 
             needs_encoding = not os.path.exists(split_cache)
             if not needs_encoding and validate_cache:
-                needs_encoding = not cache_builder.validate_cache(split_cache, checkpoint_path)
+                needs_encoding = not cache_builder.validate_cache(
+                    split_cache, checkpoint_path, require_seg_mask=require_seg_mask
+                )
 
             if needs_encoding:
                 if not auto_encode:
