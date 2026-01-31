@@ -596,22 +596,38 @@ class GenerationMetrics:
                 # Dict format - check multiple key variants
                 # Latent dataset: {'latent': ..., 'seg_mask': ..., 'latent_seg': ...}
                 # Pixel dataset: {'image': ..., 'seg': ...}
-                image = data.get('image', data.get('images', data.get('latent')))
-                seg_data = data.get('seg', data.get('mask', data.get('labels', data.get('seg_mask'))))
 
-                # For latent bravo_seg_cond mode, use seg_mask (pixel-space) for conditioning
-                # since generation metrics compare actual tumor masks, not latent representations
-                if image is None or seg_data is None:
-                    samples_without_seg += 1
-                    attempts += 1
-                    continue
-                # Convert to tensors
-                if isinstance(image, np.ndarray):
-                    image = torch.from_numpy(image).float()
-                if isinstance(seg_data, np.ndarray):
-                    seg_data = torch.from_numpy(seg_data).float()
-                tensor = torch.cat([image, seg_data], dim=0)
-                local_seg_idx = image.shape[0]  # seg follows image channels
+                # Check if this is a latent dataset (has 'latent' key)
+                is_latent_data = 'latent' in data
+
+                if is_latent_data:
+                    # Latent dataset: seg_mask is pixel-space, latent is compressed
+                    # Can't concatenate - use seg_mask directly for conditioning
+                    seg_data = data.get('seg_mask')
+                    if seg_data is None:
+                        samples_without_seg += 1
+                        attempts += 1
+                        continue
+                    if isinstance(seg_data, np.ndarray):
+                        seg_data = torch.from_numpy(seg_data).float()
+                    tensor = seg_data  # Use seg_mask directly
+                    local_seg_idx = 0  # Seg is at channel 0
+                else:
+                    # Pixel dataset: image and seg at same resolution
+                    image = data.get('image', data.get('images'))
+                    seg_data = data.get('seg', data.get('mask', data.get('labels')))
+
+                    if image is None or seg_data is None:
+                        samples_without_seg += 1
+                        attempts += 1
+                        continue
+                    # Convert to tensors
+                    if isinstance(image, np.ndarray):
+                        image = torch.from_numpy(image).float()
+                    if isinstance(seg_data, np.ndarray):
+                        seg_data = torch.from_numpy(seg_data).float()
+                    tensor = torch.cat([image, seg_data], dim=0)
+                    local_seg_idx = image.shape[0]  # seg follows image channels
             elif isinstance(data, tuple):
                 # Handle 2-element (images, seg) or 3-element (seg, size_bins, bin_maps) tuples
                 if len(data) == 2:

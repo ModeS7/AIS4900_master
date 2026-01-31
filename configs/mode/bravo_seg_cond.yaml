@@ -18,6 +18,7 @@
 # for conditioning. The seg_latent is never decoded.
 
 name: bravo_seg_cond
+subdir: bravo_latent  # Save runs under bravo_latent/ (not bravo_seg_cond/)
 is_conditional: true
 in_channels: 8   # [noisy_bravo_latent (4ch), seg_latent (4ch)]
 out_channels: 4  # predicted noise/velocity for bravo_latent
