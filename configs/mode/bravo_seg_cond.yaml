@@ -1,0 +1,33 @@
+# Bravo Seg Conditioned Mode - Latent space generation with seg conditioning
+#
+# Generates BRAVO images in LATENT SPACE conditioned on latent seg mask.
+# For use with latent diffusion (VQ-VAE/VAE compressed space).
+#
+# Workflow:
+#   1. Encode bravo and seg to latent space using VQ-VAE
+#   2. Train diffusion on latent: [noisy_bravo_latent, seg_latent] -> noise
+#   3. Decode generated bravo latent to pixel space for metrics
+#
+# For LATENT DIFFUSION training:
+#   in_channels: 8 = [noisy_bravo_latent (4), seg_latent (4)]
+#   out_channels: 4 = predicted noise/velocity for bravo_latent
+#   Dataloader: LatentDataset with 'latent' and 'latent_seg'
+#
+# Note: seg_latent uses same VQ-VAE encoder as bravo. Even though VQ-VAE
+# wasn't trained on seg masks, it still provides useful spatial structure
+# for conditioning. The seg_latent is never decoded.
+
+name: bravo_seg_cond
+is_conditional: true
+in_channels: 8   # [noisy_bravo_latent (4ch), seg_latent (4ch)]
+out_channels: 4  # predicted noise/velocity for bravo_latent
+image_keys: [bravo]
+description: "Latent BRAVO generation conditioned on latent seg mask"
+
+# Latent-specific settings
+latent_conditioning: true  # Flag to indicate latent seg conditioning
+latent_channels: 4         # Channels per modality in latent space
+
+# Classifier-free guidance (CFG) dropout
+# - Disabled: dense spatial conditioning doesn't benefit from CFG
+cfg_dropout_prob: 0.0
