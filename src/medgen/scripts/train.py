@@ -561,7 +561,7 @@ def _train_3d(cfg: DictConfig) -> None:
         log.info("=== Pixel-Space Mode ===")
 
         # Use mode-specific dataloader
-        if mode in ('seg', 'seg_conditioned'):
+        if mode in ('seg', 'seg_conditioned', 'seg_conditioned_input'):
             log.info("Using 3D seg dataloader (3D connected components)")
             train_loader, train_dataset = create_seg_dataloader(cfg)
             val_result = create_seg_validation_dataloader(cfg)

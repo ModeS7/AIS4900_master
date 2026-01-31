@@ -54,9 +54,10 @@ training:
 
 # Hydra configuration
 # Output structure: runs/diffusion_3d/{mode}/{exp_name}{strategy}_{size}_{timestamp}
+# Note: mode.subdir allows overriding directory name (e.g., seg_conditioned uses 'seg')
 hydra:
   run:
-    dir: ${paths.model_dir}/diffusion_3d/${mode.name}/${oc.select:training.name,""}${strategy.name}_${volume.height}x${volume.depth}_${now:%Y%m%d-%H%M%S}
+    dir: ${paths.model_dir}/diffusion_3d/${oc.select:mode.subdir,mode.name}/${oc.select:training.name,""}${strategy.name}_${volume.height}x${volume.depth}_${now:%Y%m%d-%H%M%S}
   sweep:
     dir: ${paths.model_dir}/diffusion_3d/multirun/${now:%Y%m%d-%H%M%S}
     subdir: ${hydra.job.num}

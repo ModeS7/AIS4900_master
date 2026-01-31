@@ -14,6 +14,7 @@
 #   Dataloader: create_seg_conditioned_dataloader()
 
 name: seg_conditioned
+subdir: seg  # Use 'seg' directory for all seg variants
 is_conditional: true
 in_channels: 1   # noisy_seg only (conditioning via embedding, not concat)
 out_channels: 1  # predicted noise/velocity for seg
