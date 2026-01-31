@@ -188,6 +188,38 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+def estimate_model_params(config: UNetConfig, in_channels: int, out_channels: int) -> float:
+    """Rough estimate of model parameters in millions.
+
+    This helps skip configs that would clearly OOM before even trying.
+    """
+    # Very rough estimate: sum of channel products + some overhead
+    channels = config.channels
+    total = 0
+
+    # Input conv
+    total += in_channels * channels[0] * 27  # 3x3x3 conv
+
+    # Each level: res blocks + possible attention
+    for i, ch in enumerate(channels):
+        num_res = config.num_res_blocks[i]
+        # Each res block has ~2 convs
+        total += num_res * ch * ch * 27 * 2
+
+        # Attention at this level
+        if config.attention_levels[i]:
+            total += ch * ch * 3  # Q, K, V projections
+
+        # Downsampling
+        if i < len(channels) - 1:
+            total += ch * channels[i + 1] * 27
+
+    # Output conv
+    total += channels[0] * out_channels * 27
+
+    return total / 1e6
+
+
 def profile_config(
     config: UNetConfig,
     latent_shape: Tuple[int, int, int, int],
@@ -305,9 +337,17 @@ def main():
         print(f"{'-'*15} {'-'*25} {'-'*10} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*10}")
 
         for config in CONFIGS:
-            result = profile_config(config, latent_shape, device)
-
             channels_str = str(config.channels)
+
+            # Estimate if this config is likely to OOM (skip if > 2000M params estimated)
+            out_ch = latent_shape[0] // 2 if latent_shape[0] == 8 else latent_shape[0]
+            est_params = estimate_model_params(config, latent_shape[0], out_ch)
+            if est_params > 2000:
+                print(f"{config.name:<15} {channels_str:<25} {'~'+str(int(est_params))+'M':>10} {'---':>8} {'---':>8} {'---':>8} {'SKIP':>8} ⏭ Too large")
+                import sys; sys.stdout.flush()
+                continue
+
+            result = profile_config(config, latent_shape, device)
 
             if result:
                 status = "✓ OK"
@@ -324,6 +364,7 @@ def main():
                       f"{result['backward_vram_mb']/1024:>7.1f}G "
                       f"{result['total_vram_gb']:>7.1f}G "
                       f"{status}")
+                import sys; sys.stdout.flush()
 
                 results.append({
                     'latent': latent_name,
@@ -333,6 +374,7 @@ def main():
                 })
             else:
                 print(f"{config.name:<15} {channels_str:<25} {'---':>10} {'---':>8} {'---':>8} {'---':>8} {'OOM':>8} ✗ OOM")
+                import sys; sys.stdout.flush()
 
     # Summary tables
     print(f"\n{'='*100}")
