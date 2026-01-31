@@ -759,3 +759,124 @@ class SegmentationConditionedInputMode(TrainingMode):
                                        device=noisy_images.device, dtype=noisy_images.dtype)
 
         return torch.cat([noisy_images, bin_maps], dim=1)
+
+
+class LatentSegConditionedMode(TrainingMode):
+    """Latent bravo generation conditioned on latent segmentation.
+
+    Mode for generating BRAVO latents conditioned on latent seg masks.
+    Both bravo and seg are encoded to latent space using the same VQ-VAE,
+    then concatenated as UNet input.
+
+    Input: [noisy_bravo_latent (4ch), seg_latent (4ch)] = 8 channels
+    Output: [noise/velocity_pred (4ch)] = 4 channels
+
+    This is for latent diffusion only. Both modalities must be pre-encoded.
+    The seg_latent is never decoded - it just provides spatial structure.
+
+    Note: VQ-VAE wasn't trained on seg masks, but the spatial structure
+    is still useful for conditioning.
+    """
+
+    def __init__(self, latent_channels: int = 4) -> None:
+        """Initialize latent seg conditioned mode.
+
+        Args:
+            latent_channels: Number of channels per modality in latent space.
+                Default 4 for VQ-VAE.
+        """
+        self.latent_channels = latent_channels
+
+    @property
+    def is_conditional(self) -> bool:
+        """Latent seg conditioned mode uses conditioning."""
+        return True
+
+    def prepare_batch(
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
+    ) -> Dict[str, Any]:
+        """Prepare batch with latent seg conditioning.
+
+        Expects batch from LatentDataset with:
+        - 'latent': Pre-encoded bravo latent [B, C_lat, ...]
+        - 'latent_seg': Pre-encoded seg latent [B, C_lat, ...]
+        - 'seg_mask': Optional pixel-space seg for regional metrics
+
+        Args:
+            batch: Dict from LatentDataset.
+            device: Target device.
+
+        Returns:
+            Dictionary with images (bravo latent), labels (seg latent),
+            and optional seg_mask for regional metrics.
+
+        Raises:
+            ValueError: If batch is not from latent dataloader or missing latent_seg.
+        """
+        if not _is_latent_batch(batch):
+            raise ValueError(
+                "bravo_seg_cond mode requires latent dataloader. "
+                "Ensure latent.enabled=true and cache includes latent_seg."
+            )
+
+        latent = batch['latent'].to(device, non_blocking=True)
+        latent_seg = batch.get('latent_seg')
+
+        if latent_seg is None:
+            raise ValueError(
+                "bravo_seg_cond mode requires 'latent_seg' in batch. "
+                "Rebuild latent cache with seg encoding enabled."
+            )
+
+        latent_seg = latent_seg.to(device, non_blocking=True)
+
+        # Keep pixel-space seg for regional metrics (optional)
+        seg_mask = batch.get('seg_mask')
+        if seg_mask is not None:
+            seg_mask = seg_mask.to(device, non_blocking=True)
+
+        return {
+            'images': latent,       # Bravo latent [B, C_lat, ...]
+            'labels': latent_seg,   # Seg latent [B, C_lat, ...] - already encoded
+            'seg_mask': seg_mask,   # Pixel seg for regional metrics
+            'is_latent': True,      # Flag: skip encoding in trainer
+            'labels_is_latent': True,  # Flag: labels are already in latent space
+        }
+
+    def get_model_config(self) -> Dict[str, int]:
+        """Get model channel configuration.
+
+        Returns pixel-equivalent channels so that space.get_latent_channels()
+        produces the correct values:
+        - 2 -> 8 (bravo_latent + seg_latent)
+        - 1 -> 4 (noise prediction for bravo_latent)
+
+        Returns:
+            Channel configuration dictionary.
+        """
+        return {
+            'in_channels': 2,  # Expands to 8 in latent space
+            'out_channels': 1  # Expands to 4 in latent space
+        }
+
+    def format_model_input(
+        self,
+        noisy_images: torch.Tensor,
+        labels_dict: Dict[str, Optional[torch.Tensor]]
+    ) -> torch.Tensor:
+        """Concatenate noisy bravo latent with seg latent.
+
+        Args:
+            noisy_images: [B, C_lat, ...] noisy bravo latent.
+            labels_dict: Dictionary with 'labels' key containing seg latent.
+
+        Returns:
+            [B, 2*C_lat, ...] - [noisy_bravo_latent, seg_latent] concatenated.
+        """
+        seg_latent = labels_dict['labels']
+        if seg_latent is None:
+            raise ValueError(
+                "bravo_seg_cond mode requires seg_latent for conditioning. "
+                "Ensure latent cache includes 'latent_seg'."
+            )
+        return torch.cat([noisy_images, seg_latent], dim=1)

@@ -470,6 +470,67 @@ class UnifiedMetrics:
         return val
 
     # =========================================================================
+    # Segmentation Metrics Methods
+    # =========================================================================
+
+    def log_seg_training(self, metrics: Dict[str, float], epoch: int) -> None:
+        """Log segmentation training losses.
+
+        Provides consistent TensorBoard paths for segmentation training metrics
+        across all trainers (compression seg_mode and SegmentationTrainer).
+
+        Args:
+            metrics: Dictionary of training metrics. Keys: 'bce', 'dice', 'boundary', 'gen'.
+            epoch: Current epoch number.
+
+        TensorBoard paths:
+            - Loss/BCE_train
+            - Loss/Dice_train
+            - Loss/Boundary_train
+            - Loss/Generator_train
+        """
+        if self.writer is None:
+            return
+        if 'bce' in metrics:
+            self.writer.add_scalar('Loss/BCE_train', metrics['bce'], epoch)
+        if 'dice' in metrics:
+            self.writer.add_scalar('Loss/Dice_train', metrics['dice'], epoch)
+        if 'boundary' in metrics:
+            self.writer.add_scalar('Loss/Boundary_train', metrics['boundary'], epoch)
+        if 'gen' in metrics:
+            self.writer.add_scalar('Loss/Generator_train', metrics['gen'], epoch)
+
+    def log_seg_validation(self, metrics: Dict[str, float], epoch: int) -> None:
+        """Log segmentation validation metrics.
+
+        Provides consistent TensorBoard paths for segmentation validation metrics
+        across all trainers (compression seg_mode and SegmentationTrainer).
+
+        Args:
+            metrics: Dictionary of validation metrics. Keys: 'bce', 'dice_score', 'boundary', 'gen', 'iou'.
+            epoch: Current epoch number.
+
+        TensorBoard paths:
+            - Loss/BCE_val
+            - Loss/Dice_val
+            - Loss/Boundary_val
+            - Loss/Generator_val
+            - Validation/IoU
+        """
+        if self.writer is None:
+            return
+        if 'bce' in metrics:
+            self.writer.add_scalar('Loss/BCE_val', metrics['bce'], epoch)
+        if 'dice_score' in metrics:
+            self.writer.add_scalar('Loss/Dice_val', metrics['dice_score'], epoch)
+        if 'boundary' in metrics:
+            self.writer.add_scalar('Loss/Boundary_val', metrics['boundary'], epoch)
+        if 'gen' in metrics:
+            self.writer.add_scalar('Loss/Generator_val', metrics['gen'], epoch)
+        if 'iou' in metrics:
+            self.writer.add_scalar('Validation/IoU', metrics['iou'], epoch)
+
+    # =========================================================================
     # Loss Methods
     # =========================================================================
 
@@ -1584,6 +1645,206 @@ class UnifiedMetrics:
 
         plt.tight_layout()
         self.writer.add_figure(tag, fig, epoch)
+        plt.close(fig)
+
+    def log_latent_samples(
+        self,
+        samples: torch.Tensor,
+        epoch: int,
+        tag: str = 'Latent_Samples',
+        num_slices: int = 8,
+    ):
+        """Log latent space samples to TensorBoard (before decoding).
+
+        Visualizes multi-channel latent tensors with per-channel views
+        and a combined magnitude view. Useful for understanding latent
+        diffusion behavior.
+
+        Args:
+            samples: Latent samples [B, C_lat, (D), H, W].
+            epoch: Current epoch number.
+            tag: TensorBoard tag.
+            num_slices: Number of slices for 3D.
+        """
+        if self.writer is None:
+            return
+
+        # Handle 3D
+        if samples.dim() == 5:
+            self._log_latent_samples_3d(samples, epoch, tag, num_slices)
+            return
+
+        # 2D: [B, C_lat, H, W]
+        self._log_latent_samples_2d(samples, epoch, tag)
+
+    def _log_latent_samples_2d(
+        self,
+        samples: torch.Tensor,
+        epoch: int,
+        tag: str,
+    ):
+        """Log 2D latent samples with per-channel visualization.
+
+        Creates a figure showing:
+        - Each latent channel separately
+        - Combined magnitude view
+
+        Args:
+            samples: 4D tensor [B, C_lat, H, W].
+            epoch: Current epoch number.
+            tag: TensorBoard tag.
+        """
+        import matplotlib.pyplot as plt
+
+        B, C_lat, H, W = samples.shape
+        samples = samples.float().cpu()
+
+        # Show first sample only for clarity
+        sample = samples[0]  # [C_lat, H, W]
+
+        # Create figure: C_lat channels + 1 combined
+        n_cols = min(C_lat + 1, 5)  # Cap at 5 columns
+        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 2.5, 2.5))
+
+        if n_cols == 1:
+            axes = [axes]
+
+        # Normalize for visualization (latent values aren't in [0,1])
+        vmin, vmax = sample.min().item(), sample.max().item()
+
+        # Show individual channels
+        for c in range(min(C_lat, n_cols - 1)):
+            ax = axes[c]
+            im = ax.imshow(sample[c].numpy(), cmap='viridis', vmin=vmin, vmax=vmax)
+            ax.set_title(f'Ch {c}', fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        # Combined magnitude view (RMS across channels)
+        if n_cols > 1:
+            ax = axes[-1]
+            magnitude = torch.sqrt((sample ** 2).mean(dim=0))  # [H, W]
+            ax.imshow(magnitude.numpy(), cmap='magma')
+            ax.set_title('Magnitude', fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        fig.suptitle(f'Latent Space (range: [{vmin:.2f}, {vmax:.2f}])', fontsize=10)
+        plt.tight_layout()
+        self.writer.add_figure(tag, fig, epoch)
+        plt.close(fig)
+
+    def _log_latent_samples_3d(
+        self,
+        samples: torch.Tensor,
+        epoch: int,
+        tag: str,
+        num_slices: int = 8,
+    ):
+        """Log 3D latent samples with per-channel center slices.
+
+        Creates a figure showing center slice for each latent channel
+        plus combined magnitude view.
+
+        Args:
+            samples: 5D tensor [B, C_lat, D, H, W].
+            epoch: Current epoch number.
+            tag: TensorBoard tag.
+            num_slices: Not used (shows center slice per channel).
+        """
+        import matplotlib.pyplot as plt
+
+        B, C_lat, D, H, W = samples.shape
+        samples = samples.float().cpu()
+
+        # Show first sample, center depth slice
+        center_idx = D // 2
+        sample = samples[0, :, center_idx, :, :]  # [C_lat, H, W]
+
+        # Create figure: C_lat channels + 1 combined
+        n_cols = min(C_lat + 1, 5)  # Cap at 5 columns
+        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 2.5, 2.5))
+
+        if n_cols == 1:
+            axes = [axes]
+
+        # Normalize for visualization
+        vmin, vmax = sample.min().item(), sample.max().item()
+
+        # Show individual channels
+        for c in range(min(C_lat, n_cols - 1)):
+            ax = axes[c]
+            im = ax.imshow(sample[c].numpy(), cmap='viridis', vmin=vmin, vmax=vmax)
+            ax.set_title(f'Ch {c}', fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        # Combined magnitude view
+        if n_cols > 1:
+            ax = axes[-1]
+            magnitude = torch.sqrt((sample ** 2).mean(dim=0))  # [H, W]
+            ax.imshow(magnitude.numpy(), cmap='magma')
+            ax.set_title('Magnitude', fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        fig.suptitle(f'Latent Space z={center_idx} (range: [{vmin:.2f}, {vmax:.2f}])', fontsize=10)
+        plt.tight_layout()
+        self.writer.add_figure(tag, fig, epoch)
+        plt.close(fig)
+
+    def log_latent_trajectory(
+        self,
+        trajectory: list,
+        epoch: int,
+        tag: str = 'denoising_trajectory',
+    ):
+        """Log latent space denoising trajectory to TensorBoard.
+
+        Shows the magnitude of latent tensors at each step of denoising.
+        Uses same path structure as decoded trajectory with '_latent' suffix.
+
+        Args:
+            trajectory: List of latent tensors at different timesteps.
+            epoch: Current epoch number.
+            tag: TensorBoard tag (e.g., 'denoising_trajectory').
+        """
+        if self.writer is None or not trajectory:
+            return
+
+        import matplotlib.pyplot as plt
+
+        n_steps = len(trajectory)
+        first = trajectory[0]
+
+        # Determine if 2D or 3D
+        is_3d = first.dim() == 5
+
+        fig, axes = plt.subplots(1, n_steps, figsize=(n_steps * 2, 2.5))
+        if n_steps == 1:
+            axes = [axes]
+
+        for i, latent in enumerate(trajectory):
+            ax = axes[i]
+            latent = latent[0].float().cpu()  # First sample
+
+            if is_3d:
+                # Center slice, magnitude across channels
+                center_idx = latent.shape[1] // 2
+                slice_data = latent[:, center_idx, :, :]  # [C, H, W]
+            else:
+                slice_data = latent  # [C, H, W]
+
+            # Compute magnitude
+            magnitude = torch.sqrt((slice_data ** 2).mean(dim=0))  # [H, W]
+            ax.imshow(magnitude.numpy(), cmap='magma')
+            ax.set_title(f't={i}', fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        fig.suptitle('Latent Denoising Trajectory (Magnitude)', fontsize=10)
+        plt.tight_layout()
+        self.writer.add_figure(f'{tag}/progression_latent', fig, epoch)
         plt.close(fig)
 
     def log_test_figure(

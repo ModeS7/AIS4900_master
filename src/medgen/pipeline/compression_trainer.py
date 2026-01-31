@@ -380,8 +380,15 @@ class BaseCompressionTrainer(BaseTrainer):
             epoch: Current epoch number.
             avg_losses: Dictionary of averaged losses from training.
         """
-        if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
-            # Update loss accumulators
+        if not hasattr(self, '_unified_metrics') or self._unified_metrics is None:
+            return
+
+        seg_mode = getattr(self, 'seg_mode', False)
+        if seg_mode:
+            # Use dedicated seg training logging
+            self._unified_metrics.log_seg_training(avg_losses, epoch)
+        else:
+            # Standard loss logging
             for key, value in avg_losses.items():
                 self._unified_metrics.update_loss(key, value, phase='train')
             self._unified_metrics.log_training(epoch)
@@ -1102,6 +1109,13 @@ class BaseCompressionTrainer(BaseTrainer):
             metrics: Dictionary of validation metrics.
         """
         if self.writer is None:
+            return
+
+        # Check for seg_mode - use dedicated seg validation logging
+        seg_mode = getattr(self, 'seg_mode', False)
+        if seg_mode:
+            # Use dedicated seg validation logging for consistent paths
+            self._unified_metrics.log_seg_validation(metrics, epoch)
             return
 
         # Get mode name for modality suffix

@@ -96,7 +96,7 @@ class LatentDataset(Dataset):
         """Load a single sample from cache.
 
         Returns:
-            Dictionary with 'latent', optionally 'seg_mask', 'patient_id', 'slice_idx'.
+            Dictionary with 'latent', optionally 'latent_seg', 'seg_mask', 'patient_id', 'slice_idx'.
         """
         data = torch.load(self.files[idx], weights_only=False)
 
@@ -104,7 +104,11 @@ class LatentDataset(Dataset):
         if 'latent' in data:
             data['latent'] = data['latent'].float()
 
-        # Ensure seg_mask is float32 if present
+        # Ensure latent_seg is float32 if present (for seg conditioning)
+        if 'latent_seg' in data and data['latent_seg'] is not None:
+            data['latent_seg'] = data['latent_seg'].float()
+
+        # Ensure seg_mask is float32 if present (pixel-space for regional metrics)
         if 'seg_mask' in data and data['seg_mask'] is not None:
             data['seg_mask'] = data['seg_mask'].float()
 
@@ -298,6 +302,12 @@ class LatentCacheBuilder:
                 if latent_shape is None:
                     latent_shape = list(latents.shape[1:])  # [C, H, W]
 
+                # Encode seg masks to latent if available
+                latent_segs = None
+                if seg_masks is not None:
+                    seg_masks_device = seg_masks.to(self.device, non_blocking=True)
+                    latent_segs = self._encode(seg_masks_device)
+
                 # Save each sample
                 for i in range(latents.shape[0]):
                     sample_data = {
@@ -306,9 +316,12 @@ class LatentCacheBuilder:
                         'slice_idx': slice_indices[i] if slice_indices else sample_idx,
                     }
 
-                    # Include seg mask if available (keep in pixel space)
+                    # Include seg mask if available
                     if seg_masks is not None:
+                        # Keep pixel-space seg for regional metrics
                         sample_data['seg_mask'] = seg_masks[i].cpu()
+                        # Also store latent seg for seg conditioning
+                        sample_data['latent_seg'] = latent_segs[i].cpu()
 
                     # Save to file
                     filename = f"sample_{sample_idx:06d}.pt"
@@ -368,9 +381,16 @@ class LatentCacheBuilder:
                     'patient_id': patient_id if patient_id else f"volume_{idx}",
                 }
 
-                # Include seg mask if available (keep in pixel space)
+                # Include seg mask if available
                 if seg_mask is not None:
+                    # Keep pixel-space seg for regional metrics
                     sample_data['seg_mask'] = seg_mask.cpu()
+
+                    # Also encode seg to latent space for seg conditioning
+                    # Use same encoder - works even if not trained on seg
+                    seg_input = seg_mask.unsqueeze(0).to(self.device)  # [1, 1, D, H, W]
+                    latent_seg = self._encode(seg_input)  # [1, C_lat, D', H', W']
+                    sample_data['latent_seg'] = latent_seg.squeeze(0).cpu()
 
                 # Save to file
                 filename = f"volume_{sample_idx:06d}.pt"

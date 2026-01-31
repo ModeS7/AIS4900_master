@@ -47,6 +47,7 @@ from medgen.diffusion import (
     SegmentationConditionedMode,
     SegmentationConditionedInputMode,
     SegmentationMode,
+    LatentSegConditionedMode,
     TrainingMode,
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
     DiffusionSpace,
@@ -647,6 +648,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             'seg_conditioned': SegmentationConditionedMode,
             'seg_conditioned_input': SegmentationConditionedInputMode,
             'bravo': ConditionalSingleMode,
+            'bravo_seg_cond': LatentSegConditionedMode,
             'dual': ConditionalDualMode,
             'multi': MultiModalityMode,
         }
@@ -668,6 +670,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if mode == 'seg_conditioned_input':
             size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
             return SegmentationConditionedInputMode(size_bin_config)
+
+        if mode == 'bravo_seg_cond':
+            latent_channels = self.cfg.mode.get('latent_channels', 4)
+            return LatentSegConditionedMode(latent_channels)
 
         return modes[mode]()
 
@@ -1548,6 +1554,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
             mode_id = prepared.get('mode_id')  # For multi-modality mode
             size_bins = prepared.get('size_bins')  # For seg_conditioned mode
             bin_maps = prepared.get('bin_maps')  # For seg_conditioned_input mode
+            is_latent = prepared.get('is_latent', False)  # Latent dataloader flag
+            labels_is_latent = prepared.get('labels_is_latent', False)  # Labels already encoded
 
             # CFG dropout for size_bins/bin_maps is handled in dataloader (cfg_dropout_prob)
             # No trainer-level dropout needed - dataloader applies per-sample dropout
@@ -1561,10 +1569,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 controlnet_cond = self._apply_conditioning_dropout(controlnet_cond, batch_size)
 
             # Encode to diffusion space (identity for PixelSpace)
-            images = self.space.encode_batch(images)
+            # Skip encoding if data is already in latent space (from latent dataloader)
+            if not is_latent:
+                images = self.space.encode_batch(images)
             # For ControlNet: keep labels in pixel space (conditioning through ControlNet)
             # For concatenation: encode labels to latent space
-            if labels is not None and not self.use_controlnet:
+            # Skip if labels are already encoded (bravo_seg_cond mode)
+            if labels is not None and not self.use_controlnet and not labels_is_latent:
                 labels = self.space.encode(labels)
 
             labels_dict = {'labels': labels, 'bin_maps': bin_maps}
@@ -2081,6 +2092,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     'images': prepared['images'].detach().clone(),
                     'labels': prepared.get('labels').detach().clone() if prepared.get('labels') is not None else None,
                     'size_bins': prepared.get('size_bins').detach().clone() if prepared.get('size_bins') is not None else None,
+                    'is_latent': prepared.get('is_latent', False),
+                    'labels_is_latent': prepared.get('labels_is_latent', False),
                 }
 
             result = self.train_step(batch)
@@ -2176,6 +2189,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 images = prepared['images']
                 labels = prepared.get('labels')
                 mode_id = prepared.get('mode_id')  # For multi-modality mode
+                is_latent = prepared.get('is_latent', False)  # Latent dataloader flag
+                labels_is_latent = prepared.get('labels_is_latent', False)  # Labels already encoded
 
                 # Get current batch size
                 if isinstance(images, dict):
@@ -2186,11 +2201,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                 # Keep original pixel-space labels for regional metrics (before encoding)
                 # Regional metrics need pixel-space masks to identify tumor/background regions
-                labels_pixel = labels
+                # For bravo_seg_cond mode, use seg_mask from prepared batch
+                labels_pixel = prepared.get('seg_mask', labels) if is_latent else labels
 
                 # Encode to diffusion space (identity for PixelSpace)
-                images = self.space.encode_batch(images)
-                if labels is not None:
+                # Skip encoding if data is already in latent space (from latent dataloader)
+                if not is_latent:
+                    images = self.space.encode_batch(images)
+                if labels is not None and not labels_is_latent:
                     labels = self.space.encode(labels)
 
                 labels_dict = {'labels': labels}
@@ -2587,7 +2605,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 size_bins = cached_size_bins[:batch_size] if cached_size_bins is not None else None
             elif self.mode.is_conditional and cached_labels is not None:
                 labels = cached_labels[:batch_size]
-                if self.space.scale_factor > 1:
+                # Check if labels are already in latent space (bravo_seg_cond mode)
+                labels_is_latent = self._cached_train_batch.get('labels_is_latent', False)
+                if self.space.scale_factor > 1 and not labels_is_latent:
                     labels_encoded = self.space.encode(labels)
                 else:
                     labels_encoded = labels
@@ -2611,6 +2631,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 use_progress_bars=False,
                 cfg_scale=cfg_scale,
             )
+
+        # Log latent space visualization before decoding (for latent diffusion)
+        if self.space.scale_factor > 1 and self._unified_metrics is not None:
+            self._unified_metrics.log_latent_samples(samples, epoch, tag='Generated_Samples_Latent')
 
         # Decode if in latent space
         if self.space.scale_factor > 1:
@@ -2684,7 +2708,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             )
         elif self.mode.is_conditional and cached_labels is not None:
             labels = cached_labels[:1]
-            if self.space.scale_factor > 1:
+            # Check if labels are already in latent space (bravo_seg_cond mode)
+            labels_is_latent = self._cached_train_batch.get('labels_is_latent', False)
+            if self.space.scale_factor > 1 and not labels_is_latent:
                 labels_encoded = self.space.encode(labels)
             else:
                 labels_encoded = labels
@@ -2692,6 +2718,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
             trajectory = self._generate_trajectory_3d(model, model_input, num_steps=25, capture_every=5)
         else:
             trajectory = self._generate_trajectory_3d(model, noise, num_steps=25, capture_every=5)
+
+        # Log latent trajectory before decoding (for latent diffusion)
+        if self.space.scale_factor > 1 and self._unified_metrics is not None:
+            self._unified_metrics.log_latent_trajectory(trajectory, epoch, tag='denoising_trajectory')
 
         # Decode trajectory if in latent space
         if self.space.scale_factor > 1:
@@ -2982,12 +3012,19 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     self._unified_metrics.log_vram(epoch)
 
                     if log_figures and worst_val_data is not None:
-                        # Decode from latent space if needed
+                        # Get latent-space data
                         original = worst_val_data['original']
                         generated = worst_val_data['generated']
+
+                        # Log latent space visualization before decoding (for latent diffusion)
                         if self.space.scale_factor > 1:
+                            self._unified_metrics.log_latent_samples(
+                                generated.to(self.device), epoch, tag='val/worst_batch_latent'
+                            )
+                            # Decode from latent space
                             original = self.space.decode(original.to(self.device))
                             generated = self.space.decode(generated.to(self.device))
+
                         self._unified_metrics.log_worst_batch(
                             original=original,
                             reconstructed=generated,
@@ -3541,11 +3578,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 images = prepared['images']
                 labels = prepared.get('labels')
                 mode_id = prepared.get('mode_id')
+                is_latent = prepared.get('is_latent', False)
+                labels_is_latent = prepared.get('labels_is_latent', False)
                 batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
 
-                # Encode to diffusion space
-                images = self.space.encode_batch(images)
-                if labels is not None:
+                # Encode to diffusion space (skip if already latent)
+                if not is_latent:
+                    images = self.space.encode_batch(images)
+                if labels is not None and not labels_is_latent:
                     labels = self.space.encode(labels)
 
                 labels_dict = {'labels': labels}

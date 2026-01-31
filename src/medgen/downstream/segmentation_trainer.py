@@ -22,7 +22,7 @@ from monai.networks.nets import SegResNet
 
 from medgen.core import create_warmup_cosine_scheduler
 from medgen.losses import SegmentationLoss
-from medgen.metrics import SimpleLossAccumulator
+from medgen.metrics import SimpleLossAccumulator, UnifiedMetrics
 from medgen.metrics.regional import SegRegionalMetricsTracker
 from medgen.pipeline.base_trainer import BaseTrainer
 from medgen.pipeline.results import TrainingStepResult
@@ -77,6 +77,9 @@ class SegmentationTrainer(BaseTrainer):
         # Loss accumulator
         self._loss_accumulator = SimpleLossAccumulator()
 
+        # Seg mode flag for consistency with compression trainers
+        self.seg_mode = True
+
     @classmethod
     def create_2d(cls, cfg: DictConfig) -> 'SegmentationTrainer':
         """Create 2D segmentation trainer."""
@@ -86,6 +89,24 @@ class SegmentationTrainer(BaseTrainer):
     def create_3d(cls, cfg: DictConfig) -> 'SegmentationTrainer':
         """Create 3D segmentation trainer."""
         return cls(cfg, spatial_dims=3)
+
+    def _init_unified_metrics(self) -> None:
+        """Initialize UnifiedMetrics for segmentation logging.
+
+        Creates UnifiedMetrics instance for consistent TensorBoard paths
+        across all trainers (matching compression trainer seg_mode).
+        """
+        self._unified_metrics = UnifiedMetrics(
+            writer=self.writer,
+            mode='seg',
+            spatial_dims=self.spatial_dims,
+            modality=None,
+            device=self.device,
+            enable_regional=False,  # Use SegRegionalMetricsTracker directly
+            enable_codebook=False,
+            image_size=self.image_size,
+            fov_mm=self.cfg.evaluation.get('fov_mm', 240.0),
+        )
 
     def _get_trainer_type(self) -> str:
         """Return trainer type for metadata."""
@@ -172,6 +193,9 @@ class SegmentationTrainer(BaseTrainer):
 
         # Setup checkpoint manager
         self._setup_checkpoint_manager()
+
+        # Initialize unified metrics (after writer is set up in parent)
+        self._init_unified_metrics()
 
         # Log model info
         if self.is_main_process:
@@ -282,10 +306,16 @@ class SegmentationTrainer(BaseTrainer):
 
         avg_losses = self._loss_accumulator.compute()
 
-        # Log training losses to TensorBoard
-        if self.writer is not None:
-            for key, value in avg_losses.items():
-                self.writer.add_scalar(f'train/{key}', value, epoch)
+        # Log training losses using unified metrics
+        if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
+            # Map keys for consistency: dice_loss -> dice
+            seg_losses = {
+                'bce': avg_losses.get('bce', 0),
+                'dice': avg_losses.get('dice_loss', 0),
+                'boundary': avg_losses.get('boundary', 0),
+                'gen': avg_losses.get('loss', 0),
+            }
+            self._unified_metrics.log_seg_training(seg_losses, epoch)
 
         return avg_losses
 
@@ -343,10 +373,21 @@ class SegmentationTrainer(BaseTrainer):
         # Merge metrics
         metrics = {**val_losses, **regional_metrics}
 
-        # Log to TensorBoard
+        # Log to TensorBoard using unified metrics
+        if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
+            # Log seg validation metrics for consistent paths
+            seg_metrics = {
+                'bce': val_losses.get('bce', 0),
+                'dice_score': regional_metrics.get('dice', 0),  # dice METRIC, not loss
+                'boundary': 0,  # Not tracked in val
+                'gen': val_losses.get('loss', 0),
+                'iou': regional_metrics.get('iou', 0),
+            }
+            self._unified_metrics.log_seg_validation(seg_metrics, epoch)
+
+        # Log regional metrics (per-size dice) separately
         if self.writer is not None:
-            for key, value in metrics.items():
-                self.writer.add_scalar(f'val/{key}', value, epoch)
+            self.regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional_seg')
 
             # Log predictions figure
             if log_figures and n_batches > 0:
