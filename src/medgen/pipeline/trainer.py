@@ -220,6 +220,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # (Uses training data to keep validation/test datasets properly separated)
         self._cached_train_batch: Optional[Dict[str, torch.Tensor]] = None
 
+        # Cached volume loaders for 3D MS-SSIM (avoid recreating datasets every epoch)
+        self._volume_loaders_cache: Dict[str, DataLoader] = {}
+
         # ScoreAug initialization (applies transforms to noisy data)
         self.score_aug = None
         self.use_omega_conditioning = False
@@ -2601,7 +2604,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self.use_controlnet or self.controlnet_stage1:
                 model_input = noise
                 size_bins = None
-            elif self.mode.name == 'seg_conditioned_input':
+            elif isinstance(self.mode, SegmentationConditionedInputMode):
                 # Input channel conditioning: concatenate noise with bin_maps
                 cached_bin_maps = self._cached_train_batch.get('bin_maps')
                 if cached_bin_maps is not None:
@@ -2711,7 +2714,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
         if self.use_controlnet or self.controlnet_stage1:
             trajectory = self._generate_trajectory_3d(model, noise, num_steps=25, capture_every=5)
-        elif self.mode.name == 'seg_conditioned_input':
+        elif isinstance(self.mode, SegmentationConditionedInputMode):
             # Input channel conditioning: concatenate noise with bin_maps
             cached_bin_maps = self._cached_train_batch.get('bin_maps')
             if cached_bin_maps is not None:
@@ -3298,12 +3301,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if modality == 'multi_modality':
             return None
 
-        # Create volume dataloader
-        result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
-        if result is None:
-            return None
-
-        volume_loader, _ = result
+        # Get or create cached volume dataloader (avoid recreating datasets every epoch)
+        cache_key = f"2d_{data_split}_{modality}"
+        if cache_key not in self._volume_loaders_cache:
+            result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
+            if result is None:
+                return None
+            volume_loader, _ = result
+            self._volume_loaders_cache[cache_key] = volume_loader
+        volume_loader = self._volume_loaders_cache[cache_key]
 
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
@@ -3425,8 +3431,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
         Returns:
             Average 3D MS-SSIM across all volumes, or None if unavailable.
         """
-        from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
-
         # Determine modality
         if modality_override is not None:
             modality = modality_override
@@ -3441,10 +3445,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if modality == 'multi_modality':
             return None
 
-        # Create 3D volume loader for this modality
-        loader = create_vae_3d_single_modality_validation_loader(self.cfg, modality)
-        if loader is None:
-            return None
+        # Get or create cached 3D volume loader for this modality
+        cache_key = f"{data_split}_{modality}"
+        if cache_key not in self._volume_loaders_cache:
+            from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
+            loader = create_vae_3d_single_modality_validation_loader(self.cfg, modality)
+            if loader is None:
+                return None
+            self._volume_loaders_cache[cache_key] = loader
+        loader = self._volume_loaders_cache[cache_key]
 
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
