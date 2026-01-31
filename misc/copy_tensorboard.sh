@@ -3,12 +3,12 @@
 # Run this on the cluster, then download the resulting folder
 #
 # Usage:
-#   ./scripts/copy_tensorboard.sh [source_runs] [destination]
+#   ./misc/copy_tensorboard.sh [source_runs] [destination]
 #
 # Examples:
-#   ./scripts/copy_tensorboard.sh                    # runs/ -> runs_tb/
-#   ./scripts/copy_tensorboard.sh runs runs_tb       # Same as above
-#   ./scripts/copy_tensorboard.sh runs/vqvae_3d tb   # Specific subfolder
+#   ./misc/copy_tensorboard.sh                    # runs/ -> runs_tb/
+#   ./misc/copy_tensorboard.sh runs runs_tb       # Same as above
+#   ./misc/copy_tensorboard.sh runs/vqvae_3d tb   # Specific subfolder
 
 set -e
 
