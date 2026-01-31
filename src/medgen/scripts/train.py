@@ -260,7 +260,7 @@ def main(cfg: DictConfig) -> None:
                 else:
                     log.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
 
-        # Create latent dataloaders
+        # Create latent dataloaders (for training)
         dataloader, train_dataset = create_latent_dataloader(
             cfg=cfg,
             cache_dir=cache_dir,
@@ -272,6 +272,14 @@ def main(cfg: DictConfig) -> None:
             world_size=trainer.world_size if use_multi_gpu else 1,
         )
         log.info(f"Training dataset (latent): {len(train_dataset)} samples")
+
+        # Create pixel-space loaders for reference feature caching
+        # FID/KID metrics are computed in pixel space, not latent space
+        image_type = 'seg' if mode == ModeType.SEG else 'bravo'
+        log.info(f"Creating pixel-space loaders for reference features (type: {image_type})")
+        pixel_train_loader, _ = create_dataloader(cfg=cfg, image_type=image_type, augment=False)
+        pixel_val_result = create_validation_dataloader(cfg=cfg, image_type=image_type)
+        pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
     else:
         # Standard pixel-space dataloaders
@@ -319,6 +327,9 @@ def main(cfg: DictConfig) -> None:
             )
 
         log.info(f"Training dataset: {len(train_dataset)} slices")
+        # Pixel-space training: no separate loaders needed for reference features
+        pixel_train_loader = None
+        pixel_val_loader = None
 
     # Create validation dataloader (if val/ directory exists)
     # Pass world_size to reduce batch size for DDP (avoids OOM on single GPU)
@@ -377,7 +388,12 @@ def main(cfg: DictConfig) -> None:
     trainer.setup_model(train_dataset)
 
     # Train with optional validation loader
-    trainer.train(dataloader, train_dataset, val_loader=val_loader)
+    trainer.train(
+        dataloader, train_dataset,
+        val_loader=val_loader,
+        pixel_train_loader=pixel_train_loader,
+        pixel_val_loader=pixel_val_loader,
+    )
 
     # Create test dataloader and evaluate (if test_new/ directory exists)
     if use_latent:
@@ -555,19 +571,27 @@ def _train_3d(cfg: DictConfig) -> None:
                 # Build cache
                 cache_builder.build_cache(pixel_dataset, split_cache, checkpoint_path)
 
-        # Create latent dataloaders
+        # Create latent dataloaders (for training)
         train_loader, train_dataset = create_latent_3d_dataloader(
             cfg, cache_dir, 'train', mode
         )
-        log.info(f"Train dataset: {len(train_dataset)} volumes")
+        log.info(f"Train dataset (latent): {len(train_dataset)} volumes")
 
         val_result = create_latent_3d_validation_dataloader(cfg, cache_dir, mode)
         if val_result is not None:
             val_loader, val_dataset = val_result
-            log.info(f"Val dataset: {len(val_dataset)} volumes")
+            log.info(f"Val dataset (latent): {len(val_dataset)} volumes")
         else:
             val_loader = None
             log.warning("No validation dataset found")
+
+        # Create pixel-space loaders for reference feature caching
+        # FID/KID metrics are computed in pixel space, not latent space
+        pixel_modality = get_modality_for_mode(mode)
+        log.info(f"Creating pixel-space loaders for reference features (modality: {pixel_modality})")
+        pixel_train_loader, _ = create_vae_3d_dataloader(cfg, pixel_modality)
+        pixel_val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
+        pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
         # Create LatentSpace with detected/configured parameters
         space = LatentSpace(
@@ -649,6 +673,9 @@ def _train_3d(cfg: DictConfig) -> None:
             log.warning("No validation dataset found")
 
         space = PixelSpace()
+        # Pixel-space training: no separate loaders needed for reference features
+        pixel_train_loader = None
+        pixel_val_loader = None
 
     # Create and setup trainer
     log.info("=== Creating 3D Trainer ===")
@@ -663,7 +690,12 @@ def _train_3d(cfg: DictConfig) -> None:
 
     # Train
     log.info("=== Starting Training ===")
-    trainer.train(train_loader, train_dataset, val_loader=val_loader)
+    trainer.train(
+        train_loader, train_dataset,
+        val_loader=val_loader,
+        pixel_train_loader=pixel_train_loader,
+        pixel_val_loader=pixel_val_loader,
+    )
 
     # Test evaluation (if test set exists and enabled)
     run_test = cfg.training.get('test_after_training', True)

@@ -2909,13 +2909,19 @@ class DiffusionTrainer(DiffusionTrainerBase):
         train_loader: DataLoader,
         train_dataset: Dataset,
         val_loader: Optional[DataLoader] = None,
+        pixel_train_loader: Optional[DataLoader] = None,
+        pixel_val_loader: Optional[DataLoader] = None,
     ) -> None:
         """Main training loop.
 
         Args:
-            train_loader: Training data loader.
+            train_loader: Training data loader (latent or pixel space).
             train_dataset: Training dataset (for sample generation).
-            val_loader: Optional validation dataloader.
+            val_loader: Optional validation dataloader (latent or pixel space).
+            pixel_train_loader: Optional pixel-space train loader for reference features.
+                Only needed when train_loader is latent space.
+            pixel_val_loader: Optional pixel-space val loader for reference features.
+                Only needed when val_loader is latent space.
         """
         total_start = time.time()
         self.val_loader = val_loader
@@ -2976,17 +2982,21 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 num_masks=self._gen_metrics_config.samples_extended,  # Use extended count for conditioning
                 seg_channel_idx=seg_channel_idx,
             )
-            # Cache reference features from train and val loaders
+            # Cache reference features from pixel-space loaders
+            # For latent diffusion: use separate pixel loaders for feature extraction
+            # For pixel-space diffusion: use train/val loaders directly
             # Use content-based cache key so all experiments with same data share cache
-            if val_loader is not None:
+            ref_train_loader = pixel_train_loader if pixel_train_loader is not None else train_loader
+            ref_val_loader = pixel_val_loader if pixel_val_loader is not None else val_loader
+            if ref_val_loader is not None:
                 import hashlib
                 data_dir = str(self.cfg.paths.data_dir)
                 cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
                 cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
                 cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
                 self._gen_metrics.cache_reference_features(
-                    train_loader,
-                    val_loader,
+                    ref_train_loader,
+                    ref_val_loader,
                     experiment_id=cache_id,
                 )
 
