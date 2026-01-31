@@ -31,6 +31,7 @@ from omegaconf import DictConfig, OmegaConf
 from medgen.core import (
     DEFAULT_DUAL_IMAGE_KEYS,
     ModeType,
+    get_modality_for_mode,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
@@ -517,11 +518,15 @@ def _train_3d(cfg: DictConfig) -> None:
 
                 log.info(f"Building {split} cache (this may take a while)...")
 
+                # Map mode to modality for pixel dataset loading
+                # bravo_seg_cond uses bravo.nii.gz, seg_conditioned uses seg.nii.gz, etc.
+                pixel_modality = get_modality_for_mode(mode)
+
                 # Create pixel-space dataset for encoding
                 if split == 'train':
-                    pixel_loader, pixel_dataset = create_vae_3d_dataloader(cfg, mode)
+                    pixel_loader, pixel_dataset = create_vae_3d_dataloader(cfg, pixel_modality)
                 else:
-                    result = create_vae_3d_validation_dataloader(cfg, mode)
+                    result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
                     if result is None:
                         log.warning(f"No {split} data found, skipping")
                         continue
@@ -609,9 +614,10 @@ def _train_3d(cfg: DictConfig) -> None:
             else:
                 val_result = None
         else:
-            # Other modes
-            train_loader, train_dataset = create_vae_3d_dataloader(cfg, mode)
-            val_result = create_vae_3d_validation_dataloader(cfg, mode)
+            # Other modes - map mode to modality for file loading
+            pixel_modality = get_modality_for_mode(mode)
+            train_loader, train_dataset = create_vae_3d_dataloader(cfg, pixel_modality)
+            val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
 
         log.info(f"Train dataset: {len(train_dataset)} volumes")
 

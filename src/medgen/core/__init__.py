@@ -11,6 +11,7 @@ from .constants import (
     DEFAULT_NUM_HEAD_CHANNELS,
     DEFAULT_NUM_WORKERS,
     DEFAULT_DUAL_IMAGE_KEYS,
+    get_modality_for_mode,
 )
 from .cuda_utils import setup_cuda_optimizations
 from .distributed import setup_distributed
@@ -39,6 +40,7 @@ __all__ = [
     'DEFAULT_NUM_HEAD_CHANNELS',
     'DEFAULT_NUM_WORKERS',
     'DEFAULT_DUAL_IMAGE_KEYS',
+    'get_modality_for_mode',
     # Utilities
     'setup_cuda_optimizations',
     # Distributed training

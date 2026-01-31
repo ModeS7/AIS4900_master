@@ -49,3 +49,41 @@ DEFAULT_NUM_WORKERS = 4  # Parallel data loading workers
 
 # Dual mode default image keys
 DEFAULT_DUAL_IMAGE_KEYS = ['t1_pre', 't1_gd']
+
+
+def get_modality_for_mode(mode: str) -> str:
+    """Map diffusion mode to data modality for file loading.
+
+    Diffusion modes (e.g., 'bravo_seg_cond') don't always map 1:1 to
+    modality file names (e.g., 'bravo.nii.gz'). This function handles
+    the translation.
+
+    Args:
+        mode: Diffusion training mode (e.g., 'bravo', 'bravo_seg_cond', 'seg')
+
+    Returns:
+        Modality name for file loading (e.g., 'bravo', 'seg', 'dual')
+
+    Raises:
+        ValueError: If mode requires special handling not supported here
+    """
+    # Direct modalities: mode == file modality
+    if mode in ('bravo', 'seg', 'flair', 't1_pre', 't1_gd', 'dual'):
+        return mode
+
+    # Segmentation modes load seg.nii.gz
+    if mode in ('seg_conditioned', 'seg_conditioned_input'):
+        return 'seg'
+
+    # bravo_seg_cond loads bravo.nii.gz (latent seg comes from cache)
+    if mode == 'bravo_seg_cond':
+        return 'bravo'
+
+    # Multi-modality modes need special dataloaders
+    if mode in ('multi', 'multi_modality'):
+        raise ValueError(
+            f"Mode '{mode}' requires a multi-modality dataloader, "
+            "not create_vae_3d_dataloader()"
+        )
+
+    raise ValueError(f"Unknown mode for modality mapping: {mode}")
