@@ -151,10 +151,12 @@ def main(cfg: DictConfig) -> None:
         )
         space_name = f"latent ({compression_type}, {scale_factor}x)"
 
-        # Determine cache directory
+        # Determine cache directory - include checkpoint hash to avoid conflicts
+        # between different compression models with same type
         cache_dir = latent_cfg.get('cache_dir')
         if cache_dir is None:
-            cache_dir = f"{cfg.paths.data_dir}-latents-{compression_type}"
+            checkpoint_hash = LatentCacheBuilder.compute_checkpoint_hash(compression_checkpoint)
+            cache_dir = f"{cfg.paths.data_dir}-latents-{compression_type}-{checkpoint_hash}"
 
         log.info(f"Loaded {compression_type} compression model from {compression_checkpoint}")
         log.info(f"Scale factor: {scale_factor}x, Latent channels: {latent_channels}")
@@ -509,10 +511,12 @@ def _train_3d(cfg: DictConfig) -> None:
         log.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
         log.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
 
-        # Setup cache directory
+        # Setup cache directory - include checkpoint hash to avoid conflicts
+        # between different compression models with same type (e.g., 4x vs 8x VQ-VAE)
         cache_dir = latent_cfg.get('cache_dir')
         if cache_dir is None:
-            cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d"
+            checkpoint_hash = LatentCacheBuilder3D.compute_checkpoint_hash(checkpoint_path)
+            cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{checkpoint_hash}"
         log.info(f"Cache directory: {cache_dir}")
 
         # Create cache builder

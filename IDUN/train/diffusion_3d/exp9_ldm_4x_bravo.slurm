@@ -39,11 +39,12 @@ echo "Mode: bravo_seg_cond (Latent BRAVO conditioned on Latent SEG)"
 echo "  in_channels:  8 = [bravo_latent(4), seg_latent(4)]"
 echo "  out_channels: 4 = noise prediction for bravo_latent"
 echo ""
-echo "UNet Architecture: LDM_4x"
+echo "UNet Architecture: 4L_large_d (4-level for 4x latent)"
 echo "  channels:         [256, 512, 1024, 2048]"
 echo "  attention_levels: [False, False, True, True]"
 echo "  num_res_blocks:   [3, 3, 3, 3]"
 echo "  num_head_channels: 64"
+echo "  Note: 4-level works with 4x latents (depth=40 divisible by 16)"
 echo ""
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \

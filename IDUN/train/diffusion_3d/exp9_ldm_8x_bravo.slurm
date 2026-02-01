@@ -44,7 +44,7 @@ echo "  channels:         [512, 1024, 2048]"
 echo "  attention_levels: [False, True, True]"
 echo "  num_res_blocks:   [3, 3, 3]"
 echo "  num_head_channels: 64"
-echo "  Note: 3-level required because depth=20 not divisible by 16"
+echo "  Note: 3-level required because depth=20 not divisible by 16 (4-level needs 16)"
 echo ""
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \

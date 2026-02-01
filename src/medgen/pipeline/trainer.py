@@ -2935,11 +2935,20 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if self.spatial_dims == 3:
             volume_size = (self.volume_height, self.volume_width, self.volume_depth)
 
+        # Determine modality for metric suffixes
+        # For seg-conditioned modes, use the target modality (bravo), not the full mode name
+        if self.mode_name in ('multi', 'dual'):
+            metric_modality = None
+        elif self.mode_name == 'bravo_seg_cond':
+            metric_modality = 'bravo'
+        else:
+            metric_modality = self.mode_name
+
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
             mode=self.mode_name,
             spatial_dims=self.spatial_dims,
-            modality=self.mode_name if self.mode_name not in ('multi', 'dual') else None,
+            modality=metric_modality,
             device=self.device,
             enable_regional=self.log_regional_losses,
             num_timestep_bins=10,
