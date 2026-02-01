@@ -162,6 +162,7 @@ def generate_batch(
     cfg_scale: float = 1.0,
     cfg_scale_end: Optional[float] = None,
     use_progress: bool = False,
+    latent_channels: int = 1,
 ) -> torch.Tensor:
     """Generate a batch using diffusion model.
 
@@ -179,6 +180,7 @@ def generate_batch(
                    For dynamic CFG, this is the starting scale (at t=T).
         cfg_scale_end: Optional ending CFG scale (at t=0). If None, uses constant cfg_scale.
         use_progress: Show progress bar.
+        latent_channels: Number of noise channels (1 for pixel, 4 for latent space).
 
     Returns:
         Generated tensor.
@@ -196,7 +198,8 @@ def generate_batch(
                 bin_maps=bin_maps,
                 cfg_scale=cfg_scale,
                 cfg_scale_end=cfg_scale_end,
-                use_progress_bars=use_progress
+                use_progress_bars=use_progress,
+                latent_channels=latent_channels,
             )
 
 

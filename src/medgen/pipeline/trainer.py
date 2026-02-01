@@ -2652,6 +2652,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 use_progress_bars=False,
                 bin_maps=bin_maps,
                 cfg_scale=cfg_scale,
+                latent_channels=self.space.latent_channels,
             )
 
         # Log latent space visualization before decoding (for latent diffusion)

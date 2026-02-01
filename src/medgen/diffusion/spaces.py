@@ -121,6 +121,11 @@ class PixelSpace(DiffusionSpace):
         """No spatial scaling in pixel space."""
         return 1
 
+    @property
+    def latent_channels(self) -> int:
+        """Pixel space has 1 channel per input channel."""
+        return 1
+
 
 class LatentSpace(DiffusionSpace):
     """Latent space using a compression model for encoding/decoding.

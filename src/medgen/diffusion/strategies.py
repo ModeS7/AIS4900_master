@@ -78,13 +78,18 @@ class DiffusionStrategy(ABC):
         """
         return tensor[:, start:end]
 
-    def _parse_model_input(self, model_input: torch.Tensor) -> ParsedModelInput:
+    def _parse_model_input(
+        self, model_input: torch.Tensor, latent_channels: int = 1
+    ) -> ParsedModelInput:
         """Parse model input into components based on channel count.
 
         Works for both 4D (2D images) and 5D (3D volumes).
+        Supports both pixel-space (1 channel noise) and latent-space (multi-channel noise).
 
         Args:
             model_input: Input tensor with noise and optional conditioning.
+            latent_channels: Number of channels for noise in latent space (default 1 for pixel).
+                For latent diffusion with 4-channel VAE, use latent_channels=4.
 
         Returns:
             ParsedModelInput with extracted components.
@@ -94,6 +99,32 @@ class DiffusionStrategy(ABC):
         """
         num_channels = model_input.shape[1]
 
+        # Latent space: multi-channel noise
+        if latent_channels > 1:
+            if num_channels == latent_channels:
+                # Latent unconditional: just noise
+                return ParsedModelInput(
+                    noisy_images=model_input,
+                    noisy_pre=None,
+                    noisy_gd=None,
+                    conditioning=None,
+                    is_dual=False,
+                )
+            elif num_channels == latent_channels * 2:
+                # Latent conditional (e.g., bravo_seg_cond): [noise, conditioning]
+                return ParsedModelInput(
+                    noisy_images=self._slice_channel(model_input, 0, latent_channels),
+                    noisy_pre=None,
+                    noisy_gd=None,
+                    conditioning=self._slice_channel(model_input, latent_channels, num_channels),
+                    is_dual=False,
+                )
+            else:
+                raise ValueError(
+                    f"Unexpected latent channels: {num_channels} (latent_channels={latent_channels})"
+                )
+
+        # Pixel space: 1 channel noise
         if num_channels == 1:
             # Unconditional: just noise
             return ParsedModelInput(
@@ -418,6 +449,7 @@ class DDPMStrategy(DiffusionStrategy):
         bin_maps: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
+        latent_channels: int = 1,
     ):
         """
         Generate using DDPM sampling
@@ -441,6 +473,7 @@ class DDPMStrategy(DiffusionStrategy):
             cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
                        For dynamic CFG, this is the starting scale (at t=T, high noise).
             cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
+            latent_channels: Number of noise channels (1 for pixel space, 4 for latent space).
         """
         batch_size = model_input.shape[0]
         use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
@@ -453,7 +486,7 @@ class DDPMStrategy(DiffusionStrategy):
         self.scheduler.set_timesteps(num_inference_steps=num_steps)
 
         # Parse model input into components
-        parsed = self._parse_model_input(model_input)
+        parsed = self._parse_model_input(model_input, latent_channels=latent_channels)
         noisy_images = parsed.noisy_images
         noisy_pre = parsed.noisy_pre
         noisy_gd = parsed.noisy_gd
@@ -709,6 +742,7 @@ class RFlowStrategy(DiffusionStrategy):
         bin_maps: Optional[torch.Tensor] = None,
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
+        latent_channels: int = 1,
     ):
         """
         Generate using RFlow sampling
@@ -738,6 +772,7 @@ class RFlowStrategy(DiffusionStrategy):
                        For dynamic CFG, this is the starting scale (at t=T, high noise).
             cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
                           Set to 1.0 for "high CFG early, no CFG late" schedule.
+            latent_channels: Number of noise channels (1 for pixel space, 4 for latent space).
         """
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
         use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
@@ -754,7 +789,7 @@ class RFlowStrategy(DiffusionStrategy):
             input_img_size_numel = model_input.shape[2] * model_input.shape[3]
 
         # Parse model input into components
-        parsed = self._parse_model_input(model_input)
+        parsed = self._parse_model_input(model_input, latent_channels=latent_channels)
         noisy_images = parsed.noisy_images
         noisy_pre = parsed.noisy_pre
         noisy_gd = parsed.noisy_gd

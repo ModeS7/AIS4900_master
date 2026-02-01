@@ -836,12 +836,15 @@ class GenerationMetrics:
                 batch_size_bins = self.fixed_size_bins[start_idx:end_idx]
 
             # Generate samples
+            # Get latent channels for proper parsing of conditional input
+            latent_ch = self.space.latent_channels if self.space is not None else 1
             with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                 samples = strategy.generate(
                     model, model_input, num_steps=num_steps, device=self.device,
                     size_bins=batch_size_bins,
                     bin_maps=batch_bin_maps,
                     cfg_scale=self.config.cfg_scale,
+                    latent_channels=latent_ch,
                 )
 
             # Move to CPU immediately to free GPU memory
@@ -918,11 +921,21 @@ class GenerationMetrics:
         # Limit diversity samples to 2 for 3D to avoid OOM
         max_diversity_samples = 2
 
-        for idx in range(num_to_generate):
-            # Get conditioning for this sample
-            masks = self.fixed_conditioning_masks[idx:idx+1]
+        # Check if using latent diffusion
+        is_latent = self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1
 
-            # Generate noise
+        for idx in range(num_to_generate):
+            # Get conditioning for this sample (pixel-space from dataset)
+            masks_pixel = self.fixed_conditioning_masks[idx:idx+1]
+
+            # For latent diffusion, encode masks to latent space
+            if is_latent:
+                with torch.no_grad():
+                    masks = self.space.encode(masks_pixel)
+            else:
+                masks = masks_pixel
+
+            # Generate noise matching the (possibly encoded) masks shape
             noise = torch.randn_like(masks)
 
             # Build model input based on mode
@@ -947,12 +960,15 @@ class GenerationMetrics:
                 batch_size_bins = self.fixed_size_bins[idx:idx+1]
 
             # Generate sample
+            # Get latent channels for proper parsing of conditional input
+            latent_ch = self.space.latent_channels if self.space is not None else 1
             with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
                 sample = strategy.generate(
                     model, model_input, num_steps=num_steps, device=self.device,
                     size_bins=batch_size_bins,
                     bin_maps=batch_bin_maps,
                     cfg_scale=self.config.cfg_scale,
+                    latent_channels=latent_ch,
                 )
 
             # Process sample: clamp, decode if latent, threshold if seg

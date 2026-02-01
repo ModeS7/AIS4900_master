@@ -519,7 +519,8 @@ class ValidationVisualizer:
                     else:
                         samples = self.strategy.generate(
                             gen_model, model_input, num_steps=self.num_timesteps, device=self.device,
-                            mode_id=mode_id
+                            mode_id=mode_id,
+                            latent_channels=self.space.latent_channels,
                         )
 
                 # Decode from latent space to pixel space for visualization
