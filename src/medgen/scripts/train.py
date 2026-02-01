@@ -540,7 +540,7 @@ def _train_3d(cfg: DictConfig) -> None:
             mode in ('bravo_seg_cond', 'seg', 'seg_conditioned', 'seg_conditioned_input')
         )
 
-        for split in ['train', 'val']:
+        for split in ['train', 'val', 'test_new']:
             split_cache = os.path.join(cache_dir, split)
 
             needs_encoding = not os.path.exists(split_cache)
@@ -551,10 +551,15 @@ def _train_3d(cfg: DictConfig) -> None:
 
             if needs_encoding:
                 if not auto_encode:
-                    raise ValueError(
-                        f"Cache missing/invalid for {split} and auto_encode=false. "
-                        f"Set latent.auto_encode=true to build cache automatically."
-                    )
+                    # Only raise error for train split - val/test are optional
+                    if split == 'train':
+                        raise ValueError(
+                            f"Cache missing/invalid for {split} and auto_encode=false. "
+                            f"Set latent.auto_encode=true to build cache automatically."
+                        )
+                    else:
+                        log.info(f"No {split} cache found (optional)")
+                        continue
 
                 log.info(f"Building {split} cache (this may take a while)...")
 
@@ -565,12 +570,28 @@ def _train_3d(cfg: DictConfig) -> None:
                 # Create pixel-space dataset for encoding
                 if split == 'train':
                     pixel_loader, pixel_dataset = create_vae_3d_dataloader(cfg, pixel_modality)
-                else:
+                elif split == 'val':
                     result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
                     if result is None:
                         log.warning(f"No {split} data found, skipping")
                         continue
                     pixel_loader, pixel_dataset = result
+                else:  # test_new
+                    # Check if test_new directory exists
+                    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
+                    if not os.path.exists(test_dir):
+                        log.info("No test_new data found, skipping test cache")
+                        continue
+                    # Use SingleModality3DDatasetWithSeg for test data
+                    pixel_dataset = SingleModality3DDatasetWithSeg(
+                        data_dir=test_dir,
+                        modality=pixel_modality,
+                        height=cfg.volume.height,
+                        width=cfg.volume.width,
+                        pad_depth_to=cfg.volume.pad_depth_to,
+                        pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+                        slice_step=cfg.volume.get('slice_step', 1),
+                    )
 
                 # Build cache
                 cache_builder.build_cache(pixel_dataset, split_cache, checkpoint_path)
@@ -701,16 +722,26 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_loader=pixel_val_loader,
     )
 
-    # Test evaluation (if test set exists and enabled)
+    # Test evaluation (if test_new set exists and enabled)
     run_test = cfg.training.get('test_after_training', True)
-    test_dir = os.path.join(cfg.paths.data_dir, 'test')
+    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
+    use_latent = cfg.latent.get('enabled', False)
+
     if run_test and os.path.exists(test_dir):
         log.info("=== Test Evaluation ===")
 
-        # Create test dataloader based on mode
+        # Create test dataloader based on mode and latent/pixel space
         test_result = None
         try:
-            if mode == 'bravo':
+            if use_latent:
+                # Latent diffusion: use latent test dataloader
+                from medgen.data.loaders.latent import create_latent_test_dataloader
+                cache_dir = cfg.latent.cache_dir
+                test_result = create_latent_test_dataloader(cfg, cache_dir, mode)
+                if test_result is None:
+                    log.warning("No test cache found for latent diffusion")
+            elif mode in ('bravo', 'bravo_seg_cond'):
+                # Bravo or bravo_seg_cond: both use SingleModality3DDatasetWithSeg
                 test_dataset = SingleModality3DDatasetWithSeg(
                     data_dir=test_dir,
                     modality='bravo',
@@ -770,6 +801,9 @@ def _train_3d(cfg: DictConfig) -> None:
             trainer.evaluate_test_set(test_loader, checkpoint_name='latest')
         else:
             log.warning("No test dataset found or could not create dataloader")
+    else:
+        if run_test:
+            log.info("No test_new/ directory found - skipping test evaluation")
 
     # Close TensorBoard writer
     trainer.close_writer()
