@@ -3504,9 +3504,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     (volume.shape[0],), mid_timestep, device=self.device, dtype=torch.long
                 )
 
-                # Add noise
-                noise = torch.randn_like(volume)
-                noisy_volume = self.strategy.add_noise(volume, noise, timesteps)
+                # Keep original pixel-space volume for MS-SSIM comparison
+                volume_pixel = volume
+
+                # Encode to latent space if using latent diffusion
+                volume_encoded = self.space.encode_batch(volume)
+
+                # Add noise in latent/pixel space
+                noise = torch.randn_like(volume_encoded)
+                noisy_volume = self.strategy.add_noise(volume_encoded, noise, timesteps)
 
                 # Format input and denoise
                 # For ControlNet (Stage 1 or 2): use only noisy images
@@ -3515,10 +3521,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 else:
                     model_input = self.mode.format_model_input(noisy_volume, labels_dict)
                 prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
-                _, predicted_clean = self.strategy.compute_loss(prediction, volume, noise, noisy_volume, timesteps)
+                _, predicted_clean = self.strategy.compute_loss(prediction, volume_encoded, noise, noisy_volume, timesteps)
 
-                # Compute 3D MS-SSIM
-                msssim_3d = compute_msssim(predicted_clean.float(), volume.float(), spatial_dims=3)
+                # Decode back to pixel space if using latent diffusion
+                if self.space.scale_factor > 1:
+                    predicted_clean = self.space.decode_batch(predicted_clean)
+
+                # Compute 3D MS-SSIM in pixel space
+                msssim_3d = compute_msssim(predicted_clean.float(), volume_pixel.float(), spatial_dims=3)
                 total_msssim_3d += msssim_3d
                 n_volumes += 1
 
