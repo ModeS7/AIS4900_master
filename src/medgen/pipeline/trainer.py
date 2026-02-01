@@ -2594,12 +2594,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
             batch_size = min(4, cached_images.shape[0])
 
             # Generate noise matching the cached batch shape
-            if self.space.scale_factor > 1:
-                # Latent space: get shape from encoding
+            is_latent = self._cached_train_batch.get('is_latent', False)
+            if is_latent:
+                # Data is already in latent space (from latent loader)
+                noise = torch.randn_like(cached_images[:batch_size])
+            elif self.space.scale_factor > 1:
+                # Pixel space data, encode to get latent shape
                 with torch.no_grad():
                     encoded = self.space.encode(cached_images[:batch_size])
                 noise = torch.randn_like(encoded)
             else:
+                # Pixel space diffusion
                 noise = torch.randn_like(cached_images[:batch_size])
 
             # Build model input with real conditioning
@@ -2707,11 +2712,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
         cached_size_bins = self._cached_train_batch.get('size_bins')
 
         # Generate noise for single sample
-        if self.space.scale_factor > 1:
+        is_latent = self._cached_train_batch.get('is_latent', False)
+        if is_latent:
+            # Data is already in latent space (from latent loader)
+            noise = torch.randn_like(cached_images[:1])
+        elif self.space.scale_factor > 1:
+            # Pixel space data, encode to get latent shape
             with torch.no_grad():
                 encoded = self.space.encode(cached_images[:1])
             noise = torch.randn_like(encoded)
         else:
+            # Pixel space diffusion
             noise = torch.randn_like(cached_images[:1])
 
         # Build model input with conditioning
