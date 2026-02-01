@@ -196,7 +196,7 @@ class DCAETrainer(BaseCompressionTrainer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _get_channel_steps(self) -> List[int]:
-        """Get list of channel counts for structured latent masking."""
+        """Get list of channel counts for structured latent training."""
         if not self.structured_latent_enabled:
             return [self.latent_channels]
         steps = list(range(
@@ -208,16 +208,15 @@ class DCAETrainer(BaseCompressionTrainer):
             steps.append(self.latent_channels)
         return steps
 
-    def _apply_structured_latent_mask(self, latent: torch.Tensor) -> torch.Tensor:
-        """Apply random channel masking for structured latent space training."""
+    def _sample_latent_channels(self) -> Optional[int]:
+        """Sample random channel count for structured latent training.
+
+        Returns:
+            Number of channels to use, or None if structured latent is disabled.
+        """
         if not self.structured_latent_enabled:
-            return latent
-        channel_steps = self._get_channel_steps()
-        c_prime = random.choice(channel_steps)
-        C = latent.shape[1]
-        mask = torch.zeros(1, C, 1, 1, device=latent.device, dtype=latent.dtype)
-        mask[:, :c_prime, :, :] = 1.0
-        return latent * mask
+            return None
+        return random.choice(self._get_channel_steps())
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for DC-AE."""
@@ -293,6 +292,14 @@ class DCAETrainer(BaseCompressionTrainer):
             raw_model = self._create_pretrained_model_2d(n_channels)
         else:
             raw_model = self._create_model_from_scratch_2d(n_channels)
+
+        # Wrap with structured latent wrapper if enabled (DC-AE 1.5)
+        if self.structured_latent_enabled:
+            from ..models.dcae_structured import StructuredAutoencoderDC
+            channel_steps = self._get_channel_steps()
+            raw_model = StructuredAutoencoderDC(raw_model, channel_steps)
+            if self.is_main_process:
+                logger.info(f"Wrapped model with StructuredAutoencoderDC (channel_steps={channel_steps})")
 
         return raw_model
 
@@ -563,8 +570,13 @@ class DCAETrainer(BaseCompressionTrainer):
             if self.spatial_dims == 3:
                 reconstruction = self.model(images)
             else:
-                latent = self.model.encode(images, return_dict=False)[0]
-                latent = self._apply_structured_latent_mask(latent)
+                # DC-AE 1.5: Sample random channel count for structured latent training
+                # StructuredAutoencoderDC handles the weight slicing internally
+                latent_channels = self._sample_latent_channels()
+                if self.structured_latent_enabled:
+                    latent = self.model.encode(images, latent_channels=latent_channels, return_dict=False)[0]
+                else:
+                    latent = self.model.encode(images, return_dict=False)[0]
                 reconstruction = self.model.decode(latent, return_dict=False)[0]
 
             # Compute reconstruction loss

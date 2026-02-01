@@ -15,6 +15,8 @@ from .embeddings import (
 )
 from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer, DropPath
 from .autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
+from .dcae_adaptive_layers import AdaptiveOutputConv2d, AdaptiveInputConv2d
+from .dcae_structured import StructuredAutoencoderDC
 
 # ControlNet utilities
 from .controlnet import (
@@ -56,6 +58,10 @@ __all__ = [
     # 3D Autoencoders
     "AutoencoderDC3D",
     "CheckpointedAutoencoderDC3D",
+    # DC-AE 1.5 Structured Latent Space
+    "AdaptiveOutputConv2d",
+    "AdaptiveInputConv2d",
+    "StructuredAutoencoderDC",
     # ControlNet
     "create_controlnet_for_unet",
     "freeze_unet_for_controlnet",

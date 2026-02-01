@@ -85,20 +85,23 @@ compression_ratio: 32
 scaling_factor: 0.3189
 
 # ============================================================================
-# DC-AE 1.5: Structured Latent Space (ICCV 2025)
+# DC-AE 1.5: Structured Latent Space (DC-Gen)
 # ============================================================================
-# Paper: "DC-AE 1.5: Accelerating Diffusion Model Convergence with Structured Latent Space"
-# https://arxiv.org/abs/2508.00413
+# Paper: "DC-Gen: Diffusion Convergence Acceleration with Structured Latent Space"
+# https://arxiv.org/abs/2412.09612
 #
-# Key idea: Train autoencoder with random channel masking so that:
+# Key idea: Train autoencoder with adaptive convolution weight slicing so that:
 # - Front channels capture object structure/semantics
 # - Later channels capture image details
 #
-# During training:
+# Implementation (official DC-Gen approach):
 # 1. Sample random channel count c' from [min_channels, min+step, ..., latent_channels]
-# 2. Create mask: [1,...,1 (c' times), 0,...,0]
-# 3. Apply mask to latent: z_masked = z * mask
-# 4. Decode masked latent and compute reconstruction loss
+# 2. Encoder output conv: slice weights[:c'] to compute ONLY first c' channels
+# 3. Decoder input conv: slice weights[:, :c'] to handle c' input channels
+# 4. Gradients only flow through active weight slices -> true structured training
+#
+# This differs from naive masking (z * mask) where gradients still flow through
+# all weights. Weight slicing ensures only the active channels are optimized.
 #
 # IMPORTANT: Paper shows DC-AE 1.5 is NOT recommended for small channel counts (c=32).
 # Use only for large latent channels (c=64, c=128). For c=32, standard DC-AE is better.
