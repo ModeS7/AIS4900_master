@@ -817,15 +817,18 @@ class GenerationMetrics:
                 noise_pre = torch.randn_like(masks)
                 noise_gd = torch.randn_like(masks)
                 model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
+                batch_bin_maps = None
             elif self.mode_name == 'seg_conditioned_input' and self.fixed_bin_maps is not None:
-                # seg_conditioned_input mode: concatenate noise with bin_maps
-                bin_maps = self.fixed_bin_maps[start_idx:end_idx]
-                model_input = torch.cat([noise, bin_maps], dim=1)
+                # seg_conditioned_input mode: pass noise as model_input, bin_maps separately for CFG
+                batch_bin_maps = self.fixed_bin_maps[start_idx:end_idx]
+                model_input = noise  # Just noise, bin_maps passed separately
             elif in_channels == 1:  # Unconditional modes (seg, seg_conditioned)
                 # No channel concatenation - conditioning via embedding (if any)
                 model_input = noise
+                batch_bin_maps = None
             else:  # Conditional single channel modes (bravo)
                 model_input = torch.cat([noise, masks], dim=1)
+                batch_bin_maps = None
 
             # Get size_bins for this batch if in seg_conditioned mode
             batch_size_bins = None
@@ -837,6 +840,7 @@ class GenerationMetrics:
                 samples = strategy.generate(
                     model, model_input, num_steps=num_steps, device=self.device,
                     size_bins=batch_size_bins,
+                    bin_maps=batch_bin_maps,
                     cfg_scale=self.config.cfg_scale,
                 )
 

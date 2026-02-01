@@ -918,6 +918,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             compile_fused = False
         elif self.use_size_bin_embedding:
             compile_fused = False
+        # Compiled forward only supports SEG, BRAVO, and DUAL modes - disable for others
+        elif self.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
+            compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
 
@@ -2600,18 +2603,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 noise = torch.randn_like(cached_images[:batch_size])
 
             # Build model input with real conditioning
+            # Initialize bin_maps for seg_conditioned_input mode (None for other modes)
+            bin_maps = None
             # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
             if self.use_controlnet or self.controlnet_stage1:
                 model_input = noise
                 size_bins = None
             elif isinstance(self.mode, SegmentationConditionedInputMode):
-                # Input channel conditioning: concatenate noise with bin_maps
+                # Input channel conditioning: pass noise as model_input, bin_maps separately
                 cached_bin_maps = self._cached_train_batch.get('bin_maps')
                 if cached_bin_maps is not None:
                     bin_maps = cached_bin_maps[:batch_size]
-                    model_input = torch.cat([noise, bin_maps], dim=1)
-                else:
-                    model_input = noise
+                model_input = noise
                 size_bins = None
             elif self.use_size_bin_embedding:
                 model_input = noise
@@ -2642,6 +2645,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 num_steps=25,
                 device=self.device,
                 use_progress_bars=False,
+                bin_maps=bin_maps,
                 cfg_scale=cfg_scale,
             )
 

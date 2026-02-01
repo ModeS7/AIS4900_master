@@ -121,6 +121,16 @@ class DiffusionStrategy(ABC):
                 conditioning=self._slice_channel(model_input, 2, 3),
                 is_dual=True,
             )
+        elif num_channels == 8:
+            # seg_conditioned_input: [noise(1), bin_maps(7)]
+            # Treat noise as the image and bin_maps as conditioning for CFG
+            return ParsedModelInput(
+                noisy_images=self._slice_channel(model_input, 0, 1),
+                noisy_pre=None,
+                noisy_gd=None,
+                conditioning=self._slice_channel(model_input, 1, 8),
+                is_dual=False,
+            )
         else:
             raise ValueError(f"Unexpected number of channels: {num_channels}")
 
