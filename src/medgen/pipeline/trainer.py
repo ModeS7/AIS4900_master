@@ -3486,33 +3486,47 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         with torch.inference_mode():
             for batch in loader:
-                # Handle both tuple format (SegDataset) and dict format (other datasets)
+                # Handle tuple format (SegDataset), latent dict, and pixel dict formats
                 if isinstance(batch, (tuple, list)):
                     # SegDataset returns (seg_volume, size_bins) or (seg_volume, size_bins, bin_maps)
                     volume = batch[0].to(self.device, non_blocking=True)
                     labels = None  # seg_conditioned mode has no separate labels
+                elif 'latent' in batch:
+                    # Latent dict format: {'latent': ..., 'latent_seg': ...}
+                    # For bravo_seg_cond: latent is bravo, latent_seg is conditioning
+                    volume = batch['latent'].to(self.device, non_blocking=True)
+                    labels = batch.get('latent_seg')
+                    if labels is not None:
+                        labels = labels.to(self.device, non_blocking=True)
                 else:
-                    # Dict format: {'image': ..., 'seg': ...}
+                    # Pixel dict format: {'image': ..., 'seg': ...}
                     volume = batch['image'].to(self.device, non_blocking=True)
                     labels = batch.get('seg')
                     if labels is not None:
                         labels = labels.to(self.device, non_blocking=True)
                 labels_dict = {'labels': labels}
 
+                # Check if data is already in latent space (from latent loader)
+                is_latent_data = 'latent' in batch if isinstance(batch, dict) else False
+
                 # Create timestep tensor
                 timesteps = torch.full(
                     (volume.shape[0],), mid_timestep, device=self.device, dtype=torch.long
                 )
 
-                # Keep original pixel-space volume for MS-SSIM comparison
-                volume_pixel = volume
+                # Handle latent vs pixel space data
+                if is_latent_data:
+                    # Data is already in latent space - decode for pixel comparison
+                    volume_latent = volume
+                    volume_pixel = self.space.decode_batch(volume)
+                else:
+                    # Data is in pixel space - encode for model
+                    volume_pixel = volume
+                    volume_latent = self.space.encode_batch(volume)
 
-                # Encode to latent space if using latent diffusion
-                volume_encoded = self.space.encode_batch(volume)
-
-                # Add noise in latent/pixel space
-                noise = torch.randn_like(volume_encoded)
-                noisy_volume = self.strategy.add_noise(volume_encoded, noise, timesteps)
+                # Add noise in latent/pixel space (model always operates here)
+                noise = torch.randn_like(volume_latent)
+                noisy_volume = self.strategy.add_noise(volume_latent, noise, timesteps)
 
                 # Format input and denoise
                 # For ControlNet (Stage 1 or 2): use only noisy images
@@ -3521,7 +3535,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 else:
                     model_input = self.mode.format_model_input(noisy_volume, labels_dict)
                 prediction = self.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
-                _, predicted_clean = self.strategy.compute_loss(prediction, volume_encoded, noise, noisy_volume, timesteps)
+                _, predicted_clean = self.strategy.compute_loss(prediction, volume_latent, noise, noisy_volume, timesteps)
 
                 # Decode back to pixel space if using latent diffusion
                 if self.space.scale_factor > 1:
