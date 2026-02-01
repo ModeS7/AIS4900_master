@@ -36,6 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Input: 256x256x1 seg masks -> Latent: 8x8x32 (32x compression)
 # Loss: BCE + Dice + Boundary (no perceptual, no GAN)
 # Tokens for transformer: 8*8 = 64 per slice
+# Augmentation: Aggressive spatial + Mosaic + CutMix + CopyPaste
 time python -m medgen.scripts.train_compression --config-name=dcae \
     paths=cluster \
     mode=seg \
@@ -45,6 +46,11 @@ time python -m medgen.scripts.train_compression --config-name=dcae \
     training.batch_size=16 \
     training.learning_rate=1e-4 \
     training.use_compile=false \
+    training.augment=true \
+    training.batch_augment.enabled=true \
+    training.batch_augment.mosaic_prob=0.2 \
+    training.batch_augment.cutmix_prob=0.2 \
+    training.batch_augment.copy_paste_prob=0.3 \
     training.logging.regional_losses=true \
     training.name=exp13_1_seg_f32_
 
