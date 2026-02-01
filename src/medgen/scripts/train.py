@@ -735,8 +735,8 @@ def _train_3d(cfg: DictConfig) -> None:
         try:
             if use_latent:
                 # Latent diffusion: use latent test dataloader
+                # Note: cache_dir is the local variable set earlier during latent training setup
                 from medgen.data.loaders.latent import create_latent_test_dataloader
-                cache_dir = cfg.latent.cache_dir
                 test_result = create_latent_test_dataloader(cfg, cache_dir, mode)
                 if test_result is None:
                     log.warning("No test cache found for latent diffusion")
