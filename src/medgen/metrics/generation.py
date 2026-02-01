@@ -534,7 +534,7 @@ class GenerationMetrics:
         self.run_dir = Path(run_dir)
         self.space = space  # DiffusionSpace for latent decoding
         self.mode_name = mode_name
-        self.is_seg_mode = mode_name in ('seg', 'seg_conditioned')
+        self.is_seg_mode = mode_name in ('seg', 'seg_conditioned', 'seg_conditioned_input')
 
         # Initialize feature extractors (lazy-loaded)
         self.resnet = ResNet50Features(device, cache_dir=Path(config.cache_dir))
@@ -553,6 +553,7 @@ class GenerationMetrics:
         self.fixed_conditioning_masks: Optional[torch.Tensor] = None
         self.fixed_gt_images: Optional[torch.Tensor] = None
         self.fixed_size_bins: Optional[torch.Tensor] = None  # For seg_conditioned mode
+        self.fixed_bin_maps: Optional[torch.Tensor] = None  # For seg_conditioned_input mode
 
         if self.is_seg_mode:
             logger.info(f"GenerationMetrics: {mode_name} mode - will threshold output at 0.5")
@@ -577,6 +578,7 @@ class GenerationMetrics:
         masks = []
         gt_images = []
         size_bins_list = []  # For seg_conditioned mode
+        bin_maps_list = []  # For seg_conditioned_input mode
         attempts = 0
         max_attempts = len(train_dataset)
         samples_without_seg = 0  # Track samples missing seg data
@@ -591,7 +593,9 @@ class GenerationMetrics:
 
             # Handle dict, tuple, or tensor format
             is_seg_conditioned = False  # Track if this sample uses size_bins conditioning
+            is_seg_conditioned_input = False  # Track if this sample uses input channel conditioning
             current_size_bins = None
+            current_bin_maps = None
             if isinstance(data, dict):
                 # Dict format - check multiple key variants
                 # Latent dataset: {'latent': ..., 'seg_mask': ..., 'latent_seg': ...}
@@ -654,11 +658,11 @@ class GenerationMetrics:
                     second = torch.tensor(second).float()
 
                 # seg_conditioned_input mode: (seg, size_bins, bin_maps)
-                is_seg_conditioned_input = bin_maps is not None and second.dim() == 1
-                if is_seg_conditioned_input:
+                if bin_maps is not None and second.dim() == 1:
+                    is_seg_conditioned_input = True
                     tensor = first
                     current_size_bins = second.long()
-                    # bin_maps are for input conditioning, not needed for metrics sampling
+                    current_bin_maps = bin_maps.float() if isinstance(bin_maps, torch.Tensor) else torch.from_numpy(bin_maps).float()
                     local_seg_idx = 0
                 # Check if this is seg_conditioned mode: (seg, size_bins)
                 # size_bins is 1D, seg is 3D [C, H, W] or 4D [C, D, H, W]
@@ -692,6 +696,9 @@ class GenerationMetrics:
                 # Save size_bins for seg_conditioned mode
                 if isinstance(data, tuple) and is_seg_conditioned:
                     size_bins_list.append(current_size_bins)
+                # Save bin_maps for seg_conditioned_input mode
+                if isinstance(data, tuple) and is_seg_conditioned_input and current_bin_maps is not None:
+                    bin_maps_list.append(current_bin_maps)
             attempts += 1
 
         if len(masks) < num_masks:
@@ -716,6 +723,9 @@ class GenerationMetrics:
         if size_bins_list:
             self.fixed_size_bins = torch.stack(size_bins_list).to(self.device)
             logger.info(f"Loaded {len(size_bins_list)} fixed size_bins for seg_conditioned mode")
+        if bin_maps_list:
+            self.fixed_bin_maps = torch.stack(bin_maps_list).to(self.device)
+            logger.info(f"Loaded {len(bin_maps_list)} fixed bin_maps for seg_conditioned_input mode")
 
         logger.info(f"Loaded {len(masks)} fixed conditioning masks")
 
@@ -807,6 +817,10 @@ class GenerationMetrics:
                 noise_pre = torch.randn_like(masks)
                 noise_gd = torch.randn_like(masks)
                 model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
+            elif self.mode_name == 'seg_conditioned_input' and self.fixed_bin_maps is not None:
+                # seg_conditioned_input mode: concatenate noise with bin_maps
+                bin_maps = self.fixed_bin_maps[start_idx:end_idx]
+                model_input = torch.cat([noise, bin_maps], dim=1)
             elif in_channels == 1:  # Unconditional modes (seg, seg_conditioned)
                 # No channel concatenation - conditioning via embedding (if any)
                 model_input = noise

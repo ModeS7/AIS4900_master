@@ -3302,7 +3302,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             out_channels = self.cfg.mode.get('out_channels', 1)
             modality = 'dual' if out_channels > 1 else mode_name
             # Map mode names to actual file modalities
-            if modality == 'seg_conditioned':
+            if modality in ('seg_conditioned', 'seg_conditioned_input'):
                 modality = 'seg'
 
         # Skip for multi_modality mode - volume loader doesn't support mixed modalities
@@ -3440,29 +3440,32 @@ class DiffusionTrainer(DiffusionTrainerBase):
         Returns:
             Average 3D MS-SSIM across all volumes, or None if unavailable.
         """
-        # Determine modality
-        if modality_override is not None:
-            modality = modality_override
-        else:
-            mode_name = self.cfg.mode.get('name', 'bravo')
-            out_channels = self.cfg.mode.get('out_channels', 1)
-            modality = 'dual' if out_channels > 1 else mode_name
-            if modality == 'seg_conditioned':
-                modality = 'seg'
-
         # Skip for multi_modality mode
-        if modality == 'multi_modality':
+        mode_name = self.cfg.mode.get('name', 'bravo')
+        if mode_name == 'multi_modality':
             return None
 
-        # Get or create cached 3D volume loader for this modality
-        cache_key = f"{data_split}_{modality}"
-        if cache_key not in self._volume_loaders_cache:
-            from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
-            loader = create_vae_3d_single_modality_validation_loader(self.cfg, modality)
-            if loader is None:
-                return None
-            self._volume_loaders_cache[cache_key] = loader
-        loader = self._volume_loaders_cache[cache_key]
+        # Use existing val_loader for validation split
+        if data_split == 'val' and self.val_loader is not None:
+            loader = self.val_loader
+        else:
+            # For other splits (test), create loader if needed
+            if modality_override is not None:
+                modality = modality_override
+            else:
+                out_channels = self.cfg.mode.get('out_channels', 1)
+                modality = 'dual' if out_channels > 1 else mode_name
+                if modality in ('seg_conditioned', 'seg_conditioned_input'):
+                    modality = 'seg'
+
+            cache_key = f"{data_split}_{modality}"
+            if cache_key not in self._volume_loaders_cache:
+                from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
+                loader = create_vae_3d_single_modality_validation_loader(self.cfg, modality)
+                if loader is None:
+                    return None
+                self._volume_loaders_cache[cache_key] = loader
+            loader = self._volume_loaders_cache[cache_key]
 
         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
         model_to_use.eval()
@@ -3479,13 +3482,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         with torch.inference_mode():
             for batch in loader:
-                # batch['image'] is [1, C, D, H, W] for 3D volumes
-                volume = batch['image'].to(self.device, non_blocking=True)
-
-                # Get conditioning if available
-                labels = batch.get('seg')
-                if labels is not None:
-                    labels = labels.to(self.device, non_blocking=True)
+                # Handle both tuple format (SegDataset) and dict format (other datasets)
+                if isinstance(batch, (tuple, list)):
+                    # SegDataset returns (seg_volume, size_bins) or (seg_volume, size_bins, bin_maps)
+                    volume = batch[0].to(self.device, non_blocking=True)
+                    labels = None  # seg_conditioned mode has no separate labels
+                else:
+                    # Dict format: {'image': ..., 'seg': ...}
+                    volume = batch['image'].to(self.device, non_blocking=True)
+                    labels = batch.get('seg')
+                    if labels is not None:
+                        labels = labels.to(self.device, non_blocking=True)
                 labels_dict = {'labels': labels}
 
                 # Create timestep tensor
