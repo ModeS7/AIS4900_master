@@ -48,9 +48,9 @@ time python -m medgen.scripts.train_compression --config-name=dcae \
     training.use_compile=false \
     training.augment=true \
     training.batch_augment.enabled=true \
-    training.batch_augment.mosaic_prob=0.2 \
+    +training.batch_augment.mosaic_prob=0.2 \
     training.batch_augment.cutmix_prob=0.2 \
-    training.batch_augment.copy_paste_prob=0.3 \
+    +training.batch_augment.copy_paste_prob=0.3 \
     training.logging.regional_losses=true \
     training.name=exp13_1_seg_f32_
 
