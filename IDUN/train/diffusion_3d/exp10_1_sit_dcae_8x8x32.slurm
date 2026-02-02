@@ -32,7 +32,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # DC-AE checkpoints (32x compression, 8x8 spatial, 32 channels)
 BRAVO_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/multi_modality/exp9_f32_20251231-175024/latest.pt
-SEG_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/seg/exp13_1_seg_f32_20260201-024545/latest.pt
+SEG_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/seg/exp13_1_seg_f32_20260201-024545/checkpoint_latest.pt
 
 echo "DC-AE Configuration:"
 echo "  Compression: 32x (256x256 -> 8x8)"

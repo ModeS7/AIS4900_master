@@ -32,7 +32,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # DC-AE checkpoints (64x spatial compression, 4x4 latent, 128 channels)
 BRAVO_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/multi_modality/exp9_f64_20251231-175024/latest.pt
-SEG_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/seg/exp13_2_seg_f64_20260201-024544/latest.pt
+SEG_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/seg/exp13_2_seg_f64_20260201-024544/checkpoint_latest.pt
 
 echo "DC-AE Configuration:"
 echo "  Compression: 64x spatial (256x256 -> 4x4)"

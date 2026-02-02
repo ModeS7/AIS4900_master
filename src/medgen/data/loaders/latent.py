@@ -1081,11 +1081,10 @@ def load_compression_model(
                 # From-scratch DC-AE: recreate architecture
                 # Architecture is same for all variants (f32, f64, f128), only latent_channels differs
                 in_channels = model_config.get('in_channels', 1)
-                latent_ch = model_config.get('latent_channels', latent_channels)
 
                 model = AutoencoderDC(
                     in_channels=in_channels,
-                    latent_channels=latent_ch,
+                    latent_channels=latent_channels,  # Use detected value from checkpoint
                     encoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
                     decoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
                     encoder_layers_per_block=(2, 2, 2, 3, 3, 3),
