@@ -1078,10 +1078,28 @@ def load_compression_model(
 
                 model = model.to(device)
             else:
-                raise ValueError(
-                    "2D DC-AE requires 'pretrained' path in checkpoint config. "
-                    "From-scratch DC-AE loading not implemented for latent diffusion."
-                )
+                # From-scratch DC-AE: recreate architecture
+                # Architecture is same for all variants (f32, f64, f128), only latent_channels differs
+                in_channels = model_config.get('in_channels', 1)
+                latent_ch = model_config.get('latent_channels', latent_channels)
+
+                model = AutoencoderDC(
+                    in_channels=in_channels,
+                    latent_channels=latent_ch,
+                    encoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
+                    decoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
+                    encoder_layers_per_block=(2, 2, 2, 3, 3, 3),
+                    decoder_layers_per_block=(3, 3, 3, 3, 3, 3),
+                    encoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+                    decoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+                    encoder_block_types="ResBlock",
+                    decoder_block_types="ResBlock",
+                    downsample_block_type="pixel_unshuffle",
+                    upsample_block_type="pixel_shuffle",
+                    encoder_out_shortcut=True,
+                    decoder_in_shortcut=True,
+                    scaling_factor=model_config.get('scaling_factor', 1.0),
+                ).to(device)
 
     else:
         raise ValueError(f"Unknown compression type: {compression_type}")
