@@ -542,12 +542,18 @@ def _train_3d(cfg: DictConfig) -> None:
         if slicewise_encoding:
             log.info("Using slicewise encoding: 2D encoder applied slice-by-slice")
 
-        # Setup cache directory - include checkpoint hash to avoid conflicts
+        # Setup cache directory - include checkpoint hash(es) to avoid conflicts
         # between different compression models with same type (e.g., 4x vs 8x VQ-VAE)
         cache_dir = latent_cfg.get('cache_dir')
         if cache_dir is None:
             checkpoint_hash = LatentCacheBuilder3D.compute_checkpoint_hash(checkpoint_path)
-            cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{checkpoint_hash}"
+            if seg_checkpoint_path is not None:
+                # Dual encoder: include both hashes (first 8 chars each)
+                seg_hash = LatentCacheBuilder3D.compute_checkpoint_hash(seg_checkpoint_path)
+                combined_hash = f"{checkpoint_hash[:8]}_{seg_hash[:8]}"
+                cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{combined_hash}"
+            else:
+                cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{checkpoint_hash}"
         log.info(f"Cache directory: {cache_dir}")
 
         # Create cache builder
@@ -579,7 +585,9 @@ def _train_3d(cfg: DictConfig) -> None:
             needs_encoding = not os.path.exists(split_cache)
             if not needs_encoding and validate_cache:
                 needs_encoding = not cache_builder.validate_cache(
-                    split_cache, checkpoint_path, require_seg_mask=require_seg_mask
+                    split_cache, checkpoint_path,
+                    require_seg_mask=require_seg_mask,
+                    seg_checkpoint_path=seg_checkpoint_path,
                 )
 
             if needs_encoding:
@@ -627,7 +635,10 @@ def _train_3d(cfg: DictConfig) -> None:
                     )
 
                 # Build cache
-                cache_builder.build_cache(pixel_dataset, split_cache, checkpoint_path)
+                cache_builder.build_cache(
+                    pixel_dataset, split_cache, checkpoint_path,
+                    seg_checkpoint_path=seg_checkpoint_path,
+                )
 
         # Create latent dataloaders (for training)
         train_loader, train_dataset = create_latent_3d_dataloader(

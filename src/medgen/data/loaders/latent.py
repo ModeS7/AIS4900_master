@@ -190,15 +190,21 @@ class LatentCacheBuilder:
         return sha256.hexdigest()[:16]
 
     def validate_cache(
-        self, cache_dir: str, checkpoint_path: str, require_seg_mask: bool = False
+        self,
+        cache_dir: str,
+        checkpoint_path: str,
+        require_seg_mask: bool = False,
+        seg_checkpoint_path: Optional[str] = None,
     ) -> bool:
-        """Check if cache exists and matches checkpoint hash.
+        """Check if cache exists and matches checkpoint hash(es).
 
         Args:
             cache_dir: Directory containing cached latents.
             checkpoint_path: Path to compression model checkpoint.
             require_seg_mask: If True, validates that cache has seg_mask data.
                 Required for regional_losses or modes like bravo_seg_cond.
+            seg_checkpoint_path: Optional path to SEG compression checkpoint.
+                If provided, validates that cache was built with same SEG encoder.
 
         Returns:
             True if cache is valid, False otherwise.
@@ -216,7 +222,7 @@ class LatentCacheBuilder:
             logger.warning(f"Failed to read cache metadata: {e}")
             return False
 
-        # Check hash match
+        # Check main checkpoint hash match
         expected_hash = self.compute_checkpoint_hash(checkpoint_path)
         cached_hash = metadata.get('checkpoint_hash', '')
 
@@ -226,6 +232,18 @@ class LatentCacheBuilder:
                 f"expected={expected_hash}"
             )
             return False
+
+        # Check SEG checkpoint hash if dual-encoder setup
+        if seg_checkpoint_path is not None:
+            expected_seg_hash = self.compute_checkpoint_hash(seg_checkpoint_path)
+            cached_seg_hash = metadata.get('seg_checkpoint_hash', '')
+
+            if cached_seg_hash != expected_seg_hash:
+                logger.info(
+                    f"SEG cache hash mismatch: cached={cached_seg_hash}, "
+                    f"expected={expected_seg_hash}"
+                )
+                return False
 
         # Check mode match
         cached_mode = metadata.get('mode', '')
@@ -270,6 +288,7 @@ class LatentCacheBuilder:
         checkpoint_path: str,
         batch_size: int = 32,
         num_workers: int = 4,
+        seg_checkpoint_path: Optional[str] = None,
     ) -> None:
         """Encode entire dataset and save as .pt files.
 
@@ -282,13 +301,14 @@ class LatentCacheBuilder:
             checkpoint_path: Path to compression checkpoint (for hash).
             batch_size: Batch size for encoding (2D only).
             num_workers: Number of dataloader workers (2D only).
+            seg_checkpoint_path: Optional path to SEG compression checkpoint.
         """
         os.makedirs(cache_dir, exist_ok=True)
 
         if self.spatial_dims == 2:
             self._build_cache_2d(pixel_dataset, cache_dir, checkpoint_path, batch_size, num_workers)
         else:
-            self._build_cache_3d(pixel_dataset, cache_dir, checkpoint_path)
+            self._build_cache_3d(pixel_dataset, cache_dir, checkpoint_path, seg_checkpoint_path)
 
     def _build_cache_2d(
         self,
@@ -376,6 +396,7 @@ class LatentCacheBuilder:
         volume_dataset: Dataset,
         cache_dir: str,
         checkpoint_path: str,
+        seg_checkpoint_path: Optional[str] = None,
     ) -> None:
         """Build 3D cache with single-volume encoding."""
         latent_shape = None
@@ -437,6 +458,11 @@ class LatentCacheBuilder:
             'has_seg_mask': has_seg_mask,
             'created_at': datetime.now().isoformat(),
         }
+
+        # Add SEG checkpoint hash if dual-encoder setup
+        if seg_checkpoint_path is not None:
+            metadata['seg_compression_checkpoint'] = seg_checkpoint_path
+            metadata['seg_checkpoint_hash'] = self.compute_checkpoint_hash(seg_checkpoint_path)
 
         with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -1004,10 +1030,58 @@ def load_compression_model(
         ).to(device)
 
     elif compression_type == 'dcae':
-        # DC-AE model loading (handles 2D/3D internally)
-        from medgen.models.dc_ae import create_dc_ae_from_config
+        # DC-AE model loading
+        if spatial_dims == 3:
+            # 3D DC-AE: use our custom implementation
+            from medgen.models.autoencoder_dc_3d import AutoencoderDC3D
 
-        model = create_dc_ae_from_config(model_config).to(device)
+            model = AutoencoderDC3D(
+                in_channels=model_config.get('in_channels', 1),
+                latent_channels=model_config.get('latent_channels', 32),
+                encoder_block_out_channels=tuple(model_config.get('encoder_block_out_channels', [128, 256, 512, 512])),
+                decoder_block_out_channels=tuple(model_config.get('decoder_block_out_channels', [512, 512, 256, 128])),
+                encoder_layers_per_block=tuple(model_config.get('encoder_layers_per_block', [2, 2, 2, 2])),
+                decoder_layers_per_block=tuple(model_config.get('decoder_layers_per_block', [2, 2, 2, 2])),
+                depth_factors=tuple(model_config.get('depth_factors', [1, 2, 2, 2])),
+                encoder_out_shortcut=model_config.get('encoder_out_shortcut', True),
+                decoder_in_shortcut=model_config.get('decoder_in_shortcut', True),
+                scaling_factor=model_config.get('scaling_factor', 1.0),
+            ).to(device)
+        else:
+            # 2D DC-AE: use diffusers AutoencoderDC
+            from diffusers import AutoencoderDC
+
+            pretrained = model_config.get('pretrained')
+            if pretrained:
+                # Load from HuggingFace pretrained weights
+                model = AutoencoderDC.from_pretrained(pretrained, torch_dtype=torch.float32)
+
+                # Modify input channels if needed (grayscale)
+                in_channels = model_config.get('in_channels', 1)
+                if model.encoder.conv_in.in_channels != in_channels:
+                    old_conv = model.encoder.conv_in
+                    new_conv = torch.nn.Conv2d(
+                        in_channels, old_conv.out_channels,
+                        kernel_size=old_conv.kernel_size, stride=old_conv.stride,
+                        padding=old_conv.padding, bias=old_conv.bias is not None
+                    )
+                    model.encoder.conv_in = new_conv
+
+                    # Also modify decoder output
+                    old_conv_out = model.decoder.conv_out.conv
+                    new_conv_out = torch.nn.Conv2d(
+                        old_conv_out.in_channels, in_channels,
+                        kernel_size=old_conv_out.kernel_size, stride=old_conv_out.stride,
+                        padding=old_conv_out.padding, bias=old_conv_out.bias is not None
+                    )
+                    model.decoder.conv_out.conv = new_conv_out
+
+                model = model.to(device)
+            else:
+                raise ValueError(
+                    "2D DC-AE requires 'pretrained' path in checkpoint config. "
+                    "From-scratch DC-AE loading not implemented for latent diffusion."
+                )
 
     else:
         raise ValueError(f"Unknown compression type: {compression_type}")
