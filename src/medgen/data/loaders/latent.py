@@ -568,8 +568,15 @@ class LatentCacheBuilder:
             # VQ-VAE returns quantized directly
             return model.encode(images)
         elif self.compression_type == 'dcae':
-            # DC-AE is deterministic
-            return model.encode(images)
+            # DC-AE is deterministic - diffusers returns EncoderOutput object
+            result = model.encode(images)
+            # Handle diffusers EncoderOutput (has .latent attribute)
+            if hasattr(result, 'latent'):
+                return result.latent
+            # Handle return_dict=False tuple format
+            if isinstance(result, tuple):
+                return result[0]
+            return result
         else:
             # Generic fallback
             result = model.encode(images)
@@ -934,6 +941,18 @@ def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto')
                 return nested['latent_channels']
             if 'z_channels' in nested:
                 return nested['z_channels']
+
+    # Infer from state_dict weights (fallback for DC-AE)
+    state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', {}))
+    # DC-AE encoder.conv_out.weight has shape [latent_channels, hidden, k, k]
+    if 'encoder.conv_out.weight' in state_dict:
+        return state_dict['encoder.conv_out.weight'].shape[0]
+    # With 'model.' prefix
+    if 'model.encoder.conv_out.weight' in state_dict:
+        return state_dict['model.encoder.conv_out.weight'].shape[0]
+    # VAE quant_conv has shape [2*latent_channels, hidden, k, k] (mu + logvar)
+    if 'quant_conv.weight' in state_dict:
+        return state_dict['quant_conv.weight'].shape[0] // 2
 
     # Default
     return 4
