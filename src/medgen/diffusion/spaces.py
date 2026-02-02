@@ -311,8 +311,13 @@ class LatentSpace(DiffusionSpace):
             return self.vae.encode(x)
 
         elif self.compression_type == 'dcae':
-            # DC-AE is deterministic
-            return self.vae.encode(x)
+            # DC-AE is deterministic - diffusers returns EncoderOutput object
+            result = self.vae.encode(x)
+            if hasattr(result, 'latent'):
+                return result.latent
+            if isinstance(result, tuple):
+                return result[0]
+            return result
 
         else:
             # Generic fallback: try to handle tuple returns
@@ -360,7 +365,11 @@ class LatentSpace(DiffusionSpace):
         if self.slicewise_encoding and z.dim() == 5:
             return self._decode_slicewise(z)
 
-        return self.vae.decode(z)
+        result = self.vae.decode(z)
+        # Handle diffusers DecoderOutput (has .sample attribute)
+        if hasattr(result, 'sample'):
+            return result.sample
+        return result
 
     def _decode_slicewise(self, z: Tensor) -> Tensor:
         """Decode 3D latent volume slice-by-slice using 2D decoder.
@@ -378,7 +387,12 @@ class LatentSpace(DiffusionSpace):
             # Extract latent slice [B, C_lat, H_lat, W_lat]
             latent_slice = z[:, :, d, :, :]
             # Decode slice
-            decoded_slice = self.vae.decode(latent_slice)
+            result = self.vae.decode(latent_slice)
+            # Handle diffusers DecoderOutput
+            if hasattr(result, 'sample'):
+                decoded_slice = result.sample
+            else:
+                decoded_slice = result
             decoded_slices.append(decoded_slice)
 
         # Stack along depth dimension: [B, C, D, H, W]
