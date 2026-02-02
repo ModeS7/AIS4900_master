@@ -103,8 +103,16 @@ class AdaptiveOutputConv2d(nn.Module):
             )
 
         # Slice weights to only compute first N channels
-        weight = self.conv.weight[:out_channels]  # [out_channels, in_channels, kH, kW]
-        bias = self.conv.bias[:out_channels] if self.conv.bias is not None else None
+        # Use contiguous() to ensure proper tensor (not just a view) before dtype conversion
+        weight = self.conv.weight[:out_channels].contiguous()  # [out_channels, in_channels, kH, kW]
+        bias = self.conv.bias[:out_channels].contiguous() if self.conv.bias is not None else None
+
+        # F.conv2d requires all tensors to have matching dtypes
+        # Cast weight and bias to input dtype for mixed precision compatibility
+        # Use .to(device, dtype) to ensure both match the input tensor
+        weight = weight.to(device=x.device, dtype=x.dtype)
+        if bias is not None:
+            bias = bias.to(device=x.device, dtype=x.dtype)
 
         return F.conv2d(x, weight, bias, self.stride, self.padding)
 
@@ -193,8 +201,16 @@ class AdaptiveInputConv2d(nn.Module):
             )
 
         # Slice weights to match actual input channels
-        weight = self.conv.weight[:, :actual_channels]  # [out_channels, actual_channels, kH, kW]
+        # Use contiguous() to ensure proper tensor (not just a view) before dtype conversion
+        weight = self.conv.weight[:, :actual_channels].contiguous()  # [out_channels, actual_channels, kH, kW]
         bias = self.conv.bias  # Bias doesn't depend on input channels
+
+        # F.conv2d requires all tensors to have matching dtypes
+        # Cast weight and bias to input dtype for mixed precision compatibility
+        # Use .to(device, dtype) to ensure both match the input tensor
+        weight = weight.to(device=x.device, dtype=x.dtype)
+        if bias is not None:
+            bias = bias.to(device=x.device, dtype=x.dtype)
 
         return F.conv2d(x, weight, bias, self.stride, self.padding)
 

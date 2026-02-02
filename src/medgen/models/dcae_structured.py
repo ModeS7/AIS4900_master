@@ -63,9 +63,8 @@ class StructuredAutoencoderDC(nn.Module):
                 f"model latent_channels ({self.latent_channels})"
             )
 
-        # Find and replace projection layers
-        self._replace_encoder_output()
-        self._replace_decoder_input()
+        # Create adaptive layers and replace in base model
+        self._setup_adaptive_layers()
 
         logger.info(
             f"StructuredAutoencoderDC initialized: "
@@ -81,146 +80,138 @@ class StructuredAutoencoderDC(nn.Module):
         else:
             raise ValueError("Cannot determine latent_channels from base model")
 
-    def _replace_encoder_output(self) -> None:
-        """Replace encoder's output conv with AdaptiveOutputConv2d."""
+    def _setup_adaptive_layers(self) -> None:
+        """Create adaptive layers and replace them in the base model."""
         encoder = self.base_model.encoder
-
-        # Find the output conv - it's typically encoder.conv_out
-        if hasattr(encoder, 'conv_out'):
-            old_conv = encoder.conv_out
-            if isinstance(old_conv, nn.Conv2d):
-                # Direct Conv2d
-                self.encoder_out_adaptive = AdaptiveOutputConv2d(
-                    in_channels=old_conv.in_channels,
-                    out_channels=old_conv.out_channels,
-                    kernel_size=old_conv.kernel_size,
-                    stride=old_conv.stride,
-                    padding=old_conv.padding,
-                    bias=old_conv.bias is not None,
-                )
-                copy_conv_weights(old_conv, self.encoder_out_adaptive)
-                self._encoder_out_is_direct = True
-                logger.debug("Replaced encoder.conv_out (direct Conv2d)")
-            else:
-                # Might be a wrapper module with .conv attribute
-                if hasattr(old_conv, 'conv') and isinstance(old_conv.conv, nn.Conv2d):
-                    inner_conv = old_conv.conv
-                    self.encoder_out_adaptive = AdaptiveOutputConv2d(
-                        in_channels=inner_conv.in_channels,
-                        out_channels=inner_conv.out_channels,
-                        kernel_size=inner_conv.kernel_size,
-                        stride=inner_conv.stride,
-                        padding=inner_conv.padding,
-                        bias=inner_conv.bias is not None,
-                    )
-                    copy_conv_weights(inner_conv, self.encoder_out_adaptive)
-                    self._encoder_out_is_direct = False
-                    self._encoder_out_wrapper = old_conv
-                    logger.debug("Replaced encoder.conv_out.conv (wrapped Conv2d)")
-                else:
-                    raise ValueError(
-                        f"encoder.conv_out is not a Conv2d or wrapper: {type(old_conv)}"
-                    )
-        else:
-            raise ValueError("Cannot find encoder.conv_out in base model")
-
-    def _replace_decoder_input(self) -> None:
-        """Replace decoder's input conv with AdaptiveInputConv2d."""
         decoder = self.base_model.decoder
 
-        # Find the input conv - it's typically decoder.conv_in
-        if hasattr(decoder, 'conv_in'):
-            old_conv = decoder.conv_in
-            if isinstance(old_conv, nn.Conv2d):
-                # Direct Conv2d
-                self.decoder_in_adaptive = AdaptiveInputConv2d(
-                    in_channels=old_conv.in_channels,
-                    out_channels=old_conv.out_channels,
-                    kernel_size=old_conv.kernel_size,
-                    stride=old_conv.stride,
-                    padding=old_conv.padding,
-                    bias=old_conv.bias is not None,
-                )
-                copy_conv_weights(old_conv, self.decoder_in_adaptive)
-                self._decoder_in_is_direct = True
-                logger.debug("Replaced decoder.conv_in (direct Conv2d)")
-            else:
-                # Might be a wrapper module with .conv attribute
-                if hasattr(old_conv, 'conv') and isinstance(old_conv.conv, nn.Conv2d):
-                    inner_conv = old_conv.conv
-                    self.decoder_in_adaptive = AdaptiveInputConv2d(
-                        in_channels=inner_conv.in_channels,
-                        out_channels=inner_conv.out_channels,
-                        kernel_size=inner_conv.kernel_size,
-                        stride=inner_conv.stride,
-                        padding=inner_conv.padding,
-                        bias=inner_conv.bias is not None,
-                    )
-                    copy_conv_weights(inner_conv, self.decoder_in_adaptive)
-                    self._decoder_in_is_direct = False
-                    self._decoder_in_wrapper = old_conv
-                    logger.debug("Replaced decoder.conv_in.conv (wrapped Conv2d)")
-                else:
-                    raise ValueError(
-                        f"decoder.conv_in is not a Conv2d or wrapper: {type(old_conv)}"
-                    )
+        # Check if encoder has shortcut (needs special handling)
+        self._encoder_has_shortcut = getattr(encoder, 'out_shortcut', False)
+        if self._encoder_has_shortcut:
+            self._shortcut_group_size = getattr(encoder, 'out_shortcut_average_group_size', 1)
+            logger.debug(f"Encoder has shortcut with group_size={self._shortcut_group_size}")
+
+        # Replace encoder.conv_out
+        old_encoder_out = encoder.conv_out
+        if isinstance(old_encoder_out, nn.Conv2d):
+            self.encoder_out_adaptive = AdaptiveOutputConv2d(
+                in_channels=old_encoder_out.in_channels,
+                out_channels=old_encoder_out.out_channels,
+                kernel_size=old_encoder_out.kernel_size,
+                stride=old_encoder_out.stride,
+                padding=old_encoder_out.padding,
+                bias=old_encoder_out.bias is not None,
+            )
+            copy_conv_weights(old_encoder_out, self.encoder_out_adaptive)
+            # Replace in base model
+            encoder.conv_out = self.encoder_out_adaptive
+            logger.debug("Replaced encoder.conv_out with AdaptiveOutputConv2d")
         else:
-            raise ValueError("Cannot find decoder.conv_in in base model")
+            raise ValueError(f"encoder.conv_out is not Conv2d: {type(old_encoder_out)}")
 
-    def _run_encoder_body(self, x: torch.Tensor) -> torch.Tensor:
-        """Run encoder up to (but not including) the output conv.
+        # Check if decoder has shortcut
+        self._decoder_has_shortcut = getattr(decoder, 'in_shortcut', False)
+        if self._decoder_has_shortcut:
+            self._decoder_shortcut_repeats = getattr(decoder, 'in_shortcut_repeats', 1)
+            logger.debug(f"Decoder has shortcut with repeats={self._decoder_shortcut_repeats}")
 
-        This runs all encoder layers except the final projection to latent space.
+        # Replace decoder.conv_in
+        old_decoder_in = decoder.conv_in
+        if isinstance(old_decoder_in, nn.Conv2d):
+            self.decoder_in_adaptive = AdaptiveInputConv2d(
+                in_channels=old_decoder_in.in_channels,
+                out_channels=old_decoder_in.out_channels,
+                kernel_size=old_decoder_in.kernel_size,
+                stride=old_decoder_in.stride,
+                padding=old_decoder_in.padding,
+                bias=old_decoder_in.bias is not None,
+            )
+            copy_conv_weights(old_decoder_in, self.decoder_in_adaptive)
+            # Replace in base model
+            decoder.conv_in = self.decoder_in_adaptive
+            logger.debug("Replaced decoder.conv_in with AdaptiveInputConv2d")
+        else:
+            raise ValueError(f"decoder.conv_in is not Conv2d: {type(old_decoder_in)}")
+
+        # Track the current latent channels for encode
+        self._current_latent_channels: Optional[int] = None
+
+        # Replace encoder forward to handle shortcut with variable channels
+        if self._encoder_has_shortcut:
+            self._original_encoder_forward = encoder.forward
+            encoder.forward = self._encoder_forward_with_shortcut
+
+        # Replace decoder forward to handle shortcut with variable input channels
+        if self._decoder_has_shortcut:
+            self._original_decoder_forward = decoder.forward
+            decoder.forward = self._decoder_forward_with_shortcut
+
+    def _encoder_forward_with_shortcut(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Custom encoder forward that handles shortcut with variable output channels.
+
+        This replaces the original encoder.forward to properly slice the shortcut
+        when using fewer than max latent channels.
         """
         encoder = self.base_model.encoder
 
-        # Initial conv
-        x = encoder.conv_in(x)
+        hidden_states = encoder.conv_in(hidden_states)
+        for down_block in encoder.down_blocks:
+            hidden_states = down_block(hidden_states)
 
-        # Down blocks
-        if hasattr(encoder, 'down_blocks'):
-            for down_block in encoder.down_blocks:
-                x = down_block(x)
+        # Get the number of output channels we want
+        out_channels = self._current_latent_channels or self.latent_channels
 
-        # Output normalization (if present)
-        if hasattr(encoder, 'conv_norm_out'):
-            x = encoder.conv_norm_out(x)
+        # Compute shortcut: average groups of channels
+        # Original: x = hidden_states.unflatten(1, (-1, group_size)).mean(dim=2)
+        # This produces latent_channels output
+        # We need to only take the first out_channels
+        x = hidden_states.unflatten(1, (-1, self._shortcut_group_size))
+        x = x.mean(dim=2)  # [B, latent_channels, H, W]
+        x = x[:, :out_channels]  # Slice to match output
 
-        # Activation before output conv (if present)
-        if hasattr(encoder, 'conv_act'):
-            x = encoder.conv_act(x)
+        # Apply adaptive conv_out with channel slicing
+        hidden_states = self.encoder_out_adaptive(hidden_states, out_channels=out_channels) + x
 
-        return x
+        return hidden_states
 
-    def _run_decoder_body(self, x: torch.Tensor) -> torch.Tensor:
-        """Run decoder after the input conv to the output.
+    def _decoder_forward_with_shortcut(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Custom decoder forward that handles shortcut with variable input channels.
 
-        This runs all decoder layers after the initial projection from latent space.
+        This replaces the original decoder.forward to properly handle the shortcut
+        when the input has fewer than max latent channels.
         """
         decoder = self.base_model.decoder
+        input_channels = hidden_states.shape[1]
 
-        # Up blocks
-        if hasattr(decoder, 'up_blocks'):
-            for up_block in decoder.up_blocks:
-                x = up_block(x)
+        # Compute shortcut: repeat the input to match conv_in output channels
+        # Original: x = hidden_states.repeat_interleave(repeats, dim=1)
+        # With full channels (128), repeats=8 gives 1024 channels
+        #
+        # For variable input channels, we need to handle cases where input_channels
+        # doesn't evenly divide into conv_in_out_channels. Strategy:
+        # 1. Repeat enough times to reach or exceed target channels
+        # 2. Slice to exactly match target channels
+        conv_in_out_channels = self.decoder_in_adaptive.out_channels  # 1024
 
-        # Output normalization and conv
-        if hasattr(decoder, 'conv_norm_out'):
-            x = decoder.conv_norm_out(x)
+        # Compute repeats: ceiling division to ensure we have enough channels
+        needed_repeats = (conv_in_out_channels + input_channels - 1) // input_channels
+        x = hidden_states.repeat_interleave(needed_repeats, dim=1)
 
-        if hasattr(decoder, 'conv_act'):
-            x = decoder.conv_act(x)
+        # Slice to exact target size if we repeated too much
+        if x.shape[1] > conv_in_out_channels:
+            x = x[:, :conv_in_out_channels]
 
-        if hasattr(decoder, 'conv_out'):
-            conv_out = decoder.conv_out
-            if hasattr(conv_out, 'conv'):
-                # Wrapper module
-                x = conv_out(x)
-            else:
-                # Direct Conv2d
-                x = conv_out(x)
+        # Apply adaptive conv_in (automatically handles variable input channels)
+        hidden_states = self.decoder_in_adaptive(hidden_states) + x
 
-        return x
+        for up_block in reversed(decoder.up_blocks):
+            hidden_states = up_block(hidden_states)
+
+        hidden_states = decoder.norm_out(hidden_states.movedim(1, -1)).movedim(-1, 1)
+        hidden_states = decoder.conv_act(hidden_states)
+        hidden_states = decoder.conv_out(hidden_states)
+
+        return hidden_states
 
     def encode(
         self,
@@ -242,19 +233,29 @@ class StructuredAutoencoderDC(nn.Module):
         if latent_channels is None:
             latent_channels = self.latent_channels
 
-        # Run encoder body (everything except final conv)
-        h = self._run_encoder_body(x)
+        # Store for the encoder forward / adaptive layer to use
+        self._current_latent_channels = latent_channels
 
-        # Apply adaptive output conv with channel slicing
-        z = self.encoder_out_adaptive(h, out_channels=latent_channels)
+        try:
+            if self._encoder_has_shortcut:
+                # Use our custom encoder forward that handles shortcut
+                result = self.base_model.encode(x, return_dict=return_dict)
+            else:
+                # No shortcut - just need to patch the conv_out forward
+                original_forward = self.encoder_out_adaptive.forward
 
-        # Apply scaling factor if present
-        if hasattr(self.base_model, 'config') and hasattr(self.base_model.config, 'scaling_factor'):
-            z = z * self.base_model.config.scaling_factor
+                def patched_forward(input_tensor, out_channels=None):
+                    return original_forward(input_tensor, out_channels=self._current_latent_channels)
 
-        if return_dict:
-            return _EncoderOutput(latent=z)
-        return (z,)
+                self.encoder_out_adaptive.forward = patched_forward
+                try:
+                    result = self.base_model.encode(x, return_dict=return_dict)
+                finally:
+                    self.encoder_out_adaptive.forward = original_forward
+        finally:
+            self._current_latent_channels = None
+
+        return result
 
     def decode(
         self,
@@ -274,19 +275,8 @@ class StructuredAutoencoderDC(nn.Module):
             If return_dict=True: DecoderOutput with .sample attribute
             If return_dict=False: Tuple of (sample,)
         """
-        # Undo scaling factor if present
-        if hasattr(self.base_model, 'config') and hasattr(self.base_model.config, 'scaling_factor'):
-            z = z / self.base_model.config.scaling_factor
-
-        # Apply adaptive input conv (handles variable channels)
-        h = self.decoder_in_adaptive(z)
-
-        # Run decoder body (everything after input conv)
-        x = self._run_decoder_body(h)
-
-        if return_dict:
-            return _DecoderOutput(sample=x)
-        return (x,)
+        # AdaptiveInputConv2d automatically handles variable input channels
+        return self.base_model.decode(z, return_dict=return_dict)
 
     def forward(
         self,
@@ -322,103 +312,45 @@ class StructuredAutoencoderDC(nn.Module):
         return getattr(self.base_model, 'config', None)
 
     def parameters(self, recurse: bool = True):
-        """Return all parameters including adaptive layers and base model."""
-        # Yield adaptive layer parameters first
-        yield from self.encoder_out_adaptive.parameters(recurse)
-        yield from self.decoder_in_adaptive.parameters(recurse)
-
-        # Yield base model parameters, excluding the replaced layers
-        for name, param in self.base_model.named_parameters(recurse=recurse):
-            # Skip the original conv layers that we replaced
-            if 'encoder.conv_out' in name or 'decoder.conv_in' in name:
-                continue
-            yield param
+        """Return all parameters from base model (which now contains adaptive layers)."""
+        return self.base_model.parameters(recurse=recurse)
 
     def named_parameters(self, prefix: str = '', recurse: bool = True):
-        """Return all named parameters including adaptive layers."""
-        # Yield adaptive layer parameters
-        for name, param in self.encoder_out_adaptive.named_parameters(recurse=recurse):
-            yield f'{prefix}encoder_out_adaptive.{name}' if prefix else f'encoder_out_adaptive.{name}', param
-        for name, param in self.decoder_in_adaptive.named_parameters(recurse=recurse):
-            yield f'{prefix}decoder_in_adaptive.{name}' if prefix else f'decoder_in_adaptive.{name}', param
-
-        # Yield base model parameters, excluding replaced layers
-        for name, param in self.base_model.named_parameters(prefix='base_model', recurse=recurse):
-            if 'encoder.conv_out' in name or 'decoder.conv_in' in name:
-                continue
-            yield f'{prefix}{name}' if prefix else name, param
+        """Return all named parameters from base model."""
+        return self.base_model.named_parameters(prefix=prefix, recurse=recurse)
 
     def state_dict(self, *args, **kwargs):
-        """Return state dict with adaptive layers."""
-        state = {}
-
-        # Add adaptive layer states
-        for name, param in self.encoder_out_adaptive.state_dict().items():
-            state[f'encoder_out_adaptive.{name}'] = param
-        for name, param in self.decoder_in_adaptive.state_dict().items():
-            state[f'decoder_in_adaptive.{name}'] = param
-
-        # Add base model state (excluding replaced layers)
-        for name, param in self.base_model.state_dict().items():
-            if 'encoder.conv_out' in name or 'decoder.conv_in' in name:
-                continue
-            state[f'base_model.{name}'] = param
-
-        return state
+        """Return state dict from base model."""
+        return self.base_model.state_dict(*args, **kwargs)
 
     def load_state_dict(self, state_dict, strict: bool = True):
-        """Load state dict with adaptive layers."""
-        # Separate adaptive and base model states
-        adaptive_encoder_state = {}
-        adaptive_decoder_state = {}
-        base_state = {}
+        """Load state dict into base model."""
+        return self.base_model.load_state_dict(state_dict, strict=strict)
 
-        for name, param in state_dict.items():
-            if name.startswith('encoder_out_adaptive.'):
-                key = name.replace('encoder_out_adaptive.', '')
-                adaptive_encoder_state[key] = param
-            elif name.startswith('decoder_in_adaptive.'):
-                key = name.replace('decoder_in_adaptive.', '')
-                adaptive_decoder_state[key] = param
-            elif name.startswith('base_model.'):
-                key = name.replace('base_model.', '')
-                base_state[key] = param
-            else:
-                # Handle legacy state dicts without prefixes
-                base_state[name] = param
+    def train(self, mode: bool = True):
+        """Set training mode."""
+        self.base_model.train(mode)
+        return self
 
-        # Load states
-        if adaptive_encoder_state:
-            self.encoder_out_adaptive.load_state_dict(adaptive_encoder_state, strict=strict)
-        if adaptive_decoder_state:
-            self.decoder_in_adaptive.load_state_dict(adaptive_decoder_state, strict=strict)
+    def eval(self):
+        """Set evaluation mode."""
+        self.base_model.eval()
+        return self
 
-        # Load base model state (skip replaced layers)
-        if base_state:
-            # Filter out replaced layer keys from base_state
-            filtered_base_state = {
-                k: v for k, v in base_state.items()
-                if 'encoder.conv_out' not in k and 'decoder.conv_in' not in k
-            }
-            # Get expected keys from base model
-            base_keys = set(self.base_model.state_dict().keys())
-            filtered_keys = set(filtered_base_state.keys())
+    def to(self, *args, **kwargs):
+        """Move model to device/dtype."""
+        self.base_model.to(*args, **kwargs)
+        return self
 
-            # Remove keys for replaced layers from expected
-            expected_keys = {
-                k for k in base_keys
-                if 'encoder.conv_out' not in k and 'decoder.conv_in' not in k
-            }
+    def cuda(self, device=None):
+        """Move model to CUDA."""
+        self.base_model.cuda(device)
+        return self
 
-            missing = expected_keys - filtered_keys
-            unexpected = filtered_keys - expected_keys
-
-            if strict and (missing or unexpected):
-                raise RuntimeError(
-                    f"Error loading state_dict: missing keys: {missing}, unexpected keys: {unexpected}"
-                )
-
-            self.base_model.load_state_dict(filtered_base_state, strict=False)
+    def cpu(self):
+        """Move model to CPU."""
+        self.base_model.cpu()
+        return self
 
 
 class _EncoderOutput:

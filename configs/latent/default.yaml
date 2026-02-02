@@ -11,9 +11,20 @@ enabled: false
 # Required when enabled=true
 compression_checkpoint: null
 
+# Separate checkpoint for encoding segmentation masks (optional)
+# If null, uses same model as compression_checkpoint
+# Use this for dual-encoder setups where bravo and seg have different encoders
+seg_compression_checkpoint: null
+
 # Compression model type: auto, vae, dcae, vqvae
 # 'auto' will detect from checkpoint structure
 compression_type: auto
+
+# Slicewise encoding for 3D volumes using 2D encoder
+# When true: Apply 2D encoder to each slice, stack results into 3D latent
+# When false: Use 3D encoder directly (default for 3D VQ-VAE/VAE)
+# Useful for DC-AE which is typically 2D pretrained
+slicewise_encoding: false
 
 # Spatial dimensions: auto, 2, 3
 # 'auto' will detect from checkpoint (e.g., 3D VAE/VQ-VAE)

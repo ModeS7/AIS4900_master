@@ -148,6 +148,8 @@ class LatentCacheBuilder:
         volume_shape: Optional[Tuple[int, int, int]] = None,
         compression_type: str = "vae",
         verbose: bool = True,
+        slicewise_encoding: bool = False,
+        seg_compression_model: Optional[torch.nn.Module] = None,
     ) -> None:
         self.model = compression_model.eval()
         self.device = device
@@ -157,6 +159,14 @@ class LatentCacheBuilder:
         self.volume_shape = volume_shape
         self.compression_type = compression_type
         self.verbose = verbose
+        self.slicewise_encoding = slicewise_encoding
+
+        # Separate encoder for segmentation (optional)
+        self.seg_model = None
+        if seg_compression_model is not None:
+            self.seg_model = seg_compression_model.eval()
+            for param in self.seg_model.parameters():
+                param.requires_grad = False
 
         # Freeze model parameters
         for param in self.model.parameters():
@@ -404,9 +414,9 @@ class LatentCacheBuilder:
                     sample_data['seg_mask'] = seg_mask.cpu()
 
                     # Also encode seg to latent space for seg conditioning
-                    # Use same encoder - works even if not trained on seg
+                    # Use seg_model if available (dual-encoder setup), else same encoder
                     seg_input = seg_mask.unsqueeze(0).to(self.device)  # [1, 1, D, H, W]
-                    latent_seg = self._encode(seg_input)  # [1, C_lat, D', H', W']
+                    latent_seg = self._encode(seg_input, use_seg_model=True)  # [1, C_lat, D', H', W']
                     sample_data['latent_seg'] = latent_seg.squeeze(0).cpu()
 
                 # Save to file
@@ -494,33 +504,83 @@ class LatentCacheBuilder:
 
         return volume, seg_mask, patient_id
 
-    def _encode(self, images: Tensor) -> Tensor:
+    def _encode(self, images: Tensor, use_seg_model: bool = False) -> Tensor:
         """Encode images/volumes to latent space.
 
-        Handles different compression model types.
+        Handles different compression model types and slicewise encoding.
 
         Args:
             images: Images [B, C, H, W] or volumes [B, C, D, H, W].
+            use_seg_model: If True, use seg_model instead of main model.
+
+        Returns:
+            Latent representation.
+        """
+        model = self.seg_model if (use_seg_model and self.seg_model is not None) else self.model
+
+        # Slicewise encoding: apply 2D encoder to each slice of 3D volume
+        if self.slicewise_encoding and images.dim() == 5:
+            return self._encode_slicewise(images, model)
+
+        return self._encode_with_model(images, model)
+
+    def _encode_with_model(self, images: Tensor, model: torch.nn.Module) -> Tensor:
+        """Encode using a specific model.
+
+        Args:
+            images: Images [B, C, H, W] or volumes [B, C, D, H, W].
+            model: Compression model to use.
 
         Returns:
             Latent representation.
         """
         if self.compression_type == 'vae':
             # VAE returns (mu, logvar) - use mu for deterministic encoding
-            z_mu, _ = self.model.encode(images)
+            z_mu, _ = model.encode(images)
             return z_mu
         elif self.compression_type == 'vqvae':
             # VQ-VAE returns quantized directly
-            return self.model.encode(images)
+            return model.encode(images)
         elif self.compression_type == 'dcae':
             # DC-AE is deterministic
-            return self.model.encode(images)
+            return model.encode(images)
         else:
             # Generic fallback
-            result = self.model.encode(images)
+            result = model.encode(images)
             if isinstance(result, tuple):
                 return result[0]
             return result
+
+    def _encode_slicewise(self, volume: Tensor, model: torch.nn.Module) -> Tensor:
+        """Encode 3D volume slice-by-slice using 2D encoder.
+
+        Applies 2D encoder to each depth slice and stacks results.
+        Useful for DC-AE which is typically 2D pretrained.
+
+        Args:
+            volume: 3D volume [B, C, D, H, W].
+            model: 2D compression model.
+
+        Returns:
+            Latent volume [B, C_latent, D, H_latent, W_latent].
+        """
+        B, C, D, H, W = volume.shape
+        latent_slices = []
+
+        for d in range(D):
+            # Extract slice [B, C, H, W]
+            slice_2d = volume[:, :, d, :, :]
+
+            # Encode slice
+            with torch.no_grad():
+                latent_slice = self._encode_with_model(slice_2d, model)
+
+            latent_slices.append(latent_slice)
+
+        # Stack along depth dimension: [B, C_lat, D, H_lat, W_lat]
+        latent_volume = torch.stack(latent_slices, dim=2)
+
+        return latent_volume
 
 
 # Backwards compatibility alias

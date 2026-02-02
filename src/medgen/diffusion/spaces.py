@@ -158,6 +158,7 @@ class LatentSpace(DiffusionSpace):
         scale_factor: int = None,
         depth_scale_factor: int = None,
         latent_channels: int = None,
+        slicewise_encoding: bool = False,
     ) -> None:
         # Store as 'vae' for backward compatibility with existing code
         self.vae = compression_model.eval()
@@ -165,6 +166,7 @@ class LatentSpace(DiffusionSpace):
         self.deterministic = deterministic
         self.spatial_dims = spatial_dims
         self.compression_type = compression_type
+        self.slicewise_encoding = slicewise_encoding
 
         # Freeze model parameters
         for param in self.vae.parameters():
@@ -183,10 +185,18 @@ class LatentSpace(DiffusionSpace):
             self._scale_factor = self._detect_scale_factor(compression_model, compression_type)
 
         # Depth scale factor (3D only) - defaults to spatial scale factor
-        self._depth_scale_factor = depth_scale_factor if depth_scale_factor is not None else self._scale_factor
+        # For slicewise encoding, depth is not compressed (scale factor = 1)
+        if slicewise_encoding:
+            self._depth_scale_factor = 1
+        else:
+            self._depth_scale_factor = depth_scale_factor if depth_scale_factor is not None else self._scale_factor
 
         # Expected tensor dimensions: batch + channels + spatial
-        self._expected_dims = 2 + spatial_dims  # 4 for 2D, 5 for 3D
+        # For slicewise: model is 2D but we process 3D volumes
+        if slicewise_encoding:
+            self._expected_dims = 5  # 3D volumes [B, C, D, H, W]
+        else:
+            self._expected_dims = 2 + spatial_dims  # 4 for 2D, 5 for 3D
 
     def _detect_latent_channels(self, model: torch.nn.Module) -> int:
         """Detect latent channels from compression model."""
@@ -257,6 +267,8 @@ class LatentSpace(DiffusionSpace):
         - VQ-VAE: Returns quantized codes
         - DC-AE: Returns deterministic encoding
 
+        For slicewise_encoding=True: applies 2D encoder slice-by-slice to 3D volume.
+
         Args:
             x: Images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
 
@@ -267,12 +279,20 @@ class LatentSpace(DiffusionSpace):
             ValueError: If input tensor doesn't have expected dimensions.
         """
         if x.dim() != self._expected_dims:
-            shape_desc = "[B, C, H, W]" if self.spatial_dims == 2 else "[B, C, D, H, W]"
+            shape_desc = "[B, C, D, H, W]" if self._expected_dims == 5 else "[B, C, H, W]"
             raise ValueError(
                 f"LatentSpace.encode expects {self._expected_dims}D input {shape_desc}, "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
 
+        # Slicewise encoding: apply 2D encoder to each depth slice
+        if self.slicewise_encoding:
+            return self._encode_slicewise(x)
+
+        return self._encode_single(x)
+
+    def _encode_single(self, x: Tensor) -> Tensor:
+        """Encode a single tensor (2D or 3D) with the compression model."""
         if self.compression_type == 'vae':
             # VAE returns (mu, logvar)
             z_mu, z_logvar = self.vae.encode(x)
@@ -301,18 +321,68 @@ class LatentSpace(DiffusionSpace):
                 return result[0]  # Assume first element is the latent
             return result
 
+    def _encode_slicewise(self, x: Tensor) -> Tensor:
+        """Encode 3D volume slice-by-slice using 2D encoder.
+
+        Args:
+            x: 3D volume [B, C, D, H, W].
+
+        Returns:
+            Latent volume [B, C_latent, D, H_latent, W_latent].
+        """
+        B, C, D, H, W = x.shape
+        latent_slices = []
+
+        for d in range(D):
+            # Extract slice [B, C, H, W]
+            slice_2d = x[:, :, d, :, :]
+            # Encode slice
+            latent_slice = self._encode_single(slice_2d)
+            latent_slices.append(latent_slice)
+
+        # Stack along depth dimension: [B, C_lat, D, H_lat, W_lat]
+        return torch.stack(latent_slices, dim=2)
+
     @torch.no_grad()
     def decode(self, z: Tensor) -> Tensor:
         """Decode latent representation to pixel space.
 
+        For slicewise_encoding=True: applies 2D decoder slice-by-slice to 3D latent.
+
         Args:
             z: Latent representation [B, latent_channels, H/8, W/8] (2D)
-               or [B, latent_channels, D/8, H/8, W/8] (3D).
+               or [B, latent_channels, D, H/8, W/8] (3D).
 
         Returns:
             Decoded images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
         """
+        # Slicewise decoding: apply 2D decoder to each depth slice
+        if self.slicewise_encoding and z.dim() == 5:
+            return self._decode_slicewise(z)
+
         return self.vae.decode(z)
+
+    def _decode_slicewise(self, z: Tensor) -> Tensor:
+        """Decode 3D latent volume slice-by-slice using 2D decoder.
+
+        Args:
+            z: Latent volume [B, C_latent, D, H_latent, W_latent].
+
+        Returns:
+            Decoded volume [B, C, D, H, W].
+        """
+        B, C_lat, D, H_lat, W_lat = z.shape
+        decoded_slices = []
+
+        for d in range(D):
+            # Extract latent slice [B, C_lat, H_lat, W_lat]
+            latent_slice = z[:, :, d, :, :]
+            # Decode slice
+            decoded_slice = self.vae.decode(latent_slice)
+            decoded_slices.append(decoded_slice)
+
+        # Stack along depth dimension: [B, C, D, H, W]
+        return torch.stack(decoded_slices, dim=2)
 
     def get_latent_channels(self, input_channels: int) -> int:
         """Get latent channel count.

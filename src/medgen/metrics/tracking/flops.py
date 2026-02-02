@@ -31,6 +31,13 @@ def measure_model_flops(
     try:
         model.eval()
         torch.cuda.empty_cache()  # Clear cache before profiling
+
+        # Ensure FP32 for FLOPs measurement - avoids BF16/FP32 dtype mismatches
+        # that can occur with models using weight slicing (like DC-AE 1.5)
+        sample_input = sample_input.float()
+        if timesteps is not None:
+            timesteps = timesteps.float()
+
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             with_flops=True,

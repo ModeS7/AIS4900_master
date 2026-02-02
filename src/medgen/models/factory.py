@@ -126,9 +126,20 @@ def _create_sit(
         cond_channels = in_channels - out_channels
         model_in_channels = in_channels
 
-    # Get VAE scale factor (used for both 2D and 3D latent space)
-    is_latent_space = cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
-    vae_scale = cfg.get('vae', {}).get('spatial_scale', 8) if is_latent_space else 1
+    # Get latent space scale factors
+    # Check both old (vae) and new (latent) config locations
+    latent_cfg = cfg.get('latent', {})
+    is_latent_space = latent_cfg.get('enabled', False) or cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
+
+    if is_latent_space:
+        # Use latent config scale factors
+        spatial_scale = latent_cfg.get('scale_factor') or cfg.get('vae', {}).get('spatial_scale', 8)
+        # For slicewise encoding, depth is not compressed
+        slicewise = latent_cfg.get('slicewise_encoding', False)
+        depth_scale = 1 if slicewise else (latent_cfg.get('depth_scale_factor') or spatial_scale)
+    else:
+        spatial_scale = 1
+        depth_scale = 1
 
     # Get input size - prefer volume config for 3D, fallback to model config
     # This avoids redundant specification of dimensions
@@ -141,12 +152,12 @@ def _create_sit(
         base_size = cfg.model.get('image_size', 256)
         base_depth = cfg.model.get('depth_size', base_size)
 
-    input_size = base_size // vae_scale
+    input_size = base_size // spatial_scale
 
     # 3D specific settings
     depth_size = None
     if spatial_dims == 3:
-        depth_size = base_depth // vae_scale
+        depth_size = base_depth // depth_scale
 
     model = create_sit(
         variant=variant,

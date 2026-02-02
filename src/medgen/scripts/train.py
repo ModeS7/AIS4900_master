@@ -497,11 +497,24 @@ def _train_3d(cfg: DictConfig) -> None:
             spatial_dims=spatial_dims_cfg,
         )
 
-        # Validate it's 3D
-        if detected_dims != 3:
-            raise ValueError(
-                f"Expected 3D compression model for spatial_dims=3, got {detected_dims}D."
-            )
+        # Check for slicewise encoding (2D encoder applied slice-by-slice for 3D)
+        slicewise_encoding = latent_cfg.get('slicewise_encoding', False)
+
+        # Validate dimensions
+        if slicewise_encoding:
+            # Slicewise mode: expect 2D encoder for 3D volume training
+            if detected_dims != 2:
+                raise ValueError(
+                    f"slicewise_encoding=true requires 2D compression model, got {detected_dims}D."
+                )
+            log.info("Slicewise encoding: 2D encoder will be applied slice-by-slice to 3D volumes")
+        else:
+            # Standard mode: expect 3D encoder for 3D volume training
+            if detected_dims != 3:
+                raise ValueError(
+                    f"Expected 3D compression model for spatial_dims=3, got {detected_dims}D. "
+                    f"Use slicewise_encoding=true for 2D encoders."
+                )
 
         # Allow config overrides
         scale_factor = latent_cfg.get('scale_factor') or detected_scale
@@ -510,6 +523,24 @@ def _train_3d(cfg: DictConfig) -> None:
 
         log.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
         log.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
+
+        # Load separate seg compression model if specified (dual-encoder setup)
+        seg_compression_model = None
+        seg_checkpoint_path = latent_cfg.get('seg_compression_checkpoint')
+        if seg_checkpoint_path is not None:
+            log.info(f"Loading SEG compression model from: {seg_checkpoint_path}")
+            seg_compression_model, seg_comp_type, _, _, _ = load_compression_model(
+                seg_checkpoint_path,
+                compression_type,  # Use same type as bravo encoder
+                device,
+                spatial_dims=spatial_dims_cfg,
+            )
+            log.info(f"Loaded SEG encoder: {seg_comp_type}")
+
+        # Check for slicewise encoding (2D encoder applied slice-by-slice for 3D)
+        slicewise_encoding = latent_cfg.get('slicewise_encoding', False)
+        if slicewise_encoding:
+            log.info("Using slicewise encoding: 2D encoder applied slice-by-slice")
 
         # Setup cache directory - include checkpoint hash to avoid conflicts
         # between different compression models with same type (e.g., 4x vs 8x VQ-VAE)
@@ -527,6 +558,8 @@ def _train_3d(cfg: DictConfig) -> None:
             volume_shape=(cfg.volume.depth, cfg.volume.height, cfg.volume.width),
             compression_type=comp_type,
             verbose=cfg.training.get('verbose', True),
+            slicewise_encoding=slicewise_encoding,
+            seg_compression_model=seg_compression_model,
         )
 
         # Build cache for train/val if needed
@@ -623,11 +656,12 @@ def _train_3d(cfg: DictConfig) -> None:
             compression_model,
             device,
             deterministic=True,
-            spatial_dims=3,
+            spatial_dims=3 if not slicewise_encoding else 2,  # Model is 2D for slicewise
             compression_type=comp_type,
             scale_factor=scale_factor,
             depth_scale_factor=depth_scale_factor,
             latent_channels=latent_channels,
+            slicewise_encoding=slicewise_encoding,
         )
 
     else:
