@@ -122,13 +122,14 @@ class TestMSSSIMProperties:
     )
     @settings(max_examples=30, deadline=10000)
     def test_msssim_in_valid_range(self, arr1, arr2):
-        """MS-SSIM always in [0, 1] range."""
+        """MS-SSIM always in [0, 1] range (with floating-point tolerance)."""
         from medgen.metrics.quality import compute_msssim
 
         x = torch.from_numpy(arr1).float()
         y = torch.from_numpy(arr2).float()
         msssim = compute_msssim(x, y, spatial_dims=2)
-        assert 0.0 <= msssim <= 1.0
+        # Allow small floating-point tolerance (MONAI can return slightly > 1.0)
+        assert -1e-5 <= msssim <= 1.0 + 1e-5
 
 
 # =============================================================================
