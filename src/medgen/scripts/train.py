@@ -321,7 +321,8 @@ def main(cfg: DictConfig) -> None:
             image_type = 'seg' if mode == ModeType.SEG else 'bravo'
             dataloader, train_dataset = create_dataloader(
                 cfg=cfg,
-                image_type=image_type,
+                task='diffusion',
+                mode=image_type,
                 use_distributed=use_multi_gpu,
                 rank=trainer.rank if use_multi_gpu else 0,
                 world_size=trainer.world_size if use_multi_gpu else 1,

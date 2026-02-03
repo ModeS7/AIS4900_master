@@ -195,14 +195,16 @@ class SegmentationMode(TrainingMode):
 
         batch = _to_device(batch, device)
 
-        # Handle 3D dict batch format (from Volume3DDataset with modality='seg')
+        # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
             images = batch.get('image')
             if images is None:
                 raise ValueError("Dict batch missing 'image' key")
 
-            # Ensure images have channel dimension
-            if images.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+            # Only add channel dim if missing (4D tensor with D > 1)
+            # 2D unified loader already provides [B, C, H, W] with C=1
+            # 3D loader without channel provides [B, D, H, W] with D > 1
+            if images.dim() == 4 and images.shape[1] > 1:
                 images = images.unsqueeze(1)
 
             return {
@@ -282,19 +284,23 @@ class ConditionalSingleMode(TrainingMode):
 
         batch = _to_device(batch, device)
 
-        # Handle 3D dict batch format (from SingleModality3DDatasetWithSeg)
+        # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
-            # Dict format: {'image': [B, C, D, H, W], 'seg': [B, 1, D, H, W], ...}
+            # Dict format: {'image': [B, C, H, W] or [B, D, H, W], 'seg': ...}
             images = batch.get('image')
             if images is None:
                 raise ValueError("Dict batch missing 'image' key")
 
-            # Ensure images have channel dimension
-            if images.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+            # Only add channel dim if missing (4D tensor with D > 1)
+            # 2D unified loader already provides [B, C, H, W] with C=1
+            # 3D loader without channel provides [B, D, H, W] with D > 1
+            if images.dim() == 4 and images.shape[1] > 1:
+                # This is [B, D, H, W] format - add channel dim
                 images = images.unsqueeze(1)
+            # If images.dim() == 4 and images.shape[1] == 1, it's already [B, 1, H, W]
 
             seg_masks = batch.get('seg')
-            if seg_masks is not None and seg_masks.dim() == 4:  # [B, D, H, W] -> [B, 1, D, H, W]
+            if seg_masks is not None and seg_masks.dim() == 4 and seg_masks.shape[1] > 1:
                 seg_masks = seg_masks.unsqueeze(1)
 
             return {
