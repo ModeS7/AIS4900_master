@@ -368,8 +368,10 @@ class BaseTestEvaluator(ABC):
         save_test_results(metrics, label, self.save_dir)
 
         # Log to TensorBoard with modality suffix for single-modality modes
+        # Empty string means no suffix (e.g., seg_conditioned modes)
         is_single_modality = (
             self.modality_name is not None
+            and self.modality_name != ''
             and self.modality_name not in ('multi_modality', 'dual')
         )
         if is_single_modality:
@@ -665,6 +667,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         if self._regional_tracker is not None and (self.writer is not None or self._unified_metrics is not None):
             is_single_modality = (
                 self.modality_name is not None
+                and self.modality_name != ''
                 and self.modality_name not in ('multi_modality', 'dual')
             )
             if is_single_modality:
@@ -926,6 +929,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         if self._regional_tracker is not None and (self.writer is not None or self._unified_metrics is not None):
             is_single_modality = (
                 self.modality_name is not None
+                and self.modality_name != ''
                 and self.modality_name not in ('multi_modality', 'dual')
             )
             if is_single_modality:

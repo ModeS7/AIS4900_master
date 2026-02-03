@@ -2952,9 +2952,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             volume_size = (self.volume_height, self.volume_width, self.volume_depth)
 
         # Determine modality for metric suffixes
-        # For seg-conditioned modes, use the target modality (bravo), not the full mode name
+        # seg_conditioned modes: no suffix (distinguish by TensorBoard run color)
+        # bravo_seg_cond: use 'bravo' as the target modality
         if self.mode_name in ('multi', 'dual'):
             metric_modality = None
+        elif self.mode_name.startswith('seg_conditioned'):
+            metric_modality = None  # No suffix for seg_conditioned modes
         elif self.mode_name == 'bravo_seg_cond':
             metric_modality = 'bravo'
         else:

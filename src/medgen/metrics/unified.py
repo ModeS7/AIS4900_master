@@ -1030,14 +1030,15 @@ class UnifiedMetrics:
             metrics: Dict of metric name -> value.
                 Image quality: {'psnr': 30.0, 'msssim': 0.95, 'lpips': 0.1, 'msssim_3d': 0.92}
                 Segmentation: {'dice': 0.85, 'iou': 0.75}
-            modality: Modality name (e.g., 'bravo', 't1_pre').
+            modality: Modality name (e.g., 'bravo', 't1_pre'). Empty string for no suffix.
             epoch: Current epoch number.
         Paths: Validation/PSNR_bravo, Validation/MS-SSIM-3D_bravo, Validation/Dice_bravo, etc.
+               Or Validation/PSNR, Validation/Dice if modality is empty.
         """
         if self.writer is None:
             return
 
-        suffix = f'_{modality}'
+        suffix = f'_{modality}' if modality else ''
 
         # Image quality metrics
         if 'psnr' in metrics and metrics['psnr'] is not None:

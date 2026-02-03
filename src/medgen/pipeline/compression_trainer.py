@@ -350,8 +350,10 @@ class BaseCompressionTrainer(BaseTrainer):
         mode_name = getattr(self, 'mode_name', 'multi_modality')
 
         # Determine modality for TensorBoard suffix
+        # seg_conditioned modes: no suffix (distinguish by TensorBoard run color)
         is_single_modality = mode_name not in ('multi_modality', 'dual', 'multi')
-        modality = mode_name if is_single_modality else None
+        is_seg_conditioned = mode_name.startswith('seg_conditioned')
+        modality = None if is_seg_conditioned else (mode_name if is_single_modality else None)
 
         # Get image size and fov_mm for regional tracker
         image_size = getattr(self.cfg.model, 'image_size', 256)
@@ -1123,11 +1125,12 @@ class BaseCompressionTrainer(BaseTrainer):
         n_channels = self.cfg.mode.get('in_channels', 1)
         is_multi_modality = mode_name == 'multi_modality'
         is_dual = n_channels == 2 and mode_name == 'dual'
+        is_seg_conditioned = mode_name.startswith('seg_conditioned')
 
         # For single-modality modes (not multi_modality or dual), use modality suffix
         # Multi-modality and dual modes are handled by their respective per-modality loops
+        # seg_conditioned modes: no suffix needed (can distinguish by TensorBoard run color)
         if not is_multi_modality and not is_dual:
-            # Use unified metrics for per-modality validation logging (includes seg metrics)
             modality_metrics = {
                 'psnr': metrics.get('psnr'),
                 'msssim': metrics.get('msssim'),
@@ -1136,7 +1139,9 @@ class BaseCompressionTrainer(BaseTrainer):
                 'dice': metrics.get('dice_score'),
                 'iou': metrics.get('iou'),
             }
-            self._unified_metrics.log_per_modality_validation(modality_metrics, mode_name, epoch)
+            # No suffix for seg_conditioned modes (distinguish by TensorBoard run color)
+            modality = '' if is_seg_conditioned else mode_name
+            self._unified_metrics.log_per_modality_validation(modality_metrics, modality, epoch)
 
             # Also log losses without suffix (gen, l1, perc, reg)
             loss_metrics = {k: v for k, v in metrics.items()
@@ -1185,7 +1190,12 @@ class BaseCompressionTrainer(BaseTrainer):
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
             is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
-            modality_override = mode_name if not is_multi_modality and not is_dual else None
+            is_seg_conditioned = mode_name.startswith('seg_conditioned')
+            # No suffix for multi_modality, dual, or seg_conditioned modes
+            if is_multi_modality or is_dual or is_seg_conditioned:
+                modality_override = None
+            else:
+                modality_override = mode_name
             self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _compute_per_modality_validation(self, epoch: int) -> None:
@@ -1389,7 +1399,9 @@ class BaseCompressionTrainer(BaseTrainer):
         else:
             mode_name = self.cfg.mode.get('name', 'bravo')
             n_channels = self.cfg.mode.get('in_channels', 1)
-            modality = 'dual' if n_channels > 1 else mode_name
+            # Use subdir for file loading (e.g., 'seg' instead of 'seg_conditioned')
+            subdir = self.cfg.mode.get('subdir', mode_name)
+            modality = 'dual' if n_channels > 1 else subdir
 
         # Create volume dataloader
         result = create_vae_volume_validation_dataloader(self.cfg, modality, data_split)
@@ -1810,7 +1822,10 @@ class BaseCompressionTrainer(BaseTrainer):
         seg_loss_fn = getattr(self, 'seg_loss_fn', None)
 
         # Get modality name for single-modality suffix
+        # Use empty string for seg_conditioned modes (no suffix needed)
         mode_name = self.cfg.mode.get('name', 'bravo')
+        if mode_name.startswith('seg_conditioned'):
+            mode_name = ''
 
         # Get image keys for per-channel metrics
         n_channels = self.cfg.mode.get('in_channels', 1)

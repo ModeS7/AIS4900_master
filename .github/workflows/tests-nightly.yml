@@ -2,6 +2,10 @@ name: Nightly Tests
 
 # Run comprehensive tests nightly - includes slow tests and E2E tests
 # These tests are too slow/resource-intensive for PR checks
+#
+# NOTE: GPU-dependent jobs (e2e-tests, slow-integration-tests, baseline-tests)
+# are disabled until a self-hosted GPU runner is configured.
+# To re-enable, uncomment the jobs below and set up a runner with labels [self-hosted, gpu].
 
 on:
   schedule:
@@ -11,113 +15,105 @@ on:
     # Allow manual triggers
 
 jobs:
-  # E2E tests require GPU and golden checkpoints
-  e2e-tests:
-    runs-on: [self-hosted, gpu]
-    timeout-minutes: 120
+  # ==========================================================================
+  # GPU-DEPENDENT JOBS (DISABLED - requires self-hosted GPU runner)
+  # ==========================================================================
+  # To enable these jobs:
+  # 1. Set up a self-hosted runner with GPU
+  # 2. Add labels: self-hosted, gpu
+  # 3. Uncomment the jobs below
+  # ==========================================================================
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true  # Fetch large files if any
+  # # E2E tests require GPU and golden checkpoints
+  # e2e-tests:
+  #   runs-on: [self-hosted, gpu]
+  #   timeout-minutes: 120
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         lfs: true
+  #     - name: Set up Python 3.11
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.11"
+  #     - name: Install dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -e .
+  #         pip install -r requirements.txt
+  #         pip install pytest pytest-timeout nibabel
+  #     - name: Check for golden checkpoints
+  #       id: check_checkpoints
+  #       run: |
+  #         if [ -d "tests/fixtures/golden_checkpoint/bravo" ]; then
+  #           echo "checkpoints_exist=true" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "checkpoints_exist=false" >> $GITHUB_OUTPUT
+  #           echo "Golden checkpoints not found. Run: ./tests/fixtures/create_golden_checkpoint.sh"
+  #         fi
+  #     - name: Create golden checkpoints (if missing)
+  #       if: steps.check_checkpoints.outputs.checkpoints_exist == 'false'
+  #       run: ./tests/fixtures/create_golden_checkpoint.sh
+  #       continue-on-error: true
+  #     - name: Run E2E tests
+  #       run: pytest tests/e2e -v --tb=short --timeout=600 -m "e2e"
+  #     - name: Upload test artifacts
+  #       if: failure()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: e2e-test-artifacts
+  #         path: tests/fixtures/golden_checkpoint/**/checkpoint*.pt
+  #         retention-days: 7
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+  # # Slow integration tests
+  # slow-integration-tests:
+  #   runs-on: [self-hosted, gpu]
+  #   timeout-minutes: 60
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Set up Python 3.11
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.11"
+  #     - name: Install dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -e .
+  #         pip install -r requirements.txt
+  #         pip install pytest pytest-timeout
+  #     - name: Run slow integration tests
+  #       run: pytest tests/integration -m "slow" -v --tb=short --timeout=300
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install -r requirements.txt
-          pip install pytest pytest-timeout nibabel
+  # # Baseline regression tests (compare against saved baselines)
+  # baseline-tests:
+  #   runs-on: [self-hosted, gpu]
+  #   timeout-minutes: 60
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Set up Python 3.11
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.11"
+  #     - name: Install dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install -e .
+  #         pip install -r requirements.txt
+  #         pip install pytest pytest-timeout
+  #     - name: Run baseline tests
+  #       run: pytest tests/integration -m "baseline" -v --tb=short --timeout=300
+  #       continue-on-error: true
+  #     - name: Upload baseline diffs
+  #       if: failure()
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: baseline-diffs
+  #         path: tests/integration/baselines/
+  #         retention-days: 7
 
-      - name: Check for golden checkpoints
-        id: check_checkpoints
-        run: |
-          if [ -d "tests/fixtures/golden_checkpoint/bravo" ]; then
-            echo "checkpoints_exist=true" >> $GITHUB_OUTPUT
-          else
-            echo "checkpoints_exist=false" >> $GITHUB_OUTPUT
-            echo "Golden checkpoints not found. Run: ./tests/fixtures/create_golden_checkpoint.sh"
-          fi
-
-      - name: Create golden checkpoints (if missing)
-        if: steps.check_checkpoints.outputs.checkpoints_exist == 'false'
-        run: |
-          ./tests/fixtures/create_golden_checkpoint.sh
-        continue-on-error: true
-
-      - name: Run E2E tests
-        run: |
-          pytest tests/e2e -v --tb=short --timeout=600 -m "e2e"
-
-      - name: Upload test artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-test-artifacts
-          path: |
-            tests/fixtures/golden_checkpoint/**/checkpoint*.pt
-          retention-days: 7
-
-  # Slow integration tests
-  slow-integration-tests:
-    runs-on: [self-hosted, gpu]
-    timeout-minutes: 60
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install -r requirements.txt
-          pip install pytest pytest-timeout
-
-      - name: Run slow integration tests
-        run: |
-          pytest tests/integration -m "slow" -v --tb=short --timeout=300
-
-  # Baseline regression tests (compare against saved baselines)
-  baseline-tests:
-    runs-on: [self-hosted, gpu]
-    timeout-minutes: 60
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-          pip install -r requirements.txt
-          pip install pytest pytest-timeout
-
-      - name: Run baseline tests
-        run: |
-          pytest tests/integration -m "baseline" -v --tb=short --timeout=300
-        continue-on-error: true  # Don't fail nightly on baseline drift
-
-      - name: Upload baseline diffs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: baseline-diffs
-          path: tests/integration/baselines/
-          retention-days: 7
+  # ==========================================================================
+  # CPU-ONLY JOBS (ACTIVE)
+  # ==========================================================================
 
   # CPU-only comprehensive test
   comprehensive-cpu:
@@ -164,7 +160,7 @@ jobs:
 
   # Notify on failure
   notify-failure:
-    needs: [e2e-tests, slow-integration-tests, baseline-tests, comprehensive-cpu]
+    needs: [comprehensive-cpu]
     if: failure()
     runs-on: ubuntu-latest
 
@@ -176,9 +172,6 @@ jobs:
           echo "One or more nightly tests failed. Check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Jobs status:**" >> $GITHUB_STEP_SUMMARY
-          echo "- E2E Tests: ${{ needs.e2e-tests.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Slow Integration: ${{ needs.slow-integration-tests.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Baseline Tests: ${{ needs.baseline-tests.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Comprehensive CPU: ${{ needs.comprehensive-cpu.result }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Create GitHub Issue on failure
@@ -193,9 +186,6 @@ jobs:
             ### Job Results
             | Job | Status |
             |-----|--------|
-            | E2E Tests | ${{ needs.e2e-tests.result }} |
-            | Slow Integration | ${{ needs.slow-integration-tests.result }} |
-            | Baseline Tests | ${{ needs.baseline-tests.result }} |
             | Comprehensive CPU | ${{ needs.comprehensive-cpu.result }} |
 
             ---

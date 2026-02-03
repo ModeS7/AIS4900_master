@@ -790,12 +790,12 @@ class DCAETrainer(BaseCompressionTrainer):
             mode_name = self.cfg.mode.get('name', 'bravo')
             is_multi_modality = mode_name == 'multi_modality'
             is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
-            if self.seg_mode:
-                modality_override = f'seg_{mode_name}'
-            elif not is_multi_modality and not is_dual:
-                modality_override = mode_name
-            else:
+            is_seg_conditioned = mode_name.startswith('seg_conditioned')
+            # No suffix for multi_modality, dual, seg_mode, or seg_conditioned modes
+            if is_multi_modality or is_dual or self.seg_mode or is_seg_conditioned:
                 modality_override = None
+            else:
+                modality_override = mode_name
             self._unified_metrics.log_validation_regional(regional_tracker, epoch, modality_override=modality_override)
 
     def _log_epoch_summary(
