@@ -1,4 +1,5 @@
 """Standardized batch data structure for all training modes."""
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Union
 import torch
@@ -23,21 +24,28 @@ class BatchData:
 
         Handles:
         - Tensor: Simple image batch
-        - 2-tuple: (images, labels) or (seg, size_bins)
-        - 3-tuple: (seg, size_bins, bin_maps) or (image, seg, mode_id)
-        - Dict: {'images': ..., 'labels': ..., ...}
+        - Dict: {'image': ..., 'seg': ..., ...} or {'images': ..., 'labels': ..., ...}
+        - 2-tuple: (images, labels) or (seg, size_bins) [deprecated]
+        - 3-tuple: (seg, size_bins, bin_maps) or (image, seg, mode_id) [deprecated]
         """
         if isinstance(data, Tensor):
             return cls(images=data)
 
         if isinstance(data, dict):
-            # Use explicit None check instead of 'or' to avoid tensor boolean ambiguity
-            images = data.get('images')
+            # Support both 'image'/'seg' and 'images'/'labels' keys
+            # Use explicit None checks to avoid tensor boolean ambiguity
+            images = data.get('image')
+            if images is None:
+                images = data.get('images')
             if images is None:
                 images = data.get('latent')
-            labels = data.get('labels')
+
+            labels = data.get('seg')
+            if labels is None:
+                labels = data.get('labels')
             if labels is None:
                 labels = data.get('latent_seg')
+
             return cls(
                 images=images,
                 labels=labels,
@@ -46,7 +54,13 @@ class BatchData:
                 mode_id=data.get('mode_id'),
             )
 
+        # Deprecated tuple format - keep for backwards compatibility
         if isinstance(data, (tuple, list)):
+            warnings.warn(
+                "Tuple batch format is deprecated. Update dataloader to return dict.",
+                DeprecationWarning,
+                stacklevel=2
+            )
             if len(data) == 2:
                 first, second = data
                 # Distinguish (images, labels) from (seg, size_bins)

@@ -6,15 +6,16 @@ is a N-dimensional vector of tumor counts per size bin.
 
 Key difference from 2D: Uses 3D connected components so tumors touching
 in ANY direction (including depth) count as ONE tumor.
+
+NOTE: Utility functions have been consolidated into datasets.py.
+This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from scipy import ndimage
-from scipy.spatial.distance import pdist
 from torch.utils.data import DataLoader, Dataset as TorchDataset
 
 from .volume_3d import (
@@ -23,110 +24,28 @@ from .volume_3d import (
     build_3d_augmentation,
     _create_loader,
 )
-from .seg_conditioned import create_size_bin_maps
+
+# Import consolidated functions from datasets.py
+from medgen.data.loaders.datasets import (
+    compute_size_bins_3d,
+    compute_feret_diameter_3d,
+    create_size_bin_maps,
+    DEFAULT_BIN_EDGES,
+)
 
 logger = logging.getLogger(__name__)
 
-# Default size bins (mm) - aligned with RANO-BM thresholds (10, 20, 30mm)
-# Same as 2D for consistency
-DEFAULT_BIN_EDGES = [0, 3, 6, 10, 15, 20, 30]
-
-
-def compute_feret_diameter_3d(
-    binary_mask: np.ndarray,
-    voxel_spacing: Tuple[float, float, float],
-) -> float:
-    """Compute 3D Feret diameter (longest axis) of a binary region.
-
-    Unlike 2D, this computes the longest distance in 3D space,
-    accounting for anisotropic voxel spacing.
-
-    Args:
-        binary_mask: 3D binary mask of a single connected component [D, H, W].
-        voxel_spacing: Voxel size in mm as (depth_mm, height_mm, width_mm).
-
-    Returns:
-        Feret diameter in mm.
-    """
-    coords = np.argwhere(binary_mask)  # [N, 3] coordinates
-    if len(coords) < 2:
-        return min(voxel_spacing)  # Single voxel
-
-    # Scale coordinates by voxel spacing for physical distances
-    # coords[:, 0] = depth, coords[:, 1] = height, coords[:, 2] = width
-    spacing_array = np.array(voxel_spacing)
-    scaled_coords = coords * spacing_array
-
-    # Subsample for large regions (3D can have many more voxels)
-    if len(scaled_coords) > 2000:
-        idx = np.random.choice(len(scaled_coords), 2000, replace=False)
-        scaled_coords = scaled_coords[idx]
-
-    distances = pdist(scaled_coords)
-    max_dist = distances.max() if len(distances) > 0 else min(voxel_spacing)
-
-    return max_dist
-
-
-def compute_size_bins_3d(
-    seg_volume: np.ndarray,
-    bin_edges: List[float],
-    voxel_spacing: Tuple[float, float, float],
-    num_bins: int = None,
-) -> np.ndarray:
-    """Compute tumor count per size bin for a 3D segmentation volume.
-
-    Uses 3D connected components so tumors touching in ANY direction
-    (including depth) count as ONE tumor.
-
-    Args:
-        seg_volume: 3D binary segmentation volume [D, H, W].
-        bin_edges: List of bin edges in mm (e.g., [0, 3, 6, 10, 15, 20, 30]).
-        voxel_spacing: Voxel size in mm as (depth_mm, height_mm, width_mm).
-        num_bins: Number of bins. If > len(edges)-1, last bin is overflow (>= last edge).
-                  Default: len(edges)-1 (no separate overflow bin).
-
-    Returns:
-        Array of shape [num_bins] with tumor counts per bin.
-    """
-    n_bounded_bins = len(bin_edges) - 1
-    if num_bins is None:
-        num_bins = n_bounded_bins
-
-    bin_counts = np.zeros(num_bins, dtype=np.int64)
-
-    # Handle tensor input
-    if isinstance(seg_volume, torch.Tensor):
-        seg_volume = seg_volume.numpy()
-
-    # Remove batch/channel dimensions if present [1, D, H, W] -> [D, H, W]
-    seg_volume = np.squeeze(seg_volume)
-
-    # 3D connected components - ndimage.label works for N-dimensional data
-    # This ensures tumors touching in ANY direction are counted as ONE tumor
-    labeled, num_features = ndimage.label(seg_volume > 0.5)
-
-    if num_features == 0:
-        return bin_counts
-
-    # Compute 3D Feret diameter for each tumor and bin it
-    for i in range(1, num_features + 1):
-        component_mask = labeled == i
-        diameter = compute_feret_diameter_3d(component_mask, voxel_spacing)
-
-        # Find bin - check bounded bins first
-        binned = False
-        for j in range(n_bounded_bins):
-            if bin_edges[j] <= diameter < bin_edges[j + 1]:
-                bin_counts[j] += 1
-                binned = True
-                break
-
-        # If not binned, goes to overflow bin (last bin) - for tumors >= last edge
-        if not binned:
-            bin_counts[num_bins - 1] += 1
-
-    return bin_counts
+# Re-export for backward compatibility
+__all__ = [
+    'SegDataset',
+    'compute_size_bins_3d',
+    'compute_feret_diameter_3d',
+    'create_size_bin_maps',
+    'DEFAULT_BIN_EDGES',
+    'create_seg_dataloader',
+    'create_seg_validation_dataloader',
+    'create_seg_test_dataloader',
+]
 
 
 class SegDataset(TorchDataset):
@@ -264,20 +183,15 @@ class SegDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.positive_patients)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Get segmentation volume and size bins.
 
         Returns:
-            If return_bin_maps=False:
-                Tuple of (seg_volume, size_bins)
-            If return_bin_maps=True:
-                Tuple of (seg_volume, size_bins, bin_maps)
-
-            Where:
-                - seg_volume: [1, D, H, W] binary segmentation tensor
-                - size_bins: [num_bins] integer tensor of tumor counts
+            Dict with keys:
+                - 'image': [1, D, H, W] binary segmentation tensor
+                - 'size_bins': [num_bins] integer tensor of tumor counts
                   (zeros if CFG dropout is applied)
-                - bin_maps: [num_bins, D, H, W] spatial maps for input conditioning
+                - 'bin_maps': [num_bins, D, H, W] spatial maps (only if return_bin_maps=True)
         """
         patient = self.positive_patients[idx]
         seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
@@ -291,8 +205,8 @@ class SegDataset(TorchDataset):
         # Apply augmentation if configured
         if self.augmentation is not None:
             # MONAI transforms expect dict format
-            result = self.augmentation({'image': seg_volume})
-            seg_volume = result['image'].contiguous()
+            aug_result = self.augmentation({'image': seg_volume})
+            seg_volume = aug_result['image'].contiguous()
             # Re-binarize after augmentation (some transforms may interpolate)
             seg_volume = (seg_volume > 0.5).float()
 
@@ -310,20 +224,24 @@ class SegDataset(TorchDataset):
         if is_dropout:
             size_bins = torch.zeros_like(size_bins)
 
-        if not self.return_bin_maps:
-            return seg_volume, size_bins
+        result = {
+            'image': seg_volume,
+            'size_bins': size_bins,
+        }
 
-        # Create spatial bin maps for input conditioning [num_bins, D, H, W]
-        spatial_shape = seg_volume.shape[1:]  # (D, H, W)
-        if is_dropout:
-            # Dropout: zero maps for unconditional
-            bin_maps = torch.zeros(self.num_bins, *spatial_shape, dtype=torch.float32)
-        else:
-            bin_maps = create_size_bin_maps(
-                size_bins, spatial_shape, normalize=True, max_count=self.max_count
-            )
+        if self.return_bin_maps:
+            # Create spatial bin maps for input conditioning [num_bins, D, H, W]
+            spatial_shape = seg_volume.shape[1:]  # (D, H, W)
+            if is_dropout:
+                # Dropout: zero maps for unconditional
+                bin_maps = torch.zeros(self.num_bins, *spatial_shape, dtype=torch.float32)
+            else:
+                bin_maps = create_size_bin_maps(
+                    size_bins, spatial_shape, normalize=True, max_count=self.max_count
+                )
+            result['bin_maps'] = bin_maps
 
-        return seg_volume, size_bins, bin_maps
+        return result
 
 
 def create_seg_dataloader(

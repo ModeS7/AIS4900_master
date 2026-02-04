@@ -58,6 +58,15 @@ from .checkpointing import BaseCheckpointedModel
 # Checkpoint management
 from .checkpoint_manager import CheckpointManager
 
+# Trainer decomposition modules (internal, used via lazy imports in trainer.py)
+# These are available for direct import if needed:
+# - profiling: FLOPs measurement, metadata utilities
+# - losses: Loss computation helpers (self-conditioning, min-SNR, regional)
+# - training_tricks: Curriculum, jitter, noise augmentation, CFG dropout
+# - visualization: Sample generation and trajectory visualization
+# - evaluation: Test set evaluation and 3D MS-SSIM computation
+# - validation: Validation loop utilities
+
 __all__ = [
     # Trainers
     'DiffusionTrainerBase',

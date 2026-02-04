@@ -5,13 +5,15 @@ Provides dataloaders that pool multiple MR modalities, each paired with seg mask
 and mode_id for training a single model on all modalities.
 
 Uses eager loading like other loaders - all slices extracted upfront into memory.
+
+NOTE: Dataset classes and utility functions have been consolidated into datasets.py.
+This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
-import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
@@ -23,106 +25,24 @@ from medgen.data.dataset import (
     validate_modality_exists,
 )
 from medgen.models.wrappers import MODE_ID_MAP
-from medgen.core.constants import BINARY_THRESHOLD_GT
+
+# Import consolidated classes and functions from datasets.py
+from medgen.data.loaders.datasets import (
+    MultiDiffusionDataset,
+    extract_slices_with_seg_and_mode,
+)
 
 logger = logging.getLogger(__name__)
 
-
-def extract_slices_with_seg_and_mode(
-    image_dataset: Dataset,
-    seg_dataset: Dataset,
-    mode_id: int,
-    augmentation: Optional[Callable] = None,
-) -> List[Tuple[np.ndarray, np.ndarray, int]]:
-    """Extract 2D slices with paired seg masks and mode_id.
-
-    Each slice is returned as a tuple (image, seg, mode_id) where:
-    - image: [1, H, W] single-channel image
-    - seg: [1, H, W] binary segmentation mask
-    - mode_id: int (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
-
-    Args:
-        image_dataset: Dataset of 3D image volumes with shape [1, H, W, D].
-        seg_dataset: Dataset of 3D seg volumes with shape [1, H, W, D].
-        mode_id: Integer mode ID for this modality.
-        augmentation: Optional albumentations Compose for data augmentation.
-
-    Returns:
-        List of tuples (image_slice, seg_slice, mode_id).
-    """
-    all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
-
-    if len(image_dataset) != len(seg_dataset):
-        raise ValueError(
-            f"Image dataset ({len(image_dataset)}) and seg dataset ({len(seg_dataset)}) "
-            "must have same number of patients"
-        )
-
-    for i in range(len(image_dataset)):
-        image_volume, image_name = image_dataset[i]  # Shape: [1, H, W, D]
-        seg_volume, seg_name = seg_dataset[i]  # Shape: [1, H, W, D]
-
-        # Convert to numpy if tensor
-        if isinstance(image_volume, torch.Tensor):
-            image_volume = image_volume.numpy()
-        if isinstance(seg_volume, torch.Tensor):
-            seg_volume = seg_volume.numpy()
-
-        # Verify same patient
-        if image_name != seg_name:
-            raise ValueError(f"Patient mismatch: {image_name} vs {seg_name}")
-
-        # Extract non-empty slices along depth dimension (axis 3)
-        for k in range(image_volume.shape[3]):
-            image_slice = image_volume[:, :, :, k].copy()
-            seg_slice = seg_volume[:, :, :, k].copy()
-
-            if np.sum(image_slice) > 1.0:
-                if augmentation is not None:
-                    # Transpose to [H, W, C] for albumentations
-                    img_hwc = np.transpose(image_slice, (1, 2, 0))
-                    seg_hwc = np.transpose(seg_slice, (1, 2, 0))
-
-                    transformed = augmentation(image=img_hwc, mask=seg_hwc)
-                    img_aug = transformed['image']
-                    seg_aug = transformed['mask']
-
-                    # Transpose back to [C, H, W]
-                    image_slice = np.transpose(img_aug, (2, 0, 1))
-                    seg_slice = np.transpose(seg_aug, (2, 0, 1))
-
-                # Binarize seg mask
-                seg_slice = (seg_slice > BINARY_THRESHOLD_GT).astype(np.float32)
-
-                all_slices.append((image_slice, seg_slice, mode_id))
-
-    return all_slices
-
-
-class MultiDiffusionDataset(Dataset):
-    """Dataset that returns (image, seg, mode_id) tuples.
-
-    Wraps a list of pre-extracted slices for efficient training.
-    """
-
-    def __init__(self, samples: List[Tuple[np.ndarray, np.ndarray, int]]):
-        """Initialize dataset.
-
-        Args:
-            samples: List of (image, seg, mode_id) tuples.
-        """
-        self.samples = samples
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        image, seg, mode_id = self.samples[idx]
-        return (
-            torch.from_numpy(image).float(),
-            torch.from_numpy(seg).float(),
-            torch.tensor(mode_id, dtype=torch.long),
-        )
+# Re-export for backward compatibility
+__all__ = [
+    'MultiDiffusionDataset',
+    'extract_slices_with_seg_and_mode',
+    'create_multi_diffusion_dataloader',
+    'create_multi_diffusion_validation_dataloader',
+    'create_multi_diffusion_test_dataloader',
+    'create_single_modality_diffusion_val_loader',
+]
 
 
 def create_multi_diffusion_dataloader(

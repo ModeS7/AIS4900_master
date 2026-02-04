@@ -15,6 +15,7 @@ from .constants import (
 )
 from .cuda_utils import setup_cuda_optimizations
 from .distributed import setup_distributed
+from .mode_factory import ModeFactory, ModeConfig, ModeCategory
 from .schedulers import create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler
 from .validation import (
     validate_common_config,
@@ -45,6 +46,10 @@ __all__ = [
     'setup_cuda_optimizations',
     # Distributed training
     'setup_distributed',
+    # Mode Factory
+    'ModeFactory',
+    'ModeConfig',
+    'ModeCategory',
     # Schedulers
     'create_warmup_cosine_scheduler',
     'create_warmup_constant_scheduler',

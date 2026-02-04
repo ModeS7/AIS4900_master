@@ -314,96 +314,9 @@ def create_vae_test_dataloader(
     return dataloader, test_dataset
 
 
-class VolumeDataset(Dataset):
-    """Dataset wrapper for returning full 3D volumes.
-
-    Used for volume-level metrics like 3D MS-SSIM. Returns volumes
-    without slice extraction, optionally with segmentation masks.
-    """
-
-    def __init__(
-        self,
-        image_dataset: NiFTIDataset,
-        seg_dataset: Optional[NiFTIDataset] = None,
-    ) -> None:
-        """Initialize volume dataset.
-
-        Args:
-            image_dataset: Dataset of image volumes.
-            seg_dataset: Optional dataset of segmentation masks.
-        """
-        self.image_dataset = image_dataset
-        self.seg_dataset = seg_dataset
-
-    def __len__(self) -> int:
-        return len(self.image_dataset)
-
-    def __getitem__(self, idx: int) -> dict:
-        """Get volume and optional segmentation.
-
-        Returns:
-            Dict with 'image' key and optional 'seg' key.
-            image: [C, H, W, D] tensor
-            seg: [1, H, W, D] tensor (if available)
-        """
-        image, patient = self.image_dataset[idx]
-        result = {'image': image, 'patient': patient}
-
-        if self.seg_dataset is not None:
-            seg, _ = self.seg_dataset[idx]
-            result['seg'] = seg
-
-        return result
-
-
-class DualVolumeDataset(Dataset):
-    """Dataset wrapper for dual-modality 3D volumes.
-
-    Stacks t1_pre and t1_gd into 2-channel volumes.
-    Used for volume-level metrics like 3D MS-SSIM.
-    """
-
-    def __init__(
-        self,
-        t1_pre_dataset: NiFTIDataset,
-        t1_gd_dataset: NiFTIDataset,
-        seg_dataset: Optional[NiFTIDataset] = None,
-    ) -> None:
-        """Initialize dual volume dataset.
-
-        Args:
-            t1_pre_dataset: Dataset of t1_pre volumes.
-            t1_gd_dataset: Dataset of t1_gd volumes.
-            seg_dataset: Optional dataset of segmentation masks.
-        """
-        self.t1_pre_dataset = t1_pre_dataset
-        self.t1_gd_dataset = t1_gd_dataset
-        self.seg_dataset = seg_dataset
-
-    def __len__(self) -> int:
-        return len(self.t1_pre_dataset)
-
-    def __getitem__(self, idx: int) -> dict:
-        """Get stacked dual-modality volume.
-
-        Returns:
-            Dict with 'image' key (2 channels) and optional 'seg' key.
-            image: [2, H, W, D] tensor (t1_pre, t1_gd stacked)
-            seg: [1, H, W, D] tensor (if available)
-        """
-        import torch
-        t1_pre, patient = self.t1_pre_dataset[idx]
-        t1_gd, _ = self.t1_gd_dataset[idx]
-
-        # Stack: [1, H, W, D] + [1, H, W, D] -> [2, H, W, D]
-        image = torch.cat([t1_pre, t1_gd], dim=0)
-        result = {'image': image, 'patient': patient}
-
-        if self.seg_dataset is not None:
-            seg, _ = self.seg_dataset[idx]
-            result['seg'] = seg
-
-        return result
+# NOTE: VolumeDataset and DualVolumeDataset have been consolidated into datasets.py.
+# Import from there for backward compatibility.
+from medgen.data.loaders.datasets import VolumeDataset, DualVolumeDataset
 
 
 def create_vae_volume_validation_dataloader(

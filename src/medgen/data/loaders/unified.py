@@ -49,7 +49,9 @@ Compression Modes:
 """
 
 import logging
-from typing import Any, Dict, Literal, Optional, Tuple
+import os
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
@@ -61,6 +63,111 @@ logger = logging.getLogger(__name__)
 Task = Literal['diffusion', 'compression']
 Mode = Literal['seg', 'bravo', 'dual', 'multi', 'seg_conditioned']
 Split = Literal['train', 'val', 'test']
+
+
+# =============================================================================
+# Mode Configuration Registry
+# =============================================================================
+
+@dataclass
+class ModeConfig:
+    """Configuration for a specific dataloader mode.
+
+    This dataclass captures all the mode-specific parameters needed to create
+    dataloaders, allowing us to define modes declaratively rather than with
+    verbose if/elif chains.
+    """
+    output_format: str  # Format string for DictDatasetWrapper
+    needs_seg: bool = False  # Whether this mode requires seg masks
+    cfg_dropout_prob: float = 0.0  # CFG dropout probability (train only)
+    extra_config: Dict[str, Any] = field(default_factory=dict)
+
+
+# Registry of supported diffusion modes
+DIFFUSION_MODES = {
+    'seg', 'bravo', 'bravo_seg_cond', 'dual', 'multi',
+    'seg_conditioned', 'seg_conditioned_input'
+}
+
+# Registry of supported compression modes
+COMPRESSION_MODES = {
+    'seg_compression', 'bravo', 'flair', 't1_pre', 't1_gd', 'seg',
+    'dual', 'multi_modality'
+}
+
+
+def _get_split_dir(base_dir: str, split: str) -> str:
+    """Get directory path for a data split.
+
+    Args:
+        base_dir: Base data directory.
+        split: Data split ('train', 'val', 'test').
+
+    Returns:
+        Path to split directory.
+    """
+    split_dirs = {'train': 'train', 'val': 'val', 'test': 'test_new'}
+    return os.path.join(base_dir, split_dirs.get(split, split))
+
+
+def _wrap_with_dict_loader(
+    raw_dataset: Dataset,
+    cfg: DictConfig,
+    output_format: str,
+    spatial_dims: int,
+    split: str,
+    batch_size: Optional[int],
+    sampler: Optional[Any] = None,
+) -> Tuple[DataLoader, Dataset]:
+    """Wrap a raw dataset with DictDatasetWrapper and create a new DataLoader.
+
+    This utility function handles the common pattern of:
+    1. Wrapping a raw dataset to return dict format
+    2. Creating a DataLoader with dict_collate_fn
+    3. Preserving distributed sampler if present
+
+    Args:
+        raw_dataset: The underlying dataset to wrap.
+        cfg: Hydra configuration.
+        output_format: Format string for DictDatasetWrapper.
+        spatial_dims: 2 for 2D images, 3 for 3D volumes.
+        split: Data split ('train', 'val', 'test').
+        batch_size: Override batch size (None = use config).
+        sampler: Optional distributed sampler to preserve.
+
+    Returns:
+        Tuple of (DataLoader, wrapped_dataset).
+    """
+    from .common import DataLoaderConfig
+
+    # Wrap dataset to return dict format
+    wrapped_dataset = DictDatasetWrapper(
+        raw_dataset, output_format=output_format, spatial_dims=spatial_dims
+    )
+
+    # Get DataLoader settings
+    dl_cfg = DataLoaderConfig.from_cfg(cfg)
+    effective_batch_size = batch_size if batch_size else cfg.training.batch_size
+
+    # Determine shuffle based on split and sampler
+    if sampler is not None:
+        shuffle = False  # Sampler handles shuffling
+    else:
+        shuffle = (split == 'train')
+
+    new_loader = DataLoader(
+        wrapped_dataset,
+        batch_size=effective_batch_size,
+        sampler=sampler,
+        shuffle=shuffle,
+        collate_fn=dict_collate_fn,
+        pin_memory=dl_cfg.pin_memory,
+        num_workers=dl_cfg.num_workers,
+        prefetch_factor=dl_cfg.prefetch_factor if dl_cfg.num_workers > 0 else None,
+        persistent_workers=dl_cfg.persistent_workers if dl_cfg.num_workers > 0 else False,
+    )
+
+    return new_loader, wrapped_dataset
 
 
 def create_dataloader(
@@ -185,7 +292,7 @@ def create_diffusion_dataloader(
     if spatial_dims not in (2, 3):
         raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
 
-    if mode not in ('seg', 'bravo', 'dual', 'multi', 'seg_conditioned', 'seg_conditioned_input'):
+    if mode not in ('seg', 'bravo', 'dual', 'multi', 'seg_conditioned', 'seg_conditioned_input', 'bravo_seg_cond'):
         raise ValueError(f"Unsupported mode: {mode}")
 
     # Determine augmentation setting
@@ -298,6 +405,23 @@ def _get_raw_2d_loader(
                 raise ValueError("No test data found")
             return result
 
+    elif mode == 'bravo_seg_cond':
+        # bravo_seg_cond: same pixel loader as bravo, latent handling is separate
+        if split == 'train':
+            return single.create_dataloader(
+                cfg, 'bravo', use_distributed, rank, world_size, augment, augment_type
+            )
+        elif split == 'val':
+            result = single.create_validation_dataloader(cfg, 'bravo', batch_size, world_size)
+            if result is None:
+                raise ValueError("No validation data found")
+            return result
+        else:  # test
+            result = single.create_test_dataloader(cfg, 'bravo', batch_size)
+            if result is None:
+                raise ValueError("No test data found")
+            return result
+
     elif mode == 'dual':
         image_keys = cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
         conditioning = cfg.mode.get('conditioning', 'seg')
@@ -319,8 +443,8 @@ def _get_raw_2d_loader(
 
     elif mode == 'multi':
         if split == 'train':
-            return multi_diffusion.create_multi_modality_dataloader(
-                cfg, use_distributed, rank, world_size, augment
+            return multi_diffusion.create_multi_diffusion_dataloader(
+                cfg, cfg.mode.image_keys, use_distributed, rank, world_size, augment
             )
         else:
             # Multi-modality validation/test not yet supported
@@ -389,6 +513,9 @@ def _create_3d_loader(
     if mode == 'seg':
         return _create_3d_seg_loader(cfg, vol_cfg, split, augment, batch_size)
     elif mode == 'bravo':
+        return _create_3d_bravo_loader(cfg, vol_cfg, split, augment, batch_size)
+    elif mode == 'bravo_seg_cond':
+        # bravo_seg_cond: same pixel loader as bravo, latent handling is separate
         return _create_3d_bravo_loader(cfg, vol_cfg, split, augment, batch_size)
     elif mode == 'dual':
         raise ValueError("3D dual mode not yet supported")

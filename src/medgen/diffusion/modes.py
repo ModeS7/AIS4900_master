@@ -472,12 +472,12 @@ class MultiModalityMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare multi-modality batch with mode_id.
 
         Args:
-            batch: Tuple (image, seg, mode_id) or latent dict where:
+            batch: Dict with 'image', 'seg', 'mode_id' or latent dict where:
                 - image: [B, 1, H, W] single modality image
                 - seg: [B, 1, H, W] segmentation mask
                 - mode_id: [B] integer tensor (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
@@ -494,22 +494,12 @@ class MultiModalityMode(TrainingMode):
                 result['mode_id'] = result['mode_id'].to(device)
             return result
 
-        if isinstance(batch, (tuple, list)):
-            image, seg, mode_id = batch
-            image = _to_device(image, device)
-            seg = _to_device(seg, device)
-            mode_id = mode_id.to(device)
-        else:
-            # Fallback for tensor format (shouldn't happen with multi dataloader)
-            batch = _to_device(batch, device)
-            image = batch[:, 0:1, :, :]
-            seg = batch[:, 1:2, :, :]
-            mode_id = None
-
+        # All batches are now dict format
+        batch = _to_device(batch, device)
         return {
-            'images': image,
-            'labels': seg,
-            'mode_id': mode_id,
+            'images': batch['image'],
+            'labels': batch['seg'],
+            'mode_id': batch['mode_id'],
         }
 
     def get_model_config(self) -> Dict[str, int]:
@@ -582,14 +572,14 @@ class SegmentationConditionedMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare segmentation conditioned batch with size_bins.
 
         Args:
-            batch: Tuple (seg, size_bins) where:
-                - seg: [B, 1, H, W] segmentation mask
-                - size_bins: [B, 9] tumor count per size bin
+            batch: Dict with 'image' and 'size_bins' where:
+                - image: [B, 1, H, W] segmentation mask
+                - size_bins: [B, num_bins] tumor count per size bin
             device: Target device.
 
         Returns:
@@ -602,20 +592,12 @@ class SegmentationConditionedMode(TrainingMode):
                 result['size_bins'] = result['size_bins'].to(device)
             return result
 
-        if isinstance(batch, (tuple, list)):
-            seg, size_bins = batch
-            seg = _to_device(seg, device)
-            size_bins = size_bins.to(device)
-        else:
-            # Fallback for tensor format
-            batch = _to_device(batch, device)
-            seg = batch
-            size_bins = None
-
+        # All batches are now dict format
+        batch = _to_device(batch, device)
         return {
-            'images': seg,
+            'images': batch['image'],
             'labels': None,  # No label concatenation, conditioning via embedding
-            'size_bins': size_bins,
+            'size_bins': batch['size_bins'],
         }
 
     def get_model_config(self) -> Dict[str, int]:
@@ -682,44 +664,27 @@ class SegmentationConditionedInputMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, tuple, Dict[str, Any]], device: torch.device
+        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
     ) -> Dict[str, Any]:
         """Prepare batch with bin_maps for input conditioning.
 
         Args:
-            batch: Tuple (seg, size_bins, bin_maps) where:
-                - seg: [B, 1, H, W] segmentation mask
+            batch: Dict with 'image', 'size_bins', and optionally 'bin_maps' where:
+                - image: [B, 1, H, W] segmentation mask
                 - size_bins: [B, num_bins] tumor count per size bin
-                - bin_maps: [B, num_bins, H, W] spatial conditioning maps
+                - bin_maps: [B, num_bins, H, W] spatial conditioning maps (optional)
             device: Target device.
 
         Returns:
             Dictionary with images (seg), bin_maps, and size_bins.
         """
-        if isinstance(batch, (tuple, list)):
-            if len(batch) == 3:
-                seg, size_bins, bin_maps = batch
-            else:
-                # Fallback: no bin_maps provided
-                seg, size_bins = batch
-                bin_maps = None
-
-            seg = _to_device(seg, device)
-            size_bins = size_bins.to(device)
-            if bin_maps is not None:
-                bin_maps = bin_maps.to(device)
-        else:
-            # Dict format (e.g., from 3D dataloader)
-            batch = _to_device(batch, device)
-            seg = batch.get('seg', batch.get('image'))
-            size_bins = batch.get('size_bins')
-            bin_maps = batch.get('bin_maps')
-
+        # All batches are now dict format
+        batch = _to_device(batch, device)
         return {
-            'images': seg,
+            'images': batch['image'],
             'labels': None,
-            'size_bins': size_bins,
-            'bin_maps': bin_maps,
+            'size_bins': batch.get('size_bins'),
+            'bin_maps': batch.get('bin_maps'),
         }
 
     def get_model_config(self) -> Dict[str, int]:

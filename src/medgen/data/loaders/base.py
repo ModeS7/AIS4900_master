@@ -202,6 +202,10 @@ class DictDatasetWrapper(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.dataset[idx]
 
+        # Already a dict - validate and return
+        if isinstance(item, dict):
+            return self._validate_dict(item)
+
         # Convert numpy to tensor
         if isinstance(item, np.ndarray):
             item = torch.from_numpy(item.copy()).float()
@@ -351,6 +355,30 @@ class DictDatasetWrapper(Dataset):
             return torch.from_numpy(item.copy()).float()
         else:
             return torch.from_numpy(np.array(item)).float()
+
+    def _validate_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate dict has required 'image' key and convert tensors.
+
+        Args:
+            item: Dict from underlying dataset.
+
+        Returns:
+            Validated dict with all numpy arrays converted to tensors.
+
+        Raises:
+            ValueError: If dict is missing required 'image' key.
+        """
+        if 'image' not in item:
+            raise ValueError(f"Dict batch must have 'image' key, got: {list(item.keys())}")
+
+        # Ensure all tensors (convert numpy arrays)
+        result = {}
+        for k, v in item.items():
+            if isinstance(v, np.ndarray):
+                result[k] = torch.from_numpy(v.copy()).float()
+            else:
+                result[k] = v
+        return result
 
     @property
     def spatial_dims(self) -> int:

@@ -29,29 +29,15 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import (
-    DEFAULT_DUAL_IMAGE_KEYS,
     ModeType,
+    ModeFactory,
+    ModeCategory,
     get_modality_for_mode,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
     validate_diffusion_config,
     run_validation,
-)
-from medgen.data import (
-    create_dataloader,
-    create_dual_image_dataloader,
-    create_validation_dataloader,
-    create_dual_image_validation_dataloader,
-    create_test_dataloader,
-    create_dual_image_test_dataloader,
-    create_multi_diffusion_dataloader,
-    create_multi_diffusion_validation_dataloader,
-    create_multi_diffusion_test_dataloader,
-    create_single_modality_diffusion_val_loader,
-    create_seg_conditioned_dataloader,
-    create_seg_conditioned_validation_dataloader,
-    create_seg_conditioned_test_dataloader,
 )
 from medgen.data.loaders.latent import (
     LatentCacheBuilder,
@@ -178,9 +164,9 @@ def main(cfg: DictConfig) -> None:
     trainer = DiffusionTrainer(cfg, space=space)
     log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
-    # Create dataloader based on mode
+    # Get mode configuration using ModeFactory
+    mode_config = ModeFactory.get_mode_config(cfg)
     augment = cfg.training.get('augment', True)
-    image_keys = None  # Will be set for multi and dual modes
 
     # Latent diffusion: build cache and use latent dataloaders
     if use_latent:
@@ -211,22 +197,10 @@ def main(cfg: DictConfig) -> None:
         ):
             if auto_encode:
                 log.info("Train cache invalid/missing, encoding dataset...")
-                # Create pixel dataloader temporarily for encoding
-                if mode == 'multi':
-                    image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
-                    _, pixel_dataset = create_multi_diffusion_dataloader(
-                        cfg=cfg, image_keys=image_keys, augment=False
-                    )
-                elif mode == ModeType.DUAL:
-                    image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
-                    _, pixel_dataset = create_dual_image_dataloader(
-                        cfg=cfg, image_keys=image_keys, conditioning='seg', augment=False
-                    )
-                else:
-                    image_type = 'seg' if mode == ModeType.SEG else 'bravo'
-                    _, pixel_dataset = create_dataloader(
-                        cfg=cfg, image_type=image_type, augment=False
-                    )
+                # Create pixel dataloader temporarily for encoding (no augmentation)
+                _, pixel_dataset = ModeFactory.create_pixel_loader_for_latent_cache(
+                    cfg, mode_config, split='train'
+                )
                 cache_builder.build_cache(
                     pixel_dataset, train_cache_dir, compression_checkpoint,
                     batch_size=latent_cfg.get('batch_size', 32),
@@ -244,21 +218,17 @@ def main(cfg: DictConfig) -> None:
             ):
                 if auto_encode:
                     log.info("Val cache invalid/missing, encoding dataset...")
-                    if mode == 'multi':
-                        val_result = create_multi_diffusion_validation_dataloader(cfg=cfg, image_keys=image_keys)
-                    elif mode == ModeType.DUAL:
-                        val_result = create_dual_image_validation_dataloader(
-                            cfg=cfg, image_keys=image_keys, conditioning='seg'
+                    try:
+                        _, val_pixel_dataset = ModeFactory.create_pixel_loader_for_latent_cache(
+                            cfg, mode_config, split='val'
                         )
-                    else:
-                        val_result = create_validation_dataloader(cfg=cfg, image_type=image_type)
-                    if val_result:
-                        _, val_pixel_dataset = val_result
                         cache_builder.build_cache(
                             val_pixel_dataset, val_cache_dir, compression_checkpoint,
                             batch_size=latent_cfg.get('batch_size', 32),
                             num_workers=latent_cfg.get('num_workers', 4),
                         )
+                    except ValueError:
+                        log.warning("No validation data found for cache building")
                 else:
                     log.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
 
@@ -277,57 +247,24 @@ def main(cfg: DictConfig) -> None:
 
         # Create pixel-space loaders for reference feature caching
         # FID/KID metrics are computed in pixel space, not latent space
-        image_type = 'seg' if mode == ModeType.SEG else 'bravo'
+        image_type = ModeFactory.get_image_type_for_mode(mode_config.mode)
         log.info(f"Creating pixel-space loaders for reference features (type: {image_type})")
-        pixel_train_loader, _ = create_dataloader(cfg=cfg, image_type=image_type, augment=False)
-        pixel_val_result = create_validation_dataloader(cfg=cfg, image_type=image_type)
+        pixel_train_loader, _ = ModeFactory.create_pixel_loader_for_latent_cache(
+            cfg, mode_config, split='train'
+        )
+        pixel_val_result = ModeFactory.create_val_dataloader(cfg, mode_config)
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
     else:
-        # Standard pixel-space dataloaders
-        if mode == 'multi':
-            # Multi-modality diffusion with mode embedding
-            image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else ['bravo', 'flair', 't1_pre', 't1_gd']
-            dataloader, train_dataset = create_multi_diffusion_dataloader(
-                cfg=cfg,
-                image_keys=image_keys,
-                use_distributed=use_multi_gpu,
-                rank=trainer.rank if use_multi_gpu else 0,
-                world_size=trainer.world_size if use_multi_gpu else 1,
-                augment=augment
-            )
-        elif mode == ModeType.DUAL:
-            image_keys = list(cfg.mode.image_keys) if 'image_keys' in cfg.mode else DEFAULT_DUAL_IMAGE_KEYS
-            dataloader, train_dataset = create_dual_image_dataloader(
-                cfg=cfg,
-                image_keys=image_keys,
-                conditioning='seg',
-                use_distributed=use_multi_gpu,
-                rank=trainer.rank if use_multi_gpu else 0,
-                world_size=trainer.world_size if use_multi_gpu else 1,
-                augment=augment
-            )
-        elif mode == ModeType.SEG_CONDITIONED:
-            # Seg conditioned mode - returns (seg, size_bins) tuples
-            dataloader, train_dataset = create_seg_conditioned_dataloader(
-                cfg=cfg,
-                use_distributed=use_multi_gpu,
-                rank=trainer.rank if use_multi_gpu else 0,
-                world_size=trainer.world_size if use_multi_gpu else 1,
-                augment=augment
-            )
-        else:
-            # seg or bravo
-            image_type = 'seg' if mode == ModeType.SEG else 'bravo'
-            dataloader, train_dataset = create_dataloader(
-                cfg=cfg,
-                task='diffusion',
-                mode=image_type,
-                use_distributed=use_multi_gpu,
-                rank=trainer.rank if use_multi_gpu else 0,
-                world_size=trainer.world_size if use_multi_gpu else 1,
-                augment=augment
-            )
+        # Standard pixel-space dataloaders using ModeFactory
+        dataloader, train_dataset = ModeFactory.create_train_dataloader(
+            cfg=cfg,
+            mode_config=mode_config,
+            use_distributed=use_multi_gpu,
+            rank=trainer.rank if use_multi_gpu else 0,
+            world_size=trainer.world_size if use_multi_gpu else 1,
+            augment=augment,
+        )
 
         log.info(f"Training dataset: {len(train_dataset)} slices")
         # Pixel-space training: no separate loaders needed for reference features
@@ -347,39 +284,15 @@ def main(cfg: DictConfig) -> None:
             mode=mode,
             world_size=world_size,
         )
-    elif mode == 'multi':
-        val_result = create_multi_diffusion_validation_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-            world_size=world_size,
-        )
-        # Create per-modality validation loaders for multi-modality metrics
-        per_modality_val_loaders = {}
-        for modality in image_keys:
-            loader = create_single_modality_diffusion_val_loader(cfg, modality)
-            if loader:
-                per_modality_val_loaders[modality] = loader
-        trainer.per_modality_val_loaders = per_modality_val_loaders
-        if per_modality_val_loaders:
-            log.info(f"Per-modality validation loaders: {list(per_modality_val_loaders.keys())}")
-    elif mode == ModeType.DUAL:
-        val_result = create_dual_image_validation_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-            conditioning='seg',
-            world_size=world_size,
-        )
-    elif mode == ModeType.SEG_CONDITIONED:
-        val_result = create_seg_conditioned_validation_dataloader(
-            cfg=cfg,
-            world_size=world_size,
-        )
     else:
-        val_result = create_validation_dataloader(
-            cfg=cfg,
-            image_type=image_type,
-            world_size=world_size,
-        )
+        # Pixel-space validation dataloader using ModeFactory
+        val_result = ModeFactory.create_val_dataloader(cfg, mode_config, world_size=world_size)
+
+        # Create per-modality validation loaders for multi-modality metrics (MULTI mode only)
+        per_modality_val_loaders = ModeFactory.create_per_modality_val_loaders(cfg, mode_config)
+        if per_modality_val_loaders:
+            trainer.per_modality_val_loaders = per_modality_val_loaders
+            log.info(f"Per-modality validation loaders: {list(per_modality_val_loaders.keys())}")
 
     if val_result is not None:
         val_loader, val_dataset = val_result
@@ -405,24 +318,9 @@ def main(cfg: DictConfig) -> None:
             cache_dir=cache_dir,
             mode=mode,
         )
-    elif mode == 'multi':
-        test_result = create_multi_diffusion_test_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-        )
-    elif mode == ModeType.DUAL:
-        test_result = create_dual_image_test_dataloader(
-            cfg=cfg,
-            image_keys=image_keys,
-            conditioning='seg',
-        )
-    elif mode == ModeType.SEG_CONDITIONED:
-        test_result = create_seg_conditioned_test_dataloader(cfg=cfg)
     else:
-        test_result = create_test_dataloader(
-            cfg=cfg,
-            image_type=image_type,
-        )
+        # Pixel-space test dataloader using ModeFactory
+        test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
 
     if test_result is not None:
         test_loader, test_dataset = test_result
@@ -465,6 +363,9 @@ def _train_3d(cfg: DictConfig) -> None:
     mode = cfg.mode.name
     strategy = cfg.strategy.name
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Get mode configuration using ModeFactory (available for both latent and pixel paths)
+    mode_config = ModeFactory.get_mode_config(cfg)
 
     log.info("")
     log.info("=" * 60)
@@ -677,65 +578,15 @@ def _train_3d(cfg: DictConfig) -> None:
         )
 
     else:
-        # Pixel-space training
+        # Pixel-space training using ModeFactory
         log.info("=== Pixel-Space Mode ===")
 
-        # Use mode-specific dataloader
-        if mode in ('seg', 'seg_conditioned', 'seg_conditioned_input'):
-            log.info("Using 3D seg dataloader (3D connected components)")
-            train_loader, train_dataset = create_seg_dataloader(cfg)
-            val_result = create_seg_validation_dataloader(cfg)
-        elif mode == 'bravo':
-            # Bravo mode: needs seg mask for conditioning
-            log.info("Using 3D bravo dataloader with seg mask conditioning")
-            train_dir = os.path.join(cfg.paths.data_dir, 'train')
-            train_dataset = SingleModality3DDatasetWithSeg(
-                data_dir=train_dir,
-                modality='bravo',
-                height=cfg.volume.height,
-                width=cfg.volume.width,
-                pad_depth_to=cfg.volume.pad_depth_to,
-                pad_mode=cfg.volume.get('pad_mode', 'replicate'),
-                slice_step=cfg.volume.get('slice_step', 1),
-            )
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=cfg.training.batch_size,
-                shuffle=True,
-                num_workers=cfg.training.get('num_workers', 4),
-                pin_memory=True,
-                drop_last=True,
-            )
-
-            val_dir = os.path.join(cfg.paths.data_dir, 'val')
-            if os.path.exists(val_dir):
-                val_dataset = SingleModality3DDatasetWithSeg(
-                    data_dir=val_dir,
-                    modality='bravo',
-                    height=cfg.volume.height,
-                    width=cfg.volume.width,
-                    pad_depth_to=cfg.volume.pad_depth_to,
-                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
-                    slice_step=cfg.volume.get('slice_step', 1),
-                )
-                val_loader = DataLoader(
-                    val_dataset,
-                    batch_size=cfg.training.batch_size,
-                    shuffle=False,
-                    num_workers=cfg.training.get('num_workers', 4),
-                    pin_memory=True,
-                )
-                val_result = (val_loader, val_dataset)
-            else:
-                val_result = None
-        else:
-            # Other modes - map mode to modality for file loading
-            pixel_modality = get_modality_for_mode(mode)
-            train_loader, train_dataset = create_vae_3d_dataloader(cfg, pixel_modality)
-            val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
-
+        # Create train dataloader using unified factory (mode_config defined at top of function)
+        train_loader, train_dataset = ModeFactory.create_train_dataloader(cfg, mode_config)
         log.info(f"Train dataset: {len(train_dataset)} volumes")
 
+        # Create validation dataloader
+        val_result = ModeFactory.create_val_dataloader(cfg, mode_config)
         if val_result is not None:
             val_loader, val_dataset = val_result
             log.info(f"Val dataset: {len(val_dataset)} volumes")
@@ -786,53 +637,10 @@ def _train_3d(cfg: DictConfig) -> None:
                 test_result = create_latent_test_dataloader(cfg, cache_dir, mode)
                 if test_result is None:
                     log.warning("No test cache found for latent diffusion")
-            elif mode in ('bravo', 'bravo_seg_cond'):
-                # Bravo or bravo_seg_cond: both use SingleModality3DDatasetWithSeg
-                test_dataset = SingleModality3DDatasetWithSeg(
-                    data_dir=test_dir,
-                    modality='bravo',
-                    height=cfg.volume.height,
-                    width=cfg.volume.width,
-                    pad_depth_to=cfg.volume.pad_depth_to,
-                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
-                    slice_step=cfg.volume.get('slice_step', 1),
-                )
-                test_loader = DataLoader(
-                    test_dataset,
-                    batch_size=cfg.training.batch_size,
-                    shuffle=False,
-                    num_workers=cfg.training.get('num_workers', 4),
-                    pin_memory=True,
-                )
-                test_result = (test_loader, test_dataset)
-            elif mode == 'seg':
-                from medgen.data.loaders.seg import SegDataset
-                size_bin_cfg = cfg.mode.get('size_bins', {})
-                bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
-                num_bins = int(size_bin_cfg.get('num_bins', 7))
-                default_spacing = 240.0 / cfg.volume.height
-                voxel_spacing = tuple(size_bin_cfg.get('voxel_spacing', [1.0, default_spacing, default_spacing]))
-                test_dataset = SegDataset(
-                    data_dir=test_dir,
-                    bin_edges=bin_edges,
-                    num_bins=num_bins,
-                    voxel_spacing=voxel_spacing,
-                    height=cfg.volume.height,
-                    width=cfg.volume.width,
-                    pad_depth_to=cfg.volume.pad_depth_to,
-                    pad_mode=cfg.volume.get('pad_mode', 'replicate'),
-                    slice_step=cfg.volume.get('slice_step', 1),
-                    positive_only=False,
-                    cfg_dropout_prob=0.0,
-                )
-                test_loader = DataLoader(
-                    test_dataset,
-                    batch_size=cfg.training.batch_size,
-                    shuffle=False,
-                    num_workers=cfg.training.get('num_workers', 4),
-                    pin_memory=True,
-                )
-                test_result = (test_loader, test_dataset)
+            else:
+                # Pixel-space test dataloader using ModeFactory
+                # Note: mode_config was set in the pixel-space training branch
+                test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
         except Exception as e:
             log.warning(f"Could not create test dataloader: {e}")
 

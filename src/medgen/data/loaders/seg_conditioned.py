@@ -3,17 +3,17 @@ Dataloader for segmentation masks with tumor size conditioning.
 
 Provides dataloaders that return (seg_mask, size_bins) tuples where size_bins
 is a 9-dimensional vector of tumor counts per size bin.
+
+NOTE: Dataset classes and utility functions have been consolidated into datasets.py.
+This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
-import numpy as np
 import torch
 from monai.data import DataLoader
 from omegaconf import DictConfig
-from scipy import ndimage
-from scipy.spatial.distance import pdist
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
@@ -21,279 +21,31 @@ from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampl
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.utils import extract_slices_single
 
+# Import consolidated classes and functions from datasets.py
+from medgen.data.loaders.datasets import (
+    SegConditionedDataset,
+    compute_size_bins,
+    compute_feret_diameter,
+    create_size_bin_maps,
+    DEFAULT_BIN_EDGES,
+)
+
 logger = logging.getLogger(__name__)
 
-# Default size bins (mm) - aligned with RANO-BM thresholds (10, 20, 30mm)
-# Last bin is 30+mm (no upper bound needed)
-DEFAULT_BIN_EDGES = [0, 3, 6, 10, 15, 20, 30]
+# Re-export for backward compatibility
+__all__ = [
+    'SegConditionedDataset',
+    'compute_size_bins',
+    'compute_feret_diameter',
+    'create_size_bin_maps',
+    'DEFAULT_BIN_EDGES',
+    'create_seg_conditioned_dataloader',
+    'create_seg_conditioned_validation_dataloader',
+    'create_seg_conditioned_test_dataloader',
+]
 
 # Default CFG dropout probability for input conditioning
 DEFAULT_CFG_DROPOUT = 0.15
-
-
-def create_size_bin_maps(
-    size_bins: torch.Tensor,
-    spatial_shape: Tuple[int, ...],
-    normalize: bool = True,
-    max_count: int = 10,
-) -> torch.Tensor:
-    """Create spatial maps from size bin counts for input conditioning.
-
-    Each size bin count becomes a constant-valued spatial map that gets
-    concatenated with the noise input to the diffusion model.
-
-    Args:
-        size_bins: [num_bins] tensor of counts per bin.
-        spatial_shape: Target spatial dimensions (H, W) or (D, H, W).
-        normalize: If True, divide counts by max_count to get [0, 1] range.
-        max_count: Maximum expected count per bin for normalization.
-
-    Returns:
-        [num_bins, *spatial_shape] tensor where each channel is filled
-        with the (normalized) count for that bin.
-    """
-    num_bins = len(size_bins)
-    bin_maps = torch.zeros(num_bins, *spatial_shape, dtype=torch.float32)
-
-    for i in range(num_bins):
-        count = size_bins[i].float()
-        if normalize:
-            count = count / max_count
-        bin_maps[i].fill_(count.item())
-
-    return bin_maps
-
-
-def compute_feret_diameter(binary_mask: np.ndarray, pixel_spacing_mm: float) -> float:
-    """Compute Feret diameter (longest axis) of a binary region.
-
-    Args:
-        binary_mask: 2D binary mask of a single connected component.
-        pixel_spacing_mm: Size of one pixel in mm.
-
-    Returns:
-        Feret diameter in mm.
-    """
-    coords = np.argwhere(binary_mask)
-    if len(coords) < 2:
-        return pixel_spacing_mm  # Single pixel
-
-    # Subsample for large regions
-    if len(coords) > 1000:
-        idx = np.random.choice(len(coords), 1000, replace=False)
-        coords = coords[idx]
-
-    distances = pdist(coords)
-    max_dist_pixels = distances.max() if len(distances) > 0 else 1
-
-    return max_dist_pixels * pixel_spacing_mm
-
-
-def compute_size_bins(
-    seg_mask: np.ndarray,
-    bin_edges: List[float],
-    pixel_spacing_mm: float,
-    num_bins: int = None,
-) -> np.ndarray:
-    """Compute tumor count per size bin for a segmentation mask.
-
-    Args:
-        seg_mask: 2D binary segmentation mask [H, W].
-        bin_edges: List of bin edges in mm (e.g., [0, 3, 6, 10, 15, 20, 30]).
-        pixel_spacing_mm: Size of one pixel in mm.
-        num_bins: Number of bins. If > len(edges)-1, last bin is overflow (>= last edge).
-                  Default: len(edges)-1 (no separate overflow bin).
-
-    Returns:
-        Array of shape [num_bins] with tumor counts per bin.
-    """
-    n_bounded_bins = len(bin_edges) - 1
-    if num_bins is None:
-        num_bins = n_bounded_bins
-
-    bin_counts = np.zeros(num_bins, dtype=np.int64)
-
-    # Handle tensor input
-    if isinstance(seg_mask, torch.Tensor):
-        seg_mask = seg_mask.numpy()
-
-    # Remove batch/channel dimensions if present
-    seg_mask = np.squeeze(seg_mask)
-
-    # Label connected components
-    labeled, num_features = ndimage.label(seg_mask > 0.5)
-
-    if num_features == 0:
-        return bin_counts
-
-    # Compute diameter for each tumor and bin it
-    for i in range(1, num_features + 1):
-        component_mask = labeled == i
-        diameter = compute_feret_diameter(component_mask, pixel_spacing_mm)
-
-        # Find bin - check bounded bins first
-        binned = False
-        for j in range(n_bounded_bins):
-            if bin_edges[j] <= diameter < bin_edges[j + 1]:
-                bin_counts[j] += 1
-                binned = True
-                break
-
-        # If not binned, goes to overflow bin (last bin)
-        if not binned:
-            bin_counts[num_bins - 1] += 1
-
-    return bin_counts
-
-
-class SegConditionedDataset(TorchDataset):
-    """Dataset wrapper that adds size bin vectors to seg slices.
-
-    Wraps an existing slice dataset and computes size bins on-the-fly.
-    Only includes positive slices (slices with at least one tumor).
-    Supports classifier-free guidance dropout.
-
-    IMPORTANT: Augmentation is applied LAZILY in __getitem__ to ensure:
-    1. Random augmentation per access (different each epoch)
-    2. Size bins are computed AFTER augmentation (bins match augmented mask)
-    """
-
-    def __init__(
-        self,
-        slice_dataset: TorchDataset,
-        bin_edges: List[float] = None,
-        num_bins: int = None,
-        fov_mm: float = 240.0,
-        image_size: int = 256,
-        positive_only: bool = True,
-        cfg_dropout_prob: float = 0.0,
-        augmentation: Optional[any] = None,
-        return_bin_maps: bool = False,
-        max_count: int = 10,
-    ):
-        """Initialize the dataset wrapper.
-
-        Args:
-            slice_dataset: Base dataset returning [1, H, W] seg tensors (NO augmentation applied).
-            bin_edges: Size bin edges in mm. Default: RANO-BM aligned bins.
-            num_bins: Number of bins. If > len(edges)-1, last bin is overflow.
-            fov_mm: Field of view in mm.
-            image_size: Image size in pixels.
-            positive_only: If True, only include slices with tumors (default: True).
-            cfg_dropout_prob: Probability of dropping conditioning for CFG (default: 0.15).
-            augmentation: Albumentations Compose for lazy augmentation (applied in __getitem__).
-            return_bin_maps: If True, return spatial bin maps for input conditioning.
-            max_count: Max count per bin for normalization (default: 10).
-        """
-        self.slice_dataset = slice_dataset
-        self.bin_edges = bin_edges or DEFAULT_BIN_EDGES
-        self.pixel_spacing_mm = fov_mm / image_size
-        self.image_size = image_size
-        self.num_bins = num_bins if num_bins is not None else len(self.bin_edges) - 1
-        self.cfg_dropout_prob = cfg_dropout_prob
-        self.augmentation = augmentation
-        self.return_bin_maps = return_bin_maps
-        self.max_count = max_count
-
-        # Filter to positive slices only (on raw data, before augmentation)
-        if positive_only:
-            self.positive_indices = self._find_positive_indices()
-            logger.info(f"Filtered to {len(self.positive_indices)}/{len(slice_dataset)} positive slices")
-        else:
-            self.positive_indices = list(range(len(slice_dataset)))
-
-    def _find_positive_indices(self) -> List[int]:
-        """Find indices of slices with at least one tumor."""
-        positive_indices = []
-        for idx in range(len(self.slice_dataset)):
-            seg = self.slice_dataset[idx]
-            if isinstance(seg, torch.Tensor):
-                has_tumor = seg.sum() > 0
-            else:
-                has_tumor = seg.sum() > 0
-            if has_tumor:
-                positive_indices.append(idx)
-        return positive_indices
-
-    def __len__(self) -> int:
-        return len(self.positive_indices)
-
-    def __getitem__(self, idx: int):
-        """Get seg slice and size bins.
-
-        Augmentation is applied HERE (lazily) to ensure:
-        1. Fresh random augmentation each access
-        2. Size bins computed on augmented mask (conditioning matches output)
-
-        Returns:
-            If return_bin_maps=False:
-                Tuple of (seg, size_bins)
-            If return_bin_maps=True:
-                Tuple of (seg, size_bins, bin_maps)
-
-            Where:
-                - seg: [1, H, W] segmentation mask tensor (augmented, binarized)
-                - size_bins: [num_bins] integer tensor of tumor counts
-                - bin_maps: [num_bins, H, W] spatial maps for input conditioning
-        """
-        # Map to actual dataset index
-        actual_idx = self.positive_indices[idx]
-        seg = self.slice_dataset[actual_idx]
-
-        # Convert to numpy for augmentation
-        if isinstance(seg, torch.Tensor):
-            seg_np = seg.numpy()
-        else:
-            seg_np = seg
-
-        # Apply augmentation BEFORE computing size bins
-        # This ensures bins match the augmented mask
-        if self.augmentation is not None:
-            # seg_np is [1, H, W], need [H, W] for albumentations
-            seg_2d = seg_np[0] if seg_np.ndim == 3 else seg_np
-            augmented = self.augmentation(image=seg_2d)
-            seg_2d = augmented['image']
-            # Restore channel dimension [1, H, W]
-            seg_np = seg_2d[np.newaxis, :, :] if seg_2d.ndim == 2 else seg_2d
-
-        # Compute size bins on AUGMENTED mask
-        size_bins = compute_size_bins(
-            seg_np,
-            self.bin_edges,
-            self.pixel_spacing_mm,
-            num_bins=self.num_bins,
-        )
-        size_bins = torch.from_numpy(size_bins).long()
-
-        # Convert back to tensor
-        if not isinstance(seg_np, torch.Tensor):
-            seg = torch.from_numpy(seg_np).float()
-        else:
-            seg = seg_np
-
-        # Ensure [1, H, W] shape
-        if seg.dim() == 2:
-            seg = seg.unsqueeze(0)
-
-        # Classifier-free guidance dropout: randomly zero out conditioning
-        is_dropout = self.cfg_dropout_prob > 0 and torch.rand(1).item() < self.cfg_dropout_prob
-        if is_dropout:
-            size_bins = torch.zeros_like(size_bins)
-
-        if not self.return_bin_maps:
-            return seg, size_bins
-
-        # Create spatial bin maps for input conditioning
-        spatial_shape = (self.image_size, self.image_size)
-        if is_dropout:
-            # Dropout: zero maps
-            bin_maps = torch.zeros(self.num_bins, *spatial_shape, dtype=torch.float32)
-        else:
-            bin_maps = create_size_bin_maps(
-                size_bins, spatial_shape, normalize=True, max_count=self.max_count
-            )
-
-        return seg, size_bins, bin_maps
 
 
 def create_seg_conditioned_dataloader(
