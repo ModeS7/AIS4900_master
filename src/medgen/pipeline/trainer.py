@@ -48,6 +48,7 @@ from medgen.diffusion import (
     DDPMStrategy, RFlowStrategy, DiffusionStrategy,
     DiffusionSpace,
 )
+from medgen.diffusion.protocols import DiffusionModel
 from medgen.evaluation import ValidationVisualizer
 from .utils import (
     get_vram_usage,
@@ -80,6 +81,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
         spatial_dims: Number of spatial dimensions (2 or 3). Defaults to 2.
         space: Optional DiffusionSpace for pixel/latent space operations.
             Defaults to PixelSpace (identity, backward compatible).
+
+    Attributes:
+        model: The diffusion model for training/inference. Conforms to DiffusionModel
+            protocol but may be wrapped with ScoreAug, ModeEmbed, or SizeBin
+            conditioning wrappers. Use for forward passes.
+        model_raw: The unwrapped model (nn.Module) for accessing parameters,
+            state_dict, and other module operations. Use for optimizer setup,
+            gradient clipping, and checkpoint saving.
 
     Example:
         >>> # 2D training (default)

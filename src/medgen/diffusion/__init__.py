@@ -58,6 +58,16 @@ from .loading import (
     LoadedModel,
 )
 
+# Protocols (type-safe interfaces)
+from .protocols import (
+    DiffusionModel,
+    ConditionalDiffusionModel,
+    SizeBinModel,
+    PreparedBatch,
+    DiffusionSpaceProtocol,
+    TrainingModeProtocol,
+)
+
 __all__ = [
     # Strategies
     'DiffusionStrategy',
@@ -83,4 +93,11 @@ __all__ = [
     'load_diffusion_model_with_metadata',
     'detect_wrapper_type',
     'LoadedModel',
+    # Protocols
+    'DiffusionModel',
+    'ConditionalDiffusionModel',
+    'SizeBinModel',
+    'PreparedBatch',
+    'DiffusionSpaceProtocol',
+    'TrainingModeProtocol',
 ]

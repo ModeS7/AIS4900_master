@@ -5,7 +5,7 @@ Each function returns a list of error strings (empty if validation passes).
 """
 import logging
 import os
-from typing import Callable, List
+from collections.abc import Callable
 
 import torch
 from omegaconf import DictConfig
@@ -15,7 +15,7 @@ from .constants import ModeType
 logger = logging.getLogger(__name__)
 
 
-def validate_common_config(cfg: DictConfig) -> List[str]:
+def validate_common_config(cfg: DictConfig) -> list[str]:
     """Validate common training parameters.
 
     Checks:
@@ -52,7 +52,7 @@ def validate_common_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_model_config(cfg: DictConfig) -> List[str]:
+def validate_model_config(cfg: DictConfig) -> list[str]:
     """Validate model configuration.
 
     Checks:
@@ -76,7 +76,7 @@ def validate_model_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_diffusion_config(cfg: DictConfig) -> List[str]:
+def validate_diffusion_config(cfg: DictConfig) -> list[str]:
     """Validate diffusion-specific configuration.
 
     Checks:
@@ -103,7 +103,7 @@ def validate_diffusion_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_vae_config(cfg: DictConfig) -> List[str]:
+def validate_vae_config(cfg: DictConfig) -> list[str]:
     """Validate VAE-specific configuration.
 
     Checks:
@@ -130,7 +130,7 @@ def validate_vae_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_vqvae_config(cfg: DictConfig) -> List[str]:
+def validate_vqvae_config(cfg: DictConfig) -> list[str]:
     """Validate VQ-VAE specific configuration.
 
     Checks:
@@ -160,7 +160,7 @@ def validate_vqvae_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
-def validate_training_config(cfg: DictConfig) -> List[str]:
+def validate_training_config(cfg: DictConfig) -> list[str]:
     """Validate training configuration for common issues.
 
     Checks:
@@ -191,9 +191,153 @@ def validate_training_config(cfg: DictConfig) -> List[str]:
     return errors
 
 
+def validate_strategy_mode_compatibility(cfg: DictConfig) -> list[str]:
+    """Check strategy and mode are compatible.
+
+    Validates:
+    - RFlow should use continuous timesteps
+    - DDPM should use discrete timesteps
+    - Multi-modality mode requires mode embedding
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    strategy = cfg.strategy.get('name', 'rflow')
+    mode = cfg.mode.get('name', 'seg')
+
+    # RFlow should use continuous timesteps
+    if strategy == 'rflow' and cfg.strategy.get('use_discrete_timesteps', False):
+        errors.append(
+            "strategy=rflow typically uses continuous timesteps. "
+            "Set use_discrete_timesteps=false or use strategy=ddpm."
+        )
+
+    # DDPM should use discrete timesteps
+    if strategy == 'ddpm' and not cfg.strategy.get('use_discrete_timesteps', True):
+        errors.append(
+            "strategy=ddpm requires discrete timesteps. "
+            "Set use_discrete_timesteps=true or use strategy=rflow."
+        )
+
+    # Multi-modality mode requires mode embedding
+    if mode == 'multi_modality' and not cfg.training.get('use_mode_embedding', False):
+        errors.append(
+            "mode=multi_modality requires use_mode_embedding=true. "
+            "Add training.use_mode_embedding=true to your config."
+        )
+
+    return errors
+
+
+def validate_3d_config(cfg: DictConfig) -> list[str]:
+    """Validate 3D-specific configuration.
+
+    Checks:
+    - spatial_dims=3 requires volume configuration
+    - Volume dimensions must be positive
+    - 3D model config is compatible
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    spatial_dims = cfg.model.get('spatial_dims', 2)
+
+    if spatial_dims != 3:
+        return errors  # Not 3D, skip
+
+    # Must have volume config
+    if 'volume' not in cfg or cfg.volume is None:
+        errors.append(
+            "spatial_dims=3 requires volume configuration. "
+            "Add volume section with depth, height, width."
+        )
+        return errors
+
+    # Check dimensions are positive
+    for dim in ['depth', 'height', 'width']:
+        val = cfg.volume.get(dim, 0)
+        if val <= 0:
+            errors.append(f"volume.{dim} must be positive, got {val}")
+
+    return errors
+
+
+def validate_latent_config(cfg: DictConfig) -> list[str]:
+    """Validate latent diffusion configuration.
+
+    Checks:
+    - latent.enabled=true requires compression checkpoint
+    - Checkpoint file exists (if path provided)
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+
+    latent_cfg = cfg.get('latent', {})
+    if not latent_cfg.get('enabled', False):
+        return errors  # Not latent, skip
+
+    # Must have checkpoint
+    checkpoint = latent_cfg.get('compression_checkpoint')
+    if not checkpoint:
+        errors.append(
+            "latent.enabled=true requires latent.compression_checkpoint. "
+            "Provide path to trained VAE/VQ-VAE/DC-AE checkpoint."
+        )
+
+    # Check checkpoint exists (if path provided)
+    if checkpoint and not os.path.exists(checkpoint):
+        errors.append(f"Compression checkpoint not found: {checkpoint}")
+
+    return errors
+
+
+def validate_regional_logging(cfg: DictConfig) -> list[str]:
+    """Validate regional logging configuration.
+
+    Checks that regional losses logging is compatible with the mode.
+    Regional losses need segmentation masks as conditioning (e.g., bravo, dual).
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+
+    logging_cfg = cfg.training.get('logging', {})
+    if not logging_cfg.get('regional_losses', False):
+        return errors
+
+    mode = cfg.mode.get('name', 'seg')
+    # Regional losses need segmentation masks as separate conditioning
+    # seg mode generates masks (has no separate mask input)
+    # seg_conditioned generates masks from size_bin input (has no pixel mask)
+    if mode in ('seg', 'seg_conditioned'):
+        errors.append(
+            "logging.regional_losses=true requires a mode with segmentation masks "
+            "as conditioning (e.g., bravo, dual). seg mode has no separate mask."
+        )
+
+    return errors
+
+
 def run_validation(
     cfg: DictConfig,
-    validators: List[Callable[[DictConfig], List[str]]],
+    validators: list[Callable[[DictConfig], list[str]]],
 ) -> None:
     """Run multiple validators and raise if any errors.
 

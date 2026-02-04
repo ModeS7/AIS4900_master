@@ -13,6 +13,8 @@ from monai.networks.schedulers import DDPMScheduler, RFlowScheduler
 from torch import nn
 from tqdm import tqdm
 
+from .protocols import DiffusionModel
+
 ImageTensor = torch.Tensor
 ImageDict = Dict[str, torch.Tensor]
 ImageOrDict = Union[ImageTensor, ImageDict]
@@ -167,7 +169,7 @@ class DiffusionStrategy(ABC):
 
     def _call_model(
         self,
-        model: nn.Module,
+        model: DiffusionModel,
         model_input: torch.Tensor,
         timesteps: torch.Tensor,
         omega: Optional[torch.Tensor],
@@ -177,7 +179,8 @@ class DiffusionStrategy(ABC):
         """Call model with appropriate arguments based on conditioning.
 
         Args:
-            model: Diffusion model (may be wrapped with conditioning).
+            model: Diffusion model conforming to DiffusionModel protocol.
+                May be wrapped with ScoreAug, ModeEmbed, or SizeBin conditioning.
             model_input: Formatted input tensor.
             timesteps: Current timesteps.
             omega: Optional ScoreAug omega conditioning.

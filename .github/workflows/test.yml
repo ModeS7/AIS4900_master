@@ -84,8 +84,25 @@ jobs:
 
       - name: Lint with ruff
         run: |
-          ruff check src/medgen --select=E,F,W --ignore=E501
-        continue-on-error: true  # Warning only initially
+          ruff check src/medgen/
+
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install mypy and dependencies
+        run: |
+          pip install mypy torch omegaconf types-tqdm
+
+      - name: Type check core modules
+        run: |
+          mypy src/medgen/diffusion/ src/medgen/core/validation.py --ignore-missing-imports
 
   integration-tests:
     runs-on: ubuntu-latest

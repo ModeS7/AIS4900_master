@@ -44,9 +44,27 @@ repos:
         stages: [pre-push]
         files: ^src/medgen/.*\.py$
 
+  # Import sorting (isort via ruff)
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile", "black", "--line-length", "100"]
+
   # Ruff linter (fast) - uses pyproject.toml config
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.3.0
     hooks:
       - id: ruff
-        args: ['--fix']
+        args: ['--fix', '--exit-non-zero-on-fix']
+      - id: ruff-format  # Add formatting
+
+  # Mypy type checking (core modules only)
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports, --no-error-summary]
+        additional_dependencies: [torch, omegaconf, types-tqdm]
+        files: ^src/medgen/(diffusion|core)/
+        exclude: ^src/medgen/(diffusion|core)/__init__\.py$

@@ -84,6 +84,7 @@ def visualize_samples_3d(
         )
         model_input = noise
         size_bins = None
+        bin_maps = None
     else:
         cached_images = trainer._cached_train_batch['images']
         cached_labels = trainer._cached_train_batch.get('labels')
