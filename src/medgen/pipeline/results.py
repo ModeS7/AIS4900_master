@@ -5,7 +5,6 @@ enabling generic training loop handling and consistent logging.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass
@@ -33,7 +32,7 @@ class TrainingStepResult:
     discriminator_loss: float = 0.0
     mse_loss: float = 0.0
 
-    def to_legacy_dict(self, reg_key: Optional[str] = 'kl') -> Dict[str, float]:
+    def to_legacy_dict(self, reg_key: str | None = 'kl') -> dict[str, float]:
         """Convert to legacy dict format for backward compatibility.
 
         Uses short key names matching existing TensorBoard logs.

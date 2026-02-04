@@ -18,22 +18,22 @@ Data Augmentation:
 """
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 from monai.transforms import (
     Compose,
-    LoadImage,
     EnsureChannelFirst,
-    ScaleIntensity,
+    LoadImage,
     RandFlipd,
     RandRotate90d,
+    ScaleIntensity,
 )
 from torch.utils.data import DataLoader, Dataset
 
-from .common import create_dataloader, DataLoaderConfig, DistributedArgs
+from .common import DataLoaderConfig, DistributedArgs, create_dataloader
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +89,8 @@ class VolumeConfig:
     load_seg: bool
     image_keys: list
     # Optional training resolution (defaults to height/width)
-    _train_height: Optional[int] = None
-    _train_width: Optional[int] = None
+    _train_height: int | None = None
+    _train_width: int | None = None
     # DataLoader config (stored as DataLoaderConfig)
     _loader_config: DataLoaderConfig = None
 
@@ -144,7 +144,7 @@ class VolumeConfig:
         return self._loader_config.num_workers
 
     @property
-    def prefetch_factor(self) -> Optional[int]:
+    def prefetch_factor(self) -> int | None:
         return self._loader_config.prefetch_factor
 
     @property
@@ -175,7 +175,7 @@ class Base3DVolumeDataset(Dataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
     ) -> None:
         # Validate data directory exists
         if not os.path.isdir(data_dir):
@@ -301,7 +301,7 @@ class Base3DVolumeDataset(Dataset):
 
         return result
 
-    def _load_seg(self, patient_dir: str) -> Optional[torch.Tensor]:
+    def _load_seg(self, patient_dir: str) -> torch.Tensor | None:
         """Load and preprocess segmentation mask if it exists.
 
         Args:
@@ -364,7 +364,7 @@ class Volume3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
         self.modality = modality
@@ -425,7 +425,7 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
 
@@ -471,8 +471,8 @@ def _create_single_dual_dataset(
     data_dir: str,
     modality: str,
     vcfg: VolumeConfig,
-    height: Optional[int] = None,
-    width: Optional[int] = None,
+    height: int | None = None,
+    width: int | None = None,
 ) -> Dataset:
     """Create Volume3DDataset or DualVolume3DDataset based on modality.
 
@@ -557,7 +557,7 @@ def create_vae_3d_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create 3D VAE training dataloader.
 
     Uses train_height/train_width if configured, allowing training at lower
@@ -599,7 +599,7 @@ def create_vae_3d_dataloader(
 def create_vae_3d_validation_dataloader(
     cfg,
     modality: str,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D VAE validation dataloader.
 
     Args:
@@ -622,7 +622,7 @@ def create_vae_3d_validation_dataloader(
 def create_vae_3d_test_dataloader(
     cfg,
     modality: str,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D VAE test dataloader.
 
     Args:
@@ -671,7 +671,7 @@ class MultiModality3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         load_seg: bool = False,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
         self.image_keys = image_keys
@@ -723,8 +723,8 @@ class MultiModality3DDataset(Base3DVolumeDataset):
 def _create_multi_modality_dataset(
     data_dir: str,
     vcfg: VolumeConfig,
-    height: Optional[int] = None,
-    width: Optional[int] = None,
+    height: int | None = None,
+    width: int | None = None,
     augment: bool = False,
     seg_mode: bool = False,
 ) -> MultiModality3DDataset:
@@ -761,7 +761,7 @@ def create_vae_3d_multi_modality_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create 3D VAE multi-modality training dataloader.
 
     Uses train_height/train_width if configured, allowing training at lower
@@ -808,7 +808,7 @@ def create_vae_3d_multi_modality_dataloader(
 
 def create_vae_3d_multi_modality_validation_dataloader(
     cfg,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D VAE multi-modality validation dataloader.
 
     Args:
@@ -829,7 +829,7 @@ def create_vae_3d_multi_modality_validation_dataloader(
 
 def create_vae_3d_multi_modality_test_dataloader(
     cfg,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D VAE multi-modality test dataloader.
 
     Args:
@@ -922,7 +922,7 @@ class SingleModality3DDatasetWithSeg(Base3DVolumeDataset):
 def create_vae_3d_single_modality_validation_loader(
     cfg,
     modality: str,
-) -> Optional[DataLoader]:
+) -> DataLoader | None:
     """Create 3D validation loader for a single modality (for per-modality metrics).
 
     Includes seg masks paired with each volume for regional metrics tracking.
@@ -1006,7 +1006,7 @@ class SingleModality3DDatasetWithSegDropout(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         cfg_dropout_prob: float = 0.0,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True, augmentation=augmentation)
         self.modality = modality
@@ -1061,7 +1061,7 @@ def create_segmentation_dataloader(
     cfg,
     vol_cfg: VolumeConfig,
     augment: bool = False,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create 3D dataloader for unconditional segmentation training.
 
     Loads seg masks only (no conditioning).
@@ -1099,7 +1099,7 @@ def create_segmentation_dataloader(
 def create_segmentation_validation_dataloader(
     cfg,
     vol_cfg: VolumeConfig,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D validation dataloader for unconditional segmentation.
 
     Args:
@@ -1133,7 +1133,7 @@ def create_single_modality_dataloader_with_seg(
     vol_cfg: VolumeConfig,
     modality: str = 'bravo',
     augment: bool = False,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create 3D dataloader for single modality conditioned on seg mask.
 
     Used for 3D bravo mode where bravo generation is conditioned on seg mask.
@@ -1179,7 +1179,7 @@ def create_single_modality_validation_dataloader_with_seg(
     cfg,
     vol_cfg: VolumeConfig,
     modality: str = 'bravo',
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D validation dataloader for single modality with seg conditioning.
 
     No CFG dropout during validation.
@@ -1217,7 +1217,7 @@ def create_segmentation_conditioned_dataloader(
     vol_cfg: VolumeConfig,
     size_bin_config: dict,
     augment: bool = False,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create 3D dataloader for size-conditioned segmentation training.
 
     Wrapper that routes to seg.py's create_seg_dataloader.
@@ -1239,7 +1239,7 @@ def create_segmentation_conditioned_validation_dataloader(
     cfg,
     vol_cfg: VolumeConfig,
     size_bin_config: dict,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create 3D validation dataloader for size-conditioned segmentation.
 
     Wrapper that routes to seg.py's create_seg_validation_dataloader.

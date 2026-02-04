@@ -21,7 +21,8 @@ Utility Functions:
     - extract_slices_with_seg_and_mode: Extract slices with mode_id
 """
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
@@ -43,7 +44,7 @@ DEFAULT_BIN_EDGES = [0, 3, 6, 10, 15, 20, 30]
 
 def create_size_bin_maps(
     size_bins: torch.Tensor,
-    spatial_shape: Tuple[int, ...],
+    spatial_shape: tuple[int, ...],
     normalize: bool = True,
     max_count: int = 10,
 ) -> torch.Tensor:
@@ -101,7 +102,7 @@ def compute_feret_diameter(binary_mask: np.ndarray, pixel_spacing_mm: float) -> 
 
 def compute_size_bins(
     seg_mask: np.ndarray,
-    bin_edges: List[float],
+    bin_edges: list[float],
     pixel_spacing_mm: float,
     num_bins: int = None,
 ) -> np.ndarray:
@@ -158,7 +159,7 @@ def compute_size_bins(
 
 def compute_feret_diameter_3d(
     binary_mask: np.ndarray,
-    voxel_spacing: Tuple[float, float, float],
+    voxel_spacing: tuple[float, float, float],
 ) -> float:
     """Compute 3D Feret diameter (longest axis) of a binary region.
 
@@ -194,8 +195,8 @@ def compute_feret_diameter_3d(
 
 def compute_size_bins_3d(
     seg_volume: np.ndarray,
-    bin_edges: List[float],
-    voxel_spacing: Tuple[float, float, float],
+    bin_edges: list[float],
+    voxel_spacing: tuple[float, float, float],
     num_bins: int = None,
 ) -> np.ndarray:
     """Compute tumor count per size bin for a 3D segmentation volume.
@@ -260,7 +261,7 @@ def compute_size_bins_3d(
 def extract_seg_slices(
     seg_dataset: TorchDataset,
     min_tumor_pixels: int = 10,
-) -> List[np.ndarray]:
+) -> list[np.ndarray]:
     """Extract 2D segmentation mask slices from 3D volumes.
 
     Only keeps slices with actual tumor content (non-empty masks).
@@ -275,7 +276,7 @@ def extract_seg_slices(
     """
     from medgen.augmentation import binarize_mask
 
-    all_slices: List[np.ndarray] = []
+    all_slices: list[np.ndarray] = []
 
     for i in range(len(seg_dataset)):
         volume, _ = seg_dataset[i]  # Shape: [1, H, W, D]
@@ -305,8 +306,8 @@ def extract_slices_with_seg_and_mode(
     image_dataset: TorchDataset,
     seg_dataset: TorchDataset,
     mode_id: int,
-    augmentation: Optional[Callable] = None,
-) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+    augmentation: Callable | None = None,
+) -> list[tuple[np.ndarray, np.ndarray, int]]:
     """Extract 2D slices with paired seg masks and mode_id.
 
     Each slice is returned as a tuple (image, seg, mode_id) where:
@@ -323,7 +324,7 @@ def extract_slices_with_seg_and_mode(
     Returns:
         List of tuples (image_slice, seg_slice, mode_id).
     """
-    all_slices: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    all_slices: list[tuple[np.ndarray, np.ndarray, int]] = []
 
     if len(image_dataset) != len(seg_dataset):
         raise ValueError(
@@ -391,13 +392,13 @@ class SegConditionedDataset(TorchDataset):
     def __init__(
         self,
         slice_dataset: TorchDataset,
-        bin_edges: List[float] = None,
+        bin_edges: list[float] = None,
         num_bins: int = None,
         fov_mm: float = 240.0,
         image_size: int = 256,
         positive_only: bool = True,
         cfg_dropout_prob: float = 0.0,
-        augmentation: Optional[Any] = None,
+        augmentation: Any | None = None,
         return_bin_maps: bool = False,
         max_count: int = 10,
     ):
@@ -432,7 +433,7 @@ class SegConditionedDataset(TorchDataset):
         else:
             self.positive_indices = list(range(len(slice_dataset)))
 
-    def _find_positive_indices(self) -> List[int]:
+    def _find_positive_indices(self) -> list[int]:
         """Find indices of slices with at least one tumor."""
         positive_indices = []
         for idx in range(len(self.slice_dataset)):
@@ -448,7 +449,7 @@ class SegConditionedDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.positive_indices)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         """Get seg slice and size bins.
 
         Augmentation is applied HERE (lazily) to ensure:
@@ -532,7 +533,7 @@ class MultiDiffusionDataset(TorchDataset):
     Used for multi-modality diffusion with mode embedding.
     """
 
-    def __init__(self, samples: List[Tuple[np.ndarray, np.ndarray, int]]):
+    def __init__(self, samples: list[tuple[np.ndarray, np.ndarray, int]]):
         """Initialize dataset.
 
         Args:
@@ -543,7 +544,7 @@ class MultiDiffusionDataset(TorchDataset):
     def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, idx) -> Dict[str, Any]:
+    def __getitem__(self, idx) -> dict[str, Any]:
         image, seg, mode_id = self.samples[idx]
         return {
             'image': torch.from_numpy(image).float(),
@@ -563,8 +564,8 @@ class AugmentedSegDataset(TorchDataset):
 
     def __init__(
         self,
-        slices: List[np.ndarray],
-        augmentation: Optional[Callable] = None,
+        slices: list[np.ndarray],
+        augmentation: Callable | None = None,
     ):
         """Initialize dataset with pre-extracted slices.
 
@@ -607,7 +608,7 @@ class VolumeDataset(TorchDataset):
     def __init__(
         self,
         image_dataset: TorchDataset,
-        seg_dataset: Optional[TorchDataset] = None,
+        seg_dataset: TorchDataset | None = None,
     ) -> None:
         """Initialize volume dataset.
 
@@ -650,7 +651,7 @@ class DualVolumeDataset(TorchDataset):
         self,
         t1_pre_dataset: TorchDataset,
         t1_gd_dataset: TorchDataset,
-        seg_dataset: Optional[TorchDataset] = None,
+        seg_dataset: TorchDataset | None = None,
     ) -> None:
         """Initialize dual volume dataset.
 

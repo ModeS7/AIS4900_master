@@ -11,26 +11,25 @@ This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import List, Optional, Tuple
 
 import numpy as np
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_diffusion_augmentation
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.models.wrappers import MODE_ID_MAP
+from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 
 # Import consolidated classes and functions from datasets.py
 from medgen.data.loaders.datasets import (
     MultiDiffusionDataset,
     extract_slices_with_seg_and_mode,
 )
+from medgen.models.wrappers import MODE_ID_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +46,12 @@ __all__ = [
 
 def create_multi_diffusion_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create dataloader for multi-modality diffusion training.
 
     Loads multiple MR sequences, each paired with seg mask and mode_id.
@@ -88,7 +87,7 @@ def create_multi_diffusion_dataloader(
     )
 
     # Extract all slices from all modalities
-    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    all_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
         mode_id = MODE_ID_MAP.get(key)
@@ -135,9 +134,9 @@ def create_multi_diffusion_dataloader(
 
 def create_multi_diffusion_validation_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     world_size: int = 1,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for multi-modality diffusion.
 
     Args:
@@ -176,7 +175,7 @@ def create_multi_diffusion_validation_dataloader(
     )
 
     # Extract all slices (no augmentation for validation)
-    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    all_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
         mode_id = MODE_ID_MAP.get(key)
@@ -212,9 +211,9 @@ def create_multi_diffusion_validation_dataloader(
 
 def create_multi_diffusion_test_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     world_size: int = 1,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for multi-modality diffusion.
 
     Args:
@@ -253,7 +252,7 @@ def create_multi_diffusion_test_dataloader(
     )
 
     # Extract all slices (no augmentation for test)
-    all_samples: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    all_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
 
     for key in image_keys:
         mode_id = MODE_ID_MAP.get(key)
@@ -290,7 +289,7 @@ def create_multi_diffusion_test_dataloader(
 def create_single_modality_diffusion_val_loader(
     cfg: DictConfig,
     modality: str,
-) -> Optional[DataLoader]:
+) -> DataLoader | None:
     """Create validation loader for a single modality (for per-modality metrics).
 
     Args:

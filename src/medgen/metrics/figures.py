@@ -5,9 +5,9 @@ Shared function for worst_batch, validation, and test visualizations.
 Works for both VAE (no timesteps) and Diffusion (with timesteps).
 """
 import io
-from typing import Dict, Optional, Union
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,13 +15,13 @@ import torch
 
 
 def create_reconstruction_figure(
-    original: Union[torch.Tensor, Dict[str, torch.Tensor]],
-    generated: Union[torch.Tensor, Dict[str, torch.Tensor]],
-    title: Optional[str] = None,
-    timesteps: Optional[torch.Tensor] = None,
-    mask: Optional[torch.Tensor] = None,
+    original: torch.Tensor | dict[str, torch.Tensor],
+    generated: torch.Tensor | dict[str, torch.Tensor],
+    title: str | None = None,
+    timesteps: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
     max_samples: int = 8,
-    metrics: Optional[Dict[str, float]] = None,
+    metrics: dict[str, float] | None = None,
 ) -> plt.Figure:
     """Create reconstruction visualization figure.
 
@@ -59,11 +59,11 @@ def create_reconstruction_figure(
 def _create_single_reconstruction_figure(
     original: torch.Tensor,
     generated: torch.Tensor,
-    title: Optional[str],
-    timesteps: Optional[torch.Tensor],
-    mask: Optional[torch.Tensor],
+    title: str | None,
+    timesteps: torch.Tensor | None,
+    mask: torch.Tensor | None,
     max_samples: int,
-    metrics: Optional[Dict[str, float]],
+    metrics: dict[str, float] | None,
 ) -> plt.Figure:
     """Create figure for single-channel reconstruction (seg, bravo modes)."""
     # Convert to numpy (float() handles bfloat16 -> float32)
@@ -149,13 +149,13 @@ def _create_single_reconstruction_figure(
 
 
 def _create_dual_reconstruction_figure(
-    original: Dict[str, torch.Tensor],
-    generated: Dict[str, torch.Tensor],
-    title: Optional[str],
-    timesteps: Optional[torch.Tensor],
-    mask: Optional[torch.Tensor],
+    original: dict[str, torch.Tensor],
+    generated: dict[str, torch.Tensor],
+    title: str | None,
+    timesteps: torch.Tensor | None,
+    mask: torch.Tensor | None,
     max_samples: int,
-    metrics: Optional[Dict[str, float]],
+    metrics: dict[str, float] | None,
 ) -> plt.Figure:
     """Create figure for dual-channel reconstruction (dual mode)."""
     keys = list(original.keys())

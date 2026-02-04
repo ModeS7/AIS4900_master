@@ -29,34 +29,32 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import (
-    ModeType,
     ModeFactory,
-    ModeCategory,
     get_modality_for_mode,
+    run_validation,
     setup_cuda_optimizations,
-    validate_common_config,
-    validate_model_config,
-    validate_diffusion_config,
-    validate_training_config,
-    validate_strategy_mode_compatibility,
     validate_3d_config,
+    validate_augmentation_config,
+    validate_common_config,
+    validate_diffusion_config,
+    validate_ema_config,
     validate_latent_config,
+    validate_model_config,
+    validate_optimizer_config,
     validate_regional_logging,
     validate_strategy_config,
-    validate_ema_config,
-    validate_optimizer_config,
-    validate_augmentation_config,
-    run_validation,
+    validate_strategy_mode_compatibility,
+    validate_training_config,
 )
 from medgen.data.loaders.latent import (
     LatentCacheBuilder,
     create_latent_dataloader,
-    create_latent_validation_dataloader,
     create_latent_test_dataloader,
+    create_latent_validation_dataloader,
     load_compression_model,
 )
+from medgen.diffusion import LatentSpace, PixelSpace
 from medgen.pipeline import DiffusionTrainer
-from medgen.diffusion import PixelSpace, LatentSpace
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
@@ -361,22 +359,18 @@ def _train_3d(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object.
     """
+
     from medgen.data.loaders.latent import (
-        load_compression_model,
         LatentCacheBuilder3D,
         create_latent_3d_dataloader,
         create_latent_3d_validation_dataloader,
+        load_compression_model,
     )
     from medgen.data.loaders.volume_3d import (
+        SingleModality3DDatasetWithSeg,
         create_vae_3d_dataloader,
         create_vae_3d_validation_dataloader,
-        SingleModality3DDatasetWithSeg,
     )
-    from medgen.data.loaders.seg import (
-        create_seg_dataloader,
-        create_seg_validation_dataloader,
-    )
-    from torch.utils.data import DataLoader
 
     mode = cfg.mode.name
     strategy = cfg.strategy.name

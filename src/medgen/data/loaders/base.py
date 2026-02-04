@@ -22,7 +22,7 @@ and ensures consistent behavior between 2D and 3D training.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 import torch
@@ -63,7 +63,7 @@ class BaseDiffusionDataset(Dataset, ABC):
         pass
 
     @abstractmethod
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         """Get a single sample.
 
         Returns:
@@ -73,7 +73,7 @@ class BaseDiffusionDataset(Dataset, ABC):
         """
         pass
 
-    def validate_sample(self, sample: Dict[str, Any]) -> None:
+    def validate_sample(self, sample: dict[str, Any]) -> None:
         """Validate that a sample has the correct format.
 
         Raises:
@@ -127,7 +127,7 @@ class BaseDiffusionDataset3D(BaseDiffusionDataset):
         return 3
 
 
-def dict_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+def dict_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """Collate function for dict-format batches.
 
     Stacks tensors along batch dimension, keeps non-tensors as lists.
@@ -199,7 +199,7 @@ class DictDatasetWrapper(Dataset):
     def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         item = self.dataset[idx]
 
         # Already a dict - validate and return
@@ -380,7 +380,7 @@ class DictDatasetWrapper(Dataset):
             return tensor.long()
         return tensor.float()
 
-    def _validate_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_dict(self, item: dict[str, Any]) -> dict[str, Any]:
         """Validate dict has required 'image' key and convert tensors.
 
         Args:
@@ -409,7 +409,7 @@ class DictDatasetWrapper(Dataset):
         return self._spatial_dims
 
 
-def validate_batch_format(batch: Any) -> Dict[str, Any]:
+def validate_batch_format(batch: Any) -> dict[str, Any]:
     """Validate and normalize batch to dict format.
 
     For backward compatibility, converts old tuple/tensor formats to dict.

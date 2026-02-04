@@ -9,23 +9,21 @@ and implements VAE-specific functionality:
 """
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
-from omegaconf import DictConfig
-from torch import nn
-from torch.amp import autocast
-from torch.utils.data import DataLoader
 
 # Disable MONAI MetaTensor tracking BEFORE importing MONAI modules
 from monai.data import set_track_meta
+from omegaconf import DictConfig
+from torch import nn
+
 set_track_meta(False)
 
 from monai.networks.nets import AutoencoderKL
 
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompressionTrainer
-from .results import TrainingStepResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +39,7 @@ class CheckpointedAutoencoder(BaseCheckpointedModel):
         model: The underlying AutoencoderKL model.
     """
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass with gradient checkpointing."""
         def encode_fn(x):
             h = self.model.encoder(x)
@@ -111,8 +109,8 @@ class VAETrainer(BaseCompressionTrainer):
         vae_cfg = cfg.vae_3d if spatial_dims == 3 else cfg.vae
         self.kl_weight: float = vae_cfg.get('kl_weight', 1e-6)
         self.latent_channels: int = vae_cfg.latent_channels
-        self.vae_channels: Tuple[int, ...] = tuple(vae_cfg.channels)
-        self.attention_levels: Tuple[bool, ...] = tuple(vae_cfg.attention_levels)
+        self.vae_channels: tuple[int, ...] = tuple(vae_cfg.channels)
+        self.attention_levels: tuple[bool, ...] = tuple(vae_cfg.attention_levels)
         self.num_res_blocks: int = vae_cfg.get('num_res_blocks', 2)
 
         # Initialize unified metrics system
@@ -158,7 +156,7 @@ class VAETrainer(BaseCompressionTrainer):
             run_name = f"{exp_name}{self.image_size}_{timestamp}"
             return os.path.join(self.cfg.paths.model_dir, 'vae_2d', mode_name, run_name)
 
-    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+    def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
         """Initialize VAE model, discriminator, optimizers, and loss functions.
 
         Args:
@@ -258,7 +256,7 @@ class VAETrainer(BaseCompressionTrainer):
         """Return trainer type for metadata."""
         return 'vae_3d' if self.spatial_dims == 3 else 'vae'
 
-    def _get_metadata_extra(self) -> Dict[str, Any]:
+    def _get_metadata_extra(self) -> dict[str, Any]:
         """Return VAE-specific metadata."""
         meta = {'vae_config': self._get_model_config()}
         if self.spatial_dims == 3:
@@ -275,7 +273,7 @@ class VAETrainer(BaseCompressionTrainer):
     # Template method hooks for train_step() and train_epoch()
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_for_training(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """VAE forward pass for training.
 
         Returns (reconstruction, weighted_kl_loss).
@@ -289,8 +287,8 @@ class VAETrainer(BaseCompressionTrainer):
         return 'kl'
 
     def _get_postfix_metrics(
-        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
-    ) -> Dict[str, str]:
+        self, avg_so_far: dict[str, float], current_losses: dict[str, float]
+    ) -> dict[str, str]:
         """VAE-specific progress bar: shows KL loss when GAN disabled."""
         if not self.disable_gan:
             return {
@@ -308,7 +306,7 @@ class VAETrainer(BaseCompressionTrainer):
         self,
         model: nn.Module,
         images: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """VAE forward pass for validation.
 
         Returns:
@@ -318,7 +316,7 @@ class VAETrainer(BaseCompressionTrainer):
         kl_loss = self._compute_kl_loss(mean, logvar)
         return reconstruction, self.kl_weight * kl_loss
 
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get VAE model configuration for checkpoint."""
         n_channels = self.cfg.mode.get('in_channels', 1)
         config = {
@@ -340,8 +338,8 @@ class VAETrainer(BaseCompressionTrainer):
     def _log_validation_metrics(
         self,
         epoch: int,
-        metrics: Dict[str, float],
-        worst_batch_data: Optional[Dict[str, Any]],
+        metrics: dict[str, float],
+        worst_batch_data: dict[str, Any] | None,
         regional_tracker,
         log_figures: bool,
     ) -> None:
@@ -389,8 +387,8 @@ class VAETrainer(BaseCompressionTrainer):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log VAE epoch summary using unified system."""

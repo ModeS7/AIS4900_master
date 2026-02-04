@@ -14,7 +14,7 @@ Features:
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -59,16 +59,16 @@ class CheckpointManager:
         save_dir: str,
         model: nn.Module,
         optimizer: Optimizer,
-        scheduler: Optional[LRScheduler] = None,
-        ema: Optional[Any] = None,
-        config: Optional[Dict] = None,
-        discriminator: Optional[nn.Module] = None,
-        optimizer_d: Optional[Optimizer] = None,
-        scheduler_d: Optional[LRScheduler] = None,
+        scheduler: LRScheduler | None = None,
+        ema: Any | None = None,
+        config: dict | None = None,
+        discriminator: nn.Module | None = None,
+        optimizer_d: Optimizer | None = None,
+        scheduler_d: LRScheduler | None = None,
         metric_name: str = 'total',
         metric_mode: str = 'min',
         keep_last_n: int = 0,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ):
         """Initialize CheckpointManager.
 
@@ -111,7 +111,7 @@ class CheckpointManager:
 
         # Cleanup
         self.keep_last_n = keep_last_n
-        self._epoch_checkpoints: List[str] = []
+        self._epoch_checkpoints: list[str] = []
 
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -126,7 +126,7 @@ class CheckpointManager:
             return current < best
         return current > best
 
-    def _get_model_state(self, model: nn.Module) -> Dict:
+    def _get_model_state(self, model: nn.Module) -> dict:
         """Get state dict, handling DDP/compiled models."""
         if hasattr(model, 'module'):
             return model.module.state_dict()
@@ -135,9 +135,9 @@ class CheckpointManager:
     def save(
         self,
         epoch: int,
-        metrics: Optional[Dict[str, float]] = None,
+        metrics: dict[str, float] | None = None,
         name: str = "latest",
-        extra_state: Optional[Dict[str, Any]] = None,
+        extra_state: dict[str, Any] | None = None,
     ) -> str:
         """Save checkpoint with given name.
 
@@ -150,7 +150,7 @@ class CheckpointManager:
         Returns:
             Path to saved checkpoint.
         """
-        checkpoint: Dict[str, Any] = {
+        checkpoint: dict[str, Any] = {
             'epoch': epoch,
             'model_state_dict': self._get_model_state(self.model),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -189,8 +189,8 @@ class CheckpointManager:
     def save_if_best(
         self,
         epoch: int,
-        metrics: Dict[str, float],
-        extra_state: Optional[Dict[str, Any]] = None,
+        metrics: dict[str, float],
+        extra_state: dict[str, Any] | None = None,
     ) -> bool:
         """Save 'best' checkpoint if metric improved.
 
@@ -221,9 +221,9 @@ class CheckpointManager:
     def save_periodic(
         self,
         epoch: int,
-        metrics: Optional[Dict[str, float]] = None,
-        extra_state: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
+        metrics: dict[str, float] | None = None,
+        extra_state: dict[str, Any] | None = None,
+    ) -> str | None:
         """Save periodic checkpoint and cleanup old ones.
 
         Args:
@@ -255,7 +255,7 @@ class CheckpointManager:
         path: str,
         strict: bool = True,
         load_optimizer: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Load checkpoint from path.
 
         Args:
@@ -314,7 +314,7 @@ class CheckpointManager:
     def _load_model_state(
         self,
         model: nn.Module,
-        state_dict: Dict,
+        state_dict: dict,
         strict: bool,
     ) -> None:
         """Load state dict, handling DDP/compiled models."""
@@ -323,7 +323,7 @@ class CheckpointManager:
         else:
             model.load_state_dict(state_dict, strict=strict)
 
-    def resume(self, path: Optional[str] = None) -> int:
+    def resume(self, path: str | None = None) -> int:
         """Resume training from checkpoint.
 
         If path is None, auto-detects latest checkpoint in save_dir.
@@ -346,7 +346,7 @@ class CheckpointManager:
         logger.info(f"Resuming from epoch {start_epoch}")
         return start_epoch
 
-    def _find_latest_checkpoint(self) -> Optional[str]:
+    def _find_latest_checkpoint(self) -> str | None:
         """Find latest checkpoint in save_dir."""
         latest = self.save_dir / "checkpoint_latest.pt"
         if latest.exists():
@@ -367,13 +367,13 @@ class CheckpointManager:
 
     def update_components(
         self,
-        model: Optional[nn.Module] = None,
-        optimizer: Optional[Optimizer] = None,
-        scheduler: Optional[LRScheduler] = None,
-        ema: Optional[Any] = None,
-        discriminator: Optional[nn.Module] = None,
-        optimizer_d: Optional[Optimizer] = None,
-        scheduler_d: Optional[LRScheduler] = None,
+        model: nn.Module | None = None,
+        optimizer: Optimizer | None = None,
+        scheduler: LRScheduler | None = None,
+        ema: Any | None = None,
+        discriminator: nn.Module | None = None,
+        optimizer_d: Optimizer | None = None,
+        scheduler_d: LRScheduler | None = None,
     ) -> None:
         """Update managed components.
 

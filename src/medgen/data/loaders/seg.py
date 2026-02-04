@@ -12,25 +12,26 @@ This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
-import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset as TorchDataset
-
-from .volume_3d import (
-    VolumeConfig,
-    build_3d_transform,
-    build_3d_augmentation,
-    _create_loader,
-)
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset as TorchDataset
 
 # Import consolidated functions from datasets.py
 from medgen.data.loaders.datasets import (
-    compute_size_bins_3d,
-    compute_feret_diameter_3d,
-    create_size_bin_maps,
     DEFAULT_BIN_EDGES,
+    compute_feret_diameter_3d,
+    compute_size_bins_3d,
+    create_size_bin_maps,
+)
+
+from .volume_3d import (
+    VolumeConfig,
+    _create_loader,
+    build_3d_augmentation,
+    build_3d_transform,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,9 +62,9 @@ class SegDataset(TorchDataset):
     def __init__(
         self,
         data_dir: str,
-        bin_edges: List[float],
+        bin_edges: list[float],
         num_bins: int,
-        voxel_spacing: Tuple[float, float, float],
+        voxel_spacing: tuple[float, float, float],
         height: int = 256,
         width: int = 256,
         pad_depth_to: int = 160,
@@ -71,7 +72,7 @@ class SegDataset(TorchDataset):
         slice_step: int = 1,
         positive_only: bool = True,
         cfg_dropout_prob: float = 0.0,
-        augmentation: Optional[Callable] = None,
+        augmentation: Callable | None = None,
         return_bin_maps: bool = False,
         max_count: int = 10,
     ):
@@ -153,7 +154,7 @@ class SegDataset(TorchDataset):
         else:
             self.positive_patients = self.patients
 
-    def _find_positive_patients(self) -> List[str]:
+    def _find_positive_patients(self) -> list[str]:
         """Find patients with at least one tumor voxel."""
         positive = []
         for patient in self.patients:
@@ -205,7 +206,7 @@ class SegDataset(TorchDataset):
     def __len__(self) -> int:
         return len(self.positive_patients)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         """Get segmentation volume and size bins.
 
         Returns:
@@ -271,7 +272,7 @@ def create_seg_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-) -> Tuple[DataLoader, TorchDataset]:
+) -> tuple[DataLoader, TorchDataset]:
     """Create 3D dataloader for size-conditioned segmentation training.
 
     Args:
@@ -340,7 +341,7 @@ def create_seg_dataloader(
 
 def create_seg_validation_dataloader(
     cfg,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create 3D validation dataloader for size-conditioned segmentation.
 
     Args:
@@ -392,7 +393,7 @@ def create_seg_validation_dataloader(
 
 def create_seg_test_dataloader(
     cfg,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create 3D test dataloader for size-conditioned segmentation.
 
     Args:

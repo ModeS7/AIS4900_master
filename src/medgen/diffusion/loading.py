@@ -22,23 +22,22 @@ Usage:
     print(f"Wrapper: {result.wrapper_type}, Epoch: {result.epoch}")
 """
 
-from dataclasses import dataclass
-from typing import Any, Dict, Literal, Optional
 import logging
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import torch
-from torch import nn
 from monai.networks.nets import DiffusionModelUNet
+from torch import nn
 
 from medgen.core import (
-    DEFAULT_CHANNELS,
     DEFAULT_ATTENTION_LEVELS,
-    DEFAULT_NUM_RES_BLOCKS,
+    DEFAULT_CHANNELS,
     DEFAULT_NUM_HEAD_CHANNELS,
+    DEFAULT_NUM_RES_BLOCKS,
 )
 from medgen.data import create_conditioning_wrapper
 from medgen.models.wrappers.size_bin_embed import SizeBinModelWrapper
-
 
 log = logging.getLogger(__name__)
 
@@ -58,13 +57,13 @@ class LoadedModel:
         checkpoint_path: Path to the loaded checkpoint.
     """
     model: nn.Module
-    config: Dict[str, Any]
+    config: dict[str, Any]
     wrapper_type: WrapperType
     epoch: int
     checkpoint_path: str
 
 
-def detect_wrapper_type(state_dict: Dict[str, Any]) -> WrapperType:
+def detect_wrapper_type(state_dict: dict[str, Any]) -> WrapperType:
     """Detect wrapper type from checkpoint state dict keys.
 
     Wrapper models store the inner model under the 'model.' key prefix,
@@ -115,8 +114,8 @@ def detect_wrapper_type(state_dict: Dict[str, Any]) -> WrapperType:
 def load_diffusion_model(
     checkpoint_path: str,
     device: torch.device,
-    in_channels: Optional[int] = None,
-    out_channels: Optional[int] = None,
+    in_channels: int | None = None,
+    out_channels: int | None = None,
     compile_model: bool = False,
     spatial_dims: int = 2,
 ) -> nn.Module:
@@ -154,8 +153,8 @@ def load_diffusion_model(
 def load_diffusion_model_with_metadata(
     checkpoint_path: str,
     device: torch.device,
-    in_channels: Optional[int] = None,
-    out_channels: Optional[int] = None,
+    in_channels: int | None = None,
+    out_channels: int | None = None,
     compile_model: bool = False,
     spatial_dims: int = 2,
 ) -> LoadedModel:
@@ -223,7 +222,7 @@ def load_diffusion_model_with_metadata(
     # Default is 32, but if channels are smaller, compute GCD
     import math
     from functools import reduce
-    norm_num_groups = arch_config.get('norm_num_groups', None)
+    norm_num_groups = arch_config.get('norm_num_groups')
     if norm_num_groups is None:
         # Find largest divisor that works for all channels (max 32)
         gcd = reduce(math.gcd, channels)
@@ -301,8 +300,8 @@ def load_diffusion_model_with_metadata(
 
 def _resolve_channels(
     name: str,
-    arg_value: Optional[int],
-    model_config: Dict[str, Any],
+    arg_value: int | None,
+    model_config: dict[str, Any],
     required: bool = False,
 ) -> int:
     """Resolve channel count from argument, checkpoint, or raise error.

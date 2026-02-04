@@ -1,7 +1,7 @@
 """Standardized batch data structure for all training modes."""
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Union
+
 import torch
 from torch import Tensor
 
@@ -13,13 +13,13 @@ class BatchData:
     All modes unpack to this format, eliminating scattered tuple handling.
     """
     images: Tensor
-    labels: Optional[Tensor] = None
-    size_bins: Optional[Tensor] = None
-    bin_maps: Optional[Tensor] = None
-    mode_id: Optional[Tensor] = None
+    labels: Tensor | None = None
+    size_bins: Tensor | None = None
+    bin_maps: Tensor | None = None
+    mode_id: Tensor | None = None
 
     @classmethod
-    def from_raw(cls, data: Union[Tensor, tuple, list, dict]) -> 'BatchData':
+    def from_raw(cls, data: Tensor | tuple | list | dict) -> 'BatchData':
         """Convert any batch format to standardized BatchData.
 
         Handles:

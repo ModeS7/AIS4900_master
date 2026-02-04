@@ -8,13 +8,12 @@ Provides shared functionality for 2D and 3D regional metrics trackers:
 - TensorBoard logging
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
 
 import torch
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from ..constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
+from ..constants import TUMOR_SIZE_CATEGORIES, TUMOR_SIZE_THRESHOLDS_MM
 
 
 class BaseRegionalMetricsTracker(ABC):
@@ -35,7 +34,7 @@ class BaseRegionalMetricsTracker(ABC):
         self,
         fov_mm: float = 240.0,
         loss_fn: str = 'l1',
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ):
         """Initialize base tracker.
 
@@ -102,7 +101,7 @@ class BaseRegionalMetricsTracker(ABC):
             return self.tumor_voxels_total
         return 0
 
-    def _get_size_counts(self) -> Dict[str, int]:
+    def _get_size_counts(self) -> dict[str, int]:
         """Get per-size pixel/voxel counts.
 
         Subclasses use different attribute names (size_pixels vs size_voxels).
@@ -133,7 +132,7 @@ class BaseRegionalMetricsTracker(ABC):
         """
         return getattr(self, 'bg_error_sum', 0.0)
 
-    def compute(self) -> Dict[str, float]:
+    def compute(self) -> dict[str, float]:
         """Compute final metrics after all batches processed.
 
         Returns:
@@ -171,7 +170,7 @@ class BaseRegionalMetricsTracker(ABC):
 
     def log_to_tensorboard(
         self,
-        writer: Optional[SummaryWriter],
+        writer: SummaryWriter | None,
         epoch: int,
         prefix: str = 'regional',
     ) -> None:

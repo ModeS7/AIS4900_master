@@ -6,7 +6,6 @@ Uses morphological operations to handle internal low-intensity regions
 (ventricles, CSF) and boundary cases correctly.
 """
 import logging
-from typing import Dict, Union
 
 import numpy as np
 import torch
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_brain_mask(
-    image: Union[torch.Tensor, np.ndarray],
+    image: torch.Tensor | np.ndarray,
     threshold: float = 0.05,
     fill_holes: bool = True,
     dilate_pixels: int = 3,
@@ -71,8 +70,8 @@ def create_brain_mask(
 
 
 def is_seg_inside_brain(
-    image: Union[torch.Tensor, np.ndarray],
-    seg: Union[torch.Tensor, np.ndarray],
+    image: torch.Tensor | np.ndarray,
+    seg: torch.Tensor | np.ndarray,
     brain_threshold: float = 0.05,
     tolerance: float = 0.05,
     dilate_pixels: int = 3,
@@ -94,11 +93,11 @@ def is_seg_inside_brain(
 
 
 def compute_outside_brain_ratio(
-    image: Union[torch.Tensor, np.ndarray],
-    seg: Union[torch.Tensor, np.ndarray],
+    image: torch.Tensor | np.ndarray,
+    seg: torch.Tensor | np.ndarray,
     brain_threshold: float = 0.05,
     dilate_pixels: int = 3,
-) -> Dict[str, Union[float, int]]:
+) -> dict[str, float | int]:
     """Compute ratio of segmentation pixels outside the brain.
 
     Args:

@@ -27,49 +27,50 @@ Usage:
     python -m medgen.scripts.train_compression --config-name=vae_3d paths=cluster
 """
 import logging
-from typing import Callable, Dict, Type
+from collections.abc import Callable
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from medgen.core import (
+    run_validation,
     setup_cuda_optimizations,
     validate_common_config,
     validate_model_config,
     validate_vae_config,
     validate_vqvae_config,
-    run_validation,
 )
 from medgen.data import (
-    # 2D dataloaders
-    create_vae_dataloader,
-    create_vae_validation_dataloader,
-    create_vae_test_dataloader,
     create_multi_modality_dataloader,
-    create_multi_modality_validation_dataloader,
     create_multi_modality_test_dataloader,
+    create_multi_modality_validation_dataloader,
     create_single_modality_validation_loader,
     # 3D dataloaders
     create_vae_3d_dataloader,
-    create_vae_3d_validation_dataloader,
-    create_vae_3d_test_dataloader,
     create_vae_3d_multi_modality_dataloader,
-    create_vae_3d_multi_modality_validation_dataloader,
     create_vae_3d_multi_modality_test_dataloader,
+    create_vae_3d_multi_modality_validation_dataloader,
     create_vae_3d_single_modality_validation_loader,
+    create_vae_3d_test_dataloader,
+    create_vae_3d_validation_dataloader,
+    # 2D dataloaders
+    create_vae_dataloader,
+    create_vae_test_dataloader,
+    create_vae_validation_dataloader,
 )
 from medgen.data.loaders.seg_compression import (
     create_seg_compression_dataloader,
-    create_seg_compression_validation_dataloader,
     create_seg_compression_test_dataloader,
+    create_seg_compression_validation_dataloader,
 )
-from medgen.pipeline import VAETrainer, VQVAETrainer, DCAETrainer
+from medgen.pipeline import DCAETrainer, VAETrainer, VQVAETrainer
+
 from .common import (
-    override_vae_channels,
-    run_test_evaluation,
     create_per_modality_val_loaders,
     create_per_modality_val_loaders_3d,
     get_image_keys,
+    override_vae_channels,
+    run_test_evaluation,
 )
 
 # Enable CUDA optimizations at module import
@@ -214,7 +215,7 @@ class TrainerConfig:
 
     def __init__(
         self,
-        trainer_class: Type,
+        trainer_class: type,
         validator: Callable[[DictConfig], list],
         config_section: str,
         display_name: str,
@@ -229,7 +230,7 @@ class TrainerConfig:
 
 # Registry: config_section -> TrainerConfig
 # Order matters for detection (check 3D sections before 2D)
-TRAINER_REGISTRY: Dict[str, TrainerConfig] = {
+TRAINER_REGISTRY: dict[str, TrainerConfig] = {
     # 3D trainers (check first)
     'vae_3d': TrainerConfig(
         trainer_class=VAETrainer,

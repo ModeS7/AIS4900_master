@@ -17,16 +17,19 @@ import logging
 import os
 import time
 from abc import abstractmethod
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from medgen.evaluation import ValidationRunner
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 from ema_pytorch import EMA
+from monai.losses import PatchAdversarialLoss
+from monai.networks.nets import PatchDiscriminator
 from omegaconf import DictConfig
 from torch import nn
 from torch.amp import autocast
@@ -34,23 +37,22 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 
-from monai.losses import PatchAdversarialLoss
-from monai.networks.nets import PatchDiscriminator
-
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
-from .base_trainer import BaseTrainer
 from medgen.losses import LPIPSLoss, PerceptualLoss
 from medgen.metrics import (
+    GradientNormTracker,
     RegionalMetricsTracker,
+    SimpleLossAccumulator,
+    UnifiedMetrics,
     compute_lpips,
     compute_lpips_3d,
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
-    UnifiedMetrics,
-    SimpleLossAccumulator,
+    create_worst_batch_figure,
 )
-from medgen.metrics import GradientNormTracker, create_worst_batch_figure
+
+from .base_trainer import BaseTrainer
 from .results import TrainingStepResult
 from .utils import save_full_checkpoint
 
@@ -168,7 +170,7 @@ class BaseCompressionTrainer(BaseTrainer):
         # Default: (0.9, 0.999), Phase 3 DC-AE: (0.5, 0.9) per paper
         optimizer_cfg = cfg.training.get('optimizer', {})
         betas_list = optimizer_cfg.get('betas', [0.9, 0.999])
-        self.optimizer_betas: Tuple[float, float] = tuple(betas_list)
+        self.optimizer_betas: tuple[float, float] = tuple(betas_list)
 
         # ─────────────────────────────────────────────────────────────────────
         # Initialize compression-specific trackers
@@ -178,16 +180,16 @@ class BaseCompressionTrainer(BaseTrainer):
         # ─────────────────────────────────────────────────────────────────────
         # Model placeholders (set in setup_model)
         # ─────────────────────────────────────────────────────────────────────
-        self.discriminator: Optional[nn.Module] = None
-        self.discriminator_raw: Optional[nn.Module] = None
-        self.optimizer_d: Optional[AdamW] = None
-        self.lr_scheduler_d: Optional[LRScheduler] = None
-        self.perceptual_loss_fn: Optional[nn.Module] = None  # PerceptualLoss or LPIPSLoss
-        self.adv_loss_fn: Optional[PatchAdversarialLoss] = None
-        self.ema: Optional[EMA] = None
+        self.discriminator: nn.Module | None = None
+        self.discriminator_raw: nn.Module | None = None
+        self.optimizer_d: AdamW | None = None
+        self.lr_scheduler_d: LRScheduler | None = None
+        self.perceptual_loss_fn: nn.Module | None = None  # PerceptualLoss or LPIPSLoss
+        self.adv_loss_fn: PatchAdversarialLoss | None = None
+        self.ema: EMA | None = None
 
         # Per-modality validation loaders (set in train())
-        self.per_modality_val_loaders: Optional[Dict[str, DataLoader]] = None
+        self.per_modality_val_loaders: dict[str, DataLoader] | None = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Config extraction methods (can be overridden by subclasses)
@@ -336,7 +338,7 @@ class BaseCompressionTrainer(BaseTrainer):
         """Return spatial dimensions (2 for images, 3 for volumes)."""
         return self._spatial_dims
 
-    def _get_spatial_shape(self) -> Tuple[int, ...]:
+    def _get_spatial_shape(self) -> tuple[int, ...]:
         """Get spatial shape based on dimensionality.
 
         Returns:
@@ -423,7 +425,7 @@ class BaseCompressionTrainer(BaseTrainer):
         # This is used by subclass train_epoch() methods
         self._loss_accumulator = SimpleLossAccumulator()
 
-    def _log_training_metrics_unified(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+    def _log_training_metrics_unified(self, epoch: int, avg_losses: dict[str, float]) -> None:
         """Log training metrics using unified system.
 
         Args:
@@ -447,7 +449,7 @@ class BaseCompressionTrainer(BaseTrainer):
     def _log_validation_metrics_unified(
         self,
         epoch: int,
-        metrics: Dict[str, float],
+        metrics: dict[str, float],
         prefix: str = '',
     ) -> None:
         """Log validation metrics using unified system.
@@ -488,8 +490,8 @@ class BaseCompressionTrainer(BaseTrainer):
     def _log_epoch_summary_unified(
         self,
         epoch: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Optional[Dict[str, float]],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float] | None,
         elapsed_time: float,
     ) -> None:
         """Log epoch summary using unified system.
@@ -641,7 +643,7 @@ class BaseCompressionTrainer(BaseTrainer):
     def _wrap_models(
         self,
         raw_model: nn.Module,
-        raw_disc: Optional[nn.Module] = None,
+        raw_disc: nn.Module | None = None,
     ) -> None:
         """Wrap models with DDP and/or torch.compile.
 
@@ -682,7 +684,7 @@ class BaseCompressionTrainer(BaseTrainer):
     # Training helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def _prepare_batch(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare batch for compression training (2D or 3D).
 
         Handles multiple batch formats:
@@ -990,7 +992,7 @@ class BaseCompressionTrainer(BaseTrainer):
             discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
         )
 
-    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_for_training(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Model-specific forward pass for training.
 
         Subclasses MUST override this method to implement their forward pass logic.
@@ -1031,7 +1033,7 @@ class BaseCompressionTrainer(BaseTrainer):
         """
         return self.spatial_dims == 2
 
-    def _track_seg_breakdown(self, seg_breakdown: Dict[str, float]) -> None:
+    def _track_seg_breakdown(self, seg_breakdown: dict[str, float]) -> None:
         """Track segmentation loss breakdown for epoch averaging.
 
         Override in subclass to accumulate breakdown for seg_mode.
@@ -1047,7 +1049,7 @@ class BaseCompressionTrainer(BaseTrainer):
     # Training epoch template
     # ─────────────────────────────────────────────────────────────────────────
 
-    def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
+    def train_epoch(self, data_loader: DataLoader, epoch: int) -> dict[str, float]:
         """Train for one epoch using template method pattern.
 
         Subclasses customize via hook methods:
@@ -1064,7 +1066,9 @@ class BaseCompressionTrainer(BaseTrainer):
             Dict with average losses.
         """
         import itertools
+
         from tqdm import tqdm
+
         from .utils import create_epoch_iterator, get_vram_usage
 
         self.model.train()
@@ -1117,7 +1121,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
         return avg_losses
 
-    def _get_loss_key(self) -> Optional[str]:
+    def _get_loss_key(self) -> str | None:
         """Return loss dictionary key for regularization term.
 
         Override in subclass:
@@ -1128,8 +1132,8 @@ class BaseCompressionTrainer(BaseTrainer):
         return None
 
     def _get_postfix_metrics(
-        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
-    ) -> Dict[str, str]:
+        self, avg_so_far: dict[str, float], current_losses: dict[str, float]
+    ) -> dict[str, str]:
         """Return metrics dict for progress bar postfix.
 
         Override in subclass for custom progress bar display.
@@ -1159,7 +1163,7 @@ class BaseCompressionTrainer(BaseTrainer):
         """
         pass
 
-    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+    def _on_train_epoch_end(self, epoch: int, avg_losses: dict[str, float]) -> None:
         """Hook called after epoch training ends.
 
         Override in subclass for post-processing (e.g., seg breakdown averaging).
@@ -1193,8 +1197,8 @@ class BaseCompressionTrainer(BaseTrainer):
     def _on_epoch_end(
         self,
         epoch: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
     ) -> None:
         """Handle end of epoch: step schedulers, log metrics."""
         # Step schedulers (only if not using constant LR)
@@ -1251,7 +1255,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
     def _create_worst_batch_figure(
         self,
-        worst_batch_data: Dict[str, Any],
+        worst_batch_data: dict[str, Any],
     ) -> plt.Figure:
         """Create worst batch figure for TensorBoard (2D or 3D).
 
@@ -1278,7 +1282,7 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Configured ValidationRunner instance.
         """
-        from medgen.evaluation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationConfig, ValidationRunner
 
         config = ValidationConfig(
             log_msssim=self.log_msssim,
@@ -1307,7 +1311,7 @@ class BaseCompressionTrainer(BaseTrainer):
         self,
         epoch: int,
         log_figures: bool = True,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute validation losses using ValidationRunner (2D or 3D).
 
         Args:
@@ -1359,7 +1363,7 @@ class BaseCompressionTrainer(BaseTrainer):
         l1_loss: torch.Tensor,
         p_loss: torch.Tensor,
         reg_loss: torch.Tensor,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Capture worst batch data for visualization (2D or 3D).
 
         Args:
@@ -1418,7 +1422,7 @@ class BaseCompressionTrainer(BaseTrainer):
     def _log_validation_metrics_core(
         self,
         epoch: int,
-        metrics: Dict[str, float],
+        metrics: dict[str, float],
     ) -> None:
         """Log validation metrics with modality suffix handling.
 
@@ -1476,9 +1480,9 @@ class BaseCompressionTrainer(BaseTrainer):
     def _log_validation_metrics(
         self,
         epoch: int,
-        metrics: Dict[str, float],
-        worst_batch_data: Optional[Dict[str, Any]],
-        regional_tracker: Optional[RegionalMetricsTracker],
+        metrics: dict[str, float],
+        worst_batch_data: dict[str, Any] | None,
+        regional_tracker: RegionalMetricsTracker | None,
         log_figures: bool,
     ) -> None:
         """Log validation metrics to TensorBoard using unified system.
@@ -1685,8 +1689,8 @@ class BaseCompressionTrainer(BaseTrainer):
         self,
         epoch: int,
         data_split: str = 'val',
-        modality_override: Optional[str] = None,
-    ) -> Optional[float]:
+        modality_override: str | None = None,
+    ) -> float | None:
         """Compute 3D MS-SSIM by reconstructing full volumes slice-by-slice.
 
         For 2D trainers, this loads full 3D volumes, processes each slice through
@@ -1819,7 +1823,7 @@ class BaseCompressionTrainer(BaseTrainer):
             device=self.device,
         )
 
-    def _get_checkpoint_extra_state(self) -> Optional[Dict[str, Any]]:
+    def _get_checkpoint_extra_state(self) -> dict[str, Any] | None:
         """Return extra state for compression trainer checkpoints.
 
         Includes discriminator config and training flags.
@@ -1973,8 +1977,8 @@ class BaseCompressionTrainer(BaseTrainer):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log epoch completion summary."""
@@ -2002,7 +2006,7 @@ class BaseCompressionTrainer(BaseTrainer):
     def _load_pretrained_weights(
         self,
         raw_model: nn.Module,
-        raw_disc: Optional[nn.Module],
+        raw_disc: nn.Module | None,
         checkpoint_path: str,
         model_name: str = "model",
     ) -> None:
@@ -2080,7 +2084,7 @@ class BaseCompressionTrainer(BaseTrainer):
         self,
         model: nn.Module,
         images: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform forward pass for validation.
 
         Returns (reconstruction, regularization_loss):
@@ -2098,7 +2102,7 @@ class BaseCompressionTrainer(BaseTrainer):
         ...
 
     @abstractmethod
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get model configuration for checkpoint.
 
         Returns:
@@ -2136,7 +2140,11 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             Configured test evaluator instance.
         """
-        from medgen.evaluation import CompressionTestEvaluator, Compression3DTestEvaluator, MetricsConfig
+        from medgen.evaluation import (
+            Compression3DTestEvaluator,
+            CompressionTestEvaluator,
+            MetricsConfig,
+        )
 
         # Check for seg_mode (set by subclasses)
         seg_mode = getattr(self, 'seg_mode', False)
@@ -2205,7 +2213,7 @@ class BaseCompressionTrainer(BaseTrainer):
         )
 
         # Volume 3D MS-SSIM callback (for 2D trainers reconstructing full volumes)
-        def volume_3d_msssim() -> Optional[float]:
+        def volume_3d_msssim() -> float | None:
             if seg_mode:
                 return None
             return self._compute_volume_3d_msssim(epoch=0, data_split='test_new')
@@ -2233,8 +2241,8 @@ class BaseCompressionTrainer(BaseTrainer):
     def evaluate_test_set(
         self,
         test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-    ) -> Dict[str, float]:
+        checkpoint_name: str | None = None,
+    ) -> dict[str, float]:
         """Evaluate compression model on test set.
 
         Uses CompressionTestEvaluator for unified test evaluation.

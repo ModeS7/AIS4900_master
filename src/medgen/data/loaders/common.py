@@ -8,8 +8,9 @@ Provides shared functions to reduce duplication across loader modules:
 """
 import logging
 import os
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 from omegaconf import DictConfig
@@ -33,7 +34,7 @@ MODALITY_KEYS = {
 class DataLoaderConfig:
     """DataLoader configuration extracted from Hydra config."""
     num_workers: int
-    prefetch_factor: Optional[int]
+    prefetch_factor: int | None
     pin_memory: bool
     persistent_workers: bool
 
@@ -68,7 +69,7 @@ def setup_distributed_sampler(
     world_size: int,
     batch_size: int,
     shuffle: bool = True,
-) -> Tuple[Optional[DistributedSampler], int, bool]:
+) -> tuple[DistributedSampler | None, int, bool]:
     """Setup DistributedSampler and compute per-GPU batch size.
 
     Args:
@@ -113,7 +114,7 @@ def setup_distributed_sampler(
     return sampler, batch_size_per_gpu, actual_shuffle
 
 
-class GroupedBatchSampler(Sampler[List[int]]):
+class GroupedBatchSampler(Sampler[list[int]]):
     """Batch sampler that ensures all samples in a batch belong to the same group.
 
     Used for multi-modality training where mode embedding requires homogeneous
@@ -140,11 +141,11 @@ class GroupedBatchSampler(Sampler[List[int]]):
 
     def __init__(
         self,
-        group_ids: List[int],
+        group_ids: list[int],
         batch_size: int,
         shuffle: bool = True,
         drop_last: bool = False,
-        generator: Optional[torch.Generator] = None,
+        generator: torch.Generator | None = None,
     ):
         # Validate parameters
         if batch_size <= 0:
@@ -158,7 +159,7 @@ class GroupedBatchSampler(Sampler[List[int]]):
         self.generator = generator
 
         # Build index groups: {group_id: [sample_indices]}
-        self.groups: dict[int, List[int]] = {}
+        self.groups: dict[int, list[int]] = {}
         for idx, gid in enumerate(group_ids):
             if gid not in self.groups:
                 self.groups[gid] = []
@@ -170,7 +171,7 @@ class GroupedBatchSampler(Sampler[List[int]]):
             f"{len(self.groups)} groups, batch_size={batch_size}"
         )
 
-    def __iter__(self) -> Iterator[List[int]]:
+    def __iter__(self) -> Iterator[list[int]]:
         """Yield batches of indices, each batch from a single group."""
         # Shuffle group order using torch for reproducibility
         group_order = self.group_ids.copy()
@@ -187,9 +188,7 @@ class GroupedBatchSampler(Sampler[List[int]]):
             # Yield full batches
             for start in range(0, len(indices), self.batch_size):
                 batch = indices[start:start + self.batch_size]
-                if len(batch) == self.batch_size:
-                    yield batch
-                elif not self.drop_last:
+                if len(batch) == self.batch_size or not self.drop_last:
                     yield batch
 
     def __len__(self) -> int:
@@ -203,7 +202,7 @@ class GroupedBatchSampler(Sampler[List[int]]):
         return total
 
 
-def get_data_dir(cfg: DictConfig, split: str) -> Optional[str]:
+def get_data_dir(cfg: DictConfig, split: str) -> str | None:
     """Get data directory for a split, return None if doesn't exist.
 
     Args:
@@ -219,7 +218,7 @@ def get_data_dir(cfg: DictConfig, split: str) -> Optional[str]:
     return data_dir
 
 
-def validate_data_dir(cfg: DictConfig, split: str, required: bool = True) -> Optional[str]:
+def validate_data_dir(cfg: DictConfig, split: str, required: bool = True) -> str | None:
     """Validate and return data directory for a split.
 
     Args:
@@ -249,15 +248,15 @@ class DistributedArgs:
 
 def create_dataloader(
     dataset: Dataset,
-    cfg: Optional[DictConfig] = None,
-    batch_size: Optional[int] = None,
+    cfg: DictConfig | None = None,
+    batch_size: int | None = None,
     shuffle: bool = True,
     drop_last: bool = False,
-    collate_fn: Optional[Callable] = None,
-    distributed_args: Optional[DistributedArgs] = None,
-    loader_config: Optional[DataLoaderConfig] = None,
+    collate_fn: Callable | None = None,
+    distributed_args: DistributedArgs | None = None,
+    loader_config: DataLoaderConfig | None = None,
     scale_batch_for_distributed: bool = True,
-    generator: Optional[torch.Generator] = None,
+    generator: torch.Generator | None = None,
 ) -> DataLoader:
     """Create DataLoader with standard configuration.
 
@@ -347,7 +346,7 @@ def create_dataloader(
 # Modality validation helpers
 # =============================================================================
 
-def get_modality_keys(modality: str) -> List[str]:
+def get_modality_keys(modality: str) -> list[str]:
     """Get image keys for a modality.
 
     Expands composite modalities like 'dual' into their constituent keys.
@@ -371,7 +370,7 @@ def validate_modality_keys(
     data_dir: str,
     modality: str,
     validate_fn: Callable,
-) -> List[str]:
+) -> list[str]:
     """Validate modality files exist and return keys to load.
 
     Combines get_modality_keys() with validation in a single call.
@@ -427,7 +426,7 @@ def validate_mode_requirements(
     data_dir: str,
     mode: str,
     validate_fn: callable,
-    image_keys: Optional[List[str]] = None,
+    image_keys: list[str] | None = None,
     require_seg: bool = True,
 ) -> None:
     """Validate all modalities required for a training mode.

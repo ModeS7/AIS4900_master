@@ -18,7 +18,6 @@ Usage:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, List, Union
 from enum import Enum
 
 from omegaconf import DictConfig
@@ -57,8 +56,8 @@ class ModeConfig:
     """
     mode: ModeType
     category: ModeCategory
-    image_keys: List[str]
-    conditioning: Optional[str]
+    image_keys: list[str]
+    conditioning: str | None
     spatial_dims: int
     use_latent: bool
 
@@ -90,7 +89,7 @@ class ModeFactory:
     }
 
     @classmethod
-    def normalize_mode(cls, mode: Union[str, ModeType]) -> ModeType:
+    def normalize_mode(cls, mode: str | ModeType) -> ModeType:
         """Normalize string/enum to ModeType.
 
         Args:
@@ -109,7 +108,7 @@ class ModeFactory:
             try:
                 return ModeType(mode.lower())
             except ValueError:
-                raise ValueError(f"Unknown mode: {mode}")
+                raise ValueError(f"Unknown mode: {mode}") from None
         raise TypeError(f"Mode must be str or ModeType, got {type(mode)}")
 
     @classmethod
@@ -155,12 +154,12 @@ class ModeFactory:
     def create_train_dataloader(
         cls,
         cfg: DictConfig,
-        mode_config: Optional[ModeConfig] = None,
+        mode_config: ModeConfig | None = None,
         use_distributed: bool = False,
         rank: int = 0,
         world_size: int = 1,
-        augment: Optional[bool] = None,
-    ) -> Tuple[DataLoader, Dataset]:
+        augment: bool | None = None,
+    ) -> tuple[DataLoader, Dataset]:
         """Create training dataloader for any mode.
 
         Args:
@@ -194,9 +193,9 @@ class ModeFactory:
     def create_val_dataloader(
         cls,
         cfg: DictConfig,
-        mode_config: Optional[ModeConfig] = None,
+        mode_config: ModeConfig | None = None,
         world_size: int = 1,
-    ) -> Optional[Tuple[DataLoader, Dataset]]:
+    ) -> tuple[DataLoader, Dataset] | None:
         """Create validation dataloader for any mode.
 
         Args:
@@ -227,8 +226,8 @@ class ModeFactory:
     def create_test_dataloader(
         cls,
         cfg: DictConfig,
-        mode_config: Optional[ModeConfig] = None,
-    ) -> Optional[Tuple[DataLoader, Dataset]]:
+        mode_config: ModeConfig | None = None,
+    ) -> tuple[DataLoader, Dataset] | None:
         """Create test dataloader for any mode.
 
         Args:
@@ -258,7 +257,7 @@ class ModeFactory:
         cls,
         cfg: DictConfig,
         mode_config: ModeConfig,
-    ) -> Dict[str, DataLoader]:
+    ) -> dict[str, DataLoader]:
         """Create per-modality validation loaders (MULTI mode only).
 
         For multi-modality training, this creates separate validation
@@ -289,7 +288,7 @@ class ModeFactory:
         cfg: DictConfig,
         mode_config: ModeConfig,
         split: str = 'train',
-    ) -> Tuple[DataLoader, Dataset]:
+    ) -> tuple[DataLoader, Dataset]:
         """Create pixel-space loader for latent cache building.
 
         For latent diffusion, we need to encode pixel-space data
@@ -326,9 +325,7 @@ class ModeFactory:
         Returns:
             Image type string ('seg', 'bravo', etc.).
         """
-        if mode == ModeType.SEG:
-            return 'seg'
-        elif mode in (ModeType.SEG_CONDITIONED, ModeType.SEG_CONDITIONED_INPUT):
+        if mode == ModeType.SEG or mode in (ModeType.SEG_CONDITIONED, ModeType.SEG_CONDITIONED_INPUT):
             return 'seg'
         else:
             # bravo, bravo_seg_cond, etc.

@@ -11,7 +11,7 @@ This module provides various training tricks:
 """
 import logging
 import random
-from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -54,7 +54,7 @@ def add_gradient_noise(
 def get_curriculum_range(
     trainer: 'DiffusionTrainer',
     epoch: int,
-) -> Optional[Tuple[float, float]]:
+) -> tuple[float, float] | None:
     """Get timestep range for curriculum learning.
 
     Linearly interpolates from start range to end range over warmup_epochs.
@@ -121,8 +121,8 @@ def apply_timestep_jitter(
 
 def apply_noise_augmentation(
     trainer: 'DiffusionTrainer',
-    noise: Union[Tensor, Dict[str, Tensor]],
-) -> Union[Tensor, Dict[str, Tensor]]:
+    noise: Tensor | dict[str, Tensor],
+) -> Tensor | dict[str, Tensor]:
     """Add perturbation to noise vector for regularization.
 
     Increases noise diversity without affecting what model learns to output.
@@ -156,9 +156,9 @@ def apply_noise_augmentation(
 
 def apply_conditioning_dropout(
     trainer: 'DiffusionTrainer',
-    conditioning: Optional[Tensor],
+    conditioning: Tensor | None,
     batch_size: int,
-) -> Optional[Tensor]:
+) -> Tensor | None:
     """Apply per-sample CFG dropout to conditioning tensor.
 
     Used for ControlNet conditioning to enable classifier-free guidance
@@ -244,7 +244,7 @@ def remove_feature_perturbation_hooks(trainer: 'DiffusionTrainer') -> None:
 def get_aug_diff_channel_steps(
     trainer: 'DiffusionTrainer',
     num_channels: int,
-) -> List[int]:
+) -> list[int]:
     """Get list of channel counts for augmented diffusion masking.
 
     Returns [min_channels, min+step, min+2*step, ..., num_channels].

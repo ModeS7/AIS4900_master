@@ -22,7 +22,6 @@ Usage:
 import logging
 import random
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import hydra
 import nibabel as nib
@@ -30,14 +29,16 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.amp import autocast
+
 from medgen.core import (
-    MAX_WHITE_PERCENTAGE, BINARY_THRESHOLD_GEN,
+    BINARY_THRESHOLD_GEN,
+    MAX_WHITE_PERCENTAGE,
     setup_cuda_optimizations,
 )
-from medgen.diffusion import DDPMStrategy, RFlowStrategy, DiffusionStrategy, load_diffusion_model
 from medgen.data import make_binary
-from medgen.data.loaders.seg import compute_size_bins_3d, DEFAULT_BIN_EDGES
+from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
 from medgen.data.loaders.seg_conditioned import create_size_bin_maps
+from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
 from medgen.metrics.brain_mask import is_seg_inside_brain
 
 setup_cuda_optimizations()
@@ -49,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def sample_random_size_bins(min_tumors: int = 1, max_tumors: int = 5) -> List[int]:
+def sample_random_size_bins(min_tumors: int = 1, max_tumors: int = 5) -> list[int]:
     """Sample random size bins for tumor generation."""
     num_tumors = random.randint(min_tumors, max_tumors)
     bins = [0] * 7
@@ -111,7 +112,7 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
 
 
 def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
-                       z_spacing_mm: float = 1.0) -> Tuple[float, float, float]:
+                       z_spacing_mm: float = 1.0) -> tuple[float, float, float]:
     """Compute voxel size based on resolution and field of view.
 
     Args:
@@ -127,7 +128,7 @@ def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
 
 
 def save_nifti(data: np.ndarray, output_path: str,
-               voxel_size: Tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
+               voxel_size: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
     """Save numpy array as NIfTI file with correct voxel spacing.
 
     Args:
@@ -142,7 +143,7 @@ def save_nifti(data: np.ndarray, output_path: str,
 
 
 def get_noise_shape(batch_size: int, channels: int, spatial_dims: int,
-                    image_size: int, depth: int) -> Tuple[int, ...]:
+                    image_size: int, depth: int) -> tuple[int, ...]:
     """Get noise tensor shape based on spatial dimensions."""
     if spatial_dims == 2:
         return (batch_size, channels, image_size, image_size)
@@ -156,11 +157,11 @@ def generate_batch(
     noise: torch.Tensor,
     num_steps: int,
     device: torch.device,
-    conditioning: Optional[torch.Tensor] = None,
-    size_bins: Optional[torch.Tensor] = None,
-    bin_maps: Optional[torch.Tensor] = None,
+    conditioning: torch.Tensor | None = None,
+    size_bins: torch.Tensor | None = None,
+    bin_maps: torch.Tensor | None = None,
     cfg_scale: float = 1.0,
-    cfg_scale_end: Optional[float] = None,
+    cfg_scale_end: float | None = None,
     use_progress: bool = False,
     latent_channels: int = 1,
 ) -> torch.Tensor:
@@ -239,7 +240,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     log.info(f"Generating {cfg.num_images} samples...")
 
     current_image = cfg.current_image
-    mask_cache: List[Tuple[np.ndarray, int]] = []
+    mask_cache: list[tuple[np.ndarray, int]] = []
 
     # Infinite loop protection
     MAX_CONSECUTIVE_FAILURES = 100
@@ -328,7 +329,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     log.info(f"Saved {current_image} samples to {output_dir}")
 
 
-def save_bins_csv(bins_data: List[Tuple[int, List[int]]], output_path: Path) -> None:
+def save_bins_csv(bins_data: list[tuple[int, list[int]]], output_path: Path) -> None:
     """Save all bins information to a single CSV file.
 
     Args:
@@ -382,7 +383,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     log.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
 
     # Collect all bins info for CSV
-    all_bins: List[Tuple[int, List[int]]] = []
+    all_bins: list[tuple[int, list[int]]] = []
 
     # Mode: seg_conditioned only (just generate seg masks)
     if cfg.gen_mode == 'seg_conditioned':
@@ -401,7 +402,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         log.info(f"Generating {cfg.num_images} seg masks...")
         if validate_size_bins:
-            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
+            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -500,7 +501,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if validate_brain_mask:
             log.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
         if validate_size_bins:
-            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
+            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -631,7 +632,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         log.info(f"Generating {cfg.num_images} seg masks with input conditioning...")
         if validate_size_bins:
-            log.info(f"Size bin validation: enabled (verify generated seg matches conditioning)")
+            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0

@@ -11,24 +11,24 @@ and implements VQ-VAE-specific functionality:
 """
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
-from omegaconf import DictConfig
-from torch import nn
-from torch.amp import autocast
-from torch.utils.data import DataLoader
 
 # Disable MONAI MetaTensor tracking BEFORE importing MONAI modules
 from monai.data import set_track_meta
+from omegaconf import DictConfig
+from torch import nn
+from torch.utils.data import DataLoader
+
 set_track_meta(False)
 
 from monai.networks.nets import VQVAE
 
+from medgen.metrics import CodebookTracker
+
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompressionTrainer
-from .results import TrainingStepResult
-from medgen.metrics import CodebookTracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class CheckpointedVQVAE(BaseCheckpointedModel):
         model: The underlying VQVAE model.
     """
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass with gradient checkpointing."""
         def encode_fn(x):
             return self.model.encode(x)
@@ -121,24 +121,24 @@ class VQVAETrainer(BaseCompressionTrainer):
 
         # Architecture config
         default_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
-        self.channels: Tuple[int, ...] = tuple(vqvae_cfg.get('channels', default_channels))
+        self.channels: tuple[int, ...] = tuple(vqvae_cfg.get('channels', default_channels))
         default_res_layers = 3 if spatial_dims == 2 else 2
         self.num_res_layers: int = vqvae_cfg.get('num_res_layers', default_res_layers)
         default_res_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
-        self.num_res_channels: Tuple[int, ...] = tuple(
+        self.num_res_channels: tuple[int, ...] = tuple(
             vqvae_cfg.get('num_res_channels', default_res_channels)
         )
         default_downsample = [[2, 4, 1, 1]] * (3 if spatial_dims == 2 else 2)
-        self.downsample_parameters: Tuple[Tuple[int, ...], ...] = tuple(
+        self.downsample_parameters: tuple[tuple[int, ...], ...] = tuple(
             tuple(p) for p in vqvae_cfg.get('downsample_parameters', default_downsample)
         )
         default_upsample = [[2, 4, 1, 1, 0]] * (3 if spatial_dims == 2 else 2)
-        self.upsample_parameters: Tuple[Tuple[int, ...], ...] = tuple(
+        self.upsample_parameters: tuple[tuple[int, ...], ...] = tuple(
             tuple(p) for p in vqvae_cfg.get('upsample_parameters', default_upsample)
         )
 
         # Codebook tracking (initialized after model setup)
-        self._codebook_tracker: Optional[CodebookTracker] = None
+        self._codebook_tracker: CodebookTracker | None = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Segmentation mode (seg_mode) - 3D only
@@ -205,7 +205,7 @@ class VQVAETrainer(BaseCompressionTrainer):
             run_name = f"{exp_name}{self.image_size}_{timestamp}"
             return os.path.join(self.cfg.paths.model_dir, 'vqvae_2d', mode_name, run_name)
 
-    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+    def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
         """Initialize VQ-VAE model, discriminator, optimizers, and loss functions.
 
         Args:
@@ -307,7 +307,7 @@ class VQVAETrainer(BaseCompressionTrainer):
         """Return trainer type for metadata."""
         return 'vqvae_3d' if self.spatial_dims == 3 else 'vqvae'
 
-    def _get_metadata_extra(self) -> Dict[str, Any]:
+    def _get_metadata_extra(self) -> dict[str, Any]:
         """Return VQ-VAE-specific metadata."""
         meta = {'vqvae_config': self._get_model_config()}
         if self.spatial_dims == 3:
@@ -324,7 +324,7 @@ class VQVAETrainer(BaseCompressionTrainer):
     # Template method hooks for train_step() and train_epoch()
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_for_training(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """VQ-VAE forward pass for training.
 
         Returns (reconstruction, vq_loss).
@@ -338,8 +338,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         return 'vq'
 
     def _get_postfix_metrics(
-        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
-    ) -> Dict[str, str]:
+        self, avg_so_far: dict[str, float], current_losses: dict[str, float]
+    ) -> dict[str, str]:
         """VQ-VAE-specific progress bar: shows VQ loss."""
         return {
             'G': f"{avg_so_far.get('gen', 0):.4f}",
@@ -352,7 +352,7 @@ class VQVAETrainer(BaseCompressionTrainer):
         if self.seg_mode:
             self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
 
-    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+    def _on_train_epoch_end(self, epoch: int, avg_losses: dict[str, float]) -> None:
         """Log seg breakdown if in seg_mode."""
         if self.seg_mode and self.is_main_process and hasattr(self, '_epoch_seg_breakdown'):
             n_batches = getattr(self, '_last_epoch_batch_count', 1)
@@ -364,7 +364,7 @@ class VQVAETrainer(BaseCompressionTrainer):
         self,
         model: nn.Module,
         images: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """VQ-VAE forward pass for validation.
 
         Returns:
@@ -379,7 +379,7 @@ class VQVAETrainer(BaseCompressionTrainer):
         Returns:
             Configured ValidationRunner instance.
         """
-        from medgen.evaluation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationConfig, ValidationRunner
 
         config = ValidationConfig(
             log_msssim=self.log_msssim and not self.seg_mode,
@@ -427,7 +427,7 @@ class VQVAETrainer(BaseCompressionTrainer):
             device=self.device,
         )
 
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get VQ-VAE model configuration for checkpoint."""
         n_channels = self.cfg.mode.get('in_channels', 1)
         config = {
@@ -451,8 +451,8 @@ class VQVAETrainer(BaseCompressionTrainer):
     def _log_validation_metrics(
         self,
         epoch: int,
-        metrics: Dict[str, float],
-        worst_batch_data: Optional[Dict[str, Any]],
+        metrics: dict[str, float],
+        worst_batch_data: dict[str, Any] | None,
         regional_tracker,
         log_figures: bool,
     ) -> None:
@@ -498,8 +498,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log VQ-VAE epoch summary using unified system."""
@@ -568,7 +568,7 @@ class VQVAETrainer(BaseCompressionTrainer):
         self,
         epoch: int,
         log_figures: bool = True,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute validation losses with codebook tracking.
 
         Extends parent method to also track codebook utilization.

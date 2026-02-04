@@ -26,7 +26,6 @@ Usage:
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import hydra
 import matplotlib.pyplot as plt
@@ -48,7 +47,7 @@ logger = logging.getLogger(__name__)
 def generate_synthetic_slices(
     image_size: int = 128,
     n_samples: int = 4,
-) -> Tuple[List[np.ndarray], List[str]]:
+) -> tuple[list[np.ndarray], list[str]]:
     """Generate synthetic brain-like slices for testing.
 
     Creates elliptical shapes with varying intensities to simulate
@@ -99,11 +98,11 @@ def generate_synthetic_slices(
 
 
 def load_sample_slices(
-    data_dir: Optional[str],
+    data_dir: str | None,
     modality: str = "t1_pre",
     image_size: int = 128,
     n_samples: int = 4,
-) -> Tuple[List[np.ndarray], List[str]]:
+) -> tuple[list[np.ndarray], list[str]]:
     """Load sample 2D slices from NIfTI dataset.
 
     Args:
@@ -177,8 +176,8 @@ def load_sample_slices(
 
 
 def visualize_per_sample_augmentation(
-    slices: List[np.ndarray],
-    names: List[str],
+    slices: list[np.ndarray],
+    names: list[str],
     output_path: str,
     n_augmented: int = 3,
 ) -> None:
@@ -241,7 +240,7 @@ def visualize_per_sample_augmentation(
 
 
 def visualize_batch_augmentations(
-    slices: List[np.ndarray],
+    slices: list[np.ndarray],
     output_path: str,
 ) -> None:
     """Visualize batch-level augmentations (mixup and cutmix).
@@ -297,7 +296,7 @@ def visualize_batch_augmentations(
 
     # Fill remaining with more mixup examples from different batch positions
     col = 1 + n_examples
-    for i, (mixed, indices, lam) in enumerate(mixup_results):
+    for _, (mixed, indices, lam) in enumerate(mixup_results):
         if col < n_slices + n_examples and len(mixed) > 1:
             axes[1, col].imshow(mixed[1, 0], cmap='gray', vmin=0, vmax=1)
             axes[1, col].set_title(f"λ={lam:.2f}\n1+{indices[1]}", fontsize=9)
@@ -322,7 +321,7 @@ def visualize_batch_augmentations(
 
     # Fill remaining with more cutmix examples
     col = 1 + n_examples
-    for i, (cut, indices, lam) in enumerate(cutmix_results):
+    for _, (cut, indices, lam) in enumerate(cutmix_results):
         if col < n_slices + n_examples and len(cut) > 1:
             axes[2, col].imshow(cut[1, 0], cmap='gray', vmin=0, vmax=1)
             axes[2, col].set_title(f"λ={lam:.2f}\n1+{indices[1]}", fontsize=9)
@@ -340,7 +339,7 @@ def visualize_batch_augmentations(
 
 
 def visualize_augmentation_comparison(
-    slices: List[np.ndarray],
+    slices: list[np.ndarray],
     output_path: str,
 ) -> None:
     """Create a compact comparison showing all augmentation types.

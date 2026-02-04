@@ -5,7 +5,7 @@ This module provides the NiFTIDataset class for loading NIfTI medical images
 and utility functions for building transform pipelines.
 """
 import os
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 from monai.data import Dataset
 from monai.transforms import (
@@ -93,12 +93,12 @@ class NiFTIDataset(Dataset):
         self,
         data_dir: str,
         mr_sequence: str,
-        transform: Optional[Compose] = None
+        transform: Compose | None = None
     ) -> None:
         self.data_dir: str = data_dir
-        self.data: List[str] = sorted(os.listdir(data_dir))
+        self.data: list[str] = sorted(os.listdir(data_dir))
         self.mr_sequence: str = mr_sequence
-        self.transform: Optional[Compose] = transform
+        self.transform: Compose | None = transform
         # Cache loader to avoid recreating on every __getitem__ call
         self._loader: LoadImage = LoadImage(image_only=True)
 
@@ -106,7 +106,7 @@ class NiFTIDataset(Dataset):
         """Return number of patients in dataset."""
         return len(self.data)
 
-    def __getitem__(self, index: int) -> Tuple[Any, str]:
+    def __getitem__(self, index: int) -> tuple[Any, str]:
         """Load and return a single patient volume.
 
         Args:

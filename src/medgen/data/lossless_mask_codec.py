@@ -24,9 +24,10 @@ Example usage:
     assert torch.equal(mask.float(), reconstructed)  # Always True (lossless)
 """
 
+from typing import Literal
+
 import torch
 from torch import Tensor
-from typing import Tuple, Literal
 
 # Format configs: (spatial_size, channels, block_size)
 # block_size = 256 / spatial_size (size of image patch per latent position)
@@ -130,7 +131,7 @@ def decode_mask_lossless(latent: Tensor, format: FormatType = 'f32') -> Tensor:
     return mask.float()
 
 
-def get_latent_shape(format: FormatType) -> Tuple[int, int, int]:
+def get_latent_shape(format: FormatType) -> tuple[int, int, int]:
     """Get latent shape (C, H, W) for a format."""
     spatial, channels, _ = FORMATS[format]
     return (channels, spatial, spatial)

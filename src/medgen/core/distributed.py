@@ -6,7 +6,6 @@ with automatic SLURM cluster detection.
 import datetime
 import logging
 import os
-from typing import Tuple
 
 import torch
 import torch.distributed as dist
@@ -14,7 +13,7 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-def setup_distributed() -> Tuple[int, int, int, torch.device]:
+def setup_distributed() -> tuple[int, int, int, torch.device]:
     """Setup distributed training with dynamic port allocation.
 
     Automatically detects SLURM environment or falls back to environment

@@ -8,16 +8,15 @@ Unlike RegionalMetricsTracker which tracks reconstruction error,
 this tracks segmentation quality metrics per region.
 """
 import logging
-from typing import Dict, Optional
 
 import numpy as np
 import torch
-from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
+from torch import Tensor
+from torch.utils.tensorboard import SummaryWriter
 
-from ..constants import TUMOR_SIZE_THRESHOLDS_MM, TUMOR_SIZE_CATEGORIES
+from ..constants import TUMOR_SIZE_CATEGORIES, TUMOR_SIZE_THRESHOLDS_MM
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,7 @@ class SegRegionalMetricsTracker:
         self,
         image_size: int,
         fov_mm: float = 240.0,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ):
         self.image_size = image_size
         self.fov_mm = fov_mm
@@ -68,9 +67,9 @@ class SegRegionalMetricsTracker:
         self.total_tumors = 0
 
         # Per-size accumulators
-        self.size_dice_sum: Dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
-        self.size_iou_sum: Dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
-        self.size_tumor_count: Dict[str, int] = {k: 0 for k in TUMOR_SIZE_CATEGORIES}
+        self.size_dice_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
+        self.size_iou_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
+        self.size_tumor_count: dict[str, int] = {k: 0 for k in TUMOR_SIZE_CATEGORIES}
 
     def _classify_tumor_size(self, diameter_mm: float) -> str:
         """Classify tumor by Feret diameter using RANO-BM thresholds."""
@@ -199,7 +198,7 @@ class SegRegionalMetricsTracker:
                 self.size_iou_sum[size_cat] += iou
                 self.size_tumor_count[size_cat] += 1
 
-    def compute(self) -> Dict[str, float]:
+    def compute(self) -> dict[str, float]:
         """Compute final metrics after all batches processed.
 
         Returns:
@@ -229,7 +228,7 @@ class SegRegionalMetricsTracker:
 
     def log_to_tensorboard(
         self,
-        writer: Optional[SummaryWriter],
+        writer: SummaryWriter | None,
         epoch: int,
         prefix: str = 'regional_seg',
     ) -> None:

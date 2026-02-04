@@ -14,7 +14,6 @@ FiLM modulation: out = time_embed * (1 + scale) + shift
     - Same principle as adaLN-Zero in DiT
 """
 
-from typing import List, Optional
 
 import torch
 from torch import nn
@@ -30,7 +29,7 @@ DEFAULT_EMBEDDING_DIM = 32  # Embedding dim per bin
 
 
 def encode_size_bins(
-    size_bins: Optional[torch.Tensor],
+    size_bins: torch.Tensor | None,
     device: torch.device,
     batch_size: int = 1,
     num_bins: int = DEFAULT_NUM_BINS,
@@ -113,7 +112,7 @@ class SizeBinTimeEmbed(nn.Module):
         self.projection = create_zero_init_mlp(combined_dim, embed_dim * 2)
 
         # Store current size bins (set before each forward)
-        self._size_bins: Optional[torch.Tensor] = None
+        self._size_bins: torch.Tensor | None = None
 
     def set_size_bins(self, size_bins: torch.Tensor):
         """Set size bins for next forward pass.
@@ -237,7 +236,7 @@ class SizeBinModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        size_bins: Optional[torch.Tensor] = None,
+        size_bins: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with size bin conditioning.
 
@@ -268,7 +267,7 @@ class SizeBinModelWrapper(nn.Module):
         return self.model.parameters(recurse=recurse)
 
 
-def get_bin_label(bin_idx: int, bin_edges: List[float] = None, num_bins: int = None) -> str:
+def get_bin_label(bin_idx: int, bin_edges: list[float] = None, num_bins: int = None) -> str:
     """Get human-readable label for a bin index.
 
     Args:
@@ -298,7 +297,7 @@ def get_bin_label(bin_idx: int, bin_edges: List[float] = None, num_bins: int = N
 
 def format_size_bins(
     size_bins: torch.Tensor,
-    bin_edges: List[float] = None,
+    bin_edges: list[float] = None,
 ) -> str:
     """Format size bins tensor as human-readable string.
 

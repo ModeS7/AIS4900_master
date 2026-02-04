@@ -6,18 +6,18 @@ This module provides validation loop functionality:
 - Timestep bin loss tracking
 """
 import logging
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from medgen.metrics import (
-    compute_msssim,
-    compute_psnr,
-    compute_lpips,
-    compute_lpips_3d,
+    RegionalMetricsTracker,
     compute_dice,
     compute_iou,
-    RegionalMetricsTracker,
+    compute_lpips,
+    compute_lpips_3d,
+    compute_msssim,
+    compute_psnr,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def compute_validation_losses(
     trainer: 'DiffusionTrainer',
     epoch: int,
-) -> Tuple[Dict[str, float], Optional[Dict[str, Any]]]:
+) -> tuple[dict[str, float], dict[str, Any] | None]:
     """Compute losses and metrics on validation set.
 
     Args:
@@ -66,11 +66,11 @@ def compute_validation_losses(
     is_seg_mode = trainer.mode_name in ('seg', 'seg_conditioned')
 
     # Per-channel metrics for dual/multi modes
-    per_channel_metrics: Dict[str, Dict[str, float]] = {}
+    per_channel_metrics: dict[str, dict[str, float]] = {}
 
     # Track worst validation batch (only from full-sized batches)
     worst_loss = 0.0
-    worst_batch_data: Optional[Dict[str, Any]] = None
+    worst_batch_data: dict[str, Any] | None = None
     min_batch_size = trainer.batch_size  # Don't track small last batches
 
     # Regional tracking now uses unified metrics internal tracker
@@ -406,7 +406,7 @@ def compute_validation_losses(
                 except torch.cuda.OutOfMemoryError as e:
                     logger.warning(f"Generation metrics skipped due to OOM: {e}")
                     torch.cuda.empty_cache()
-                except Exception as e:
+                except Exception:
                     logger.exception(f"Generation metrics computation failed at epoch {epoch}")
                 finally:
                     # Always clean up after generation metrics to prevent memory buildup

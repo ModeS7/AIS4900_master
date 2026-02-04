@@ -30,7 +30,6 @@ Reference:
     https://arxiv.org/abs/2302.05543
 """
 import logging
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -162,9 +161,9 @@ class ControlNetConditionedUNet(nn.Module):
         x: Tensor,
         timesteps: Tensor,
         controlnet_cond: Tensor,
-        context: Optional[Tensor] = None,
-        class_labels: Optional[Tensor] = None,
-        conditioning_scale: Optional[float] = None,
+        context: Tensor | None = None,
+        class_labels: Tensor | None = None,
+        conditioning_scale: float | None = None,
     ) -> Tensor:
         """Forward pass with ControlNet conditioning.
 
@@ -245,7 +244,7 @@ def save_controlnet_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     save_path: str,
-    cfg: Optional[DictConfig] = None,
+    cfg: DictConfig | None = None,
 ) -> None:
     """Save ControlNet checkpoint.
 

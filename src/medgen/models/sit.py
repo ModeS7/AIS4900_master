@@ -7,9 +7,10 @@ diffusion, supporting both 2D images and 3D volumes.
 Reference: https://arxiv.org/abs/2401.08740 (SiT paper)
 """
 
+from typing import Literal
+
 import torch
 import torch.nn as nn
-from typing import Optional, Literal
 
 from .embeddings import (
     PatchEmbed2D,
@@ -18,8 +19,7 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .sit_blocks import SiTBlock, FinalLayer
-
+from .sit_blocks import FinalLayer, SiTBlock
 
 # Model variant configurations
 SIT_VARIANTS = {
@@ -69,7 +69,7 @@ class SiT(nn.Module):
         input_size: int = 32,
         patch_size: int = 2,
         in_channels: int = 4,
-        out_channels: Optional[int] = None,
+        out_channels: int | None = None,
         hidden_size: int = 768,
         depth: int = 12,
         num_heads: int = 12,
@@ -80,7 +80,7 @@ class SiT(nn.Module):
         drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         qk_norm: bool = True,
-        depth_size: Optional[int] = None,
+        depth_size: int | None = None,
     ):
         super().__init__()
         self.spatial_dims = spatial_dims
@@ -257,7 +257,7 @@ class SiT(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        cond: Optional[torch.Tensor] = None,
+        cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass.
 
@@ -309,7 +309,7 @@ def create_sit(
     learn_sigma: bool = False,
     drop_rate: float = 0.0,
     drop_path_rate: float = 0.0,
-    depth_size: Optional[int] = None,
+    depth_size: int | None = None,
     **kwargs,
 ) -> SiT:
     """Create a SiT model with predefined variant configuration.

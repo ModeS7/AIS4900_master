@@ -25,7 +25,7 @@ Dimension-specific functionality (implemented in subclasses):
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from ema_pytorch import EMA
@@ -36,11 +36,12 @@ from torch.utils.data import DataLoader, Dataset
 
 from medgen.diffusion import (
     DDPMStrategy,
-    RFlowStrategy,
-    DiffusionStrategy,
     DiffusionSpace,
+    DiffusionStrategy,
     PixelSpace,
+    RFlowStrategy,
 )
+
 from .base_trainer import BaseTrainer
 from .results import TrainingStepResult
 
@@ -58,7 +59,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         space: DiffusionSpace for pixel/latent operations. Defaults to PixelSpace.
     """
 
-    def __init__(self, cfg: DictConfig, space: Optional[DiffusionSpace] = None) -> None:
+    def __init__(self, cfg: DictConfig, space: DiffusionSpace | None = None) -> None:
         super().__init__(cfg)
 
         self.space = space if space is not None else PixelSpace()
@@ -76,7 +77,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # EMA configuration (shared)
         self.use_ema: bool = cfg.training.get('use_ema', True)
         self.ema_decay: float = cfg.training.get('ema', {}).get('decay', 0.9999)
-        self.ema: Optional[EMA] = None
+        self.ema: EMA | None = None
 
         # Global step counter
         self._global_step: int = 0
@@ -105,7 +106,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
         self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
         self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
-        self._aug_diff_channel_steps: Optional[List[int]] = None
+        self._aug_diff_channel_steps: list[int] | None = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Conditioning dropout (shared config)
@@ -126,16 +127,16 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # ─────────────────────────────────────────────────────────────────────
         # Model components (set during setup_model)
         # ─────────────────────────────────────────────────────────────────────
-        self.model: Optional[nn.Module] = None
-        self.model_raw: Optional[nn.Module] = None
-        self.optimizer: Optional[AdamW] = None
-        self.lr_scheduler: Optional[Any] = None
+        self.model: nn.Module | None = None
+        self.model_raw: nn.Module | None = None
+        self.optimizer: AdamW | None = None
+        self.lr_scheduler: Any | None = None
 
         # Validation loader (set in train())
-        self.val_loader: Optional[DataLoader] = None
+        self.val_loader: DataLoader | None = None
 
         # Feature perturbation hooks (set in _setup_feature_perturbation)
-        self._feature_hooks: List[Any] = []
+        self._feature_hooks: list[Any] = []
 
         # Log config at initialization
         self._log_shared_config()
@@ -195,7 +196,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Raises:
             ValueError: If strategy name is unknown.
         """
-        strategies: Dict[str, type] = {
+        strategies: dict[str, type] = {
             'ddpm': DDPMStrategy,
             'rflow': RFlowStrategy,
         }
@@ -207,7 +208,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
     # Shared Methods: Timestep Manipulation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_curriculum_range(self, epoch: int) -> Optional[Tuple[float, float]]:
+    def _get_curriculum_range(self, epoch: int) -> tuple[float, float] | None:
         """Get timestep range for curriculum learning.
 
         Linearly interpolates from start range to end range over warmup_epochs.
@@ -274,8 +275,8 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
 
     def _apply_noise_augmentation(
         self,
-        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        noise: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         """Add perturbation to noise vector for regularization.
 
         Increases noise diversity without affecting what model learns to output.
@@ -414,7 +415,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
     # Shared Methods: DC-AE 1.5 Augmented Diffusion
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_aug_diff_channel_steps(self, num_channels: int) -> List[int]:
+    def _get_aug_diff_channel_steps(self, num_channels: int) -> list[int]:
         """Get list of channel counts for augmented diffusion masking.
 
         Returns [min_channels, min+step, min+2*step, ..., num_channels].
@@ -509,7 +510,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         model_input: torch.Tensor,
         timesteps: torch.Tensor,
         prediction: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute self-conditioning consistency loss.
 
@@ -632,7 +633,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             t = t.unsqueeze(-1)
         return t
 
-    def _get_spatial_shape(self) -> Tuple[int, ...]:
+    def _get_spatial_shape(self) -> tuple[int, ...]:
         """Get spatial dimensions as tuple.
 
         Returns:
@@ -643,7 +644,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         else:
             return (self.volume_depth, self.volume_height, self.volume_width)
 
-    def _get_noise_shape(self, batch_size: int, channels: int) -> Tuple[int, ...]:
+    def _get_noise_shape(self, batch_size: int, channels: int) -> tuple[int, ...]:
         """Get full tensor shape for noise generation.
 
         Args:
@@ -697,6 +698,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             Function for computing MS-SSIM with spatial_dims preset.
         """
         from functools import partial
+
         from medgen.metrics import compute_msssim
         return partial(compute_msssim, spatial_dims=self.spatial_dims)
 
@@ -738,7 +740,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
                 loss_fn=loss_fn,
             )
 
-    def _create_score_aug(self, cfg: Optional[Dict] = None):
+    def _create_score_aug(self, cfg: dict | None = None):
         """Create dimension-appropriate ScoreAug transform.
 
         Args:
@@ -772,7 +774,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             patterns_patch_dropout=cfg.get('patterns_patch_dropout', True),
         )
 
-    def _create_sda(self, cfg: Optional[Dict] = None):
+    def _create_sda(self, cfg: dict | None = None):
         """Create dimension-appropriate SDA transform.
 
         Args:

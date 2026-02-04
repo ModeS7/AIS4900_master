@@ -4,7 +4,6 @@ Provides shared functions for DDP wrapping and torch.compile setup
 used across different trainers.
 """
 import logging
-from typing import Tuple
 
 import torch
 from torch import nn
@@ -22,7 +21,7 @@ def wrap_model_for_training(
     find_unused_parameters: bool = False,
     disable_ddp_optimizer: bool = False,
     is_main_process: bool = True,
-) -> Tuple[nn.Module, nn.Module]:
+) -> tuple[nn.Module, nn.Module]:
     """Wrap model with DDP and/or torch.compile for training.
 
     Args:

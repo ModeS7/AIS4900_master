@@ -14,23 +14,21 @@ and implements DC-AE-specific functionality:
 import logging
 import os
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
-from torch.amp import autocast
-from torch.utils.data import DataLoader
 
-from .compression_trainer import BaseCompressionTrainer
-from .results import TrainingStepResult
 from medgen.metrics import create_worst_batch_figure
 
 # Import 3D components for module-level export
 from ..models.autoencoder_dc_3d import CheckpointedAutoencoderDC3D
+from .compression_trainer import BaseCompressionTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +94,7 @@ class DCAETrainer(BaseCompressionTrainer):
         if spatial_dims == 2:
             # 2D-specific config
             self.compression_ratio: int = dcae_cfg.compression_ratio
-            self.pretrained: Optional[str] = dcae_cfg.get('pretrained', None)
+            self.pretrained: str | None = dcae_cfg.get('pretrained', None)
 
             # Training phase (1=no GAN, 3=with GAN)
             self.training_phase: int = cfg.training.get('phase', 1)
@@ -188,7 +186,7 @@ class DCAETrainer(BaseCompressionTrainer):
     # DC-AE 1.5: Structured Latent Space Methods (2D only)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_channel_steps(self) -> List[int]:
+    def _get_channel_steps(self) -> list[int]:
         """Get list of channel counts for structured latent training."""
         if not self.structured_latent_enabled:
             return [self.latent_channels]
@@ -201,7 +199,7 @@ class DCAETrainer(BaseCompressionTrainer):
             steps.append(self.latent_channels)
         return steps
 
-    def _sample_latent_channels(self) -> Optional[int]:
+    def _sample_latent_channels(self) -> int | None:
         """Sample random channel count for structured latent training.
 
         Returns:
@@ -229,7 +227,7 @@ class DCAETrainer(BaseCompressionTrainer):
             run_name = f"{exp_name}{image_size}_{timestamp}"
             return os.path.join(self.cfg.paths.model_dir, 'compression_2d', mode_name, run_name)
 
-    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+    def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
         """Initialize DC-AE model, discriminator, optimizers.
 
         Args:
@@ -278,7 +276,7 @@ class DCAETrainer(BaseCompressionTrainer):
         # Log model info
         self._log_model_info()
 
-    def _setup_model_2d(self, n_channels: int, pretrained_checkpoint: Optional[str] = None) -> nn.Module:
+    def _setup_model_2d(self, n_channels: int, pretrained_checkpoint: str | None = None) -> nn.Module:
         """Setup 2D DC-AE model."""
 
         if self.pretrained:
@@ -296,7 +294,7 @@ class DCAETrainer(BaseCompressionTrainer):
 
         return raw_model
 
-    def _setup_model_3d(self, n_channels: int, pretrained_checkpoint: Optional[str] = None) -> nn.Module:
+    def _setup_model_3d(self, n_channels: int, pretrained_checkpoint: str | None = None) -> nn.Module:
         """Setup 3D DC-AE model."""
         from ..models.autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
 
@@ -403,7 +401,7 @@ class DCAETrainer(BaseCompressionTrainer):
     def _load_pretrained_weights_2d(
         self,
         raw_model: nn.Module,
-        raw_disc: Optional[nn.Module],
+        raw_disc: nn.Module | None,
         checkpoint_path: str,
     ) -> None:
         """Load pretrained weights from checkpoint (2D)."""
@@ -471,7 +469,7 @@ class DCAETrainer(BaseCompressionTrainer):
         """Return trainer type for metadata."""
         return 'dcae_3d' if self.spatial_dims == 3 else 'dcae'
 
-    def _get_metadata_extra(self) -> Dict[str, Any]:
+    def _get_metadata_extra(self) -> dict[str, Any]:
         """Return DC-AE-specific metadata."""
         if self.spatial_dims == 3:
             return {
@@ -492,7 +490,7 @@ class DCAETrainer(BaseCompressionTrainer):
                 'seg_mode': self.seg_mode,
             }
 
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get DC-AE model configuration for checkpoint."""
         if self.spatial_dims == 3:
             n_channels = self.cfg.mode.get('in_channels', 4)
@@ -517,7 +515,7 @@ class DCAETrainer(BaseCompressionTrainer):
                 'seg_mode': self.seg_mode,
             }
 
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def _prepare_batch(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare batch for DC-AE training."""
         # Use base class for 3D
         if self.spatial_dims == 3:
@@ -551,7 +549,7 @@ class DCAETrainer(BaseCompressionTrainer):
     # Template method hooks for train_step() and train_epoch()
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward_for_training(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """DC-AE forward pass for training.
 
         Returns (reconstruction, 0.0) - DC-AE has no regularization loss.
@@ -577,13 +575,13 @@ class DCAETrainer(BaseCompressionTrainer):
         """DC-AE always trains discriminator after generator."""
         return False
 
-    def _get_loss_key(self) -> Optional[str]:
+    def _get_loss_key(self) -> str | None:
         """DC-AE has no regularization loss, return None."""
         return None
 
     def _get_postfix_metrics(
-        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
-    ) -> Dict[str, str]:
+        self, avg_so_far: dict[str, float], current_losses: dict[str, float]
+    ) -> dict[str, str]:
         """DC-AE-specific progress bar: shows Dice for seg_mode."""
         if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
             # Show running average of Dice using accumulator count
@@ -603,7 +601,7 @@ class DCAETrainer(BaseCompressionTrainer):
         if self.seg_mode:
             self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
 
-    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+    def _on_train_epoch_end(self, epoch: int, avg_losses: dict[str, float]) -> None:
         """Add seg breakdown to avg_losses."""
         if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
             n_batches = getattr(self, '_last_epoch_batch_count', 1)
@@ -614,7 +612,7 @@ class DCAETrainer(BaseCompressionTrainer):
         self,
         model: nn.Module,
         images: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """DC-AE forward pass for validation."""
         if self.spatial_dims == 3:
             reconstruction = model(images)
@@ -625,7 +623,7 @@ class DCAETrainer(BaseCompressionTrainer):
 
     def _create_validation_runner(self):
         """Create ValidationRunner with seg_mode support."""
-        from medgen.evaluation import ValidationRunner, ValidationConfig
+        from medgen.evaluation import ValidationConfig, ValidationRunner
 
         config = ValidationConfig(
             log_msssim=self.log_msssim and not self.seg_mode,
@@ -669,7 +667,7 @@ class DCAETrainer(BaseCompressionTrainer):
 
     def _create_worst_batch_figure(
         self,
-        worst_batch_data: Dict[str, Any],
+        worst_batch_data: dict[str, Any],
     ) -> plt.Figure:
         """Create worst batch figure with seg_mode support."""
         generated = worst_batch_data['generated']
@@ -685,8 +683,8 @@ class DCAETrainer(BaseCompressionTrainer):
     def _log_validation_metrics(
         self,
         epoch: int,
-        metrics: Dict[str, float],
-        worst_batch_data: Optional[Dict[str, Any]],
+        metrics: dict[str, float],
+        worst_batch_data: dict[str, Any] | None,
         regional_tracker,
         log_figures: bool,
     ) -> None:
@@ -721,8 +719,8 @@ class DCAETrainer(BaseCompressionTrainer):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log DC-AE epoch summary using unified system."""

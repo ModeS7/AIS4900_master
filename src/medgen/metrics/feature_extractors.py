@@ -21,7 +21,6 @@ Usage:
 """
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -47,7 +46,7 @@ class ResNet50Features(nn.Module):
         self,
         device: torch.device,
         network_type: str = "imagenet",
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         compile_model: bool = True,
     ) -> None:
         super().__init__()
@@ -55,7 +54,7 @@ class ResNet50Features(nn.Module):
         self.network_type = network_type
         self.cache_dir = cache_dir
         self.compile_model = compile_model
-        self._model: Optional[nn.Module] = None
+        self._model: nn.Module | None = None
 
     def _ensure_model(self) -> None:
         """Lazy-load the ResNet50 model."""
@@ -200,14 +199,14 @@ class BiomedCLIPFeatures(nn.Module):
     def __init__(
         self,
         device: torch.device,
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
         compile_model: bool = True,
     ) -> None:
         super().__init__()
         self.device = device
         self.cache_dir = cache_dir
         self.compile_model = compile_model
-        self._model: Optional[nn.Module] = None
+        self._model: nn.Module | None = None
         self._processor = None
 
     def _ensure_model(self) -> None:
@@ -221,7 +220,7 @@ class BiomedCLIPFeatures(nn.Module):
             raise ImportError(
                 "open_clip_torch is required for CMMD metrics. "
                 "Install with: pip install open_clip_torch"
-            )
+            ) from None
 
         model_name = "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 

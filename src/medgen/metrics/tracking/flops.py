@@ -5,7 +5,6 @@ Shared utility for measuring and tracking model FLOPs during training.
 """
 
 import logging
-from typing import Optional
 
 import torch
 from torch import nn
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 def measure_model_flops(
     model: nn.Module,
     sample_input: torch.Tensor,
-    timesteps: Optional[torch.Tensor] = None,
+    timesteps: torch.Tensor | None = None,
 ) -> int:
     """Measure model FLOPs using torch.profiler.
 
@@ -102,7 +101,7 @@ class FLOPsTracker:
         sample_input: torch.Tensor,
         steps_per_epoch: int,
         batch_size: int = 1,
-        timesteps: Optional[torch.Tensor] = None,
+        timesteps: torch.Tensor | None = None,
         is_main_process: bool = True,
     ) -> None:
         """Measure FLOPs and store for tracking.

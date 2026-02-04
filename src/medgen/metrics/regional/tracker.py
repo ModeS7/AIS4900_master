@@ -16,13 +16,12 @@ For 3D volumes:
 - Error accumulated for ALL voxels of each 3D tumor
 """
 import logging
-from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from torch import Tensor
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
+from torch import Tensor
 
 from .base import BaseRegionalMetricsTracker
 
@@ -70,11 +69,11 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
     def __init__(
         self,
         spatial_dims: int = 2,
-        image_size: Optional[int] = None,
-        volume_size: Optional[Tuple[int, int, int]] = None,
+        image_size: int | None = None,
+        volume_size: tuple[int, int, int] | None = None,
         fov_mm: float = 240.0,
         loss_fn: str = 'mse',
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ):
         super().__init__(fov_mm=fov_mm, loss_fn=loss_fn, device=device)
         self.spatial_dims = spatial_dims
@@ -115,8 +114,8 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
 
     def update(
         self,
-        prediction: Union[Tensor, Dict[str, Tensor]],
-        target: Union[Tensor, Dict[str, Tensor]],
+        prediction: Tensor | dict[str, Tensor],
+        target: Tensor | dict[str, Tensor],
         mask: Tensor,
     ) -> None:
         """Accumulate regional losses for a batch.
@@ -141,8 +140,8 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
 
     def _update_2d(
         self,
-        prediction: Union[Tensor, Dict[str, Tensor]],
-        target: Union[Tensor, Dict[str, Tensor]],
+        prediction: Tensor | dict[str, Tensor],
+        target: Tensor | dict[str, Tensor],
         mask: Tensor,
     ) -> None:
         """2D update implementation."""

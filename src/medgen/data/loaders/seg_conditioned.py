@@ -9,7 +9,6 @@ This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import Optional, Tuple
 
 import torch
 from monai.data import DataLoader
@@ -17,22 +16,22 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
+from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.loaders.common import (
     DistributedArgs,
     create_dataloader,
     validate_mode_requirements,
 )
-from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
-from medgen.data.utils import extract_slices_single
 
 # Import consolidated classes and functions from datasets.py
 from medgen.data.loaders.datasets import (
-    SegConditionedDataset,
-    compute_size_bins,
-    compute_feret_diameter,
-    create_size_bin_maps,
     DEFAULT_BIN_EDGES,
+    SegConditionedDataset,
+    compute_feret_diameter,
+    compute_size_bins,
+    create_size_bin_maps,
 )
+from medgen.data.utils import extract_slices_single
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +53,12 @@ DEFAULT_CFG_DROPOUT = 0.15
 
 def create_seg_conditioned_dataloader(
     cfg: DictConfig,
-    size_bin_config: Optional[dict] = None,
+    size_bin_config: dict | None = None,
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True,
-) -> Tuple[DataLoader, TorchDataset]:
+) -> tuple[DataLoader, TorchDataset]:
     """Create dataloader for size-conditioned segmentation training.
 
     Args:
@@ -149,10 +148,10 @@ def create_seg_conditioned_dataloader(
 
 def create_seg_conditioned_validation_dataloader(
     cfg: DictConfig,
-    size_bin_config: Optional[dict] = None,
-    batch_size: Optional[int] = None,
+    size_bin_config: dict | None = None,
+    batch_size: int | None = None,
     world_size: int = 1,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create validation dataloader for size-conditioned segmentation.
 
     Args:
@@ -230,8 +229,8 @@ def create_seg_conditioned_validation_dataloader(
 
 def create_seg_conditioned_test_dataloader(
     cfg: DictConfig,
-    batch_size: Optional[int] = None,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+    batch_size: int | None = None,
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create test dataloader for size-conditioned segmentation.
 
     Args:

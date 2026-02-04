@@ -7,11 +7,10 @@ optional cross-attention, and MLP layers.
 Reference: https://arxiv.org/abs/2212.09748 (DiT paper for adaLN-Zero)
 """
 
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
-
 
 # =============================================================================
 # DropPath (Stochastic Depth)
@@ -252,8 +251,8 @@ class Mlp(nn.Module):
     def __init__(
         self,
         in_features: int,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
+        hidden_features: int | None = None,
+        out_features: int | None = None,
         drop: float = 0.0,
     ):
         super().__init__()
@@ -330,7 +329,7 @@ class SiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
-        context: Optional[torch.Tensor] = None,
+        context: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:

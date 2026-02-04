@@ -6,23 +6,30 @@ or bravo+seg conditioning).
 """
 import logging
 import os
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_diffusion_augmentation, build_vae_augmentation
-from medgen.data.loaders.common import (
-    create_dataloader as create_dataloader_from_dataset,
-    DistributedArgs,
-    validate_mode_requirements,
-)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.utils import extract_slices_dual, extract_slices_single, merge_sequences, CFGDropoutDataset
+from medgen.data.loaders.common import (
+    DistributedArgs,
+    validate_mode_requirements,
+)
+from medgen.data.loaders.common import (
+    create_dataloader as create_dataloader_from_dataset,
+)
+from medgen.data.utils import (
+    CFGDropoutDataset,
+    extract_slices_dual,
+    extract_slices_single,
+    merge_sequences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +45,7 @@ def create_dataloader(
     augment: bool = True,
     augment_type: AugmentType = "diffusion",
     cfg_dropout_prob: float = 0.15,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create dataloader for single-image training (seg or bravo+seg).
 
     Args:
@@ -109,9 +116,9 @@ def create_dataloader(
 def create_validation_dataloader(
     cfg: DictConfig,
     image_type: str,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
     world_size: int = 1,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for single-image diffusion from val/ directory.
 
     Args:
@@ -179,8 +186,8 @@ def create_validation_dataloader(
 def create_test_dataloader(
     cfg: DictConfig,
     image_type: str,
-    batch_size: Optional[int] = None
-) -> Optional[Tuple[DataLoader, Dataset]]:
+    batch_size: int | None = None
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for single-image diffusion from test_new/ directory.
 
     Args:

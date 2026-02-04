@@ -6,9 +6,10 @@ during training for both DiffusionTrainer and VAETrainer.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,15 +43,15 @@ class WorstBatchTracker:
         """
         self.enabled = enabled
         self.worst_loss: float = 0.0
-        self.worst_data: Optional[Dict[str, Any]] = None
+        self.worst_data: dict[str, Any] | None = None
 
     def update(
         self,
         loss: float,
         original: Tensor,
         generated: Tensor,
-        loss_breakdown: Optional[Dict[str, float]] = None,
-        extra: Optional[Dict[str, Any]] = None,
+        loss_breakdown: dict[str, float] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> bool:
         """Update tracker if this batch has higher loss.
 
@@ -79,7 +80,7 @@ class WorstBatchTracker:
             return True
         return False
 
-    def get_and_reset(self) -> Optional[Dict[str, Any]]:
+    def get_and_reset(self) -> dict[str, Any] | None:
         """Get worst batch data (moved to CPU) and reset tracker.
 
         Returns:
@@ -106,10 +107,10 @@ class WorstBatchTracker:
 
     def log_and_reset(
         self,
-        writer: Optional[SummaryWriter],
+        writer: SummaryWriter | None,
         epoch: int,
         tag_prefix: str = "training",
-        save_path: Optional[str] = None,
+        save_path: str | None = None,
     ) -> None:
         """Log worst batch visualization to TensorBoard and reset.
 
@@ -144,9 +145,9 @@ def create_worst_batch_figure_3d(
     original: Tensor,
     generated: Tensor,
     loss: float,
-    loss_breakdown: Optional[Dict[str, float]] = None,
+    loss_breakdown: dict[str, float] | None = None,
     num_slices: int = 8,
-    channel_names: Optional[List[str]] = None,
+    channel_names: list[str] | None = None,
 ) -> "plt.Figure":
     """Create visualization figure for worst 3D volume.
 
@@ -259,8 +260,8 @@ def create_worst_batch_figure(
     original: Tensor,
     generated: Tensor,
     loss: float,
-    loss_breakdown: Optional[Dict[str, float]] = None,
-    extra: Optional[Dict[str, Any]] = None,
+    loss_breakdown: dict[str, float] | None = None,
+    extra: dict[str, Any] | None = None,
     max_samples: int = 8,
 ) -> plt.Figure:
     """Create visualization figure for worst batch.

@@ -9,21 +9,21 @@ augmentations (mixup, cutmix) via custom collate function.
 """
 import logging
 import os
-from typing import Callable, Dict, Optional, Tuple
+from collections.abc import Callable
 
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
-from medgen.data.loaders.common import (
-    DistributedArgs,
-    create_dataloader,
-    validate_mode_requirements,
-)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
+)
+from medgen.data.loaders.common import (
+    DistributedArgs,
+    create_dataloader,
+    validate_mode_requirements,
 )
 from medgen.data.utils import (
     extract_slices_dual,
@@ -42,7 +42,7 @@ def create_vae_dataloader(
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create dataloader for VAE training - correct single/dual modality handling.
 
     For VAE training, we never concatenate seg with images.
@@ -77,7 +77,7 @@ def create_vae_dataloader(
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: Dict[str, NiFTIDataset] = {}
+        datasets_dict: dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=data_dir, mr_sequence=key, transform=transform
@@ -118,7 +118,7 @@ def create_vae_dataloader(
     batch_aug_enabled = batch_aug_cfg.get('enabled', False)
 
     # Create collate function with batch augmentations if enabled
-    collate_fn: Optional[Callable] = None
+    collate_fn: Callable | None = None
     if batch_aug_enabled:
         mixup_prob = batch_aug_cfg.get('mixup_prob', 0.2)
         cutmix_prob = batch_aug_cfg.get('cutmix_prob', 0.2)
@@ -143,8 +143,8 @@ def create_vae_dataloader(
 def create_vae_validation_dataloader(
     cfg: DictConfig,
     modality: str,
-    batch_size: Optional[int] = None
-) -> Optional[Tuple[DataLoader, Dataset]]:
+    batch_size: int | None = None
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for VAE training from val/ directory.
 
     Loads data from the val/ subdirectory if it exists. Returns None if
@@ -186,7 +186,7 @@ def create_vae_validation_dataloader(
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: Dict[str, NiFTIDataset] = {}
+        datasets_dict: dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=val_dir, mr_sequence=key, transform=transform
@@ -234,8 +234,8 @@ def create_vae_validation_dataloader(
 def create_vae_test_dataloader(
     cfg: DictConfig,
     modality: str,
-    batch_size: Optional[int] = None
-) -> Optional[Tuple[DataLoader, Dataset]]:
+    batch_size: int | None = None
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for VAE evaluation from test_new/ directory.
 
     Loads data from the test_new/ subdirectory if it exists. Returns None if
@@ -276,7 +276,7 @@ def create_vae_test_dataloader(
     if modality == 'dual':
         # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
         image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: Dict[str, NiFTIDataset] = {}
+        datasets_dict: dict[str, NiFTIDataset] = {}
         for key in image_keys:
             datasets_dict[key] = NiFTIDataset(
                 data_dir=test_dir, mr_sequence=key, transform=transform
@@ -322,14 +322,14 @@ def create_vae_test_dataloader(
 
 # NOTE: VolumeDataset and DualVolumeDataset have been consolidated into datasets.py.
 # Import from there for backward compatibility.
-from medgen.data.loaders.datasets import VolumeDataset, DualVolumeDataset
+from medgen.data.loaders.datasets import DualVolumeDataset, VolumeDataset
 
 
 def create_vae_volume_validation_dataloader(
     cfg: DictConfig,
     modality: str,
     data_split: str = 'val',
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create dataloader that returns full 3D volumes for volume-level metrics.
 
     Unlike slice-based loaders, this returns [C, H, W, D] volumes without

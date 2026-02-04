@@ -12,16 +12,15 @@ import json
 import logging
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from medgen.metrics.unified import UnifiedMetrics
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def load_checkpoint_if_needed(
-    checkpoint_name: Optional[str],
+    checkpoint_name: str | None,
     save_dir: str,
     model: nn.Module,
     device: torch.device,
@@ -64,7 +63,7 @@ def load_checkpoint_if_needed(
 
 
 def save_test_results(
-    metrics: Dict[str, float],
+    metrics: dict[str, float],
     label: str,
     save_dir: str,
 ) -> str:
@@ -92,7 +91,7 @@ def log_test_header(label: str) -> None:
 
 
 def log_test_results(
-    metrics: Dict[str, float],
+    metrics: dict[str, float],
     label: str,
     n_samples: int,
 ) -> None:
@@ -131,8 +130,8 @@ def log_test_results(
 
 
 def log_metrics_to_tensorboard(
-    writer: Optional[SummaryWriter],
-    metrics: Dict[str, float],
+    writer: SummaryWriter | None,
+    metrics: dict[str, float],
     prefix: str,
     step: int = 0,
     unified_metrics: Optional["UnifiedMetrics"] = None,
@@ -198,8 +197,8 @@ def log_metrics_to_tensorboard(
 
 
 def log_test_per_modality(
-    writer: Optional[SummaryWriter],
-    metrics: Dict[str, float],
+    writer: SummaryWriter | None,
+    metrics: dict[str, float],
     prefix: str,
     modality: str,
     step: int = 0,
@@ -297,11 +296,11 @@ class BaseTestEvaluator(ABC):
         model: nn.Module,
         device: torch.device,
         save_dir: str,
-        writer: Optional[SummaryWriter] = None,
-        metrics_config: Optional[MetricsConfig] = None,
+        writer: SummaryWriter | None = None,
+        metrics_config: MetricsConfig | None = None,
         is_cluster: bool = False,
-        worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        modality_name: Optional[str] = None,
+        worst_batch_figure_fn: Callable[[dict[str, Any]], Any] | None = None,
+        modality_name: str | None = None,
         unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize test evaluator.
@@ -332,9 +331,9 @@ class BaseTestEvaluator(ABC):
     def evaluate(
         self,
         test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-        get_eval_model: Optional[Callable[[], nn.Module]] = None,
-    ) -> Dict[str, float]:
+        checkpoint_name: str | None = None,
+        get_eval_model: Callable[[], nn.Module] | None = None,
+    ) -> dict[str, float]:
         """Run test evaluation.
 
         Args:
@@ -400,7 +399,7 @@ class BaseTestEvaluator(ABC):
         self,
         test_loader: DataLoader,
         model: nn.Module,
-    ) -> Tuple[Dict[str, float], Optional[Any]]:
+    ) -> tuple[dict[str, float], Any | None]:
         """Run the evaluation loop over all batches.
 
         Args:
@@ -461,7 +460,7 @@ class BaseTestEvaluator(ABC):
 
         return metrics, worst_batch_data
 
-    def _init_accumulators(self) -> Dict[str, float]:
+    def _init_accumulators(self) -> dict[str, float]:
         """Initialize metric accumulators based on config."""
         accumulators = {}
         if self.metrics_config.seg_mode:
@@ -483,7 +482,7 @@ class BaseTestEvaluator(ABC):
                 accumulators['msssim'] = 0.0
         return accumulators
 
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def _prepare_batch(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare batch for evaluation, handling dict, tuple, or tensor inputs.
 
         Handles three input formats:
@@ -523,19 +522,19 @@ class BaseTestEvaluator(ABC):
         self,
         model: nn.Module,
         batch_data: Any,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute metrics for a single batch. Subclass implements."""
         pass
 
     def _capture_worst_batch(
         self,
         batch_data: Any,
-        batch_metrics: Dict[str, float],
-    ) -> Optional[Any]:
+        batch_metrics: dict[str, float],
+    ) -> Any | None:
         """Capture data for worst batch visualization. Can be overridden."""
         return None
 
-    def _add_additional_metrics(self, metrics: Dict[str, float]) -> None:
+    def _add_additional_metrics(self, metrics: dict[str, float]) -> None:
         """Add additional metrics after main loop. Can be overridden."""
         pass
 
@@ -596,15 +595,15 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         save_dir: str,
         forward_fn: Callable[[nn.Module, torch.Tensor], torch.Tensor],
         weight_dtype: torch.dtype = torch.bfloat16,
-        writer: Optional[SummaryWriter] = None,
-        metrics_config: Optional[MetricsConfig] = None,
+        writer: SummaryWriter | None = None,
+        metrics_config: MetricsConfig | None = None,
         is_cluster: bool = False,
-        regional_tracker_factory: Optional[Callable[[], Any]] = None,
-        volume_3d_msssim_fn: Optional[Callable[[], Optional[float]]] = None,
-        worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        image_keys: Optional[List[str]] = None,
-        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
-        modality_name: Optional[str] = None,
+        regional_tracker_factory: Callable[[], Any] | None = None,
+        volume_3d_msssim_fn: Callable[[], float | None] | None = None,
+        worst_batch_figure_fn: Callable[[dict[str, Any]], Any] | None = None,
+        image_keys: list[str] | None = None,
+        seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
+        modality_name: str | None = None,
         unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize 2D compression evaluator.
@@ -639,17 +638,17 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         self.volume_3d_msssim_fn = volume_3d_msssim_fn
         self.image_keys = image_keys
         self.seg_loss_fn = seg_loss_fn
-        self._regional_tracker: Optional[Any] = None
+        self._regional_tracker: Any | None = None
         # Per-channel metric accumulators
-        self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
+        self._per_channel_metrics: dict[str, dict[str, float]] = {}
         self._per_channel_count: int = 0
 
     def evaluate(
         self,
         test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-        get_eval_model: Optional[Callable[[], nn.Module]] = None,
-    ) -> Dict[str, float]:
+        checkpoint_name: str | None = None,
+        get_eval_model: Callable[[], nn.Module] | None = None,
+    ) -> dict[str, float]:
         """Run test evaluation with optional regional tracking."""
         # Create regional tracker if configured
         if self.regional_tracker_factory is not None:
@@ -698,7 +697,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         return result
 
-    def _prepare_batch(self, batch: Any) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def _prepare_batch(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare batch for evaluation, handling extra seg channel in tensor.
 
         For dual/multi-modality modes, test dataloader may return concatenated
@@ -719,7 +718,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
         return images, mask
 
-    def _get_batch_size(self, batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> int:
+    def _get_batch_size(self, batch_data: tuple[torch.Tensor, torch.Tensor | None]) -> int:
         """Get batch size from prepared batch."""
         images, _ = batch_data
         return images.shape[0]
@@ -727,11 +726,18 @@ class CompressionTestEvaluator(BaseTestEvaluator):
     def _compute_batch_metrics(
         self,
         model: nn.Module,
-        batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]],
-    ) -> Dict[str, float]:
+        batch_data: tuple[torch.Tensor, torch.Tensor | None],
+    ) -> dict[str, float]:
         """Compute metrics for a single batch."""
         from torch.amp import autocast
-        from medgen.metrics import compute_lpips, compute_msssim, compute_psnr, compute_dice, compute_iou
+
+        from medgen.metrics import (
+            compute_dice,
+            compute_iou,
+            compute_lpips,
+            compute_msssim,
+            compute_psnr,
+        )
 
         images, mask = batch_data
 
@@ -804,9 +810,9 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
     def _capture_worst_batch(
         self,
-        batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]],
-        batch_metrics: Dict[str, float],
-    ) -> Optional[Dict[str, Any]]:
+        batch_data: tuple[torch.Tensor, torch.Tensor | None],
+        batch_metrics: dict[str, float],
+    ) -> dict[str, Any] | None:
         """Capture worst batch data for visualization."""
         if not hasattr(self, '_current_batch'):
             return None
@@ -831,7 +837,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
             'loss_breakdown': loss_breakdown,
         }
 
-    def _add_additional_metrics(self, metrics: Dict[str, float]) -> None:
+    def _add_additional_metrics(self, metrics: dict[str, float]) -> None:
         """Add volume-level 3D MS-SSIM if configured."""
         if self.volume_3d_msssim_fn is not None:
             msssim_3d = self.volume_3d_msssim_fn()
@@ -857,14 +863,14 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         save_dir: str,
         forward_fn: Callable[[nn.Module, torch.Tensor], torch.Tensor],
         weight_dtype: torch.dtype = torch.bfloat16,
-        writer: Optional[SummaryWriter] = None,
-        metrics_config: Optional[MetricsConfig] = None,
+        writer: SummaryWriter | None = None,
+        metrics_config: MetricsConfig | None = None,
         is_cluster: bool = False,
-        regional_tracker_factory: Optional[Callable[[], Any]] = None,
-        worst_batch_figure_fn: Optional[Callable[[Dict[str, Any]], Any]] = None,
-        image_keys: Optional[List[str]] = None,
-        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
-        modality_name: Optional[str] = None,
+        regional_tracker_factory: Callable[[], Any] | None = None,
+        worst_batch_figure_fn: Callable[[dict[str, Any]], Any] | None = None,
+        image_keys: list[str] | None = None,
+        seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
+        modality_name: str | None = None,
         unified_metrics: Optional["UnifiedMetrics"] = None,
     ):
         """Initialize 3D compression evaluator.
@@ -896,11 +902,11 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         self.regional_tracker_factory = regional_tracker_factory
         self.image_keys = image_keys
         self.seg_loss_fn = seg_loss_fn
-        self._regional_tracker: Optional[Any] = None
-        self._per_channel_metrics: Dict[str, Dict[str, float]] = {}
+        self._regional_tracker: Any | None = None
+        self._per_channel_metrics: dict[str, dict[str, float]] = {}
         self._per_channel_count: int = 0
 
-    def _init_accumulators(self) -> Dict[str, float]:
+    def _init_accumulators(self) -> dict[str, float]:
         """Initialize accumulators including 3D MS-SSIM."""
         accumulators = super()._init_accumulators()
         if self.metrics_config.compute_msssim_3d:
@@ -910,9 +916,9 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
     def evaluate(
         self,
         test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None,
-        get_eval_model: Optional[Callable[[], nn.Module]] = None,
-    ) -> Dict[str, float]:
+        checkpoint_name: str | None = None,
+        get_eval_model: Callable[[], nn.Module] | None = None,
+    ) -> dict[str, float]:
         """Run test evaluation with optional regional tracking."""
         if self.regional_tracker_factory is not None:
             self._regional_tracker = self.regional_tracker_factory()
@@ -962,7 +968,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 
         return result
 
-    def _get_batch_size(self, batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]]) -> int:
+    def _get_batch_size(self, batch_data: tuple[torch.Tensor, torch.Tensor | None]) -> int:
         """Get batch size from prepared batch."""
         images, _ = batch_data
         return images.shape[0]
@@ -970,17 +976,18 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
     def _compute_batch_metrics(
         self,
         model: nn.Module,
-        batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]],
-    ) -> Dict[str, float]:
+        batch_data: tuple[torch.Tensor, torch.Tensor | None],
+    ) -> dict[str, float]:
         """Compute metrics for a single 3D batch."""
         from torch.amp import autocast
+
         from medgen.metrics import (
+            compute_dice,
+            compute_iou,
             compute_lpips_3d,
             compute_msssim,
             compute_msssim_2d_slicewise,
             compute_psnr,
-            compute_dice,
-            compute_iou,
         )
 
         images, mask = batch_data
@@ -1069,9 +1076,9 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 
     def _capture_worst_batch(
         self,
-        batch_data: Tuple[torch.Tensor, Optional[torch.Tensor]],
-        batch_metrics: Dict[str, float],
-    ) -> Optional[Dict[str, Any]]:
+        batch_data: tuple[torch.Tensor, torch.Tensor | None],
+        batch_metrics: dict[str, float],
+    ) -> dict[str, Any] | None:
         """Capture worst batch data for 3D visualization."""
         if not hasattr(self, '_current_batch'):
             return None

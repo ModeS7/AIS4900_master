@@ -5,8 +5,9 @@ into a reusable component.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 from torch import nn
@@ -14,6 +15,7 @@ from torch.amp import autocast
 from torch.utils.data import DataLoader
 
 from medgen.metrics import (
+    WorstBatchTracker,
     compute_dice,
     compute_iou,
     compute_lpips,
@@ -22,7 +24,6 @@ from medgen.metrics import (
     compute_msssim_2d_slicewise,
     compute_psnr,
 )
-from medgen.metrics import WorstBatchTracker
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +58,9 @@ class ValidationConfig:
 class ValidationResult:
     """Result from a validation run."""
 
-    metrics: Dict[str, float]
-    worst_batch_data: Optional[Dict[str, Any]] = None
-    regional_tracker: Optional[Any] = None
+    metrics: dict[str, float]
+    worst_batch_data: dict[str, Any] | None = None
+    regional_tracker: Any | None = None
 
 
 class ValidationRunner:
@@ -92,12 +93,12 @@ class ValidationRunner:
         self,
         config: ValidationConfig,
         device: torch.device,
-        forward_fn: Callable[[nn.Module, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]],
-        perceptual_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
-        seg_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, float]]]] = None,
-        regional_tracker_factory: Optional[Callable[[], Any]] = None,
-        seg_regional_tracker_factory: Optional[Callable[[], Any]] = None,
-        prepare_batch_fn: Optional[Callable[[Any], Tuple[torch.Tensor, Optional[torch.Tensor]]]] = None,
+        forward_fn: Callable[[nn.Module, torch.Tensor], tuple[torch.Tensor, torch.Tensor]],
+        perceptual_loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
+        seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
+        regional_tracker_factory: Callable[[], Any] | None = None,
+        seg_regional_tracker_factory: Callable[[], Any] | None = None,
+        prepare_batch_fn: Callable[[Any], tuple[torch.Tensor, torch.Tensor | None]] | None = None,
     ):
         """Initialize validation runner.
 
@@ -124,7 +125,7 @@ class ValidationRunner:
     def _default_prepare_batch(
         self,
         batch: Any,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Default batch preparation."""
         if isinstance(batch, dict):
             images = batch.get('image', batch.get('images'))

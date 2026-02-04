@@ -24,13 +24,12 @@ Usage:
     weight_map = weight_computer(seg_mask)  # [B, 1, D, H, W]
 """
 import logging
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
-from torch import Tensor
 from scipy.ndimage import label as scipy_label
 from skimage.measure import regionprops
+from torch import Tensor
 
 from medgen.metrics import TUMOR_SIZE_THRESHOLDS_MM
 
@@ -96,12 +95,12 @@ class RegionalWeightComputer:
     def __init__(
         self,
         spatial_dims: int = 2,
-        image_size: Optional[int] = None,
-        volume_size: Optional[Tuple[int, int, int]] = None,
-        weights: Optional[Dict[str, float]] = None,
+        image_size: int | None = None,
+        volume_size: tuple[int, int, int] | None = None,
+        weights: dict[str, float] | None = None,
         background_weight: float = 1.0,
         fov_mm: float = 240.0,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ):
         self.spatial_dims = spatial_dims
         self.weights = weights or {
@@ -232,8 +231,8 @@ class RegionalWeightComputer3D(RegionalWeightComputer):
 
 def create_regional_weight_computer(
     cfg,
-    spatial_dims: Optional[int] = None,
-) -> Optional[RegionalWeightComputer]:
+    spatial_dims: int | None = None,
+) -> RegionalWeightComputer | None:
     """Create RegionalWeightComputer from config.
 
     Auto-detects 2D vs 3D from config if spatial_dims not specified.

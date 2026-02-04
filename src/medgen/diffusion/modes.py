@@ -7,7 +7,7 @@ generation modes.
 """
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import torch
 
@@ -37,7 +37,7 @@ def _validate_tensor(value: Any, name: str) -> torch.Tensor:
     return value
 
 
-def _validate_dict_keys(batch: Dict[str, Any], required_keys: List[str], context: str) -> None:
+def _validate_dict_keys(batch: dict[str, Any], required_keys: list[str], context: str) -> None:
     """Validate that dict contains all required keys.
 
     Args:
@@ -53,7 +53,7 @@ def _validate_dict_keys(batch: Dict[str, Any], required_keys: List[str], context
             raise KeyError(f"{context}: missing required key '{key}'")
 
 
-def _to_device(batch: Union[torch.Tensor, Dict[str, Any], tuple], device: torch.device) -> Union[torch.Tensor, Dict[str, Any], tuple]:
+def _to_device(batch: torch.Tensor | dict[str, Any] | tuple, device: torch.device) -> torch.Tensor | dict[str, Any] | tuple:
     """Convert batch tensor, dict, or tuple to device, handling MONAI MetaTensors.
 
     MetaTensors from MONAI need to be converted to regular tensors
@@ -115,10 +115,10 @@ def _is_latent_batch(batch: Any) -> bool:
 
 
 def _prepare_latent_batch(
-    batch: Dict[str, Any],
+    batch: dict[str, Any],
     device: torch.device,
     is_conditional: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Prepare latent batch for training.
 
     Latent batches have format:
@@ -168,7 +168,7 @@ class TrainingMode(ABC):
     @abstractmethod
     def prepare_batch(
         self, batch: torch.Tensor, device: torch.device
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Prepare batch data for training.
 
         Args:
@@ -181,7 +181,7 @@ class TrainingMode(ABC):
         pass
 
     @abstractmethod
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Return model configuration.
 
         Returns:
@@ -192,8 +192,8 @@ class TrainingMode(ABC):
     @abstractmethod
     def format_model_input(
         self,
-        noisy_images: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        noisy_images: torch.Tensor | dict[str, torch.Tensor],
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Format input for model forward pass.
 
@@ -224,8 +224,8 @@ class SegmentationMode(TrainingMode):
         return False
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare segmentation batch.
 
         Args:
@@ -273,7 +273,7 @@ class SegmentationMode(TrainingMode):
             f"got {type(batch).__name__}"
         )
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_seg] = 1 input channel
@@ -290,7 +290,7 @@ class SegmentationMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Format model input (no conditioning).
 
@@ -321,8 +321,8 @@ class ConditionalSingleMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare conditional single batch.
 
         Args:
@@ -373,7 +373,7 @@ class ConditionalSingleMode(TrainingMode):
             'labels': seg_masks
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_bravo, seg_mask] = 2 input channels
@@ -390,7 +390,7 @@ class ConditionalSingleMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Concatenate noisy BRAVO with segmentation mask.
 
@@ -416,7 +416,7 @@ class ConditionalDualMode(TrainingMode):
     images anatomically consistent.
     """
 
-    def __init__(self, image_keys: List[str] = None) -> None:
+    def __init__(self, image_keys: list[str] = None) -> None:
         """Initialize conditional dual mode.
 
         Args:
@@ -427,7 +427,7 @@ class ConditionalDualMode(TrainingMode):
             image_keys = DEFAULT_DUAL_IMAGE_KEYS.copy()
         if len(image_keys) != 2:
             raise ValueError(f"ConditionalDualMode requires exactly 2 image types, got {len(image_keys)}: {image_keys}")
-        self.image_keys: List[str] = image_keys
+        self.image_keys: list[str] = image_keys
 
     @property
     def is_conditional(self) -> bool:
@@ -435,8 +435,8 @@ class ConditionalDualMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare conditional dual batch.
 
         Args:
@@ -453,7 +453,7 @@ class ConditionalDualMode(TrainingMode):
             return _prepare_latent_batch(batch, device, is_conditional=True)
 
         batch = _to_device(batch, device)
-        images: Dict[str, torch.Tensor] = {
+        images: dict[str, torch.Tensor] = {
             self.image_keys[0]: batch[:, 0:1, :, :],
             self.image_keys[1]: batch[:, 1:2, :, :],
         }
@@ -464,7 +464,7 @@ class ConditionalDualMode(TrainingMode):
             'labels': seg_mask
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_t1_pre, noisy_t1_gd, seg_mask] = 3 input channels
@@ -480,8 +480,8 @@ class ConditionalDualMode(TrainingMode):
 
     def format_model_input(
         self,
-        noisy_images: Dict[str, torch.Tensor],
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        noisy_images: dict[str, torch.Tensor],
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Concatenate both noisy images with segmentation mask.
 
@@ -534,7 +534,7 @@ class MultiModalityMode(TrainingMode):
     with mode embedding to identify which modality is being generated.
     """
 
-    def __init__(self, image_keys: List[str] = None) -> None:
+    def __init__(self, image_keys: list[str] = None) -> None:
         """Initialize multi-modality mode.
 
         Args:
@@ -543,7 +543,7 @@ class MultiModalityMode(TrainingMode):
         """
         if image_keys is None:
             image_keys = ['bravo', 'flair', 't1_pre', 't1_gd']
-        self.image_keys: List[str] = image_keys
+        self.image_keys: list[str] = image_keys
 
     @property
     def is_conditional(self) -> bool:
@@ -551,8 +551,8 @@ class MultiModalityMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare multi-modality batch with mode_id.
 
         Args:
@@ -594,7 +594,7 @@ class MultiModalityMode(TrainingMode):
             'mode_id': batch['mode_id'],
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_image, seg_mask] = 2 input channels (same as bravo)
@@ -611,7 +611,7 @@ class MultiModalityMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Concatenate noisy image with segmentation mask.
 
@@ -641,7 +641,7 @@ class SegmentationConditionedMode(TrainingMode):
     Conditioning is done via embedding (added to timestep), NOT concatenation.
     """
 
-    def __init__(self, size_bin_config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, size_bin_config: dict[str, Any] | None = None) -> None:
         """Initialize segmentation conditioned mode.
 
         Args:
@@ -664,8 +664,8 @@ class SegmentationConditionedMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare segmentation conditioned batch with size_bins.
 
         Args:
@@ -692,7 +692,7 @@ class SegmentationConditionedMode(TrainingMode):
             'size_bins': batch['size_bins'],
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_seg] = 1 input channel (conditioning via embedding)
@@ -709,7 +709,7 @@ class SegmentationConditionedMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Format model input (no concatenation, conditioning via embedding).
 
@@ -736,7 +736,7 @@ class SegmentationConditionedInputMode(TrainingMode):
     The bin_maps are normalized to [0, 1] (count / max_count).
     """
 
-    def __init__(self, size_bin_config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, size_bin_config: dict[str, Any] | None = None) -> None:
         """Initialize segmentation conditioned input mode.
 
         Args:
@@ -756,8 +756,8 @@ class SegmentationConditionedInputMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare batch with bin_maps for input conditioning.
 
         Args:
@@ -779,7 +779,7 @@ class SegmentationConditionedInputMode(TrainingMode):
             'bin_maps': batch.get('bin_maps'),
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Model takes: [noisy_seg, bin_maps] = 1 + num_bins input channels
@@ -796,7 +796,7 @@ class SegmentationConditionedInputMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Format model input by concatenating bin_maps.
 
@@ -856,8 +856,8 @@ class LatentSegConditionedMode(TrainingMode):
         return True
 
     def prepare_batch(
-        self, batch: Union[torch.Tensor, Dict[str, Any]], device: torch.device
-    ) -> Dict[str, Any]:
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
         """Prepare batch with latent seg conditioning.
 
         Expects batch from LatentDataset with:
@@ -906,7 +906,7 @@ class LatentSegConditionedMode(TrainingMode):
             'labels_is_latent': True,  # Flag: labels are already in latent space
         }
 
-    def get_model_config(self) -> Dict[str, int]:
+    def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
         Returns pixel-equivalent channels so that space.get_latent_channels()
@@ -925,7 +925,7 @@ class LatentSegConditionedMode(TrainingMode):
     def format_model_input(
         self,
         noisy_images: torch.Tensor,
-        labels_dict: Dict[str, Optional[torch.Tensor]]
+        labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
         """Concatenate noisy bravo latent with seg latent.
 

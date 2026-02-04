@@ -15,18 +15,17 @@ Based on:
 - DC-VideoGen: https://arxiv.org/abs/2509.25182
 """
 import math
-from typing import Tuple
 
 import torch
 import torch.nn as nn
 
+from ..pipeline.checkpointing import BaseCheckpointedModel
 from .dcae_3d_ops import (
     DCDownBlock3D,
     DCUpBlock3D,
     ResBlock3D,
     RMSNorm3D,
 )
-from ..pipeline.checkpointing import BaseCheckpointedModel
 
 
 class Encoder3D(nn.Module):
@@ -48,9 +47,9 @@ class Encoder3D(nn.Module):
         self,
         in_channels: int,
         latent_channels: int,
-        block_out_channels: Tuple[int, ...] = (64, 128, 256, 256, 512, 512),
-        layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
-        depth_factors: Tuple[int, ...] = (2, 2, 1, 1, 1),
+        block_out_channels: tuple[int, ...] = (64, 128, 256, 256, 512, 512),
+        layers_per_block: tuple[int, ...] = (2, 2, 2, 2, 2, 2),
+        depth_factors: tuple[int, ...] = (2, 2, 1, 1, 1),
         out_shortcut: bool = True,
     ) -> None:
         super().__init__()
@@ -153,9 +152,9 @@ class Decoder3D(nn.Module):
         self,
         in_channels: int,
         latent_channels: int,
-        block_out_channels: Tuple[int, ...] = (64, 128, 256, 256, 512, 512),
-        layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
-        depth_factors: Tuple[int, ...] = (2, 2, 1, 1, 1),
+        block_out_channels: tuple[int, ...] = (64, 128, 256, 256, 512, 512),
+        layers_per_block: tuple[int, ...] = (2, 2, 2, 2, 2, 2),
+        depth_factors: tuple[int, ...] = (2, 2, 1, 1, 1),
         in_shortcut: bool = True,
     ) -> None:
         super().__init__()
@@ -280,11 +279,11 @@ class AutoencoderDC3D(nn.Module):
         self,
         in_channels: int = 4,
         latent_channels: int = 32,
-        encoder_block_out_channels: Tuple[int, ...] = (64, 128, 256, 256, 512, 512),
-        decoder_block_out_channels: Tuple[int, ...] = (64, 128, 256, 256, 512, 512),
-        encoder_layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
-        decoder_layers_per_block: Tuple[int, ...] = (2, 2, 2, 2, 2, 2),
-        depth_factors: Tuple[int, ...] = (2, 2, 1, 1, 1),
+        encoder_block_out_channels: tuple[int, ...] = (64, 128, 256, 256, 512, 512),
+        decoder_block_out_channels: tuple[int, ...] = (64, 128, 256, 256, 512, 512),
+        encoder_layers_per_block: tuple[int, ...] = (2, 2, 2, 2, 2, 2),
+        decoder_layers_per_block: tuple[int, ...] = (2, 2, 2, 2, 2, 2),
+        depth_factors: tuple[int, ...] = (2, 2, 1, 1, 1),
         encoder_out_shortcut: bool = True,
         decoder_in_shortcut: bool = True,
         scaling_factor: float = 1.0,

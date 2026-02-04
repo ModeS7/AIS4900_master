@@ -9,7 +9,6 @@ Monitors codebook health by tracking:
 Reference: https://arxiv.org/abs/1711.00937 (VQ-VAE paper)
 """
 import logging
-from typing import Dict
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -83,7 +82,7 @@ class CodebookTracker:
         counts = torch.bincount(flat_indices, minlength=self.num_embeddings)
         self._usage_counts += counts
 
-    def compute(self) -> Dict[str, float]:
+    def compute(self) -> dict[str, float]:
         """Compute codebook metrics from accumulated counts.
 
         Returns:
@@ -145,7 +144,7 @@ class CodebookTracker:
         writer: SummaryWriter,
         epoch: int,
         prefix: str = 'Codebook',
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Log codebook metrics to TensorBoard.
 
         Args:

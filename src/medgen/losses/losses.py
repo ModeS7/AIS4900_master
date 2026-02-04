@@ -6,13 +6,11 @@ like multi-channel inputs consistently across all trainers.
 """
 import logging
 import os
-from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
-
 from monai.losses import PerceptualLoss as MonaiPerceptualLoss
+from torch import Tensor, nn
 
 # Import LPIPS library (Zhang et al. 2018)
 try:
@@ -54,9 +52,9 @@ class PerceptualLoss(nn.Module):
         self,
         spatial_dims: int = 2,
         network_type: str = "radimagenet_resnet50",
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
         pretrained: bool = True,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         use_compile: bool = False,
     ) -> None:
         super().__init__()
@@ -118,8 +116,8 @@ class PerceptualLoss(nn.Module):
 
     def forward_dict(
         self,
-        input: Dict[str, Tensor],
-        target: Dict[str, Tensor],
+        input: dict[str, Tensor],
+        target: dict[str, Tensor],
     ) -> Tensor:
         """Compute perceptual loss for dict inputs (like DiffusionTrainer dual mode).
 
@@ -137,8 +135,8 @@ class PerceptualLoss(nn.Module):
 
     def __call__(
         self,
-        input: Union[Tensor, Dict[str, Tensor]],
-        target: Union[Tensor, Dict[str, Tensor]],
+        input: Tensor | dict[str, Tensor],
+        target: Tensor | dict[str, Tensor],
     ) -> Tensor:
         """Compute perceptual loss, auto-detecting input type.
 
@@ -179,7 +177,7 @@ class LPIPSLoss(nn.Module):
     def __init__(
         self,
         net: str = "vgg",
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         use_compile: bool = False,
     ) -> None:
         super().__init__()
@@ -245,8 +243,8 @@ class LPIPSLoss(nn.Module):
 
     def forward_dict(
         self,
-        input: Dict[str, Tensor],
-        target: Dict[str, Tensor],
+        input: dict[str, Tensor],
+        target: dict[str, Tensor],
     ) -> Tensor:
         """Compute LPIPS loss for dict inputs.
 
@@ -264,8 +262,8 @@ class LPIPSLoss(nn.Module):
 
     def __call__(
         self,
-        input: Union[Tensor, Dict[str, Tensor]],
-        target: Union[Tensor, Dict[str, Tensor]],
+        input: Tensor | dict[str, Tensor],
+        target: Tensor | dict[str, Tensor],
     ) -> Tensor:
         """Compute LPIPS loss, auto-detecting input type.
 
@@ -331,7 +329,7 @@ class SegmentationLoss(nn.Module):
         self,
         logits: Tensor,
         target: Tensor,
-    ) -> Tuple[Tensor, Dict[str, float]]:
+    ) -> tuple[Tensor, dict[str, float]]:
         """Compute combined segmentation loss.
 
         Args:

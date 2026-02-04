@@ -24,14 +24,13 @@ v2 mode adds structured masking patterns:
 """
 
 import random
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 
 from medgen.models.wrappers import create_zero_init_mlp
-
 
 # =============================================================================
 # Fixed Pattern Definitions (16 total)
@@ -180,7 +179,7 @@ def generate_pattern_mask(
     pattern_id: int,
     H: int,
     W: int,
-    D: Optional[int] = None,
+    D: int | None = None,
     spatial_dims: int = 2,
 ) -> torch.Tensor:
     """Generate mask for a fixed pattern ID.
@@ -370,9 +369,9 @@ class ScoreAugTransform:
             self._enabled_patterns.extend([12, 13, 14, 15])
 
         # Cache for pattern masks (generated lazily per image size)
-        self._pattern_cache: Dict[Tuple[int, ...], torch.Tensor] = {}
+        self._pattern_cache: dict[tuple[int, ...], torch.Tensor] = {}
 
-    def sample_transform(self) -> Tuple[str, Dict[str, Any]]:
+    def sample_transform(self) -> tuple[str, dict[str, Any]]:
         """Sample a random transform with equal probability (per paper).
 
         Identity is always included as one option. All enabled transforms
@@ -404,7 +403,7 @@ class ScoreAugTransform:
 
         return 'identity', {}
 
-    def _sample_spatial_transform(self) -> Tuple[str, Dict[str, Any]]:
+    def _sample_spatial_transform(self) -> tuple[str, dict[str, Any]]:
         """Sample a spatial transform (rotation or flip)."""
         spatial_options = []
 
@@ -444,7 +443,7 @@ class ScoreAugTransform:
 
         return random.choice(spatial_options)
 
-    def _sample_translation(self) -> Tuple[str, Dict[str, Any]]:
+    def _sample_translation(self) -> tuple[str, dict[str, Any]]:
         """Sample a translation transform."""
         if self.spatial_dims == 2:
             # Asymmetric: ±40% X, ±20% Y (brain is oval, more vertical space taken)
@@ -458,7 +457,7 @@ class ScoreAugTransform:
             dw = random.uniform(-0.4, 0.4)
             return 'translate', {'dd': dd, 'dh': dh, 'dw': dw}
 
-    def _sample_cutout(self) -> Tuple[str, Dict[str, Any]]:
+    def _sample_cutout(self) -> tuple[str, dict[str, Any]]:
         """Sample a cutout transform."""
         if self.spatial_dims == 2:
             # Random rectangle (not square) - sample width/height independently
@@ -477,7 +476,7 @@ class ScoreAugTransform:
             return 'cutout', {'cd': cd, 'ch': ch, 'cw': cw,
                              'size_d': size_d, 'size_h': size_h, 'size_w': size_w}
 
-    def sample_compose_transforms(self) -> List[Tuple[str, Dict[str, Any]]]:
+    def sample_compose_transforms(self) -> list[tuple[str, dict[str, Any]]]:
         """Sample multiple transforms independently for compose mode.
 
         Each enabled transform has compose_prob chance of being applied.
@@ -506,7 +505,7 @@ class ScoreAugTransform:
 
         return transforms
 
-    def sample_v2_transforms(self) -> Tuple[List[Tuple[str, Dict[str, Any]]], Optional[Tuple[str, Dict[str, Any]]]]:
+    def sample_v2_transforms(self) -> tuple[list[tuple[str, dict[str, Any]]], tuple[str, dict[str, Any]] | None]:
         """Sample transforms for v2 mode: non-destructive stack + one destructive.
 
         Non-destructive transforms (can stack): rotation, flip, translation
@@ -597,7 +596,7 @@ class ScoreAugTransform:
         self,
         x: torch.Tensor,
         transform_type: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
     ) -> torch.Tensor:
         """Apply transform to tensor.
 
@@ -811,8 +810,8 @@ class ScoreAugTransform:
     def inverse_apply(
         self,
         x: torch.Tensor,
-        omega: Optional[Dict[str, Any]],
-    ) -> Optional[torch.Tensor]:
+        omega: dict[str, Any] | None,
+    ) -> torch.Tensor | None:
         """Apply inverse transform to tensor.
 
         For invertible transforms (rotation, flip), applies the inverse to
@@ -867,7 +866,7 @@ class ScoreAugTransform:
 
         return x
 
-    def requires_omega(self, omega: Optional[Dict[str, Any]]) -> bool:
+    def requires_omega(self, omega: dict[str, Any] | None) -> bool:
         """Check if transform requires omega conditioning.
 
         Per paper: rotation requires conditioning because noise is rotation-invariant.
@@ -898,7 +897,7 @@ class ScoreAugTransform:
     def apply_omega(
         self,
         x: torch.Tensor,
-        omega: Optional[Dict[str, Any]],
+        omega: dict[str, Any] | None,
     ) -> torch.Tensor:
         """Apply transform(s) from omega dict to tensor.
 
@@ -927,8 +926,8 @@ class ScoreAugTransform:
     def inverse_apply_omega(
         self,
         x: torch.Tensor,
-        omega: Optional[Dict[str, Any]],
-    ) -> Optional[torch.Tensor]:
+        omega: dict[str, Any] | None,
+    ) -> torch.Tensor | None:
         """Apply inverse transform(s) from omega dict to tensor.
 
         Handles both single-transform and compose mode omega formats.
@@ -961,7 +960,7 @@ class ScoreAugTransform:
         self,
         noisy_input: torch.Tensor,
         target: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, Any]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any] | None]:
         """Apply ScoreAug transform to noisy input and target.
 
         Args:
@@ -1068,9 +1067,9 @@ MODE_INTENSITY_SCALE_INV = {k: 1.0 / v for k, v in MODE_INTENSITY_SCALE.items()}
 
 def apply_mode_intensity_scale(
     x: torch.Tensor,
-    mode_id: Optional[torch.Tensor],
+    mode_id: torch.Tensor | None,
     spatial_dims: int = 2,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply modality-specific intensity scaling to input (per-sample).
 
     This makes mode conditioning NECESSARY for correct predictions.
@@ -1150,9 +1149,9 @@ OMEGA_ENCODING_DIM = 36
 
 
 def encode_omega(
-    omega: Optional[Dict[str, Any]],
+    omega: dict[str, Any] | None,
     device: torch.device,
-    mode_id: Optional[torch.Tensor] = None,
+    mode_id: torch.Tensor | None = None,
     spatial_dims: int = 2,
 ) -> torch.Tensor:
     """Encode omega dict into tensor format for MLP.
@@ -1212,7 +1211,7 @@ def encode_omega(
 def _encode_single_transform(
     enc: torch.Tensor,
     transform_type: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     spatial_dims: int,
     is_v2: bool = True,
 ) -> None:
@@ -1289,7 +1288,7 @@ def _encode_single_transform(
 def _encode_single_transform_legacy(
     enc: torch.Tensor,
     transform_type: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     spatial_dims: int,
 ) -> None:
     """Encode a single transform for legacy single-transform mode (in-place)."""
@@ -1392,8 +1391,8 @@ class ScoreAugModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        omega: Optional[Dict[str, Any]] = None,
-        mode_id: Optional[torch.Tensor] = None,
+        omega: dict[str, Any] | None = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with omega conditioning.
 
@@ -1470,8 +1469,8 @@ MODE_INTENSITY_SCALE_INV_3D = MODE_INTENSITY_SCALE_INV
 
 def apply_mode_intensity_scale_3d(
     x: torch.Tensor,
-    mode_id: Optional[torch.Tensor],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    mode_id: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply modality-specific intensity scaling to 3D input (per-sample).
 
     Backwards compatibility alias for apply_mode_intensity_scale with spatial_dims=3.
@@ -1491,9 +1490,9 @@ def inverse_mode_intensity_scale_3d(
 
 
 def encode_omega_3d(
-    omega: Optional[Dict[str, Any]],
+    omega: dict[str, Any] | None,
     device: torch.device,
-    mode_id: Optional[torch.Tensor] = None,
+    mode_id: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Encode 3D omega dict into tensor format for MLP.
 

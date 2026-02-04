@@ -11,12 +11,15 @@ Key difference from naive channel masking:
 Reference: DC-Gen (https://arxiv.org/abs/2412.09612)
 """
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Union
 
 import torch
 import torch.nn as nn
 
 from .dcae_adaptive_layers import AdaptiveInputConv2d, AdaptiveOutputConv2d, copy_conv_weights
+
+if TYPE_CHECKING:
+    from diffusers.models.autoencoders.autoencoder_dc import DecoderOutput, EncoderOutput
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,7 @@ class StructuredAutoencoderDC(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
-        channel_steps: List[int],
+        channel_steps: list[int],
     ) -> None:
         super().__init__()
 
@@ -134,7 +137,7 @@ class StructuredAutoencoderDC(nn.Module):
             raise ValueError(f"decoder.conv_in is not Conv2d: {type(old_decoder_in)}")
 
         # Track the current latent channels for encode
-        self._current_latent_channels: Optional[int] = None
+        self._current_latent_channels: int | None = None
 
         # Replace encoder forward to handle shortcut with variable channels
         if self._encoder_has_shortcut:
@@ -216,9 +219,9 @@ class StructuredAutoencoderDC(nn.Module):
     def encode(
         self,
         x: torch.Tensor,
-        latent_channels: Optional[int] = None,
+        latent_channels: int | None = None,
         return_dict: bool = True,
-    ) -> Union[Tuple[torch.Tensor], "EncoderOutput"]:
+    ) -> Union[tuple[torch.Tensor], "EncoderOutput"]:
         """Encode input to latent space with optional channel restriction.
 
         Args:
@@ -261,7 +264,7 @@ class StructuredAutoencoderDC(nn.Module):
         self,
         z: torch.Tensor,
         return_dict: bool = True,
-    ) -> Union[Tuple[torch.Tensor], "DecoderOutput"]:
+    ) -> Union[tuple[torch.Tensor], "DecoderOutput"]:
         """Decode latent to output image.
 
         The decoder automatically handles variable input channels via the
@@ -281,7 +284,7 @@ class StructuredAutoencoderDC(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        latent_channels: Optional[int] = None,
+        latent_channels: int | None = None,
     ) -> torch.Tensor:
         """Full encode-decode cycle.
 

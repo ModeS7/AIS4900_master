@@ -9,7 +9,6 @@ Official DC-Gen implementation:
 
 Our implementation wraps diffusers AutoencoderDC with equivalent functionality.
 """
-from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -47,9 +46,9 @@ class AdaptiveOutputConv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Union[int, Tuple[int, int]] = 1,
+        kernel_size: int | tuple[int, int] = 3,
+        stride: int | tuple[int, int] = 1,
+        padding: int | tuple[int, int] = 1,
         bias: bool = True,
     ) -> None:
         super().__init__()
@@ -82,7 +81,7 @@ class AdaptiveOutputConv2d(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        out_channels: Optional[int] = None,
+        out_channels: int | None = None,
     ) -> torch.Tensor:
         """Forward pass with optional channel slicing.
 
@@ -151,9 +150,9 @@ class AdaptiveInputConv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Union[int, Tuple[int, int]] = 1,
+        kernel_size: int | tuple[int, int] = 3,
+        stride: int | tuple[int, int] = 1,
+        padding: int | tuple[int, int] = 1,
         bias: bool = True,
     ) -> None:
         super().__init__()
@@ -223,7 +222,7 @@ class AdaptiveInputConv2d(nn.Module):
 
 def copy_conv_weights(
     source_conv: nn.Conv2d,
-    target_adaptive: Union[AdaptiveOutputConv2d, AdaptiveInputConv2d],
+    target_adaptive: AdaptiveOutputConv2d | AdaptiveInputConv2d,
 ) -> None:
     """Copy weights from a standard Conv2d to an adaptive conv layer.
 

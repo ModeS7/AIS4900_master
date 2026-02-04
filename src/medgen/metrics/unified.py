@@ -39,7 +39,7 @@ Usage:
     self._unified_metrics.reset_validation()
 """
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -73,7 +73,7 @@ class SimpleLossAccumulator:
 
     def __init__(self) -> None:
         """Initialize empty accumulator."""
-        self._accumulators: Dict[str, float] = {}
+        self._accumulators: dict[str, float] = {}
         self._count: int = 0
 
     def reset(self) -> None:
@@ -81,7 +81,7 @@ class SimpleLossAccumulator:
         self._accumulators.clear()
         self._count = 0
 
-    def update(self, losses: Dict[str, Union[float, torch.Tensor]]) -> None:
+    def update(self, losses: dict[str, float | torch.Tensor]) -> None:
         """Accumulate losses from a single step.
 
         Args:
@@ -96,7 +96,7 @@ class SimpleLossAccumulator:
             self._accumulators[key] += val
         self._count += 1
 
-    def compute(self) -> Dict[str, float]:
+    def compute(self) -> dict[str, float]:
         """Compute average losses over accumulated steps.
 
         Returns:
@@ -158,11 +158,11 @@ class UnifiedMetrics:
 
     def __init__(
         self,
-        writer: Optional[SummaryWriter],
+        writer: SummaryWriter | None,
         mode: str,
         spatial_dims: int = 2,
-        modality: Optional[str] = None,
-        device: Optional[torch.device] = None,
+        modality: str | None = None,
+        device: torch.device | None = None,
         # Optional feature flags
         enable_regional: bool = False,
         enable_codebook: bool = False,
@@ -172,7 +172,7 @@ class UnifiedMetrics:
         image_size: int = 256,
         fov_mm: float = 240.0,
         # Regional tracker params (3D)
-        volume_size: Optional[Tuple[int, int, int]] = None,
+        volume_size: tuple[int, int, int] | None = None,
         # Logging config flags (from MetricsTracker)
         log_grad_norm: bool = True,
         log_timestep_losses: bool = True,
@@ -242,7 +242,7 @@ class UnifiedMetrics:
         self.num_train_timesteps = num_train_timesteps
         self.use_min_snr = use_min_snr
         self.min_snr_gamma = min_snr_gamma
-        self.scheduler: Optional[Any] = None  # Set via set_scheduler()
+        self.scheduler: Any | None = None  # Set via set_scheduler()
 
         # Initialize accumulators
         self._init_accumulators()
@@ -259,11 +259,11 @@ class UnifiedMetrics:
     def _init_accumulators(self):
         """Initialize all metric accumulators."""
         # Training accumulators
-        self._train_losses: Dict[str, Dict[str, float]] = {}
+        self._train_losses: dict[str, dict[str, float]] = {}
         self._grad_norm_sum = 0.0
         self._grad_norm_max = 0.0
         self._grad_norm_count = 0
-        self._current_lr: Optional[float] = None
+        self._current_lr: float | None = None
 
         # Validation quality metrics
         self._val_psnr_sum = 0.0
@@ -282,7 +282,7 @@ class UnifiedMetrics:
         self._val_iou_count = 0
 
         # Validation losses
-        self._val_losses: Dict[str, Dict[str, float]] = {}
+        self._val_losses: dict[str, dict[str, float]] = {}
 
         # Timestep losses (validation only)
         self._val_timesteps = self._create_timestep_storage()
@@ -294,9 +294,9 @@ class UnifiedMetrics:
         self._tr_bg_count = [0] * self.num_timestep_bins
 
         # History tracking for JSON export
-        self._regional_history: Dict[str, Any] = {}
-        self._timestep_history: Dict[str, Any] = {}
-        self._timestep_region_history: Dict[str, Any] = {}
+        self._regional_history: dict[str, Any] = {}
+        self._timestep_history: dict[str, Any] = {}
+        self._timestep_region_history: dict[str, Any] = {}
 
         # Resource metrics
         self._vram_allocated = 0.0
@@ -305,7 +305,7 @@ class UnifiedMetrics:
         self._flops_epoch = 0.0
         self._flops_total = 0.0
 
-    def _create_timestep_storage(self) -> Dict[str, Any]:
+    def _create_timestep_storage(self) -> dict[str, Any]:
         """Create storage for timestep losses."""
         return {
             'sums': [0.0] * self.num_timestep_bins,
@@ -473,7 +473,7 @@ class UnifiedMetrics:
     # Segmentation Metrics Methods
     # =========================================================================
 
-    def log_seg_training(self, metrics: Dict[str, float], epoch: int) -> None:
+    def log_seg_training(self, metrics: dict[str, float], epoch: int) -> None:
         """Log segmentation training losses.
 
         Provides consistent TensorBoard paths for segmentation training metrics
@@ -500,7 +500,7 @@ class UnifiedMetrics:
         if 'gen' in metrics:
             self.writer.add_scalar('Loss/Generator_train', metrics['gen'], epoch)
 
-    def log_seg_validation(self, metrics: Dict[str, float], epoch: int) -> None:
+    def log_seg_validation(self, metrics: dict[str, float], epoch: int) -> None:
         """Log segmentation validation metrics.
 
         Provides consistent TensorBoard paths for segmentation validation metrics
@@ -843,7 +843,7 @@ class UnifiedMetrics:
             prefix = f'regional{suffix}' if suffix else 'regional'
             self._regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
 
-    def log_generation(self, epoch: int, results: Dict[str, float]):
+    def log_generation(self, epoch: int, results: dict[str, float]):
         """Log generation metrics to TensorBoard.
 
         Args:
@@ -861,7 +861,7 @@ class UnifiedMetrics:
             else:
                 self.writer.add_scalar(f'Generation/{key}', value, epoch)
 
-    def log_test(self, metrics: Dict[str, float], prefix: str = 'test_best'):
+    def log_test(self, metrics: dict[str, float], prefix: str = 'test_best'):
         """Log test evaluation metrics.
 
         Args:
@@ -876,9 +876,9 @@ class UnifiedMetrics:
 
     def log_test_generation(
         self,
-        results: Dict[str, float],
+        results: dict[str, float],
         prefix: str = 'test_best',
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Log test generation metrics (FID, KID, CMMD, diversity).
 
         Paths:
@@ -942,7 +942,7 @@ class UnifiedMetrics:
         self,
         regional_tracker: Any,
         epoch: int,
-        modality_override: Optional[str] = None,
+        modality_override: str | None = None,
     ):
         """Log regional metrics for validation (supports per-modality tracking).
 
@@ -970,7 +970,7 @@ class UnifiedMetrics:
 
     def log_test_timesteps(
         self,
-        timestep_bins: Dict[str, float],
+        timestep_bins: dict[str, float],
         prefix: str = 'test_best',
     ):
         """Log timestep bin losses.
@@ -991,7 +991,7 @@ class UnifiedMetrics:
 
     def log_per_channel_validation(
         self,
-        channel_metrics: Dict[str, Dict[str, float]],
+        channel_metrics: dict[str, dict[str, float]],
         epoch: int,
     ):
         """Log per-channel validation (dual/multi modes).
@@ -1020,7 +1020,7 @@ class UnifiedMetrics:
 
     def log_per_modality_validation(
         self,
-        metrics: Dict[str, float],
+        metrics: dict[str, float],
         modality: str,
         epoch: int,
     ):
@@ -1061,7 +1061,7 @@ class UnifiedMetrics:
         loss_type: str,
         weighted_loss: float,
         epoch: int,
-        unweighted_loss: Optional[float] = None,
+        unweighted_loss: float | None = None,
     ):
         """Log regularization losses (KL for VAE, VQ for VQVAE).
 
@@ -1091,7 +1091,7 @@ class UnifiedMetrics:
         codebook_tracker: Any,
         epoch: int,
         prefix: str = 'Codebook',
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Log codebook metrics from external tracker (VQVAE).
 
         Delegates to the codebook_tracker's log_to_tensorboard() method
@@ -1120,10 +1120,10 @@ class UnifiedMetrics:
         self,
         psnr: float,
         msssim: float,
-        lpips: Optional[float] = None,
-        msssim_3d: Optional[float] = None,
-        dice: Optional[float] = None,
-        iou: Optional[float] = None,
+        lpips: float | None = None,
+        msssim_3d: float | None = None,
+        dice: float | None = None,
+        iou: float | None = None,
     ):
         """Update validation metrics from pre-computed results.
 
@@ -1217,7 +1217,7 @@ class UnifiedMetrics:
     # Helper Methods
     # =========================================================================
 
-    def get_validation_metrics(self) -> Dict[str, float]:
+    def get_validation_metrics(self) -> dict[str, float]:
         """Collect current validation metrics as a dict.
 
         Returns:
@@ -1247,7 +1247,7 @@ class UnifiedMetrics:
 
         return metrics
 
-    def get_training_losses(self) -> Dict[str, float]:
+    def get_training_losses(self) -> dict[str, float]:
         """Collect current training losses as a dict.
 
         Returns:
@@ -1356,6 +1356,7 @@ class UnifiedMetrics:
         """
         import json
         import os
+
         import numpy as np
 
         def convert_to_native(obj):
@@ -1396,12 +1397,12 @@ class UnifiedMetrics:
         original: torch.Tensor,
         reconstructed: torch.Tensor,
         epoch: int,
-        mask: Optional[torch.Tensor] = None,
-        timesteps: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
+        timesteps: torch.Tensor | None = None,
         tag: str = 'Figures/reconstruction',
         max_samples: int = 8,
-        metrics: Optional[Dict[str, float]] = None,
-        save_path: Optional[str] = None,
+        metrics: dict[str, float] | None = None,
+        save_path: str | None = None,
     ):
         """Log reconstruction comparison figure to TensorBoard.
 
@@ -1419,8 +1420,9 @@ class UnifiedMetrics:
         if self.writer is None and save_path is None:
             return
 
-        from .figures import create_reconstruction_figure
         import matplotlib.pyplot as plt
+
+        from .figures import create_reconstruction_figure
 
         # Handle 3D volumes - extract multiple slices for visualization
         if self.spatial_dims == 3:
@@ -1461,11 +1463,11 @@ class UnifiedMetrics:
         loss: float,
         epoch: int,
         phase: str = 'train',
-        mask: Optional[torch.Tensor] = None,
-        timesteps: Optional[torch.Tensor] = None,
-        tag_prefix: Optional[str] = None,
-        save_path: Optional[str] = None,
-        display_metrics: Optional[Dict[str, float]] = None,
+        mask: torch.Tensor | None = None,
+        timesteps: torch.Tensor | None = None,
+        tag_prefix: str | None = None,
+        save_path: str | None = None,
+        display_metrics: dict[str, float] | None = None,
     ):
         """Log worst batch visualization to TensorBoard.
 
@@ -1853,8 +1855,8 @@ class UnifiedMetrics:
         original: torch.Tensor,
         reconstructed: torch.Tensor,
         prefix: str = 'test_best',
-        mask: Optional[torch.Tensor] = None,
-        metrics: Optional[Dict[str, float]] = None,
+        mask: torch.Tensor | None = None,
+        metrics: dict[str, float] | None = None,
     ):
         """Log test evaluation figure to TensorBoard.
 

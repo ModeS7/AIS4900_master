@@ -6,10 +6,13 @@ for monitoring training progress.
 """
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 
 import matplotlib
+
 matplotlib.use('Agg')
+from typing import TYPE_CHECKING
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -18,13 +21,12 @@ from torch import nn
 from torch.amp import autocast
 from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from medgen.metrics.unified import UnifiedMetrics
 
 from medgen.core import ModeType
-from medgen.diffusion import TrainingMode, DiffusionStrategy, DiffusionSpace, PixelSpace
+from medgen.diffusion import DiffusionSpace, DiffusionStrategy, PixelSpace, TrainingMode
 from medgen.metrics import create_reconstruction_figure
 from medgen.models import ControlNetGenerationWrapper
 
@@ -54,13 +56,13 @@ class ValidationVisualizer:
         cfg: DictConfig,
         strategy: DiffusionStrategy,
         mode: TrainingMode,
-        writer: Optional[SummaryWriter],
+        writer: SummaryWriter | None,
         save_dir: str,
         device: torch.device,
         is_main_process: bool = True,
-        space: Optional[DiffusionSpace] = None,
+        space: DiffusionSpace | None = None,
         use_controlnet: bool = False,
-        controlnet: Optional[nn.Module] = None,
+        controlnet: nn.Module | None = None,
         unified_metrics: Optional["UnifiedMetrics"] = None,
     ) -> None:
         self.cfg = cfg
@@ -93,9 +95,9 @@ class ValidationVisualizer:
 
         # Cached training samples for deterministic visualization
         # Keyed by (num_samples, seg_channel_idx, return_images) for different modes
-        self._cached_samples: Dict[Tuple[int, int, bool], Any] = {}
+        self._cached_samples: dict[tuple[int, int, bool], Any] = {}
 
-    def log_worst_batch(self, epoch: int, data: Dict[str, Any]) -> None:
+    def log_worst_batch(self, epoch: int, data: dict[str, Any]) -> None:
         """Save visualization of the worst (highest loss) batch.
 
         Uses shared create_reconstruction_figure for consistent visualization.
@@ -156,7 +158,7 @@ class ValidationVisualizer:
         num_samples: int,
         seg_channel_idx: int,
         return_images: bool = False
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Sample slices with positive segmentation masks from dataset.
 
         Uses deterministic sampling with caching for reproducibility across epochs.
@@ -247,8 +249,8 @@ class ValidationVisualizer:
         model: nn.Module,
         model_input: torch.Tensor,
         num_steps: int,
-        mode_id: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        mode_id: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """Generate samples while saving intermediate denoising steps.
 
         Args:
@@ -324,8 +326,8 @@ class ValidationVisualizer:
     def _log_intermediate_steps(
         self,
         epoch: int,
-        intermediates: List[torch.Tensor],
-        mask: Optional[torch.Tensor] = None
+        intermediates: list[torch.Tensor],
+        mask: torch.Tensor | None = None
     ) -> None:
         """Log intermediate denoising steps to TensorBoard.
 

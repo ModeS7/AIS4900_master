@@ -5,23 +5,25 @@ Provides dataloaders for dual mode training (T1 pre + T1 gd with seg conditionin
 """
 import logging
 import os
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Literal
 
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_diffusion_augmentation, build_vae_augmentation
-from medgen.data.loaders.common import (
-    create_dataloader as create_dataloader_from_dataset,
-    DistributedArgs,
-    validate_mode_requirements,
-)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.utils import extract_slices_dual, merge_sequences, CFGDropoutDataset
+from medgen.data.loaders.common import (
+    DistributedArgs,
+    validate_mode_requirements,
+)
+from medgen.data.loaders.common import (
+    create_dataloader as create_dataloader_from_dataset,
+)
+from medgen.data.utils import CFGDropoutDataset, extract_slices_dual, merge_sequences
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +32,15 @@ AugmentType = Literal["diffusion", "vae"]
 
 def create_dual_image_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
-    conditioning: Optional[str],
+    image_keys: list[str],
+    conditioning: str | None,
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True,
     augment_type: AugmentType = "diffusion",
     cfg_dropout_prob: float = 0.15,
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create dataloader for dual-image training (T1 pre + T1 gd).
 
     Args:
@@ -78,7 +80,7 @@ def create_dual_image_dataloader(
         aug = build_diffusion_augmentation(enabled=augment)
 
     # Load all required datasets
-    datasets_dict: Dict[str, NiFTIDataset] = {}
+    datasets_dict: dict[str, NiFTIDataset] = {}
 
     for key in image_keys:
         datasets_dict[key] = NiFTIDataset(
@@ -113,11 +115,11 @@ def create_dual_image_dataloader(
 
 def create_dual_image_validation_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
-    conditioning: Optional[str] = 'seg',
-    batch_size: Optional[int] = None,
+    image_keys: list[str],
+    conditioning: str | None = 'seg',
+    batch_size: int | None = None,
     world_size: int = 1,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for dual-image diffusion from val/ directory.
 
     Args:
@@ -157,7 +159,7 @@ def create_dual_image_validation_dataloader(
 
     transform = build_standard_transform(image_size)
 
-    datasets_dict: Dict[str, NiFTIDataset] = {}
+    datasets_dict: dict[str, NiFTIDataset] = {}
     for key in image_keys:
         datasets_dict[key] = NiFTIDataset(
             data_dir=val_dir, mr_sequence=key, transform=transform
@@ -184,10 +186,10 @@ def create_dual_image_validation_dataloader(
 
 def create_dual_image_test_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
-    conditioning: Optional[str] = 'seg',
-    batch_size: Optional[int] = None
-) -> Optional[Tuple[DataLoader, Dataset]]:
+    image_keys: list[str],
+    conditioning: str | None = 'seg',
+    batch_size: int | None = None
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for dual-image diffusion from test_new/ directory.
 
     Args:
@@ -221,7 +223,7 @@ def create_dual_image_test_dataloader(
 
     transform = build_standard_transform(image_size)
 
-    datasets_dict: Dict[str, NiFTIDataset] = {}
+    datasets_dict: dict[str, NiFTIDataset] = {}
     for key in image_keys:
         datasets_dict[key] = NiFTIDataset(
             data_dir=test_dir, mr_sequence=key, transform=transform

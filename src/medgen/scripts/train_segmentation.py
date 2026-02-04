@@ -28,8 +28,8 @@ from medgen.core import setup_cuda_optimizations
 from medgen.downstream import (
     SegmentationTrainer,
     create_segmentation_dataloader,
-    create_segmentation_val_dataloader,
     create_segmentation_test_dataloader,
+    create_segmentation_val_dataloader,
 )
 
 # Enable CUDA optimizations at module import
@@ -91,7 +91,7 @@ def main(cfg: DictConfig) -> None:
     # Log training header
     log.info("")
     log.info("=" * 60)
-    log.info(f"Downstream Segmentation Training")
+    log.info("Downstream Segmentation Training")
     log.info(f"Scenario: {scenario}")
     log.info(f"Spatial dims: {spatial_dims}D")
     log.info(f"Image size: {cfg.model.image_size}")

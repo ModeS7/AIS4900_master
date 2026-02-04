@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.utils.data import DataLoader
@@ -29,7 +29,7 @@ def get_trainer_type() -> str:
     return 'diffusion'
 
 
-def get_metadata_extra(trainer: 'DiffusionTrainer') -> Dict[str, Any]:
+def get_metadata_extra(trainer: 'DiffusionTrainer') -> dict[str, Any]:
     """Collect diffusion-specific metadata for checkpoints.
 
     Args:
@@ -50,7 +50,7 @@ def get_metadata_extra(trainer: 'DiffusionTrainer') -> Dict[str, Any]:
     }
 
 
-def get_model_config(trainer: 'DiffusionTrainer') -> Dict[str, Any]:
+def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
     """Get model configuration for checkpoint.
 
     Includes architecture params so checkpoints are self-describing
@@ -149,7 +149,7 @@ def measure_model_flops(
     except StopIteration:
         if trainer.is_main_process:
             logger.warning("FLOPs measurement failed: empty dataloader")
-    except Exception as e:
+    except Exception:
         if trainer.is_main_process:
             logger.exception("FLOPs measurement failed unexpectedly")
 
@@ -170,7 +170,7 @@ def update_metadata_final(
     """
     metadata_path = os.path.join(trainer.save_dir, 'metadata.json')
     if os.path.exists(metadata_path):
-        with open(metadata_path, 'r') as f:
+        with open(metadata_path) as f:
             metadata = json.load(f)
         metadata['final_loss'] = final_loss
         metadata['final_mse'] = final_mse

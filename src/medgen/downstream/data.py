@@ -15,17 +15,17 @@ Reuses infrastructure from medgen.data:
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from omegaconf import DictConfig
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
-from medgen.data.utils import make_binary
 from medgen.data.loaders.common import DataLoaderConfig, create_dataloader
 from medgen.data.loaders.volume_3d import build_3d_transform
+from medgen.data.utils import make_binary
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +38,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SegmentationConfig:
     """Configuration extracted from Hydra config for segmentation data loading."""
-    modality: Union[str, List[str]]
+    modality: str | list[str]
     image_size: int
     volume_depth: int
     batch_size: int
     augment: bool
     real_dir: str
-    synthetic_dir: Optional[str]
+    synthetic_dir: str | None
     synthetic_ratio: float
 
     @classmethod
@@ -110,7 +110,7 @@ class SegmentationDataset(Dataset):
     def __init__(
         self,
         data_dir: str,
-        modality: Union[str, List[str]] = 'bravo',
+        modality: str | list[str] = 'bravo',
         image_size: int = 256,
         spatial_dims: int = 2,
         augment: bool = False,
@@ -147,7 +147,7 @@ class SegmentationDataset(Dataset):
             f"modalities={self.modalities}, spatial_dims={spatial_dims}, augment={augment}"
         )
 
-    def _build_slice_indices(self) -> List[Tuple[int, int]]:
+    def _build_slice_indices(self) -> list[tuple[int, int]]:
         """Build mapping from linear index to (patient_idx, slice_idx).
 
         Only includes slices with tumor pixels (positive examples).
@@ -169,7 +169,7 @@ class SegmentationDataset(Dataset):
             return len(self.slice_indices)
         return len(self.patients)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if self.spatial_dims == 2:
             return self._get_slice(idx)
         return self._get_volume(idx)
@@ -182,7 +182,7 @@ class SegmentationDataset(Dataset):
         ]
         return torch.cat(images, dim=0)
 
-    def _get_slice(self, idx: int) -> Dict[str, torch.Tensor]:
+    def _get_slice(self, idx: int) -> dict[str, torch.Tensor]:
         """Get a 2D slice."""
         patient_idx, slice_idx = self.slice_indices[idx]
 
@@ -199,7 +199,7 @@ class SegmentationDataset(Dataset):
 
         return {'image': image_slice, 'seg': seg_slice}
 
-    def _get_volume(self, idx: int) -> Dict[str, torch.Tensor]:
+    def _get_volume(self, idx: int) -> dict[str, torch.Tensor]:
         """Get a 3D volume."""
         image = self._load_modalities(idx)  # [C, H, W, D]
         seg, _ = self._seg_dataset[idx]
@@ -229,7 +229,7 @@ class SegmentationDataset(Dataset):
 
     def _apply_augmentation(
         self, image: torch.Tensor, seg: torch.Tensor, rotate: bool = True
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply augmentation to image and mask pair.
 
         Args:
@@ -283,7 +283,7 @@ class SyntheticDataset(Dataset):
         self.transform = _build_transform(spatial_dims, image_size)
         logger.info(f"SyntheticDataset: {len(self.pairs)} pairs from {data_dir}")
 
-    def _find_pairs(self) -> List[Tuple[str, str]]:
+    def _find_pairs(self) -> list[tuple[str, str]]:
         """Find all image-seg pairs in the directory."""
         pairs = []
         files = os.listdir(self.data_dir)
@@ -307,7 +307,7 @@ class SyntheticDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pairs)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         img_path, seg_path = self.pairs[idx]
 
         image = _to_tensor(self.transform(img_path))
@@ -330,7 +330,7 @@ def _create_eval_dataloader(
     cfg: DictConfig,
     split: str,
     spatial_dims: int,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create evaluation (val/test) dataloader for segmentation.
 
     Args:
@@ -374,7 +374,7 @@ def create_segmentation_dataloader(
     scenario: str,
     split: str,
     spatial_dims: int = 2,
-) -> Tuple[Optional[DataLoader], Optional[Dataset]]:
+) -> tuple[DataLoader | None, Dataset | None]:
     """Create dataloader for downstream segmentation training.
 
     Args:
@@ -473,7 +473,7 @@ def create_segmentation_dataloader(
 def create_segmentation_val_dataloader(
     cfg: DictConfig,
     spatial_dims: int = 2,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for segmentation."""
     return _create_eval_dataloader(cfg, 'val', spatial_dims)
 
@@ -481,6 +481,6 @@ def create_segmentation_val_dataloader(
 def create_segmentation_test_dataloader(
     cfg: DictConfig,
     spatial_dims: int = 2,
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for segmentation."""
     return _create_eval_dataloader(cfg, 'test_new', spatial_dims)

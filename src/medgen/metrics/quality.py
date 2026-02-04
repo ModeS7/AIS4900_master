@@ -15,7 +15,7 @@ Caching:
 import logging
 import traceback
 from functools import lru_cache
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -60,7 +60,7 @@ def clear_metric_caches() -> None:
     logger.debug("Cleared metric caches (MS-SSIM, LPIPS)")
 
 
-def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
+def _get_weights_for_size(min_size: int) -> tuple[float, ...]:
     """Get MS-SSIM weights based on image size.
 
     MS-SSIM requires minimum image size for each scale (halved at each level).
@@ -93,7 +93,7 @@ def _get_weights_for_size(min_size: int) -> Tuple[float, ...]:
 @lru_cache(maxsize=8)
 def _get_msssim_metric(
     spatial_dims: int,
-    weights: Tuple[float, ...],
+    weights: tuple[float, ...],
     device_str: str,
 ) -> 'MultiScaleSSIMMetric':
     """Get or create cached MS-SSIM metric instance.
@@ -220,7 +220,7 @@ def compute_msssim(
 def _get_lpips_metric(
     device_str: str,
     network_type: str = "radimagenet_resnet50",
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
     use_compile: bool = True,
 ) -> torch.nn.Module:
     """Get or create cached LPIPS metric instance.
@@ -268,9 +268,9 @@ def _get_lpips_metric(
 def compute_lpips(
     generated: torch.Tensor,
     reference: torch.Tensor,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
 ) -> float:
     """Compute LPIPS (perceptual distance) between generated and reference images.
 
@@ -352,7 +352,7 @@ def compute_lpips(
 def compute_lpips_3d(
     generated: torch.Tensor,
     reference: torch.Tensor,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
     chunk_size: int = 32,
 ) -> float:
@@ -538,7 +538,7 @@ def compute_iou(
 
 def compute_lpips_diversity(
     samples: torch.Tensor,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
 ) -> float:
     """Compute mean pairwise LPIPS diversity between generated samples.
@@ -620,7 +620,7 @@ def compute_msssim_diversity(
 
 def compute_lpips_diversity_3d(
     volumes: torch.Tensor,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
 ) -> float:
     """Compute mean pairwise LPIPS diversity for 3D volumes (same-slice comparison).

@@ -8,17 +8,18 @@ Separate augmentation pipelines for diffusion and VAE training:
 Batch-level augmentations (mixup, cutmix) are applied via collate function.
 """
 import random
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import albumentations as A
-from albumentations.core.transforms_interface import ImageOnlyTransform
 import numpy as np
 import torch
+from albumentations.core.transforms_interface import ImageOnlyTransform
 
 # Module-level imports for segmentation augmentations (avoid import inside functions)
 try:
-    from skimage.transform import resize as skimage_resize
     from scipy.ndimage import label as scipy_label
+    from skimage.transform import resize as skimage_resize
     _SEG_AUG_AVAILABLE = True
 except ImportError:
     _SEG_AUG_AVAILABLE = False
@@ -93,7 +94,7 @@ class DiscreteTranslate(ImageOnlyTransform):
 
         return result
 
-    def get_params_dependent_on_data(self, params: Dict, data: Dict) -> Dict[str, int]:
+    def get_params_dependent_on_data(self, params: dict, data: dict) -> dict[str, int]:
         h, w = params["shape"][:2]
         max_dx = int(w * self.max_percent_x)
         max_dy = int(h * self.max_percent_y)
@@ -102,7 +103,7 @@ class DiscreteTranslate(ImageOnlyTransform):
             "dy": random.randint(-max_dy, max_dy) if max_dy > 0 else 0,
         }
 
-    def get_transform_init_args_names(self) -> Tuple[str, ...]:
+    def get_transform_init_args_names(self) -> tuple[str, ...]:
         return ("max_percent_x", "max_percent_y", "pad_mode")
 
 
@@ -110,7 +111,7 @@ class DiscreteTranslate(ImageOnlyTransform):
 # Diffusion Augmentation (Conservative)
 # =============================================================================
 
-def build_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+def build_diffusion_augmentation(enabled: bool = True) -> A.Compose | None:
     """Build conservative augmentation for diffusion training.
 
     Only lossless spatial transforms that preserve image quality.
@@ -140,7 +141,7 @@ def build_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
 # VAE Augmentation (Aggressive)
 # =============================================================================
 
-def build_vae_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+def build_vae_augmentation(enabled: bool = True) -> A.Compose | None:
     """Build aggressive augmentation for VAE training.
 
     More variety helps learn robust latent representations.
@@ -202,7 +203,7 @@ def build_vae_augmentation(enabled: bool = True) -> Optional[A.Compose]:
 def mixup(
     images: torch.Tensor,
     alpha: float = 0.4,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> tuple[torch.Tensor, torch.Tensor, float]:
     """Apply mixup augmentation to a batch of images.
 
     Blends pairs of images: mixed = lambda * img1 + (1-lambda) * img2
@@ -232,7 +233,7 @@ def mixup(
 def cutmix(
     images: torch.Tensor,
     alpha: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor, float]:
+) -> tuple[torch.Tensor, torch.Tensor, float]:
     """Apply CutMix augmentation to a batch of images.
 
     Cuts a rectangular region from one image and pastes onto another.
@@ -281,7 +282,7 @@ def cutmix(
 def create_vae_collate_fn(
     mixup_prob: float = 0.2,
     cutmix_prob: float = 0.2,
-) -> Callable[[List], Any]:
+) -> Callable[[list], Any]:
     """Create collate function with mixup/cutmix for VAE training.
 
     Handles both tensor batches and tuple batches (image, mask) for regional metrics.
@@ -293,7 +294,7 @@ def create_vae_collate_fn(
     Returns:
         Collate function for DataLoader.
     """
-    def collate_fn(batch: List) -> Any:
+    def collate_fn(batch: list) -> Any:
         # Check if batch contains tuples (image, mask) for regional metrics
         has_masks = isinstance(batch[0], tuple) and len(batch[0]) == 2
 
@@ -343,7 +344,7 @@ def create_vae_collate_fn(
 
 def apply_augmentation(
     slice_data: np.ndarray,
-    aug: Optional[A.Compose],
+    aug: A.Compose | None,
     has_mask: bool = False,
     mask_channel: int = -1,
 ) -> np.ndarray:
@@ -430,7 +431,7 @@ def apply_augmentation(
 # Segmentation Diffusion Augmentation (Conservative for Size-Conditioned)
 # =============================================================================
 
-def build_seg_diffusion_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+def build_seg_diffusion_augmentation(enabled: bool = True) -> A.Compose | None:
     """Build augmentation for segmentation mask diffusion training.
 
     Conservative spatial transforms suitable for size-conditioned diffusion
@@ -507,11 +508,11 @@ class BinarizeTransform(ImageOnlyTransform):
     def apply(self, img: np.ndarray, **params) -> np.ndarray:
         return (img > self.threshold).astype(np.float32)
 
-    def get_transform_init_args_names(self) -> Tuple[str, ...]:
+    def get_transform_init_args_names(self) -> tuple[str, ...]:
         return ("threshold",)
 
 
-def build_seg_diffusion_augmentation_with_binarize(enabled: bool = True) -> Optional[A.Compose]:
+def build_seg_diffusion_augmentation_with_binarize(enabled: bool = True) -> A.Compose | None:
     """Build seg diffusion augmentation with automatic binarization.
 
     Same as build_seg_diffusion_augmentation but includes final
@@ -565,7 +566,7 @@ def build_seg_diffusion_augmentation_with_binarize(enabled: bool = True) -> Opti
 # Segmentation Mask Augmentation (Hardcore Spatial for Compression)
 # =============================================================================
 
-def build_seg_augmentation(enabled: bool = True) -> Optional[A.Compose]:
+def build_seg_augmentation(enabled: bool = True) -> A.Compose | None:
     """Build hardcore augmentation for segmentation mask compression.
 
     Aggressive spatial transforms for learning robust mask representations.
@@ -653,7 +654,7 @@ def binarize_mask(mask: np.ndarray, threshold: float = 0.5) -> np.ndarray:
 
 
 def mosaic_augmentation(
-    masks: List[np.ndarray],
+    masks: list[np.ndarray],
     output_size: int = 256,
 ) -> np.ndarray:
     """Create mosaic from 4 masks (2x2 grid).
@@ -768,7 +769,7 @@ def copy_paste_augmentation(
 def _cutmix_masks(
     mask1: np.ndarray,
     mask2: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Apply cutmix between two masks.
 
     Args:
@@ -825,7 +826,7 @@ def create_seg_collate_fn(
     mosaic_prob: float = 0.2,
     cutmix_prob: float = 0.2,
     copy_paste_prob: float = 0.3,
-) -> Callable[[List], torch.Tensor]:
+) -> Callable[[list], torch.Tensor]:
     """Create collate function with batch-level seg augmentations.
 
     Args:
@@ -836,7 +837,7 @@ def create_seg_collate_fn(
     Returns:
         Collate function for DataLoader.
     """
-    def collate_fn(batch: List) -> torch.Tensor:
+    def collate_fn(batch: list) -> torch.Tensor:
         # Convert to numpy if needed
         augmented = []
         for item in batch:

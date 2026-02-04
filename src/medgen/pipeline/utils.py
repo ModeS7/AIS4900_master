@@ -11,8 +11,9 @@ import itertools
 import logging
 import os
 import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterator, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from torch import nn
@@ -46,11 +47,11 @@ class EpochTimeEstimator:
         self.total_epochs = total_epochs
         self.epoch_count = 0
         self.total_time = 0.0  # Total time excluding first epoch
-        self.first_epoch_time: Optional[float] = None
+        self.first_epoch_time: float | None = None
 
         # Adaptive correction using EMA
         self.ema_alpha = ema_alpha
-        self.ema_epoch_time: Optional[float] = None
+        self.ema_epoch_time: float | None = None
 
     def update(self, elapsed_time: float) -> None:
         """Record time for completed epoch and update EMA."""
@@ -144,9 +145,9 @@ class EpochTimeEstimator:
 def log_epoch_summary(
     epoch: int,
     total_epochs: int,
-    avg_losses: Tuple[float, float, float],
+    avg_losses: tuple[float, float, float],
     elapsed_time: float,
-    time_estimator: Optional[EpochTimeEstimator] = None,
+    time_estimator: EpochTimeEstimator | None = None,
 ) -> None:
     """Log epoch completion summary.
 
@@ -196,7 +197,7 @@ def get_vram_usage(device: torch.device) -> str:
     return f"VRAM: {allocated:.1f}GB allocated, {reserved:.1f}GB reserved, max: {max_allocated:.1f}GB"
 
 
-def get_vram_stats(device: torch.device) -> Dict[str, float]:
+def get_vram_stats(device: torch.device) -> dict[str, float]:
     """Get VRAM usage statistics as numeric values for TensorBoard logging.
 
     Args:
@@ -224,10 +225,10 @@ def save_full_checkpoint(
     epoch: int,
     save_dir: str,
     filename: str,
-    model_config: Optional[Dict[str, Any]] = None,
-    scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None,
-    ema: Optional[Any] = None,
-    extra_state: Optional[Dict[str, Any]] = None,
+    model_config: dict[str, Any] | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    ema: Any | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> str:
     """Save full training checkpoint with model, optimizer, and scheduler state.
 
@@ -273,8 +274,8 @@ def create_epoch_iterator(
     is_cluster: bool,
     is_main_process: bool,
     ncols: int = 100,
-    limit_batches: Optional[int] = None,
-) -> Union[Iterator, tqdm]:
+    limit_batches: int | None = None,
+) -> Iterator | tqdm:
     """Create progress bar or plain iterator for epoch training.
 
     Args:

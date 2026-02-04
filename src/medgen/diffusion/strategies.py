@@ -5,7 +5,7 @@ This module provides abstract and concrete implementations of diffusion
 strategies including DDPM and Rectified Flow algorithms.
 """
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -16,8 +16,8 @@ from tqdm import tqdm
 from .protocols import DiffusionModel
 
 ImageTensor = torch.Tensor
-ImageDict = Dict[str, torch.Tensor]
-ImageOrDict = Union[ImageTensor, ImageDict]
+ImageDict = dict[str, torch.Tensor]
+ImageOrDict = ImageTensor | ImageDict
 
 
 class ParsedModelInput:
@@ -25,10 +25,10 @@ class ParsedModelInput:
 
     def __init__(
         self,
-        noisy_images: Optional[torch.Tensor],
-        noisy_pre: Optional[torch.Tensor],
-        noisy_gd: Optional[torch.Tensor],
-        conditioning: Optional[torch.Tensor],
+        noisy_images: torch.Tensor | None,
+        noisy_pre: torch.Tensor | None,
+        noisy_gd: torch.Tensor | None,
+        conditioning: torch.Tensor | None,
         is_dual: bool,
     ):
         self.noisy_images = noisy_images
@@ -172,9 +172,9 @@ class DiffusionStrategy(ABC):
         model: DiffusionModel,
         model_input: torch.Tensor,
         timesteps: torch.Tensor,
-        omega: Optional[torch.Tensor],
-        mode_id: Optional[torch.Tensor],
-        size_bins: Optional[torch.Tensor] = None,
+        omega: torch.Tensor | None,
+        mode_id: torch.Tensor | None,
+        size_bins: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Call model with appropriate arguments based on conditioning.
 
@@ -268,7 +268,7 @@ class DiffusionStrategy(ABC):
         noise: ImageOrDict,
         noisy_images: ImageOrDict,
         timesteps: torch.Tensor
-    ) -> Tuple[torch.Tensor, ImageOrDict]:
+    ) -> tuple[torch.Tensor, ImageOrDict]:
         """Compute loss and predicted clean images.
 
         Args:
@@ -288,7 +288,7 @@ class DiffusionStrategy(ABC):
     def sample_timesteps(
         self,
         images: ImageOrDict,
-        curriculum_range: Optional[Tuple[float, float]] = None,
+        curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
         """Sample timesteps for training.
 
@@ -310,8 +310,8 @@ class DiffusionStrategy(ABC):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
-        omega: Optional[torch.Tensor] = None,
-        mode_id: Optional[torch.Tensor] = None,
+        omega: torch.Tensor | None = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Generate samples using the diffusion process.
 
@@ -367,7 +367,7 @@ class DDPMStrategy(DiffusionStrategy):
         noise: ImageOrDict,
         noisy_images: ImageOrDict,
         timesteps: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ImageOrDict]:
+    ) -> tuple[torch.Tensor, ImageOrDict]:
         """
         Compute DDPM loss
 
@@ -433,7 +433,7 @@ class DDPMStrategy(DiffusionStrategy):
     def sample_timesteps(
         self,
         images: ImageOrDict,
-        curriculum_range: Optional[Tuple[float, float]] = None,
+        curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
         # Extract batch size from images
         if isinstance(images, dict):
@@ -463,12 +463,12 @@ class DDPMStrategy(DiffusionStrategy):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
-        omega: Optional[torch.Tensor] = None,
-        mode_id: Optional[torch.Tensor] = None,
-        size_bins: Optional[torch.Tensor] = None,
-        bin_maps: Optional[torch.Tensor] = None,
+        omega: torch.Tensor | None = None,
+        mode_id: torch.Tensor | None = None,
+        size_bins: torch.Tensor | None = None,
+        bin_maps: torch.Tensor | None = None,
         cfg_scale: float = 1.0,
-        cfg_scale_end: Optional[float] = None,
+        cfg_scale_end: float | None = None,
         latent_channels: int = 1,
     ) -> torch.Tensor:
         """
@@ -629,7 +629,7 @@ class RFlowStrategy(DiffusionStrategy):
         self,
         num_timesteps: int = 1000,
         image_size: int = 128,
-        depth_size: Optional[int] = None,
+        depth_size: int | None = None,
         spatial_dims: int = 2,
         use_discrete_timesteps: bool = True,
         sample_method: str = 'logit-normal',
@@ -678,7 +678,7 @@ class RFlowStrategy(DiffusionStrategy):
         noise: ImageOrDict,
         noisy_images: ImageOrDict,
         timesteps: torch.Tensor,
-    ) -> Tuple[torch.Tensor, ImageOrDict]:
+    ) -> tuple[torch.Tensor, ImageOrDict]:
         """
         Compute RFlow loss (velocity prediction)
 
@@ -733,7 +733,7 @@ class RFlowStrategy(DiffusionStrategy):
     def sample_timesteps(
         self,
         images: ImageOrDict,
-        curriculum_range: Optional[Tuple[float, float]] = None,
+        curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
         # Extract batch size and device from images
         if isinstance(images, dict):
@@ -765,12 +765,12 @@ class RFlowStrategy(DiffusionStrategy):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
-        omega: Optional[torch.Tensor] = None,
-        mode_id: Optional[torch.Tensor] = None,
-        size_bins: Optional[torch.Tensor] = None,
-        bin_maps: Optional[torch.Tensor] = None,
+        omega: torch.Tensor | None = None,
+        mode_id: torch.Tensor | None = None,
+        size_bins: torch.Tensor | None = None,
+        bin_maps: torch.Tensor | None = None,
         cfg_scale: float = 1.0,
-        cfg_scale_end: Optional[float] = None,
+        cfg_scale_end: float | None = None,
         latent_channels: int = 1,
     ) -> torch.Tensor:
         """

@@ -13,12 +13,11 @@ Strategies:
     - 'late': Late conditioning (inject mode only in later UNet blocks)
 """
 
-from typing import Optional
 
 import torch
 from torch import nn
 
-from .base_embed import create_zero_init_mlp, create_film_mlp
+from .base_embed import create_film_mlp, create_zero_init_mlp
 
 # Mode ID mapping
 MODE_ID_MAP = {
@@ -36,7 +35,7 @@ MODE_ENCODING_DIM = 4
 
 
 def encode_mode_id(
-    mode_id: Optional[torch.Tensor],
+    mode_id: torch.Tensor | None,
     device: torch.device,
     batch_size: int = 1,
 ) -> torch.Tensor:
@@ -113,7 +112,7 @@ class ModeTimeEmbed(nn.Module):
 
         # Store current mode encoding (set before each forward)
         # Using None instead of buffer to support variable batch sizes
-        self._mode_encoding: Optional[torch.Tensor] = None
+        self._mode_encoding: torch.Tensor | None = None
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
         """Set mode encoding for next forward pass.
@@ -201,7 +200,7 @@ class ModeEmbedModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with per-sample mode conditioning.
 
@@ -277,7 +276,7 @@ class ModeEmbedDropoutModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with mode embedding dropout.
 
@@ -338,7 +337,7 @@ class NoModeModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass ignoring mode_id.
 
@@ -378,7 +377,7 @@ class LateModeTimeEmbed(nn.Module):
         self.embed_dim = embed_dim
 
         # Store mode encoding for late injection (not used in forward)
-        self._mode_encoding: Optional[torch.Tensor] = None
+        self._mode_encoding: torch.Tensor | None = None
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
         """Set mode encoding for late injection.
@@ -393,7 +392,7 @@ class LateModeTimeEmbed(nn.Module):
             )
         self._mode_encoding = mode_encoding
 
-    def get_mode_encoding(self) -> Optional[torch.Tensor]:
+    def get_mode_encoding(self) -> torch.Tensor | None:
         """Get stored mode encoding for injection."""
         return self._mode_encoding
 
@@ -540,7 +539,7 @@ class LateModeModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with late mode injection.
 
@@ -602,7 +601,7 @@ class FiLMModeTimeEmbed(nn.Module):
         self.film_mlp = create_film_mlp(MODE_ENCODING_DIM, embed_dim)
 
         # Store current mode encoding
-        self._mode_encoding: Optional[torch.Tensor] = None
+        self._mode_encoding: torch.Tensor | None = None
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
         """Set mode encoding for next forward pass.
@@ -690,7 +689,7 @@ class FiLMModeModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with FiLM mode conditioning.
 

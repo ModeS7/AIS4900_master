@@ -7,18 +7,14 @@ Tracks per-tumor-size Dice scores using SegRegionalMetricsTracker.
 import logging
 import os
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
+from monai.networks.nets import SegResNet
 from omegaconf import DictConfig, OmegaConf
-from torch import nn
 from torch.amp import autocast
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LRScheduler
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
-
-from monai.networks.nets import SegResNet
+from torch.utils.data import DataLoader
 
 from medgen.core import create_warmup_cosine_scheduler
 from medgen.losses import SegmentationLoss
@@ -55,8 +51,8 @@ class SegmentationTrainer(BaseTrainer):
         self.in_channels: int = cfg.model.get('in_channels', 1)
         self.out_channels: int = cfg.model.get('out_channels', 1)
         self.init_filters: int = cfg.model.get('init_filters', 32)
-        self.blocks_down: Tuple[int, ...] = tuple(cfg.model.get('blocks_down', [1, 2, 2, 4]))
-        self.blocks_up: Tuple[int, ...] = tuple(cfg.model.get('blocks_up', [1, 1, 1]))
+        self.blocks_down: tuple[int, ...] = tuple(cfg.model.get('blocks_down', [1, 2, 2, 4]))
+        self.blocks_up: tuple[int, ...] = tuple(cfg.model.get('blocks_up', [1, 1, 1]))
         self.dropout_prob: float = cfg.model.get('dropout_prob', 0.2)
 
         # Image size for regional metrics
@@ -131,7 +127,7 @@ class SegmentationTrainer(BaseTrainer):
             run_name
         )
 
-    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+    def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
         """Initialize SegResNet model, optimizer, and loss functions.
 
         Args:
@@ -264,7 +260,7 @@ class SegmentationTrainer(BaseTrainer):
         self,
         train_loader: DataLoader,
         epoch: int,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Train for one epoch.
 
         Args:
@@ -323,7 +319,7 @@ class SegmentationTrainer(BaseTrainer):
         self,
         epoch: int,
         log_figures: bool = True,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute validation metrics.
 
         Args:
@@ -500,7 +496,7 @@ class SegmentationTrainer(BaseTrainer):
         path = os.path.join(self.save_dir, f'checkpoint_{name}.pt')
         torch.save(checkpoint, path)
 
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get model configuration for checkpoint."""
         return {
             'spatial_dims': self.spatial_dims,
@@ -515,8 +511,8 @@ class SegmentationTrainer(BaseTrainer):
     def _on_epoch_end(
         self,
         epoch: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
     ) -> None:
         """Hook called at end of each epoch."""
         super()._on_epoch_end(epoch, avg_losses, val_metrics)
@@ -538,8 +534,8 @@ class SegmentationTrainer(BaseTrainer):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log epoch completion summary."""

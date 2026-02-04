@@ -4,14 +4,14 @@ Slice extraction and sequence merging utilities.
 This module provides functions for extracting 2D slices from 3D NIfTI volumes
 and merging multiple MR sequences from the same patients.
 """
-from typing import Dict, List, Optional
+from typing import Optional
 
 import numpy as np
 import torch
 from monai.data import Dataset
 
-from medgen.core.constants import BINARY_THRESHOLD_GT
 from medgen.augmentation import apply_augmentation
+from medgen.core.constants import BINARY_THRESHOLD_GT
 from medgen.data.dataset import NiFTIDataset
 
 try:
@@ -49,7 +49,7 @@ def extract_slices_single(
     Returns:
         Dataset of 2D slices with shape [C, H, W].
     """
-    all_slices: List[np.ndarray] = []
+    all_slices: list[np.ndarray] = []
 
     for i in range(len(nifti_dataset)):
         volume, _ = nifti_dataset[i]  # Shape: [1, H, W, D]
@@ -90,7 +90,7 @@ def extract_slices_dual(
     Returns:
         Dataset of 2D slices with shape [C, H, W].
     """
-    all_slices: List[np.ndarray] = []
+    all_slices: list[np.ndarray] = []
 
     for i in range(len(merged_dataset)):
         volume = merged_dataset[i]  # Shape: [C, H, W, D]
@@ -160,7 +160,7 @@ def extract_slices_single_with_seg(
     Returns:
         Dataset of tuples (image_slice, seg_slice).
     """
-    all_slices: List[tuple] = []
+    all_slices: list[tuple] = []
 
     if len(image_dataset) != len(seg_dataset):
         raise ValueError(
@@ -204,7 +204,7 @@ def extract_slices_single_with_seg(
     return Dataset(all_slices)
 
 
-def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
+def merge_sequences(datasets_dict: dict[str, NiFTIDataset]) -> Dataset:
     """Merge multiple MR sequences from same patients into single dataset.
 
     Concatenates volumes from different sequences along channel dimension,
@@ -233,11 +233,11 @@ def merge_sequences(datasets_dict: Dict[str, NiFTIDataset]) -> Dataset:
                 f"Dataset {key} has {len(dataset)} patients, expected {num_patients}"
             )
 
-    merged_data: List[np.ndarray] = []
+    merged_data: list[np.ndarray] = []
 
     for patient_idx in range(num_patients):
-        patient_volumes: List[np.ndarray] = []
-        patient_name: Optional[str] = None
+        patient_volumes: list[np.ndarray] = []
+        patient_name: str | None = None
 
         for seq_key in sequence_keys:
             volume, name = datasets_dict[seq_key][patient_idx]

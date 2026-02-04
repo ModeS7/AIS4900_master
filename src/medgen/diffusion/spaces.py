@@ -6,7 +6,6 @@ diffusion training code to operate in either pixel space (identity) or
 latent space (using a VAE encoder/decoder).
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Union
 
 import torch
 from torch import Tensor
@@ -67,8 +66,8 @@ class DiffusionSpace(ABC):
         pass
 
     def encode_batch(
-        self, data: Union[Tensor, Dict[str, Tensor]]
-    ) -> Union[Tensor, Dict[str, Tensor]]:
+        self, data: Tensor | dict[str, Tensor]
+    ) -> Tensor | dict[str, Tensor]:
         """Encode a batch that may be a tensor or dict of tensors.
 
         Args:
@@ -82,8 +81,8 @@ class DiffusionSpace(ABC):
         return self.encode(data)
 
     def decode_batch(
-        self, data: Union[Tensor, Dict[str, Tensor]]
-    ) -> Union[Tensor, Dict[str, Tensor]]:
+        self, data: Tensor | dict[str, Tensor]
+    ) -> Tensor | dict[str, Tensor]:
         """Decode a batch that may be a tensor or dict of tensors.
 
         Args:

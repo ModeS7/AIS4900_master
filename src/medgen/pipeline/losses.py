@@ -7,7 +7,7 @@ This module provides loss functions for:
 """
 import logging
 import random
-from typing import Dict, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor
@@ -24,7 +24,7 @@ def compute_self_conditioning_loss(
     model_input: Tensor,
     timesteps: Tensor,
     prediction: Tensor,
-    mode_id: Optional[Tensor] = None,
+    mode_id: Tensor | None = None,
 ) -> Tensor:
     """Compute self-conditioning consistency loss.
 
@@ -68,8 +68,8 @@ def compute_self_conditioning_loss(
 def compute_min_snr_weighted_mse(
     trainer: 'DiffusionTrainer',
     prediction: Tensor,
-    images: Union[Tensor, Dict[str, Tensor]],
-    noise: Union[Tensor, Dict[str, Tensor]],
+    images: Tensor | dict[str, Tensor],
+    noise: Tensor | dict[str, Tensor],
     timesteps: Tensor,
 ) -> Tensor:
     """Compute MSE loss with Min-SNR weighting.
@@ -111,8 +111,8 @@ def compute_min_snr_weighted_mse(
 def compute_region_weighted_mse(
     trainer: 'DiffusionTrainer',
     prediction: Tensor,
-    images: Union[Tensor, Dict[str, Tensor]],
-    noise: Union[Tensor, Dict[str, Tensor]],
+    images: Tensor | dict[str, Tensor],
+    noise: Tensor | dict[str, Tensor],
     seg_mask: Tensor,
 ) -> Tensor:
     """Compute MSE loss with per-pixel regional weighting.

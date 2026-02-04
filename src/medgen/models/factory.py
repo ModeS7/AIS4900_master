@@ -5,10 +5,10 @@ Provides unified creation of diffusion backbones (UNet or SiT) based on config.
 """
 
 import logging
-from omegaconf import DictConfig
 
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def _create_sit(
     out_channels: int,
 ) -> nn.Module:
     """Create SiT (Scalable Interpolant Transformer)."""
-    from .sit import create_sit, SIT_VARIANTS
+    from .sit import SIT_VARIANTS, create_sit
 
     spatial_dims = cfg.model.get('spatial_dims', 2)
 

@@ -33,9 +33,9 @@ Reference:
 """
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import numpy as np
 import torch
@@ -44,14 +44,15 @@ import torch.nn.functional as F
 from torch.amp import autocast
 from torch.utils.data import DataLoader, Dataset
 
-from .feature_extractors import ResNet50Features, BiomedCLIPFeatures
+from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES, compute_size_bins
+
+from .feature_extractors import BiomedCLIPFeatures, ResNet50Features
 from .quality import (
     compute_lpips_diversity,
-    compute_msssim_diversity,
     compute_lpips_diversity_3d,
+    compute_msssim_diversity,
     compute_msssim_diversity_3d,
 )
-from medgen.data.loaders.seg_conditioned import compute_size_bins, DEFAULT_BIN_EDGES
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +90,9 @@ class GenerationMetricsConfig:
     cache_dir: str = ".cache/generation_features"
     feature_batch_size: int = 16  # Set by trainer to match training.batch_size
     cfg_scale: float = 2.0  # CFG scale for generation (requires CFG dropout during training)
-    original_depth: Optional[int] = None  # Original depth before padding (for 3D metrics)
+    original_depth: int | None = None  # Original depth before padding (for 3D metrics)
     # Size bin adherence config (for seg_conditioned mode)
-    size_bin_edges: Optional[List[float]] = None  # Bin edges in mm (default from loader)
+    size_bin_edges: list[float] | None = None  # Bin edges in mm (default from loader)
     size_bin_fov_mm: float = 240.0  # Field of view in mm
 
 
@@ -104,7 +105,7 @@ def compute_kid(
     generated_features: torch.Tensor,
     subset_size: int = 100,
     num_subsets: int = 50,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Compute Kernel Inception Distance between real and generated features.
 
     KID uses a polynomial kernel k(x,y) = (x^T y / d + 1)^3 and computes
@@ -179,7 +180,7 @@ def compute_kid(
 def compute_cmmd(
     real_features: torch.Tensor,
     generated_features: torch.Tensor,
-    kernel_bandwidth: Optional[float] = None,
+    kernel_bandwidth: float | None = None,
 ) -> float:
     """Compute CLIP Maximum Mean Discrepancy with RBF kernel.
 
@@ -340,10 +341,10 @@ class ReferenceFeatureCache:
         self.batch_size = batch_size
 
         # Feature storage
-        self.train_resnet: Optional[torch.Tensor] = None
-        self.train_biomed: Optional[torch.Tensor] = None
-        self.val_resnet: Optional[torch.Tensor] = None
-        self.val_biomed: Optional[torch.Tensor] = None
+        self.train_resnet: torch.Tensor | None = None
+        self.train_biomed: torch.Tensor | None = None
+        self.val_resnet: torch.Tensor | None = None
+        self.val_biomed: torch.Tensor | None = None
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -352,7 +353,7 @@ class ReferenceFeatureCache:
         dataloader: DataLoader,
         extractor: nn.Module,
         name: str,
-        max_samples: Optional[int] = None,
+        max_samples: int | None = None,
     ) -> torch.Tensor:
         """Extract features from a dataloader, filtering for positive masks.
 
@@ -526,7 +527,7 @@ class GenerationMetrics:
         config: GenerationMetricsConfig,
         device: torch.device,
         run_dir: Path,
-        space: Optional[Any] = None,
+        space: Any | None = None,
         mode_name: str = 'bravo',
     ) -> None:
         self.config = config
@@ -550,10 +551,10 @@ class GenerationMetrics:
         )
 
         # Fixed conditioning masks (loaded once, used every epoch)
-        self.fixed_conditioning_masks: Optional[torch.Tensor] = None
-        self.fixed_gt_images: Optional[torch.Tensor] = None
-        self.fixed_size_bins: Optional[torch.Tensor] = None  # For seg_conditioned mode
-        self.fixed_bin_maps: Optional[torch.Tensor] = None  # For seg_conditioned_input mode
+        self.fixed_conditioning_masks: torch.Tensor | None = None
+        self.fixed_gt_images: torch.Tensor | None = None
+        self.fixed_size_bins: torch.Tensor | None = None  # For seg_conditioned mode
+        self.fixed_bin_maps: torch.Tensor | None = None  # For seg_conditioned_input mode
 
         if self.is_seg_mode:
             logger.info(f"GenerationMetrics: {mode_name} mode - will threshold output at 0.5")
@@ -881,7 +882,7 @@ class GenerationMetrics:
         num_samples: int,
         num_steps: int,
         keep_samples_for_diversity: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Generate 3D samples and extract features in a streaming fashion.
 
         Generates one sample at a time and extracts features immediately to
@@ -1013,7 +1014,7 @@ class GenerationMetrics:
         self,
         samples: torch.Tensor,
         extractor: nn.Module,
-        batch_size: Optional[int] = None,
+        batch_size: int | None = None,
     ) -> torch.Tensor:
         """Extract features from samples in batches.
 
@@ -1062,7 +1063,7 @@ class GenerationMetrics:
         ref_resnet: torch.Tensor,
         ref_biomed: torch.Tensor,
         prefix: str = "",
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute KID and CMMD against reference features.
 
         Args:
@@ -1098,7 +1099,7 @@ class GenerationMetrics:
         self,
         samples: torch.Tensor,
         prefix: str = "",
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute diversity metrics for generated samples.
 
         Measures how different the generated samples are from each other
@@ -1149,7 +1150,7 @@ class GenerationMetrics:
         generated_masks: torch.Tensor,
         conditioning_bins: torch.Tensor,
         prefix: str = "",
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute size bin adherence metrics for seg_conditioned mode.
 
         Measures how well generated masks match their conditioning size bins.
@@ -1215,7 +1216,7 @@ class GenerationMetrics:
         model: nn.Module,
         strategy: Any,
         mode: Any,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute quick generation metrics (every epoch).
 
         Uses fewer samples and steps for fast feedback.
@@ -1317,7 +1318,7 @@ class GenerationMetrics:
         model: nn.Module,
         strategy: Any,
         mode: Any,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute extended generation metrics (every N epochs).
 
         Uses more samples and steps for detailed analysis.
@@ -1418,7 +1419,7 @@ class GenerationMetrics:
         self,
         samples: torch.Tensor,
         extended: bool = False,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute metrics from pre-generated samples.
 
         This method is useful when samples are generated externally (e.g., 3D volumes).
@@ -1488,8 +1489,8 @@ class GenerationMetrics:
         model: nn.Module,
         strategy: Any,
         mode: Any,
-        test_loader: Optional[DataLoader] = None,
-    ) -> Dict[str, float]:
+        test_loader: DataLoader | None = None,
+    ) -> dict[str, float]:
         """Compute full test generation metrics with FID.
 
         Uses the most samples and steps for final evaluation.
@@ -1619,7 +1620,7 @@ def volumes_to_slices(volumes: torch.Tensor) -> torch.Tensor:
 
 def extract_features_3d(
     volumes: torch.Tensor,
-    extractor: Union[ResNet50Features, BiomedCLIPFeatures],
+    extractor: ResNet50Features | BiomedCLIPFeatures,
     chunk_size: int = 64,
 ) -> torch.Tensor:
     """Extract features from 3D volumes slice-wise (2.5D approach).
@@ -1664,7 +1665,7 @@ def compute_kid_3d(
     subset_size: int = 100,
     num_subsets: int = 50,
     chunk_size: int = 64,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Compute KID for 3D volumes using 2.5D slice-wise approach.
 
     Extracts ResNet50 features from all slices of real and generated
@@ -1693,7 +1694,7 @@ def compute_cmmd_3d(
     real_volumes: torch.Tensor,
     generated_volumes: torch.Tensor,
     extractor: BiomedCLIPFeatures,
-    kernel_bandwidth: Optional[float] = None,
+    kernel_bandwidth: float | None = None,
     chunk_size: int = 64,
 ) -> float:
     """Compute CMMD for 3D volumes using 2.5D slice-wise approach.

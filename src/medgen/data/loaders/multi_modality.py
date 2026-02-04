@@ -6,22 +6,22 @@ enabling training on diverse brain MRI sequences.
 """
 import logging
 import os
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 import numpy as np
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
-from medgen.data.loaders.common import (
-    create_dataloader,
-    DistributedArgs,
-    validate_mode_requirements,
-)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
+)
+from medgen.data.loaders.common import (
+    DistributedArgs,
+    create_dataloader,
+    validate_mode_requirements,
 )
 from medgen.data.utils import extract_slices_single, extract_slices_single_with_seg
 
@@ -30,14 +30,14 @@ logger = logging.getLogger(__name__)
 
 def create_multi_modality_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     image_size: int,
     batch_size: int,
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True
-) -> Tuple[DataLoader, Dataset]:
+) -> tuple[DataLoader, Dataset]:
     """Create dataloader for multi-modality VAE training.
 
     Loads multiple MR sequences as individual single-channel images and
@@ -70,7 +70,7 @@ def create_multi_modality_dataloader(
     aug = build_vae_augmentation(enabled=augment)
 
     # Collect all slices from all modalities into one list
-    all_slices: List[np.ndarray] = []
+    all_slices: list[np.ndarray] = []
 
     for key in image_keys:
         dataset = NiFTIDataset(
@@ -87,7 +87,7 @@ def create_multi_modality_dataloader(
     batch_aug_enabled = batch_aug_cfg.get('enabled', False)
 
     # Create collate function with batch augmentations if enabled
-    collate_fn: Optional[Callable] = None
+    collate_fn: Callable | None = None
     if batch_aug_enabled:
         mixup_prob = batch_aug_cfg.get('mixup_prob', 0.2)
         cutmix_prob = batch_aug_cfg.get('cutmix_prob', 0.2)
@@ -108,10 +108,10 @@ def create_multi_modality_dataloader(
 
 def create_multi_modality_validation_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     image_size: int,
     batch_size: int
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create validation dataloader for multi-modality VAE training.
 
     Loads data from the val/ subdirectory if it exists. Returns None if
@@ -157,7 +157,7 @@ def create_multi_modality_validation_dataloader(
     transform = build_standard_transform(image_size)
 
     # Collect all slices from all modalities
-    all_slices: List = []
+    all_slices: list = []
 
     if has_seg:
         # Load seg dataset once (shared across all modalities)
@@ -199,7 +199,7 @@ def create_single_modality_validation_loader(
     modality: str,
     image_size: int,
     batch_size: int
-) -> Optional[DataLoader]:
+) -> DataLoader | None:
     """Create validation loader for a single modality (for per-modality metrics).
 
     Includes seg masks paired with each slice for regional metrics tracking.
@@ -270,10 +270,10 @@ def create_single_modality_validation_loader(
 
 def create_multi_modality_test_dataloader(
     cfg: DictConfig,
-    image_keys: List[str],
+    image_keys: list[str],
     image_size: int,
     batch_size: int
-) -> Optional[Tuple[DataLoader, Dataset]]:
+) -> tuple[DataLoader, Dataset] | None:
     """Create test dataloader for multi-modality VAE evaluation.
 
     Loads data from the test_new/ subdirectory if it exists. Returns None if
@@ -319,7 +319,7 @@ def create_multi_modality_test_dataloader(
     transform = build_standard_transform(image_size)
 
     # Collect all slices from all modalities
-    all_slices: List = []
+    all_slices: list = []
 
     if has_seg:
         # Load seg dataset once (shared across all modalities)

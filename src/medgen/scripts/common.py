@@ -5,7 +5,7 @@ This module provides shared functionality used across multiple training scripts
 to reduce code duplication and ensure consistent behavior.
 """
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from omegaconf import DictConfig, open_dict
 
@@ -45,7 +45,7 @@ def override_vae_channels(cfg: DictConfig, mode: str) -> int:
 
 def run_test_evaluation(
     trainer: Any,
-    test_result: Optional[Tuple],
+    test_result: tuple | None,
     log: logging.Logger,
     eval_method: str = "evaluate_test_set"
 ) -> None:
@@ -87,7 +87,7 @@ def create_per_modality_val_loaders(
     image_size: int,
     batch_size: int,
     log: logging.Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create per-modality validation loaders for multi-modality training.
 
     Args:
@@ -128,7 +128,7 @@ def create_per_modality_val_loaders_3d(
     image_keys: list,
     create_loader_fn,
     log: logging.Logger,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create per-modality validation loaders for 3D multi-modality training.
 
     Simplified version of create_per_modality_val_loaders for 3D loaders
@@ -187,7 +187,7 @@ def log_training_header(
     in_channels: int,
     cfg: DictConfig,
     log: logging.Logger,
-    extra_info: Optional[Dict[str, str]] = None
+    extra_info: dict[str, str] | None = None
 ) -> None:
     """Log a consistent training header.
 

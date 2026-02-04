@@ -6,10 +6,10 @@ This module provides sample generation and visualization:
 - Size-binned generation for seg_conditioned mode
 """
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
-from torch import nn, Tensor
+from torch import Tensor, nn
 from torch.utils.data import Dataset
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ def visualize_samples(
     trainer: 'DiffusionTrainer',
     model: nn.Module,
     epoch: int,
-    train_dataset: Optional[Dataset] = None,
+    train_dataset: Dataset | None = None,
 ) -> None:
     """Generate and visualize samples.
 
@@ -292,7 +292,7 @@ def generate_trajectory_3d(
     model_input: Tensor,
     num_steps: int = 25,
     capture_every: int = 5,
-) -> List[Tensor]:
+) -> list[Tensor]:
     """Generate samples while capturing intermediate states (3D).
 
     Args:
@@ -399,7 +399,7 @@ def generate_trajectory_with_size_bins_3d(
     size_bins: Tensor,
     num_steps: int = 25,
     capture_every: int = 5,
-) -> List[Tensor]:
+) -> list[Tensor]:
     """Generate 3D samples with size bins while capturing trajectory.
 
     Args:

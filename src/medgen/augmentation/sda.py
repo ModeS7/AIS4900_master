@@ -32,7 +32,7 @@ Usage:
 """
 
 import random
-from typing import Optional, Tuple, Dict, Any
+from typing import Any
 
 import torch
 
@@ -111,7 +111,7 @@ class SDATransform:
         self,
         x: torch.Tensor,
         transform_type: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
     ) -> torch.Tensor:
         """Apply transform to tensor.
 
@@ -157,7 +157,7 @@ class SDATransform:
     def apply_to_target(
         self,
         target: torch.Tensor,
-        transform_info: Dict[str, Any],
+        transform_info: dict[str, Any],
     ) -> torch.Tensor:
         """Apply the same transform to the target (velocity/noise).
 
@@ -177,7 +177,7 @@ class SDATransform:
     def __call__(
         self,
         images: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+    ) -> tuple[torch.Tensor, dict[str, Any] | None]:
         """Apply SDA transform to clean images.
 
         With probability `self.prob`, applies a random geometric transform.
@@ -225,7 +225,7 @@ class SDATransform:
 SDATransform3D = SDATransform
 
 
-def create_sda_transform(cfg) -> Optional[SDATransform]:
+def create_sda_transform(cfg) -> SDATransform | None:
     """Create SDA transform from config.
 
     Args:

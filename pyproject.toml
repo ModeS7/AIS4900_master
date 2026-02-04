@@ -90,12 +90,29 @@ ignore = [
     "E501",   # line too long (handled by formatter)
     "E402",   # module level import not at top
     "B008",   # function call in default argument (hydra pattern)
+    "B027",   # empty method in abstract class (intentional hook pattern)
+    "B905",   # zip() without strict= (not always needed)
     "SIM108", # ternary operator (sometimes less readable)
+    "SIM102", # nested if (sometimes clearer)
+    "SIM116", # dict vs if-elif (sometimes clearer with comments)
+    "SIM117", # nested with (clearer for separate contexts)
+    "SIM118", # key in dict vs key in dict.keys() (explicit is fine)
+    "RUF001", # ambiguous unicode in string (intentional math symbols)
+    "RUF002", # ambiguous unicode in docstring (intentional math symbols)
+    "RUF003", # ambiguous unicode in comment (intentional math symbols)
+    "RUF005", # list spread vs concatenation (style preference)
+    "RUF012", # mutable class attributes (would need ClassVar everywhere)
+    "RUF013", # implicit Optional (explicit None default is clear)
+    "RUF015", # next(iter()) vs [0] (readability trade-off)
+    "RUF022", # __all__ not sorted (organized by category instead)
+    "RUF059", # unused unpacked variable (common pattern with destructuring)
+    "F841",   # unused variable (sometimes intentional for debugging/clarity)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B", "SIM"]  # Less strict for tests
 "scripts/*" = ["B", "SIM"]
+"*/__init__.py" = ["I001", "F401"]  # Skip isort and unused imports in __init__.py
 
 [tool.ruff.lint.isort]
 known-first-party = ["medgen"]

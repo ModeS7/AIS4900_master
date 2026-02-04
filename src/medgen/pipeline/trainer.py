@@ -13,54 +13,65 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 import matplotlib
+
+if TYPE_CHECKING:
+    from medgen.metrics.generation import GenerationMetrics
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from ema_pytorch import EMA
+from monai.networks.nets import DiffusionModelUNet
 from omegaconf import DictConfig
 from torch import nn
 from torch.amp import autocast
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 
-from monai.networks.nets import DiffusionModelUNet
-
-from medgen.core import ModeType, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler, wrap_model_for_training
-from .diffusion_trainer_base import DiffusionTrainerBase
-from .results import TrainingStepResult
-from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
-from medgen.losses import PerceptualLoss
+from medgen.core import (
+    ModeType,
+    create_plateau_scheduler,
+    create_warmup_constant_scheduler,
+    create_warmup_cosine_scheduler,
+    wrap_model_for_training,
+)
 from medgen.diffusion import (
     ConditionalDualMode,
     ConditionalSingleMode,
-    MultiModalityMode,
-    SegmentationConditionedMode,
-    SegmentationConditionedInputMode,
-    SegmentationMode,
-    LatentSegConditionedMode,
-    TrainingMode,
-    DDPMStrategy, RFlowStrategy, DiffusionStrategy,
+    DDPMStrategy,
     DiffusionSpace,
+    DiffusionStrategy,
+    LatentSegConditionedMode,
+    MultiModalityMode,
+    RFlowStrategy,
+    SegmentationConditionedInputMode,
+    SegmentationConditionedMode,
+    SegmentationMode,
+    TrainingMode,
 )
-from medgen.diffusion.protocols import DiffusionModel
 from medgen.evaluation import ValidationVisualizer
+from medgen.losses import PerceptualLoss, RegionalWeightComputer, create_regional_weight_computer
+from medgen.metrics import UnifiedMetrics
+from medgen.models import (
+    ControlNetConditionedUNet,
+    create_controlnet_for_unet,
+    create_diffusion_model,
+    freeze_unet_for_controlnet,
+    get_model_type,
+    is_transformer_model,
+)
+
+from .diffusion_trainer_base import DiffusionTrainerBase
+from .results import TrainingStepResult
 from .utils import (
+    EpochTimeEstimator,
+    create_epoch_iterator,
     get_vram_usage,
     log_epoch_summary,
     save_full_checkpoint,
-    create_epoch_iterator,
-    EpochTimeEstimator,
-)
-from medgen.metrics import UnifiedMetrics
-from medgen.losses import RegionalWeightComputer, create_regional_weight_computer
-from medgen.models import (
-    create_controlnet_for_unet,
-    freeze_unet_for_controlnet,
-    ControlNetConditionedUNet,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,7 +117,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         cfg: DictConfig,
         spatial_dims: int = 2,
-        space: Optional[DiffusionSpace] = None,
+        space: DiffusionSpace | None = None,
     ) -> None:
         # Validate spatial_dims
         if spatial_dims not in (2, 3):
@@ -185,18 +196,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
-        self._unified_metrics: Optional[UnifiedMetrics] = None
+        self._unified_metrics: UnifiedMetrics | None = None
 
         # Model components
-        self.perceptual_loss_fn: Optional[nn.Module] = None
-        self.visualizer: Optional[ValidationVisualizer] = None
+        self.perceptual_loss_fn: nn.Module | None = None
+        self.visualizer: ValidationVisualizer | None = None
 
         # Cached training samples for deterministic visualization
         # (Uses training data to keep validation/test datasets properly separated)
-        self._cached_train_batch: Optional[Dict[str, torch.Tensor]] = None
+        self._cached_train_batch: dict[str, torch.Tensor] | None = None
 
         # Cached volume loaders for 3D MS-SSIM (avoid recreating datasets every epoch)
-        self._volume_loaders_cache: Dict[str, DataLoader] = {}
+        self._volume_loaders_cache: dict[str, DataLoader] = {}
 
         # ScoreAug initialization (applies transforms to noisy data)
         self.score_aug = None
@@ -347,7 +358,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
         self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
         self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
-        self._aug_diff_channel_steps: Optional[List[int]] = None  # Computed lazily
+        self._aug_diff_channel_steps: list[int] | None = None  # Computed lazily
 
         if self.augmented_diffusion_enabled and self.is_main_process:
             # Only effective for latent diffusion
@@ -407,7 +418,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         # Region-weighted loss (per-pixel weighting by tumor size)
         # Only applies to conditional modes (bravo, dual, multi) where seg mask is available
-        self.regional_weight_computer: Optional[RegionalWeightComputer] = None
+        self.regional_weight_computer: RegionalWeightComputer | None = None
         rw_cfg = cfg.training.get('regional_weighting', {})
         if rw_cfg.get('enabled', False):
             if self.mode.is_conditional:
@@ -428,10 +439,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     )
 
         # Generation quality metrics (KID, CMMD) for overfitting detection
-        self._gen_metrics: Optional['GenerationMetrics'] = None
+        self._gen_metrics: GenerationMetrics | None = None
         gen_cfg = cfg.training.get('generation_metrics', {})
         if gen_cfg.get('enabled', False):
-            from medgen.metrics.generation import GenerationMetricsConfig, GenerationMetrics
+            from medgen.metrics.generation import GenerationMetricsConfig
             # Use training batch_size by default for torch.compile consistency
             feature_batch_size = gen_cfg.get('feature_batch_size', None)
             if feature_batch_size is None:
@@ -500,7 +511,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.controlnet_freeze_unet: bool = controlnet_cfg.get('freeze_unet', True)
         self.controlnet_scale: float = controlnet_cfg.get('conditioning_scale', 1.0)
         self.controlnet_cfg_dropout_prob: float = controlnet_cfg.get('cfg_dropout_prob', 0.15)
-        self.controlnet: Optional[nn.Module] = None
+        self.controlnet: nn.Module | None = None
 
         # Stage 1 mode: Train UNet without conditioning (in_channels=out_channels)
         # This prepares the UNet for Stage 2 ControlNet training
@@ -553,7 +564,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
     # DC-AE 1.5: Augmented Diffusion Training Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_aug_diff_channel_steps(self, num_channels: int) -> List[int]:
+    def _get_aug_diff_channel_steps(self, num_channels: int) -> list[int]:
         """Get list of channel counts for augmented diffusion masking."""
         from .training_tricks import get_aug_diff_channel_steps
         return get_aug_diff_channel_steps(self, num_channels)
@@ -576,7 +587,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
-        strategies: Dict[str, type] = {
+        strategies: dict[str, type] = {
             'ddpm': DDPMStrategy,
             'rflow': RFlowStrategy
         }
@@ -586,7 +597,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _create_mode(self, mode: str) -> TrainingMode:
         """Create a training mode instance."""
-        modes: Dict[str, type] = {
+        modes: dict[str, type] = {
             'seg': SegmentationMode,
             'seg_conditioned': SegmentationConditionedMode,
             'seg_conditioned_input': SegmentationConditionedInputMode,
@@ -834,30 +845,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Compiled forward doesn't support mode_id parameter, so disable when using
         # mode embedding or omega conditioning (wrappers need extra kwargs)
         compile_fused = self.cfg.training.get('compile_fused_forward', True)
-        if self.use_multi_gpu:
-            compile_fused = False
-        elif self.space.scale_factor > 1:
-            compile_fused = False
-        elif self.use_min_snr:
-            compile_fused = False
-        elif self.regional_weight_computer is not None:
-            compile_fused = False
-        elif self.score_aug is not None:
-            compile_fused = False
-        elif self.sda is not None:
-            compile_fused = False
-        elif self.use_mode_embedding:
-            compile_fused = False
-        elif self.use_omega_conditioning:
-            compile_fused = False
-        elif self.augmented_diffusion_enabled:
-            compile_fused = False
-        elif self.use_controlnet:
-            compile_fused = False
-        elif self.use_size_bin_embedding:
-            compile_fused = False
-        # Compiled forward only supports SEG, BRAVO, and DUAL modes - disable for others
-        elif self.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
+        if self.use_multi_gpu or self.space.scale_factor > 1 or self.use_min_snr or self.regional_weight_computer is not None or self.score_aug is not None or self.sda is not None or self.use_mode_embedding or self.use_omega_conditioning or self.augmented_diffusion_enabled or self.use_controlnet or self.use_size_bin_embedding or self.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
             compile_fused = False
 
         self._setup_compiled_forward(compile_fused)
@@ -980,7 +968,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .training_tricks import add_gradient_noise
         add_gradient_noise(self, step)
 
-    def _get_curriculum_range(self, epoch: int) -> Optional[Tuple[float, float]]:
+    def _get_curriculum_range(self, epoch: int) -> tuple[float, float] | None:
         """Get timestep range for curriculum learning."""
         from .training_tricks import get_curriculum_range
         return get_curriculum_range(self, epoch)
@@ -992,17 +980,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _apply_noise_augmentation(
         self,
-        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
-    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        noise: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         """Add perturbation to noise vector for regularization."""
         from .training_tricks import apply_noise_augmentation
         return apply_noise_augmentation(self, noise)
 
     def _apply_conditioning_dropout(
         self,
-        conditioning: Optional[torch.Tensor],
+        conditioning: torch.Tensor | None,
         batch_size: int,
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Apply per-sample CFG dropout to conditioning tensor."""
         from .training_tricks import apply_conditioning_dropout
         return apply_conditioning_dropout(self, conditioning, batch_size)
@@ -1022,7 +1010,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         model_input: torch.Tensor,
         timesteps: torch.Tensor,
         prediction: torch.Tensor,
-        mode_id: Optional[torch.Tensor] = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute self-conditioning consistency loss."""
         from .losses import compute_self_conditioning_loss
@@ -1031,8 +1019,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def _compute_min_snr_weighted_mse(
         self,
         prediction: torch.Tensor,
-        images: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        images: torch.Tensor | dict[str, torch.Tensor],
+        noise: torch.Tensor | dict[str, torch.Tensor],
         timesteps: torch.Tensor,
     ) -> torch.Tensor:
         """Compute MSE loss with Min-SNR weighting."""
@@ -1042,8 +1030,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def _compute_region_weighted_mse(
         self,
         prediction: torch.Tensor,
-        images: Union[torch.Tensor, Dict[str, torch.Tensor]],
-        noise: Union[torch.Tensor, Dict[str, torch.Tensor]],
+        images: torch.Tensor | dict[str, torch.Tensor],
+        noise: torch.Tensor | dict[str, torch.Tensor],
         seg_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Compute MSE loss with per-pixel regional weighting."""
@@ -1075,7 +1063,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             perceptual_weight: float,
             strategy_name: str,
             num_train_timesteps: int,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             prediction = model(model_input, timesteps)
 
             if strategy_name == 'rflow':
@@ -1118,7 +1106,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             perceptual_weight: float,
             strategy_name: str,
             num_train_timesteps: int,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             prediction = model(model_input, timesteps)
             pred_0 = prediction[:, 0:1, :, :]
             pred_1 = prediction[:, 1:2, :, :]
@@ -1169,12 +1157,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .profiling import get_trainer_type
         return get_trainer_type()
 
-    def _get_metadata_extra(self) -> Dict[str, Any]:
+    def _get_metadata_extra(self) -> dict[str, Any]:
         """Return diffusion-specific metadata."""
         from .profiling import get_metadata_extra
         return get_metadata_extra(self)
 
-    def _get_model_config(self) -> Dict[str, Any]:
+    def _get_model_config(self) -> dict[str, Any]:
         """Get model configuration for checkpoint."""
         from .profiling import get_model_config
         return get_model_config(self)
@@ -1620,7 +1608,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             mse_loss=mse_loss.item(),
         )
 
-    def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
+    def train_epoch(self, data_loader: DataLoader, epoch: int) -> tuple[float, float, float]:
         """Train the model for one epoch.
 
         Args:
@@ -1687,7 +1675,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         return avg_loss, avg_mse, avg_perceptual
 
-    def compute_validation_losses(self, epoch: int) -> Tuple[Dict[str, float], Optional[Dict[str, Any]]]:
+    def compute_validation_losses(self, epoch: int) -> tuple[dict[str, float], dict[str, Any] | None]:
         """Compute losses and metrics on validation set."""
         from .validation import compute_validation_losses
         return compute_validation_losses(self, epoch)
@@ -1701,7 +1689,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         model: nn.Module,
         epoch: int,
-        train_dataset: Optional[Dataset] = None,
+        train_dataset: Dataset | None = None,
     ) -> None:
         """Generate and visualize samples."""
         from .visualization import visualize_samples
@@ -1737,7 +1725,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         model_input: torch.Tensor,
         num_steps: int = 25,
         capture_every: int = 5,
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         """Generate samples while capturing intermediate states (3D)."""
         from .visualization import generate_trajectory_3d
         return generate_trajectory_3d(self, model, model_input, num_steps, capture_every)
@@ -1761,7 +1749,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         size_bins: torch.Tensor,
         num_steps: int = 25,
         capture_every: int = 5,
-    ) -> List[torch.Tensor]:
+    ) -> list[torch.Tensor]:
         """Generate 3D samples with size bins while capturing trajectory."""
         from .visualization import generate_trajectory_with_size_bins_3d
         return generate_trajectory_with_size_bins_3d(self, noise, size_bins, num_steps, capture_every)
@@ -1784,9 +1772,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         train_loader: DataLoader,
         train_dataset: Dataset,
-        val_loader: Optional[DataLoader] = None,
-        pixel_train_loader: Optional[DataLoader] = None,
-        pixel_val_loader: Optional[DataLoader] = None,
+        val_loader: DataLoader | None = None,
+        pixel_train_loader: DataLoader | None = None,
+        pixel_val_loader: DataLoader | None = None,
     ) -> None:
         """Main training loop.
 
@@ -2005,8 +1993,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         epoch: int,
         data_split: str = 'val',
-        modality_override: Optional[str] = None,
-    ) -> Optional[float]:
+        modality_override: str | None = None,
+    ) -> float | None:
         """Compute 3D MS-SSIM by reconstructing full volumes."""
         from .evaluation import compute_volume_3d_msssim
         return compute_volume_3d_msssim(self, epoch, data_split, modality_override)
@@ -2015,8 +2003,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         epoch: int,
         data_split: str = 'val',
-        modality_override: Optional[str] = None,
-    ) -> Optional[float]:
+        modality_override: str | None = None,
+    ) -> float | None:
         """Compute 3D MS-SSIM for 3D diffusion models (native volume processing)."""
         from .evaluation import compute_volume_3d_msssim_native
         return compute_volume_3d_msssim_native(self, epoch, data_split, modality_override)
@@ -2029,8 +2017,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def evaluate_test_set(
         self,
         test_loader: DataLoader,
-        checkpoint_name: Optional[str] = None
-    ) -> Dict[str, float]:
+        checkpoint_name: str | None = None
+    ) -> dict[str, float]:
         """Evaluate diffusion model on test set."""
         from .evaluation import evaluate_test_set
         return evaluate_test_set(self, test_loader, checkpoint_name)
@@ -2039,9 +2027,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self,
         original: torch.Tensor,
         predicted: torch.Tensor,
-        metrics: Dict[str, float],
+        metrics: dict[str, float],
         label: str,
-        timesteps: Optional[torch.Tensor] = None,
+        timesteps: torch.Tensor | None = None,
     ) -> plt.Figure:
         """Create side-by-side test evaluation figure."""
         from .evaluation import create_test_reconstruction_figure

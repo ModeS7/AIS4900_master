@@ -7,7 +7,7 @@ This module provides a unified wrapper that handles both conditioning signals,
 plus a factory function to create the appropriate wrapper based on config.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 from torch import nn
@@ -15,13 +15,14 @@ from torch import nn
 from .base_embed import create_zero_init_mlp
 from .mode_embed import (
     MODE_ENCODING_DIM,
-    encode_mode_id,
-    ModeEmbedModelWrapper,
-    ModeEmbedDropoutModelWrapper,
-    NoModeModelWrapper,
-    LateModeModelWrapper,
     FiLMModeModelWrapper,
+    LateModeModelWrapper,
+    ModeEmbedDropoutModelWrapper,
+    ModeEmbedModelWrapper,
+    NoModeModelWrapper,
+    encode_mode_id,
 )
+
 
 # Lazy imports to avoid circular dependency (augmentation imports from wrappers)
 # These are imported at runtime when needed
@@ -55,7 +56,7 @@ def create_conditioning_wrapper(
     mode_strategy: str = 'full',
     mode_dropout_prob: float = 0.2,
     late_mode_start_level: int = 2,
-) -> Tuple[nn.Module, Optional[str]]:
+) -> tuple[nn.Module, str | None]:
     """Factory function to create appropriate conditioning wrapper.
 
     Simplifies the if-elif chain in trainer.py by selecting the right
@@ -181,7 +182,7 @@ class CombinedTimeEmbed(nn.Module):
         self.register_buffer('_omega_encoding', torch.zeros(1, _omega_dim()))
 
         # Mode uses regular tensor (per-sample, variable batch size)
-        self._mode_encoding: Optional[torch.Tensor] = None
+        self._mode_encoding: torch.Tensor | None = None
 
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
         """Set omega encoding for next forward pass."""
@@ -289,8 +290,8 @@ class CombinedModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        omega: Optional[Dict[str, Any]] = None,
-        mode_id: Optional[torch.Tensor] = None,
+        omega: dict[str, Any] | None = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with combined omega and per-sample mode conditioning.
 
@@ -358,7 +359,7 @@ class CombinedFiLMTimeEmbed(nn.Module):
         self.register_buffer('_omega_encoding', torch.zeros(1, _omega_dim()))
 
         # Mode uses regular tensor (per-sample, variable batch size)
-        self._mode_encoding: Optional[torch.Tensor] = None
+        self._mode_encoding: torch.Tensor | None = None
 
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
         """Set omega encoding for next forward pass."""
@@ -454,8 +455,8 @@ class CombinedFiLMModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        omega: Optional[Dict[str, Any]] = None,
-        mode_id: Optional[torch.Tensor] = None,
+        omega: dict[str, Any] | None = None,
+        mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with omega + FiLM mode conditioning.
 

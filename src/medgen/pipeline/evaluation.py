@@ -8,7 +8,7 @@ This module provides:
 import json
 import logging
 import os
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.amp import autocast
@@ -16,16 +16,17 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from medgen.metrics import (
+    RegionalMetricsTracker,
+    compute_lpips,
     compute_msssim,
     compute_psnr,
-    compute_lpips,
     create_reconstruction_figure,
-    RegionalMetricsTracker,
 )
 
 if TYPE_CHECKING:
-    from medgen.pipeline.trainer import DiffusionTrainer
     import matplotlib.pyplot as plt
+
+    from medgen.pipeline.trainer import DiffusionTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ logger = logging.getLogger(__name__)
 def evaluate_test_set(
     trainer: 'DiffusionTrainer',
     test_loader: DataLoader,
-    checkpoint_name: Optional[str] = None,
-) -> Dict[str, float]:
+    checkpoint_name: str | None = None,
+) -> dict[str, float]:
     """Evaluate diffusion model on test set.
 
     Runs inference on the entire test set and computes metrics:
@@ -95,7 +96,7 @@ def evaluate_test_set(
 
     # Track worst batch by loss
     worst_batch_loss = 0.0
-    worst_batch_data: Optional[Dict[str, Any]] = None
+    worst_batch_data: dict[str, Any] | None = None
 
     # Timestep bin accumulators (10 bins: 0.0-0.1, 0.1-0.2, ..., 0.9-1.0)
     num_timestep_bins = 10
@@ -346,7 +347,7 @@ def evaluate_test_set(
                 except torch.cuda.OutOfMemoryError as e:
                     logger.warning(f"Generation metrics skipped due to OOM: {e}")
                     torch.cuda.empty_cache()
-                except Exception as e:
+                except Exception:
                     logger.exception("Generation metrics computation failed on test set")
 
         return metrics
@@ -360,8 +361,8 @@ def compute_volume_3d_msssim(
     trainer: 'DiffusionTrainer',
     epoch: int,
     data_split: str = 'val',
-    modality_override: Optional[str] = None,
-) -> Optional[float]:
+    modality_override: str | None = None,
+) -> float | None:
     """Compute 3D MS-SSIM by reconstructing full volumes.
 
     For 2D diffusion models: processes slice-by-slice then stacks.
@@ -525,8 +526,8 @@ def compute_volume_3d_msssim_native(
     trainer: 'DiffusionTrainer',
     epoch: int,
     data_split: str = 'val',
-    modality_override: Optional[str] = None,
-) -> Optional[float]:
+    modality_override: str | None = None,
+) -> float | None:
     """Compute 3D MS-SSIM for 3D diffusion models (native volume processing).
 
     For 3D diffusion models, this:
@@ -565,7 +566,9 @@ def compute_volume_3d_msssim_native(
 
         cache_key = f"{data_split}_{modality}"
         if cache_key not in trainer._volume_loaders_cache:
-            from medgen.data.loaders.volume_3d import create_vae_3d_single_modality_validation_loader
+            from medgen.data.loaders.volume_3d import (
+                create_vae_3d_single_modality_validation_loader,
+            )
             loader = create_vae_3d_single_modality_validation_loader(trainer.cfg, modality)
             if loader is None:
                 return None
@@ -663,9 +666,9 @@ def compute_volume_3d_msssim_native(
 def create_test_reconstruction_figure(
     original: torch.Tensor,
     predicted: torch.Tensor,
-    metrics: Dict[str, float],
+    metrics: dict[str, float],
     label: str,
-    timesteps: Optional[torch.Tensor] = None,
+    timesteps: torch.Tensor | None = None,
 ) -> 'plt.Figure':
     """Create side-by-side test evaluation figure.
 

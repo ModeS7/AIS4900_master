@@ -16,7 +16,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -28,10 +28,11 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import setup_distributed
-from medgen.pipeline.results import TrainingStepResult
 from medgen.metrics import FLOPsTracker, GradientNormTracker
-from .utils import EpochTimeEstimator
+from medgen.pipeline.results import TrainingStepResult
+
 from .checkpoint_manager import CheckpointManager
+from .utils import EpochTimeEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ class BaseTrainer(ABC):
             self.figure_interval: int = max(1, self.n_epochs // max(1, num_figures))
         self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
         self.gradient_clip_norm: float = cfg.training.get('gradient_clip_norm', 1.0)
-        self.limit_train_batches: Optional[int] = cfg.training.get('limit_train_batches', None)
+        self.limit_train_batches: int | None = cfg.training.get('limit_train_batches', None)
 
         # Determine if running on cluster
         self.is_cluster: bool = (cfg.paths.name == "cluster")
@@ -116,8 +117,8 @@ class BaseTrainer(ABC):
         # ─────────────────────────────────────────────────────────────────────
         profiling_cfg = cfg.training.get('profiling', {})
         self._profiling_enabled: bool = profiling_cfg.get('enabled', False)
-        self._profiling_config: Dict[str, Any] = profiling_cfg
-        self._profiler: Optional[torch.profiler.profile] = None
+        self._profiling_config: dict[str, Any] = profiling_cfg
+        self._profiler: torch.profiler.profile | None = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Setup device and distributed training
@@ -137,7 +138,7 @@ class BaseTrainer(ABC):
         # ─────────────────────────────────────────────────────────────────────
         if self.is_main_process:
             self.save_dir = self._create_save_dir()
-            self.writer: Optional[SummaryWriter] = self._init_tensorboard()
+            self.writer: SummaryWriter | None = self._init_tensorboard()
             self.best_loss: float = float('inf')
         else:
             self.save_dir = ""
@@ -153,18 +154,18 @@ class BaseTrainer(ABC):
         # ─────────────────────────────────────────────────────────────────────
         # Model placeholders (set in setup_model)
         # ─────────────────────────────────────────────────────────────────────
-        self.model: Optional[nn.Module] = None
-        self.model_raw: Optional[nn.Module] = None
-        self.optimizer: Optional[Optimizer] = None
-        self.lr_scheduler: Optional[LRScheduler] = None
-        self.val_loader: Optional[DataLoader] = None
+        self.model: nn.Module | None = None
+        self.model_raw: nn.Module | None = None
+        self.optimizer: Optimizer | None = None
+        self.lr_scheduler: LRScheduler | None = None
+        self.val_loader: DataLoader | None = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Checkpoint manager (initialized in _setup_checkpoint_manager)
         # ─────────────────────────────────────────────────────────────────────
-        self.checkpoint_manager: Optional[CheckpointManager] = None
+        self.checkpoint_manager: CheckpointManager | None = None
 
-    def _setup_distributed(self) -> Tuple[int, int, int, torch.device]:
+    def _setup_distributed(self) -> tuple[int, int, int, torch.device]:
         """Setup distributed training.
 
         Returns:
@@ -209,7 +210,7 @@ class BaseTrainer(ABC):
         run_name = f"{exp_name}{image_size}_{timestamp}"
         return os.path.join(self.cfg.paths.model_dir, 'runs', run_name)
 
-    def _init_tensorboard(self) -> Optional[SummaryWriter]:
+    def _init_tensorboard(self) -> SummaryWriter | None:
         """Initialize TensorBoard writer.
 
         Returns:
@@ -248,7 +249,7 @@ class BaseTrainer(ABC):
     def _log_learning_rate(
         self,
         epoch: int,
-        scheduler: Optional[LRScheduler] = None,
+        scheduler: LRScheduler | None = None,
         prefix: str = "LR/Generator",
     ) -> None:
         """Log current learning rate to TensorBoard.
@@ -274,7 +275,7 @@ class BaseTrainer(ABC):
             self.writer.close()
             self.writer = None
 
-    def _setup_profiler(self) -> Optional[torch.profiler.profile]:
+    def _setup_profiler(self) -> torch.profiler.profile | None:
         """Setup PyTorch profiler if enabled.
 
         Creates a profiler with Chrome trace export for performance analysis.
@@ -368,8 +369,8 @@ class BaseTrainer(ABC):
     def _on_epoch_end(
         self,
         epoch: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
     ) -> None:
         """Hook called at end of each epoch.
 
@@ -415,7 +416,7 @@ class BaseTrainer(ABC):
     def _prepare_batch(
         self,
         batch: Any,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Prepare batch for training.
 
         Handles different batch formats (dict, tuple, tensor).
@@ -486,7 +487,7 @@ class BaseTrainer(ABC):
         """
         return 'gen'
 
-    def _get_checkpoint_extra_state(self) -> Optional[dict]:
+    def _get_checkpoint_extra_state(self) -> dict | None:
         """Return extra state to include in checkpoints.
 
         Override in subclasses to add trainer-specific state.
@@ -535,7 +536,7 @@ class BaseTrainer(ABC):
     # ─────────────────────────────────────────────────────────────────────────
 
     @abstractmethod
-    def setup_model(self, pretrained_checkpoint: Optional[str] = None) -> None:
+    def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
         """Initialize model, optimizer, scheduler, and loss functions.
 
         Args:
@@ -561,7 +562,7 @@ class BaseTrainer(ABC):
         self,
         train_loader: DataLoader,
         epoch: int,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Train for one epoch.
 
         Args:
@@ -578,7 +579,7 @@ class BaseTrainer(ABC):
         self,
         epoch: int,
         log_figures: bool = True,
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compute validation metrics.
 
         Args:
@@ -613,7 +614,7 @@ class BaseTrainer(ABC):
         """
         ...
 
-    def _get_metadata_extra(self) -> Dict[str, Any]:
+    def _get_metadata_extra(self) -> dict[str, Any]:
         """Return trainer-specific metadata fields.
 
         Override in subclasses to add custom fields to metadata.json.
@@ -657,10 +658,10 @@ class BaseTrainer(ABC):
         self,
         train_loader: DataLoader,
         train_dataset: Dataset,
-        val_loader: Optional[DataLoader] = None,
-        per_modality_val_loaders: Optional[Dict[str, DataLoader]] = None,
+        val_loader: DataLoader | None = None,
+        per_modality_val_loaders: dict[str, DataLoader] | None = None,
         start_epoch: int = 0,
-        max_epochs: Optional[int] = None,
+        max_epochs: int | None = None,
     ) -> int:
         """Execute full training loop using template method pattern.
 
@@ -701,7 +702,7 @@ class BaseTrainer(ABC):
                 logger.warning(f"FLOPs measurement failed (OOM or CUDA error): {e}")
             except StopIteration:
                 logger.warning("FLOPs measurement failed: empty dataloader")
-            except Exception as e:
+            except Exception:
                 logger.exception("FLOPs measurement failed unexpectedly")
 
         # Setup PyTorch profiler if enabled
@@ -726,7 +727,7 @@ class BaseTrainer(ABC):
                 avg_losses = self.train_epoch(train_loader, epoch)
 
                 # Validation (main process only)
-                val_metrics: Dict[str, float] = {}
+                val_metrics: dict[str, float] = {}
                 if self.is_main_process:
                     log_figures = (epoch + 1) % self.figure_interval == 0
                     if self.val_loader is not None:
@@ -786,8 +787,8 @@ class BaseTrainer(ABC):
         self,
         epoch: int,
         total_epochs: int,
-        avg_losses: Dict[str, float],
-        val_metrics: Dict[str, float],
+        avg_losses: dict[str, float],
+        val_metrics: dict[str, float],
         elapsed_time: float,
     ) -> None:
         """Log epoch completion summary.

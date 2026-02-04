@@ -16,27 +16,31 @@ Usage:
 """
 import logging
 import os
-from typing import List, Optional, Tuple
 
 import hydra
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+from monai.losses import PerceptualLoss
+from monai.networks.nets import AutoencoderKL, DiffusionModelUNet
 from omegaconf import DictConfig
 from torch.amp import autocast
 from torch.optim import AdamW
 from tqdm import tqdm
 
-from monai.losses import PerceptualLoss
-from monai.networks.nets import AutoencoderKL, DiffusionModelUNet
-
 from medgen.core import DEFAULT_DUAL_IMAGE_KEYS, ModeType, setup_cuda_optimizations
 from medgen.data import create_dataloader, create_dual_image_dataloader, create_vae_dataloader
-from medgen.diffusion import ConditionalDualMode, ConditionalSingleMode, SegmentationMode
-from medgen.diffusion import DDPMStrategy, RFlowStrategy
+from medgen.diffusion import (
+    ConditionalDualMode,
+    ConditionalSingleMode,
+    DDPMStrategy,
+    RFlowStrategy,
+    SegmentationMode,
+)
 
 setup_cuda_optimizations()
 
@@ -56,7 +60,7 @@ def find_lr_diffusion(
     perceptual_weight: float = 0.001,
     smoothing: float = 0.05,
     diverge_th: float = 5.0,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Run LR range test for diffusion model.
 
     Args:
@@ -79,9 +83,9 @@ def find_lr_diffusion(
     optimizer = AdamW(model.parameters(), lr=min_lr)
     lr_mult = (max_lr / min_lr) ** (1.0 / num_steps)
 
-    learning_rates: List[float] = []
-    losses: List[float] = []
-    smoothed_loss: Optional[float] = None
+    learning_rates: list[float] = []
+    losses: list[float] = []
+    smoothed_loss: float | None = None
     best_loss = float('inf')
 
     model.train()
@@ -165,7 +169,7 @@ def find_lr_vae(
     perceptual_weight: float = 0.002,
     smoothing: float = 0.05,
     diverge_th: float = 5.0,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Run LR range test for VAE (without GAN for stability).
 
     Uses only reconstruction + perceptual + KL loss to find optimal LR.
@@ -190,9 +194,9 @@ def find_lr_vae(
     optimizer = AdamW(model.parameters(), lr=min_lr)
     lr_mult = (max_lr / min_lr) ** (1.0 / num_steps)
 
-    learning_rates: List[float] = []
-    losses: List[float] = []
-    smoothed_loss: Optional[float] = None
+    learning_rates: list[float] = []
+    losses: list[float] = []
+    smoothed_loss: float | None = None
     best_loss = float('inf')
 
     model.train()
@@ -263,7 +267,7 @@ def find_lr_vae(
     return learning_rates, losses
 
 
-def suggest_lr(losses: List[float], lrs: List[float], div_factor: float = 10.0) -> float:
+def suggest_lr(losses: list[float], lrs: list[float], div_factor: float = 10.0) -> float:
     """Suggest optimal LR using 10x before divergence rule.
 
     Finds where loss starts diverging (loss > 2x minimum) and suggests
@@ -311,8 +315,8 @@ def suggest_lr(losses: List[float], lrs: List[float], div_factor: float = 10.0) 
 
 
 def plot_lr_finder_diffusion(
-    lrs: List[float],
-    losses: List[float],
+    lrs: list[float],
+    losses: list[float],
     save_path: str,
 ) -> float:
     """Plot LR finder results for diffusion model."""
@@ -336,8 +340,8 @@ def plot_lr_finder_diffusion(
 
 
 def plot_lr_finder_vae(
-    lrs: List[float],
-    losses: List[float],
+    lrs: list[float],
+    losses: list[float],
     save_path: str,
 ) -> float:
     """Plot LR finder results for VAE."""

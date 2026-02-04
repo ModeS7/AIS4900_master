@@ -12,7 +12,7 @@ import logging
 import os
 from datetime import datetime
 from glob import glob
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import torch
 from monai.data import DataLoader
@@ -22,10 +22,8 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from medgen.data.loaders.common import (
-    DataLoaderConfig,
     DistributedArgs,
     create_dataloader,
-    setup_distributed_sampler,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,7 +68,7 @@ class LatentDataset(Dataset):
         self,
         cache_dir: str,
         mode: str,
-        spatial_dims: Optional[int] = None,
+        spatial_dims: int | None = None,
     ) -> None:
         # Validate cache directory exists
         if not os.path.isdir(cache_dir):
@@ -98,12 +96,12 @@ class LatentDataset(Dataset):
         metadata_path = os.path.join(self.cache_dir, "metadata.json")
         if os.path.exists(metadata_path):
             try:
-                with open(metadata_path, 'r') as f:
+                with open(metadata_path) as f:
                     metadata = json.load(f)
                 return metadata.get('spatial_dims', 2)
             except json.JSONDecodeError as e:
                 logger.warning(f"Corrupted metadata JSON at {metadata_path}: {e}. Falling back to detection.")
-            except IOError as e:
+            except OSError as e:
                 logger.debug(f"Could not read metadata at {metadata_path}: {e}. Falling back to detection.")
 
         # Fallback: check first sample's latent shape
@@ -119,7 +117,7 @@ class LatentDataset(Dataset):
     def __len__(self) -> int:
         return len(self.files)
 
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         """Load a single sample from cache.
 
         Returns:
@@ -171,12 +169,12 @@ class LatentCacheBuilder:
         device: torch.device,
         mode: str,
         spatial_dims: int = 2,
-        image_size: Optional[int] = None,
-        volume_shape: Optional[Tuple[int, int, int]] = None,
+        image_size: int | None = None,
+        volume_shape: tuple[int, int, int] | None = None,
         compression_type: str = "vae",
         verbose: bool = True,
         slicewise_encoding: bool = False,
-        seg_compression_model: Optional[torch.nn.Module] = None,
+        seg_compression_model: torch.nn.Module | None = None,
     ) -> None:
         self.model = compression_model.eval()
         self.device = device
@@ -221,7 +219,7 @@ class LatentCacheBuilder:
         cache_dir: str,
         checkpoint_path: str,
         require_seg_mask: bool = False,
-        seg_checkpoint_path: Optional[str] = None,
+        seg_checkpoint_path: str | None = None,
     ) -> bool:
         """Check if cache exists and matches checkpoint hash(es).
 
@@ -243,9 +241,9 @@ class LatentCacheBuilder:
             return False
 
         try:
-            with open(metadata_path, 'r') as f:
+            with open(metadata_path) as f:
                 metadata = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to read cache metadata: {e}")
             return False
 
@@ -315,7 +313,7 @@ class LatentCacheBuilder:
         checkpoint_path: str,
         batch_size: int = 32,
         num_workers: int = 4,
-        seg_checkpoint_path: Optional[str] = None,
+        seg_checkpoint_path: str | None = None,
     ) -> None:
         """Encode entire dataset and save as .pt files.
 
@@ -423,7 +421,7 @@ class LatentCacheBuilder:
         volume_dataset: Dataset,
         cache_dir: str,
         checkpoint_path: str,
-        seg_checkpoint_path: Optional[str] = None,
+        seg_checkpoint_path: str | None = None,
     ) -> None:
         """Build 3D cache with single-volume encoding."""
         latent_shape = None
@@ -498,7 +496,7 @@ class LatentCacheBuilder:
 
     def _parse_batch_2d(
         self, batch: Any
-    ) -> Tuple[Tensor, Optional[Tensor], Optional[List[str]], Optional[List[int]]]:
+    ) -> tuple[Tensor, Tensor | None, list[str] | None, list[int] | None]:
         """Parse 2D batch into images, seg masks, and metadata."""
         import numpy as np
 
@@ -536,7 +534,7 @@ class LatentCacheBuilder:
 
     def _parse_batch_3d(
         self, batch: Any
-    ) -> Tuple[Tensor, Optional[Tensor], Optional[str]]:
+    ) -> tuple[Tensor, Tensor | None, str | None]:
         """Parse 3D batch into volume, seg mask, and patient ID."""
         seg_mask = None
         patient_id = None
@@ -665,13 +663,13 @@ def create_latent_dataloader(
     cache_dir: str,
     split: str,
     mode: str,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
     shuffle: bool = True,
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-    spatial_dims: Optional[int] = None,
-) -> Tuple[DataLoader, LatentDataset]:
+    spatial_dims: int | None = None,
+) -> tuple[DataLoader, LatentDataset]:
     """Create dataloader for pre-encoded latents.
 
     Supports both 2D and 3D latents (auto-detected from cache metadata).
@@ -713,10 +711,10 @@ def create_latent_validation_dataloader(
     cfg: DictConfig,
     cache_dir: str,
     mode: str,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
     world_size: int = 1,
-    spatial_dims: Optional[int] = None,
-) -> Optional[Tuple[DataLoader, LatentDataset]]:
+    spatial_dims: int | None = None,
+) -> tuple[DataLoader, LatentDataset] | None:
     """Create validation dataloader for pre-encoded latents.
 
     Args:
@@ -764,9 +762,9 @@ def create_latent_test_dataloader(
     cfg: DictConfig,
     cache_dir: str,
     mode: str,
-    batch_size: Optional[int] = None,
-    spatial_dims: Optional[int] = None,
-) -> Optional[Tuple[DataLoader, LatentDataset]]:
+    batch_size: int | None = None,
+    spatial_dims: int | None = None,
+) -> tuple[DataLoader, LatentDataset] | None:
     """Create test dataloader for pre-encoded latents.
 
     Args:
@@ -986,9 +984,9 @@ def load_compression_model(
     checkpoint_path: str,
     compression_type: str,
     device: torch.device,
-    cfg: Optional[DictConfig] = None,
+    cfg: DictConfig | None = None,
     spatial_dims: Any = 'auto',
-) -> Tuple[torch.nn.Module, str, int, int, int]:
+) -> tuple[torch.nn.Module, str, int, int, int]:
     """Load compression model from checkpoint.
 
     Args:

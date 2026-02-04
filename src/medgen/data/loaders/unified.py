@@ -51,12 +51,12 @@ Compression Modes:
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 
-from .base import dict_collate_fn, DictDatasetWrapper
+from .base import DictDatasetWrapper, dict_collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class ModeConfig:
     output_format: str  # Format string for DictDatasetWrapper
     needs_seg: bool = False  # Whether this mode requires seg masks
     cfg_dropout_prob: float = 0.0  # CFG dropout probability (train only)
-    extra_config: Dict[str, Any] = field(default_factory=dict)
+    extra_config: dict[str, Any] = field(default_factory=dict)
 
 
 # Registry of supported diffusion modes
@@ -116,9 +116,9 @@ def _wrap_with_dict_loader(
     output_format: str,
     spatial_dims: int,
     split: str,
-    batch_size: Optional[int],
-    sampler: Optional[Any] = None,
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+    sampler: Any | None = None,
+) -> tuple[DataLoader, Dataset]:
     """Wrap a raw dataset with DictDatasetWrapper and create a new DataLoader.
 
     This utility function handles the common pattern of:
@@ -179,9 +179,9 @@ def create_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-    augment: Optional[bool] = None,
-    batch_size: Optional[int] = None,
-) -> Tuple[DataLoader, Dataset]:
+    augment: bool | None = None,
+    batch_size: int | None = None,
+) -> tuple[DataLoader, Dataset]:
     """Unified dataloader factory for diffusion and compression.
 
     This is the main entry point for creating dataloaders. It routes to the
@@ -256,9 +256,9 @@ def create_diffusion_dataloader(
     use_distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
-    augment: Optional[bool] = None,
-    batch_size: Optional[int] = None,
-) -> Tuple[DataLoader, Dataset]:
+    augment: bool | None = None,
+    batch_size: int | None = None,
+) -> tuple[DataLoader, Dataset]:
     """Create unified dataloader for diffusion training.
 
     This factory function creates dataloaders that return consistent dict-format
@@ -314,8 +314,8 @@ def _create_2d_loader(
     rank: int,
     world_size: int,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 2D dataloader based on mode.
 
     Wraps existing loaders to return dict format batches.
@@ -368,10 +368,10 @@ def _get_raw_2d_loader(
     world_size: int,
     augment: bool,
     augment_type: str,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Get raw 2D loader (may return tuple/tensor format)."""
-    from medgen.data.loaders import single, dual, multi_diffusion, seg_conditioned
+    from medgen.data.loaders import dual, multi_diffusion, seg_conditioned, single
 
     if mode == 'seg':
         if split == 'train':
@@ -494,8 +494,8 @@ def _create_3d_loader(
     rank: int,
     world_size: int,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D dataloader based on mode.
 
     Note: 3D loaders use different implementations from 2D due to:
@@ -536,8 +536,8 @@ def _create_3d_seg_loader(
     vol_cfg: Any,
     split: str,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D segmentation mode loader."""
     from medgen.data.loaders.volume_3d import (
         create_segmentation_dataloader,
@@ -560,8 +560,8 @@ def _create_3d_bravo_loader(
     vol_cfg: Any,
     split: str,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D BRAVO mode loader (BRAVO conditioned on seg)."""
     from medgen.data.loaders.volume_3d import (
         create_single_modality_dataloader_with_seg,
@@ -588,8 +588,8 @@ def _create_3d_seg_conditioned_loader(
     vol_cfg: Any,
     split: str,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D seg_conditioned mode loader."""
     from medgen.data.loaders.volume_3d import (
         create_segmentation_conditioned_dataloader,
@@ -618,8 +618,8 @@ def _create_3d_seg_conditioned_input_loader(
     vol_cfg: Any,
     split: str,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D seg_conditioned_input mode loader.
 
     This mode uses input channel conditioning where size bins are converted
@@ -690,7 +690,7 @@ def _create_3d_seg_conditioned_input_loader(
     return new_loader, wrapped_dataset
 
 
-def get_dataloader_info(loader: DataLoader) -> Dict[str, Any]:
+def get_dataloader_info(loader: DataLoader) -> dict[str, Any]:
     """Get information about a dataloader for logging.
 
     Args:
@@ -752,9 +752,9 @@ def _create_compression_dataloader(
     use_distributed: bool,
     rank: int,
     world_size: int,
-    augment: Optional[bool],
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    augment: bool | None,
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create compression dataloader (VAE/VQVAE/DC-AE).
 
     Routes to 2D or 3D compression loader based on spatial_dims.
@@ -780,8 +780,8 @@ def _create_compression_2d_loader(
     rank: int,
     world_size: int,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 2D compression dataloader.
 
     Routes to the appropriate underlying loader based on mode,
@@ -833,10 +833,10 @@ def _get_raw_compression_2d_loader(
     rank: int,
     world_size: int,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Get raw 2D compression loader (returns tuple/tensor format)."""
-    from medgen.data.loaders import vae, seg_compression, multi_modality
+    from medgen.data.loaders import multi_modality, seg_compression, vae
 
     if mode == 'seg_compression':
         # DC-AE seg mask compression
@@ -933,8 +933,8 @@ def _create_compression_3d_loader(
     rank: int,
     world_size: int,
     augment: bool,
-    batch_size: Optional[int],
-) -> Tuple[DataLoader, Dataset]:
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
     """Create 3D compression dataloader.
 
     3D loaders already return dict format, so minimal wrapping needed.

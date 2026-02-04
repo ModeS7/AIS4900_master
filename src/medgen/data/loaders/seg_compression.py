@@ -14,19 +14,19 @@ This file now imports from there for backward compatibility.
 """
 import logging
 import os
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
-from torch.utils.data import Dataset as TorchDataset
 from monai.data import DataLoader
 from omegaconf import DictConfig
+from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_augmentation, create_seg_collate_fn
-from medgen.data.loaders.common import create_dataloader, DistributedArgs
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
     validate_modality_exists,
 )
+from medgen.data.loaders.common import DistributedArgs, create_dataloader
 
 # Import consolidated classes and functions from datasets.py
 from medgen.data.loaders.datasets import (
@@ -54,7 +54,7 @@ def create_seg_compression_dataloader(
     rank: int = 0,
     world_size: int = 1,
     augment: bool = True,
-) -> Tuple[DataLoader, TorchDataset]:
+) -> tuple[DataLoader, TorchDataset]:
     """Create dataloader for segmentation mask compression training.
 
     Augmentation is applied on-the-fly during __getitem__, NOT during slice
@@ -96,7 +96,7 @@ def create_seg_compression_dataloader(
 
     # Create collate with batch augmentations if enabled
     batch_aug_cfg = cfg.training.get('batch_augment', {})
-    collate_fn: Optional[Callable] = None
+    collate_fn: Callable | None = None
     if batch_aug_cfg.get('enabled', False):
         collate_fn = create_seg_collate_fn(
             mosaic_prob=batch_aug_cfg.get('mosaic_prob', 0.2),
@@ -120,7 +120,7 @@ def create_seg_compression_validation_dataloader(
     cfg: DictConfig,
     image_size: int,
     batch_size: int,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create validation dataloader for seg compression.
 
     No augmentation for validation.
@@ -175,7 +175,7 @@ def create_seg_compression_test_dataloader(
     cfg: DictConfig,
     image_size: int,
     batch_size: int,
-) -> Optional[Tuple[DataLoader, TorchDataset]]:
+) -> tuple[DataLoader, TorchDataset] | None:
     """Create test dataloader for seg compression evaluation.
 
     No augmentation for testing.
