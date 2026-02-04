@@ -255,7 +255,7 @@ class DictDatasetWrapper(Dataset):
                 if isinstance(image, np.ndarray):
                     image = torch.from_numpy(image.copy()).float()
                 if isinstance(seg, np.ndarray):
-                    seg = torch.from_numpy(seg.copy()).float()
+                    seg = torch.from_numpy(seg.copy()).long()  # Categorical mask
                 return {
                     'image': image,
                     'seg': seg,
@@ -269,9 +269,9 @@ class DictDatasetWrapper(Dataset):
             if isinstance(item, (tuple, list)) and len(item) >= 2:
                 seg, size_bins = item[0], item[1]
                 if isinstance(seg, np.ndarray):
-                    seg = torch.from_numpy(seg.copy()).float()
+                    seg = torch.from_numpy(seg.copy()).long()  # Categorical mask
                 if isinstance(size_bins, np.ndarray):
-                    size_bins = torch.from_numpy(size_bins.copy()).float()
+                    size_bins = torch.from_numpy(size_bins.copy()).long()  # Discrete counts
                 return {
                     'image': seg,  # seg is the image to generate
                     'size_bins': size_bins,
@@ -285,11 +285,11 @@ class DictDatasetWrapper(Dataset):
             if isinstance(item, (tuple, list)) and len(item) >= 3:
                 seg, size_bins, bin_maps = item[0], item[1], item[2]
                 if isinstance(seg, np.ndarray):
-                    seg = torch.from_numpy(seg.copy()).float()
+                    seg = torch.from_numpy(seg.copy()).long()  # Categorical mask
                 if isinstance(size_bins, np.ndarray):
-                    size_bins = torch.from_numpy(size_bins.copy()).float()
+                    size_bins = torch.from_numpy(size_bins.copy()).long()  # Discrete counts
                 if isinstance(bin_maps, np.ndarray):
-                    bin_maps = torch.from_numpy(bin_maps.copy()).float()
+                    bin_maps = torch.from_numpy(bin_maps.copy()).float()  # Continuous spatial
                 return {
                     'image': seg,  # seg is the image to generate
                     'size_bins': size_bins,
@@ -299,9 +299,9 @@ class DictDatasetWrapper(Dataset):
                 # Fallback: no bin_maps provided
                 seg, size_bins = item[0], item[1]
                 if isinstance(seg, np.ndarray):
-                    seg = torch.from_numpy(seg.copy()).float()
+                    seg = torch.from_numpy(seg.copy()).long()  # Categorical mask
                 if isinstance(size_bins, np.ndarray):
-                    size_bins = torch.from_numpy(size_bins.copy()).float()
+                    size_bins = torch.from_numpy(size_bins.copy()).long()  # Discrete counts
                 return {
                     'image': seg,
                     'size_bins': size_bins,
@@ -326,7 +326,7 @@ class DictDatasetWrapper(Dataset):
             elif isinstance(item, (tuple, list)) and len(item) >= 2:
                 return {
                     'image': self._to_tensor(item[0]),
-                    'seg': self._to_tensor(item[1]),
+                    'seg': self._to_tensor_field(item[1], 'seg'),  # Categorical mask
                 }
             return {'image': self._to_tensor(item)}
 
@@ -337,7 +337,7 @@ class DictDatasetWrapper(Dataset):
             elif isinstance(item, (tuple, list)) and len(item) >= 2:
                 return {
                     'image': self._to_tensor(item[0]),
-                    'seg': self._to_tensor(item[1]),
+                    'seg': self._to_tensor_field(item[1], 'seg'),  # Categorical mask
                 }
             return {'image': self._to_tensor(item)}
 
@@ -348,13 +348,37 @@ class DictDatasetWrapper(Dataset):
             return {'image': torch.from_numpy(np.array(item)).float()}
 
     def _to_tensor(self, item: Any) -> torch.Tensor:
-        """Convert item to tensor."""
+        """Convert item to tensor (float dtype)."""
         if isinstance(item, torch.Tensor):
             return item
         elif isinstance(item, np.ndarray):
             return torch.from_numpy(item.copy()).float()
         else:
             return torch.from_numpy(np.array(item)).float()
+
+    def _to_tensor_field(self, item: Any, field_name: str) -> torch.Tensor:
+        """Convert item to tensor with field-appropriate dtype.
+
+        Args:
+            item: numpy array or other convertible type
+            field_name: name of the field (used to determine dtype)
+
+        Returns:
+            Tensor with appropriate dtype (long for categorical, float for continuous)
+        """
+        # Fields that should be integer dtype (categorical/discrete values)
+        INTEGER_FIELDS = {'seg', 'size_bins', 'labels', 'mode_id'}
+
+        if isinstance(item, torch.Tensor):
+            return item
+        elif isinstance(item, np.ndarray):
+            tensor = torch.from_numpy(item.copy())
+        else:
+            tensor = torch.from_numpy(np.array(item))
+
+        if field_name in INTEGER_FIELDS:
+            return tensor.long()
+        return tensor.float()
 
     def _validate_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Validate dict has required 'image' key and convert tensors.
@@ -371,11 +395,11 @@ class DictDatasetWrapper(Dataset):
         if 'image' not in item:
             raise ValueError(f"Dict batch must have 'image' key, got: {list(item.keys())}")
 
-        # Ensure all tensors (convert numpy arrays)
+        # Ensure all tensors (convert numpy arrays with field-aware dtype)
         result = {}
         for k, v in item.items():
             if isinstance(v, np.ndarray):
-                result[k] = torch.from_numpy(v.copy()).float()
+                result[k] = self._to_tensor_field(v, k)
             else:
                 result[k] = v
         return result

@@ -11,7 +11,6 @@ and implements DC-AE-specific functionality:
 - Structured latent space training (DC-AE 1.5, 2D only)
 - Gradient checkpointing for 3D memory efficiency
 """
-import itertools
 import logging
 import os
 import random
@@ -25,11 +24,9 @@ import torch.nn as nn
 from omegaconf import DictConfig
 from torch.amp import autocast
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from .compression_trainer import BaseCompressionTrainer
 from .results import TrainingStepResult
-from .utils import create_epoch_iterator, get_vram_usage
 from medgen.metrics import create_worst_batch_figure
 
 # Import 3D components for module-level export
@@ -66,6 +63,18 @@ class DCAETrainer(BaseCompressionTrainer):
         >>> trainer.setup_model()
         >>> trainer.train(train_loader, train_dataset, val_loader)
     """
+
+    # Config section names for DC-AE
+    _CONFIG_SECTION_2D = 'dcae'
+    _CONFIG_SECTION_3D = 'dcae_3d'
+
+    # DC-AE-specific defaults: higher perceptual weight, no adversarial loss by default
+    _DEFAULT_DISC_LR_2D = 5e-4
+    _DEFAULT_DISC_LR_3D = 1e-4
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D = 0.1
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D = 0.1
+    _DEFAULT_ADV_WEIGHT_2D = 0.0
+    _DEFAULT_ADV_WEIGHT_3D = 0.0
 
     def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize DC-AE trainer.
@@ -158,30 +167,14 @@ class DCAETrainer(BaseCompressionTrainer):
         """Create 3D DCAETrainer."""
         return cls(cfg, spatial_dims=3, **kwargs)
 
-    def _get_disc_lr(self, cfg: DictConfig) -> float:
-        """Get discriminator LR from dcae/dcae_3d config."""
-        section = 'dcae_3d' if self.spatial_dims == 3 else 'dcae'
-        if section in cfg:
-            return cfg[section].get('disc_lr', 1e-4 if self.spatial_dims == 3 else 5e-4)
-        return 5e-4
-
-    def _get_perceptual_weight(self, cfg: DictConfig) -> float:
-        """Get perceptual weight from dcae/dcae_3d config."""
-        section = 'dcae_3d' if self.spatial_dims == 3 else 'dcae'
-        if section in cfg:
-            return cfg[section].get('perceptual_weight', 0.1)
-        return 0.1
-
-    def _get_adv_weight(self, cfg: DictConfig) -> float:
-        """Get adversarial weight from dcae/dcae_3d config."""
-        section = 'dcae_3d' if self.spatial_dims == 3 else 'dcae'
-        if section in cfg:
-            return cfg[section].get('adv_weight', 0.0)
-        return 0.0
-
     def _get_disable_gan(self, cfg: DictConfig) -> bool:
-        """Determine if GAN is disabled."""
-        section = 'dcae_3d' if self.spatial_dims == 3 else 'dcae'
+        """Determine if GAN is disabled.
+
+        DC-AE has special phase-based logic for 2D training:
+        - Phase 1: GAN disabled (reconstruction-only training)
+        - Phase 3: GAN enabled (refinement training)
+        """
+        section = self._get_config_section()
         if section in cfg:
             if self.spatial_dims == 3:
                 return cfg[section].get('disable_gan', True)
@@ -554,142 +547,68 @@ class DCAETrainer(BaseCompressionTrainer):
 
         return images, mask
 
-    def train_step(self, batch: Any) -> TrainingStepResult:
-        """Execute DC-AE training step."""
-        images, _ = self._prepare_batch(batch)
-        grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Template method hooks for train_step() and train_epoch()
+    # ─────────────────────────────────────────────────────────────────────────
 
-        d_loss = torch.tensor(0.0, device=self.device)
-        adv_loss = torch.tensor(0.0, device=self.device)
+    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """DC-AE forward pass for training.
 
-        # ==================== Generator Step ====================
-        self.optimizer.zero_grad(set_to_none=True)
-
-        with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-            # Forward pass (different API for 2D vs 3D)
-            if self.spatial_dims == 3:
-                reconstruction = self.model(images)
+        Returns (reconstruction, 0.0) - DC-AE has no regularization loss.
+        """
+        if self.spatial_dims == 3:
+            reconstruction = self.model(images)
+        else:
+            # DC-AE 1.5: Sample random channel count for structured latent training
+            # StructuredAutoencoderDC handles the weight slicing internally
+            latent_channels = self._sample_latent_channels()
+            if self.structured_latent_enabled:
+                latent = self.model.encode(images, latent_channels=latent_channels, return_dict=False)[0]
             else:
-                # DC-AE 1.5: Sample random channel count for structured latent training
-                # StructuredAutoencoderDC handles the weight slicing internally
-                latent_channels = self._sample_latent_channels()
-                if self.structured_latent_enabled:
-                    latent = self.model.encode(images, latent_channels=latent_channels, return_dict=False)[0]
-                else:
-                    latent = self.model.encode(images, return_dict=False)[0]
-                reconstruction = self.model.decode(latent, return_dict=False)[0]
+                latent = self.model.encode(images, return_dict=False)[0]
+            reconstruction = self.model.decode(latent, return_dict=False)[0]
+        return reconstruction, torch.tensor(0.0, device=self.device)
 
-            # Compute reconstruction loss
-            if self.seg_mode and self.seg_loss_fn is not None:
-                seg_loss, seg_breakdown = self.seg_loss_fn(reconstruction, images)
-                l1_loss = seg_loss
-                p_loss = torch.tensor(0.0, device=self.device)
-                if hasattr(self, '_epoch_seg_breakdown'):
-                    for key in seg_breakdown:
-                        self._epoch_seg_breakdown[key] += seg_breakdown[key]
-            else:
-                l1_loss = torch.nn.functional.l1_loss(reconstruction.float(), images.float())
-                p_loss = self._compute_perceptual_loss(reconstruction.float(), images.float())
+    def _get_reconstruction_loss_weight(self) -> float:
+        """DC-AE uses configurable L1 weight."""
+        return self.l1_weight
 
-            # Adversarial loss
-            if not self.disable_gan:
-                adv_loss = self._compute_adversarial_loss(reconstruction)
+    def _use_discriminator_before_generator(self) -> bool:
+        """DC-AE always trains discriminator after generator."""
+        return False
 
-            # Total generator loss
-            g_loss = (
-                self.l1_weight * l1_loss
-                + self.perceptual_weight * p_loss
-                + self.adv_weight * adv_loss
-            )
+    def _get_loss_key(self) -> Optional[str]:
+        """DC-AE has no regularization loss, return None."""
+        return None
 
-        g_loss.backward()
+    def _get_postfix_metrics(
+        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
+    ) -> Dict[str, str]:
+        """DC-AE-specific progress bar: shows Dice for seg_mode."""
+        if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
+            # Show running average of Dice using accumulator count
+            batch_count = self._loss_accumulator._count if hasattr(self._loss_accumulator, '_count') else 1
+            dice_avg = self._epoch_seg_breakdown['dice'] / max(batch_count, 1)
+            return {
+                'G': f"{avg_so_far.get('gen', 0):.4f}",
+                'Dice': f"{dice_avg:.4f}",
+            }
+        return {
+            'G': f"{avg_so_far.get('gen', 0):.4f}",
+            'L1': f"{avg_so_far.get('recon', 0):.4f}",
+        }
 
-        # Gradient clipping
-        grad_norm_g = 0.0
-        if grad_clip > 0:
-            grad_norm_g = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=grad_clip
-            ).item()
-
-        self.optimizer.step()
-
-        # Track gradient norm
-        if self.log_grad_norm:
-            self._grad_norm_tracker.update(grad_norm_g)
-
-        # Update EMA
-        self._update_ema()
-
-        # ==================== Discriminator Step ====================
-        if not self.disable_gan:
-            d_loss = self._train_discriminator_step(images, reconstruction.detach())
-
-        return TrainingStepResult(
-            total_loss=g_loss.item(),
-            reconstruction_loss=l1_loss.item(),
-            perceptual_loss=p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
-            regularization_loss=0.0,  # DC-AE is deterministic
-            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-        )
-
-    def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        """Train DC-AE for one epoch."""
-        self.model.train()
-        if not self.disable_gan and self.discriminator is not None:
-            self.discriminator.train()
-
-        self._loss_accumulator.reset()
-
-        # Initialize seg breakdown accumulator
+    def _on_train_epoch_start(self, epoch: int) -> None:
+        """Initialize seg breakdown tracking for this epoch."""
         if self.seg_mode:
             self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
 
-        if self.spatial_dims == 3:
-            disable_pbar = not self.is_main_process or self.is_cluster
-            total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-            iterator = itertools.islice(data_loader, self.limit_train_batches) if self.limit_train_batches else data_loader
-            epoch_iter = tqdm(iterator, desc=f"Epoch {epoch}", disable=disable_pbar, total=total)
-        else:
-            epoch_iter = create_epoch_iterator(
-                data_loader, epoch, self.is_cluster, self.is_main_process,
-                limit_batches=self.limit_train_batches
-            )
-
-        for step, batch in enumerate(epoch_iter):
-            result = self.train_step(batch)
-            losses = result.to_legacy_dict(None)  # DC-AE has no regularization
-
-            self._profiler_step()
-            self._loss_accumulator.update(losses)
-
-            if hasattr(epoch_iter, 'set_postfix'):
-                avg_so_far = self._loss_accumulator.compute()
-                if self.seg_mode:
-                    epoch_iter.set_postfix(
-                        G=f"{avg_so_far.get('gen', 0):.4f}",
-                        Dice=f"{self._epoch_seg_breakdown['dice'] / (step + 1):.4f}"
-                    )
-                else:
-                    epoch_iter.set_postfix(
-                        G=f"{avg_so_far.get('gen', 0):.4f}",
-                        L1=f"{avg_so_far.get('recon', 0):.4f}"
-                    )
-
-            if epoch == 1 and step == 0 and self.is_main_process:
-                logger.info(get_vram_usage(self.device))
-
-        avg_losses = self._loss_accumulator.compute()
-
-        # Add seg breakdown to avg_losses
+    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+        """Add seg breakdown to avg_losses."""
         if self.seg_mode and hasattr(self, '_epoch_seg_breakdown'):
-            n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-            avg_seg = {k: v / n_batches for k, v in self._epoch_seg_breakdown.items()}
+            n_batches = getattr(self, '_last_epoch_batch_count', 1)
+            avg_seg = {k: v / max(n_batches, 1) for k, v in self._epoch_seg_breakdown.items()}
             avg_losses.update(avg_seg)
-
-        self._log_training_metrics_unified(epoch, avg_losses)
-
-        return avg_losses
 
     def _forward_for_validation(
         self,

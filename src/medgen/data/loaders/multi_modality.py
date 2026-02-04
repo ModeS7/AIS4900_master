@@ -13,7 +13,11 @@ from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
-from medgen.data.loaders.common import create_dataloader, DistributedArgs
+from medgen.data.loaders.common import (
+    create_dataloader,
+    DistributedArgs,
+    validate_mode_requirements,
+)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -56,9 +60,11 @@ def create_multi_modality_dataloader(
     """
     data_dir = os.path.join(cfg.paths.data_dir, "train")
 
-    # Validate all modalities exist before loading
-    for key in image_keys:
-        validate_modality_exists(data_dir, key)
+    # Validate all modalities exist before loading (no seg required for VAE)
+    validate_mode_requirements(
+        data_dir, 'multi_modality', validate_modality_exists,
+        image_keys=image_keys, require_seg=False
+    )
 
     transform = build_standard_transform(image_size)
     aug = build_vae_augmentation(enabled=augment)
@@ -127,14 +133,17 @@ def create_multi_modality_validation_dataloader(
 
     # Check if validation directory exists
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
-    # Validate modalities exist in val directory
+    # Validate modalities exist in val directory (no seg required for VAE)
     try:
-        for key in image_keys:
-            validate_modality_exists(val_dir, key)
+        validate_mode_requirements(
+            val_dir, 'multi_modality', validate_modality_exists,
+            image_keys=image_keys, require_seg=False
+        )
     except ValueError as e:
-        logger.warning(f"Validation directory exists but is misconfigured: {e}")
+        logger.warning(f"Validation data for multi-modality mode (keys={image_keys}) not available in {val_dir}: {e}")
         return None
 
     # Check if seg exists for regional metrics
@@ -209,6 +218,7 @@ def create_single_modality_validation_loader(
 
     # Check if validation directory exists
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found for {modality}: {val_dir}")
         return None
 
     # Validate modality exists in val directory
@@ -285,14 +295,17 @@ def create_multi_modality_test_dataloader(
 
     # Check if test directory exists
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
-    # Validate modalities exist in test directory
+    # Validate modalities exist in test directory (no seg required for VAE)
     try:
-        for key in image_keys:
-            validate_modality_exists(test_dir, key)
+        validate_mode_requirements(
+            test_dir, 'multi_modality', validate_modality_exists,
+            image_keys=image_keys, require_seg=False
+        )
     except ValueError as e:
-        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        logger.warning(f"Test data for multi-modality mode (keys={image_keys}) not available in {test_dir}: {e}")
         return None
 
     # Check if seg exists for regional metrics

@@ -165,6 +165,8 @@ def validate_training_config(cfg: DictConfig) -> list[str]:
 
     Checks:
     - use_compile + gradient_checkpointing conflict
+    - gradient_clip_norm > 0
+    - warmup_epochs >= 0
 
     Args:
         cfg: Hydra configuration object.
@@ -187,6 +189,16 @@ def validate_training_config(cfg: DictConfig) -> list[str]:
             "torch.compile with reduce-overhead mode uses CUDA graphs which conflict "
             "with gradient checkpointing's dynamic recomputation. Set one to False."
         )
+
+    # Validate gradient_clip_norm
+    gradient_clip_norm = training.get('gradient_clip_norm', 1.0)
+    if gradient_clip_norm <= 0:
+        errors.append(f"training.gradient_clip_norm must be > 0, got {gradient_clip_norm}")
+
+    # Validate warmup_epochs
+    warmup_epochs = training.get('warmup_epochs', 0)
+    if warmup_epochs < 0:
+        errors.append(f"training.warmup_epochs must be >= 0, got {warmup_epochs}")
 
     return errors
 
@@ -331,6 +343,135 @@ def validate_regional_logging(cfg: DictConfig) -> list[str]:
             "logging.regional_losses=true requires a mode with segmentation masks "
             "as conditioning (e.g., bravo, dual). seg mode has no separate mask."
         )
+
+    return errors
+
+
+def validate_strategy_config(cfg: DictConfig) -> list[str]:
+    """Validate strategy configuration.
+
+    Checks:
+    - strategy.num_train_timesteps > 0
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    strategy = cfg.get('strategy', {})
+
+    num_timesteps = strategy.get('num_train_timesteps', 1000)
+    if num_timesteps <= 0:
+        errors.append(f"strategy.num_train_timesteps must be > 0, got {num_timesteps}")
+
+    return errors
+
+
+def validate_ema_config(cfg: DictConfig) -> list[str]:
+    """Validate EMA configuration.
+
+    Checks:
+    - training.ema.decay in [0.9, 1.0)
+    - training.ema.update_after_step >= 0
+    - training.ema.update_every > 0
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    training = cfg.get('training', {})
+
+    if not training.get('use_ema', False):
+        return errors  # EMA disabled, skip validation
+
+    ema = training.get('ema', {})
+
+    decay = ema.get('decay', 0.999)
+    if not (0.9 <= decay < 1.0):
+        errors.append(f"training.ema.decay must be in [0.9, 1.0), got {decay}")
+
+    update_after_step = ema.get('update_after_step', 100)
+    if update_after_step < 0:
+        errors.append(f"training.ema.update_after_step must be >= 0, got {update_after_step}")
+
+    update_every = ema.get('update_every', 10)
+    if update_every <= 0:
+        errors.append(f"training.ema.update_every must be > 0, got {update_every}")
+
+    return errors
+
+
+def validate_optimizer_config(cfg: DictConfig) -> list[str]:
+    """Validate optimizer configuration.
+
+    Checks:
+    - training.optimizer.betas is list of 2 floats in [0, 1)
+    - training.optimizer.weight_decay >= 0
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    from omegaconf import ListConfig
+    errors = []
+    training = cfg.get('training', {})
+    optimizer = training.get('optimizer', {})
+
+    # Validate betas
+    betas = optimizer.get('betas', [0.9, 0.999])
+    if not isinstance(betas, (list, tuple, ListConfig)):
+        errors.append(f"training.optimizer.betas must be a list, got {type(betas).__name__}")
+    elif len(betas) != 2:
+        errors.append(f"training.optimizer.betas must have exactly 2 values, got {len(betas)}")
+    else:
+        for i, beta in enumerate(betas):
+            if not isinstance(beta, (int, float)):
+                errors.append(f"training.optimizer.betas[{i}] must be a number, got {type(beta).__name__}")
+            elif not (0 <= beta < 1):
+                errors.append(f"training.optimizer.betas[{i}] must be in [0, 1), got {beta}")
+
+    # Validate weight_decay
+    weight_decay = optimizer.get('weight_decay', 0.0)
+    if weight_decay < 0:
+        errors.append(f"training.optimizer.weight_decay must be >= 0, got {weight_decay}")
+
+    return errors
+
+
+def validate_augmentation_config(cfg: DictConfig) -> list[str]:
+    """Validate score augmentation configuration.
+
+    Checks:
+    - score_aug probability values are in [0, 1]
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors = []
+    training = cfg.get('training', {})
+    score_aug = training.get('score_aug', {})
+
+    if not score_aug:
+        return errors  # No score_aug config
+
+    prob_fields = ['compose_prob', 'nondestructive_prob', 'destructive_prob', 'dropout_prob']
+    for field in prob_fields:
+        if field in score_aug:
+            prob = score_aug[field]
+            if not isinstance(prob, (int, float)):
+                errors.append(f"score_aug.{field} must be a number, got {type(prob).__name__}")
+            elif not (0 <= prob <= 1):
+                errors.append(f"score_aug.{field} must be in [0, 1], got {prob}")
 
     return errors
 

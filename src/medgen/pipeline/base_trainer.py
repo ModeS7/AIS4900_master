@@ -697,8 +697,12 @@ class BaseTrainer(ABC):
                 sample_batch = next(iter(train_loader))
                 sample_images, _ = self._prepare_batch(sample_batch)
                 self._measure_model_flops(sample_images, len(train_loader))
+            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+                logger.warning(f"FLOPs measurement failed (OOM or CUDA error): {e}")
+            except StopIteration:
+                logger.warning("FLOPs measurement failed: empty dataloader")
             except Exception as e:
-                logger.warning(f"FLOPs measurement failed: {e}")
+                logger.exception("FLOPs measurement failed unexpectedly")
 
         # Setup PyTorch profiler if enabled
         self._profiler = self._setup_profiler()

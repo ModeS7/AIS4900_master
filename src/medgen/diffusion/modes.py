@@ -5,12 +5,52 @@ This module defines different training modes for the diffusion model,
 including unconditional segmentation generation and conditional image
 generation modes.
 """
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Union
 
 import torch
 
 from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_tensor(value: Any, name: str) -> torch.Tensor:
+    """Validate that value is a torch.Tensor.
+
+    Args:
+        value: Value to validate.
+        name: Name for error messages.
+
+    Returns:
+        The tensor if valid.
+
+    Raises:
+        ValueError: If value is None.
+        TypeError: If value is not a Tensor.
+    """
+    if value is None:
+        raise ValueError(f"{name} is None, expected torch.Tensor")
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(f"{name} is {type(value).__name__}, expected torch.Tensor")
+    return value
+
+
+def _validate_dict_keys(batch: Dict[str, Any], required_keys: List[str], context: str) -> None:
+    """Validate that dict contains all required keys.
+
+    Args:
+        batch: Dictionary to validate.
+        required_keys: Keys that must be present.
+        context: Context string for error messages.
+
+    Raises:
+        KeyError: If a required key is missing.
+    """
+    for key in required_keys:
+        if key not in batch:
+            raise KeyError(f"{context}: missing required key '{key}'")
 
 
 def _to_device(batch: Union[torch.Tensor, Dict[str, Any], tuple], device: torch.device) -> Union[torch.Tensor, Dict[str, Any], tuple]:
@@ -25,31 +65,39 @@ def _to_device(batch: Union[torch.Tensor, Dict[str, Any], tuple], device: torch.
 
     Returns:
         Tensor, dict of tensors, or tuple of tensors on target device.
+
+    Raises:
+        TypeError: If batch is not Tensor, Dict, or tuple.
     """
     if isinstance(batch, dict):
         # Handle dict batch format (e.g., from 3D dataloaders)
         result = {}
         for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
+            if v is None:
+                result[k] = None
+            elif isinstance(v, torch.Tensor):
                 if hasattr(v, 'as_tensor'):
                     result[k] = v.as_tensor().to(device, non_blocking=True)
                 else:
                     result[k] = v.to(device, non_blocking=True)
             else:
-                result[k] = v  # Keep non-tensor values as-is
+                result[k] = v  # Keep non-tensor values as-is (e.g., strings, ints)
         return result
     elif isinstance(batch, tuple):
         # Handle tuple batch format (e.g., 3D seg mode: (seg_tensor, size_bins))
         return tuple(
-            v.as_tensor().to(device, non_blocking=True) if hasattr(v, 'as_tensor')
+            None if v is None
+            else v.as_tensor().to(device, non_blocking=True) if hasattr(v, 'as_tensor')
             else v.to(device, non_blocking=True) if isinstance(v, torch.Tensor)
             else v
             for v in batch
         )
-    else:
+    elif isinstance(batch, torch.Tensor):
         if hasattr(batch, 'as_tensor'):
             return batch.as_tensor().to(device)
         return batch.to(device)
+    else:
+        raise TypeError(f"_to_device: expected Tensor, Dict, or tuple, got {type(batch).__name__}")
 
 
 def _is_latent_batch(batch: Any) -> bool:
@@ -200,6 +248,7 @@ class SegmentationMode(TrainingMode):
             images = batch.get('image')
             if images is None:
                 raise ValueError("Dict batch missing 'image' key")
+            images = _validate_tensor(images, "SegmentationMode batch['image']")
 
             # Only add channel dim if missing (4D tensor with D > 1)
             # 2D unified loader already provides [B, C, H, W] with C=1
@@ -212,10 +261,17 @@ class SegmentationMode(TrainingMode):
                 'labels': None,
             }
 
-        return {
-            'images': batch,
-            'labels': None
-        }
+        # Tensor input
+        if isinstance(batch, torch.Tensor):
+            return {
+                'images': batch,
+                'labels': None
+            }
+
+        raise TypeError(
+            f"SegmentationMode.prepare_batch: expected Tensor or Dict, "
+            f"got {type(batch).__name__}"
+        )
 
     def get_model_config(self) -> Dict[str, int]:
         """Get model channel configuration.
@@ -435,9 +491,32 @@ class ConditionalDualMode(TrainingMode):
 
         Returns:
             [B, 3, H, W] - [noisy_t1_pre, noisy_t1_gd, seg_mask] concatenated.
+
+        Raises:
+            TypeError: If noisy_images is not a dict.
+            KeyError: If noisy_images is missing required keys.
+            ValueError: If labels are None.
         """
+        # Type guard - this method requires dict input
+        if not isinstance(noisy_images, dict):
+            raise TypeError(
+                f"ConditionalDualMode.format_model_input requires Dict, "
+                f"got {type(noisy_images).__name__}. "
+                f"Ensure prepare_batch returned dict format."
+            )
+
+        # Validate required keys exist
+        for key in self.image_keys:
+            if key not in noisy_images:
+                raise KeyError(f"noisy_images missing required key: '{key}'")
+            _validate_tensor(noisy_images[key], f"noisy_images['{key}']")
+
+        labels = labels_dict.get('labels')
+        if labels is None:
+            raise ValueError("labels_dict['labels'] is None, cannot concatenate")
+
         channels = [noisy_images[key] for key in self.image_keys]
-        channels.append(labels_dict['labels'])
+        channels.append(labels)
         return torch.cat(channels, dim=1)
 
 
@@ -485,6 +564,10 @@ class MultiModalityMode(TrainingMode):
 
         Returns:
             Dictionary with images, labels (seg), and mode_id.
+
+        Raises:
+            TypeError: If batch is not a dict.
+            KeyError: If batch is missing required keys.
         """
         if _is_latent_batch(batch):
             result = _prepare_latent_batch(batch, device, is_conditional=True)
@@ -494,7 +577,16 @@ class MultiModalityMode(TrainingMode):
                 result['mode_id'] = result['mode_id'].to(device)
             return result
 
-        # All batches are now dict format
+        # Validate batch is dict format
+        if not isinstance(batch, dict):
+            raise TypeError(
+                f"MultiModalityMode.prepare_batch requires dict batch, "
+                f"got {type(batch).__name__}. Update dataloader to return dict format."
+            )
+
+        # Validate required keys
+        _validate_dict_keys(batch, ['image', 'seg', 'mode_id'], 'MultiModalityMode.prepare_batch')
+
         batch = _to_device(batch, device)
         return {
             'images': batch['image'],

@@ -51,6 +51,7 @@ from medgen.metrics import (
     SimpleLossAccumulator,
 )
 from medgen.metrics import GradientNormTracker, create_worst_batch_figure
+from .results import TrainingStepResult
 from .utils import save_full_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,22 @@ class BaseCompressionTrainer(BaseTrainer):
     # ─────────────────────────────────────────────────────────────────────────
 
     # List of config sections to check for trainer-specific settings
+    # Subclasses should override _CONFIG_SECTION_2D and _CONFIG_SECTION_3D
     _CONFIG_SECTIONS = ('vae', 'vqvae', 'dcae', 'vae_3d', 'vqvae_3d')
+    _CONFIG_SECTION_2D: str = 'vae'  # Override in subclass
+    _CONFIG_SECTION_3D: str = 'vae_3d'  # Override in subclass
+
+    # Default config values - subclasses can override these class attributes
+    _DEFAULT_DISC_LR_2D: float = 5e-4
+    _DEFAULT_DISC_LR_3D: float = 5e-4
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D: float = 0.001
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D: float = 0.001
+    _DEFAULT_ADV_WEIGHT_2D: float = 0.01
+    _DEFAULT_ADV_WEIGHT_3D: float = 0.01
+
+    def _get_config_section(self) -> str:
+        """Get the config section name for this trainer's spatial_dims."""
+        return self._CONFIG_SECTION_3D if self.spatial_dims == 3 else self._CONFIG_SECTION_2D
 
     def _get_config_value(self, cfg: DictConfig, key: str, default: Any) -> Any:
         """Get a value from any trainer config section.
@@ -214,25 +230,57 @@ class BaseCompressionTrainer(BaseTrainer):
                 return cfg[section].get(key, default)
         return default
 
+    def _get_config_value_dimensional(
+        self, cfg: DictConfig, key: str, default_2d: Any, default_3d: Any
+    ) -> Any:
+        """Get config value with dimension-specific defaults.
+
+        Searches the trainer's config section first (e.g., 'vae' or 'vae_3d'),
+        then falls back to dimension-specific default.
+
+        Args:
+            cfg: Hydra configuration.
+            key: Config key to look for.
+            default_2d: Default for 2D (spatial_dims=2).
+            default_3d: Default for 3D (spatial_dims=3).
+
+        Returns:
+            Config value or appropriate default.
+        """
+        section = self._get_config_section()
+        default = default_3d if self.spatial_dims == 3 else default_2d
+        if section in cfg:
+            return cfg[section].get(key, default)
+        return default
+
     def _get_disc_lr(self, cfg: DictConfig) -> float:
         """Get discriminator learning rate from config."""
-        return self._get_config_value(cfg, 'disc_lr', 5e-4)
+        return self._get_config_value_dimensional(
+            cfg, 'disc_lr', self._DEFAULT_DISC_LR_2D, self._DEFAULT_DISC_LR_3D
+        )
 
     def _get_perceptual_weight(self, cfg: DictConfig) -> float:
         """Get perceptual loss weight from config."""
-        return self._get_config_value(cfg, 'perceptual_weight', 0.001)
+        return self._get_config_value_dimensional(
+            cfg, 'perceptual_weight', self._DEFAULT_PERCEPTUAL_WEIGHT_2D, self._DEFAULT_PERCEPTUAL_WEIGHT_3D
+        )
 
     def _get_adv_weight(self, cfg: DictConfig) -> float:
         """Get adversarial loss weight from config."""
-        return self._get_config_value(cfg, 'adv_weight', 0.01)
+        return self._get_config_value_dimensional(
+            cfg, 'adv_weight', self._DEFAULT_ADV_WEIGHT_2D, self._DEFAULT_ADV_WEIGHT_3D
+        )
 
     def _get_disable_gan(self, cfg: DictConfig) -> bool:
-        """Get disable_gan flag from config."""
+        """Get disable_gan flag from config.
+
+        Subclasses may override this for special logic (e.g., DC-AE phase-based).
+        """
         # Check progressive config first (for staged training)
         progressive_cfg = cfg.get('progressive', {})
         if progressive_cfg.get('disable_gan', False):
             return True
-        return self._get_config_value(cfg, 'disable_gan', False)
+        return self._get_config_value_dimensional(cfg, 'disable_gan', False, False)
 
     def _get_disc_num_layers(self, cfg: DictConfig) -> int:
         """Get discriminator number of layers from config."""
@@ -844,6 +892,279 @@ class BaseCompressionTrainer(BaseTrainer):
         if self.ema is not None:
             return self.ema.ema_model
         return self.model_raw
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Train step template (shared across VAE, VQ-VAE, DC-AE)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def train_step(self, batch: Any) -> TrainingStepResult:
+        """Template train step for compression trainers.
+
+        Implements the common training step pattern shared by VAE, VQ-VAE, and DC-AE.
+        Subclasses customize via hook methods:
+        - _forward_for_training(): Model-specific forward pass returning (reconstruction, reg_loss)
+        - _get_reconstruction_loss_weight(): Return L1 weight (1.0 for VAE/VQ-VAE, configurable for DC-AE)
+        - _use_discriminator_before_generator(): Whether to run D step before G (VAE/VQ-VAE 2D: True)
+        - _track_seg_breakdown(): Track seg loss breakdown for epoch averaging
+
+        Args:
+            batch: Input batch.
+
+        Returns:
+            TrainingStepResult with all loss components.
+        """
+        images, mask = self._prepare_batch(batch)
+        grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
+
+        d_loss = torch.tensor(0.0, device=self.device)
+        adv_loss = torch.tensor(0.0, device=self.device)
+
+        # ==================== Discriminator Step (before generator, if applicable) ====================
+        if self._use_discriminator_before_generator() and not self.disable_gan:
+            with torch.no_grad():
+                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+                    reconstruction_for_d, _ = self._forward_for_training(images)
+            d_loss = self._train_discriminator_step(images, reconstruction_for_d)
+
+        # ==================== Generator Step ====================
+        self.optimizer.zero_grad(set_to_none=True)
+
+        with autocast('cuda', enabled=True, dtype=self.weight_dtype):
+            # Model-specific forward pass
+            reconstruction, reg_loss = self._forward_for_training(images)
+
+            # Compute reconstruction loss (L1 or seg-specific)
+            seg_mode = getattr(self, 'seg_mode', False)
+            seg_loss_fn = getattr(self, 'seg_loss_fn', None)
+
+            if seg_mode and seg_loss_fn is not None:
+                seg_loss, seg_breakdown = seg_loss_fn(reconstruction, images)
+                l1_loss = seg_loss
+                p_loss = torch.tensor(0.0, device=self.device)
+                self._track_seg_breakdown(seg_breakdown)
+            else:
+                l1_loss = torch.nn.functional.l1_loss(reconstruction.float(), images.float())
+                p_loss = self._compute_perceptual_loss(reconstruction.float(), images.float())
+
+            # Adversarial loss
+            if not self.disable_gan:
+                adv_loss = self._compute_adversarial_loss(reconstruction)
+
+            # Total generator loss with configurable weights
+            l1_weight = self._get_reconstruction_loss_weight()
+            g_loss = (
+                l1_weight * l1_loss
+                + self.perceptual_weight * p_loss
+                + reg_loss
+                + self.adv_weight * adv_loss
+            )
+
+        g_loss.backward()
+
+        # Gradient clipping
+        grad_norm_g = 0.0
+        if grad_clip > 0:
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(
+                self.model_raw.parameters(), max_norm=grad_clip
+            ).item()
+
+        self.optimizer.step()
+
+        # Track gradient norm
+        if self.log_grad_norm:
+            self._grad_norm_tracker.update(grad_norm_g)
+
+        # Update EMA
+        self._update_ema()
+
+        # ==================== Discriminator Step (after generator, if applicable) ====================
+        if not self._use_discriminator_before_generator() and not self.disable_gan:
+            d_loss = self._train_discriminator_step(images, reconstruction.detach())
+
+        return TrainingStepResult(
+            total_loss=g_loss.item(),
+            reconstruction_loss=l1_loss.item(),
+            perceptual_loss=p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
+            regularization_loss=reg_loss.item() if isinstance(reg_loss, torch.Tensor) else reg_loss,
+            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
+            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
+        )
+
+    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Model-specific forward pass for training.
+
+        Subclasses MUST override this method to implement their forward pass logic.
+
+        Returns (reconstruction, regularization_loss):
+        - VAE: compute kl_loss from mean/logvar, return (recon, kl_weight * kl_loss)
+        - VQ-VAE: model returns vq_loss, return (recon, vq_loss)
+        - DC-AE: no regularization, return (recon, 0.0)
+
+        Args:
+            images: Input images.
+
+        Returns:
+            Tuple of (reconstruction, regularization_loss).
+        """
+        raise NotImplementedError("Subclasses must implement _forward_for_training()")
+
+    def _get_reconstruction_loss_weight(self) -> float:
+        """Get weight for L1 reconstruction loss.
+
+        Override in subclass if L1 loss should be weighted (e.g., DC-AE).
+
+        Returns:
+            Weight for L1 loss (default: 1.0).
+        """
+        return 1.0
+
+    def _use_discriminator_before_generator(self) -> bool:
+        """Whether to train discriminator before generator step.
+
+        VAE/VQ-VAE: True for 2D (discriminator sees detached reconstruction)
+        DC-AE: Always False (discriminator after generator)
+
+        Override in subclass to change timing.
+
+        Returns:
+            True if D step should come before G step.
+        """
+        return self.spatial_dims == 2
+
+    def _track_seg_breakdown(self, seg_breakdown: Dict[str, float]) -> None:
+        """Track segmentation loss breakdown for epoch averaging.
+
+        Override in subclass to accumulate breakdown for seg_mode.
+
+        Args:
+            seg_breakdown: Dictionary with 'bce', 'dice', 'boundary' losses.
+        """
+        if hasattr(self, '_epoch_seg_breakdown'):
+            for key in seg_breakdown:
+                self._epoch_seg_breakdown[key] += seg_breakdown[key]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Training epoch template
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
+        """Train for one epoch using template method pattern.
+
+        Subclasses customize via hook methods:
+        - _get_loss_key(): Return loss dictionary key for regularization ('kl', 'vq', None)
+        - _get_postfix_metrics(): Return metrics dict for progress bar
+        - _on_train_epoch_start(): Optional setup (e.g., seg breakdown tracking)
+        - _on_train_epoch_end(): Optional teardown (e.g., seg breakdown averaging)
+
+        Args:
+            data_loader: Training data loader.
+            epoch: Current epoch number.
+
+        Returns:
+            Dict with average losses.
+        """
+        import itertools
+        from tqdm import tqdm
+        from .utils import create_epoch_iterator, get_vram_usage
+
+        self.model.train()
+        if not self.disable_gan and self.discriminator is not None:
+            self.discriminator.train()
+
+        self._loss_accumulator.reset()
+        self._on_train_epoch_start(epoch)
+
+        # Create epoch iterator (handles 2D vs 3D differences)
+        if self.spatial_dims == 3:
+            disable_pbar = not self.is_main_process or self.is_cluster
+            total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
+            iterator = itertools.islice(data_loader, self.limit_train_batches) if self.limit_train_batches else data_loader
+            epoch_iter = tqdm(iterator, desc=f"Epoch {epoch}", disable=disable_pbar, total=total)
+        else:
+            epoch_iter = create_epoch_iterator(
+                data_loader, epoch, self.is_cluster, self.is_main_process,
+                limit_batches=self.limit_train_batches
+            )
+
+        for step, batch in enumerate(epoch_iter):
+            result = self.train_step(batch)
+            losses = result.to_legacy_dict(self._get_loss_key())
+
+            # Step profiler to mark training step boundary
+            self._profiler_step()
+
+            # Accumulate with unified system
+            self._loss_accumulator.update(losses)
+
+            if hasattr(epoch_iter, 'set_postfix'):
+                avg_so_far = self._loss_accumulator.compute()
+                epoch_iter.set_postfix(self._get_postfix_metrics(avg_so_far, losses))
+
+            if epoch == 1 and step == 0 and self.is_main_process:
+                logger.info(get_vram_usage(self.device))
+
+        # Compute average losses using unified system
+        avg_losses = self._loss_accumulator.compute()
+
+        # Track batch count for seg breakdown averaging
+        self._last_epoch_batch_count = self._loss_accumulator._count
+
+        # Call subclass hook for post-epoch processing
+        self._on_train_epoch_end(epoch, avg_losses)
+
+        # Log training metrics using unified system
+        self._log_training_metrics_unified(epoch, avg_losses)
+
+        return avg_losses
+
+    def _get_loss_key(self) -> Optional[str]:
+        """Return loss dictionary key for regularization term.
+
+        Override in subclass:
+        - VAE: return 'kl'
+        - VQ-VAE: return 'vq'
+        - DC-AE: return None (no regularization)
+        """
+        return None
+
+    def _get_postfix_metrics(
+        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
+    ) -> Dict[str, str]:
+        """Return metrics dict for progress bar postfix.
+
+        Override in subclass for custom progress bar display.
+
+        Args:
+            avg_so_far: Running average of losses for epoch.
+            current_losses: Current batch losses (for breakdown display).
+
+        Returns:
+            Dict mapping metric name to formatted string value.
+        """
+        if not self.disable_gan:
+            return {
+                'G': f"{avg_so_far.get('gen', 0):.4f}",
+                'D': f"{avg_so_far.get('disc', 0):.4f}",
+                'L1': f"{avg_so_far.get('recon', 0):.4f}",
+            }
+        return {
+            'G': f"{avg_so_far.get('gen', 0):.4f}",
+            'L1': f"{avg_so_far.get('recon', 0):.4f}",
+        }
+
+    def _on_train_epoch_start(self, epoch: int) -> None:
+        """Hook called before epoch training starts.
+
+        Override in subclass for initialization (e.g., seg breakdown tracking).
+        """
+        pass
+
+    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+        """Hook called after epoch training ends.
+
+        Override in subclass for post-processing (e.g., seg breakdown averaging).
+        """
+        pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # Gradient norm tracking

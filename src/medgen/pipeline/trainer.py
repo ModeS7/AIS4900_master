@@ -6,7 +6,6 @@ and implements 2D-specific diffusion training functionality:
 - Strategy pattern (DDPM, Rectified Flow) - from base
 - Mode pattern (seg, bravo, dual, multi, seg_conditioned)
 - Timestep-based noise training
-- SAM optimizer support
 - ScoreAug v2 transforms
 - Compiled forward paths for performance
 """
@@ -32,7 +31,6 @@ from monai.networks.nets import DiffusionModelUNet
 
 from medgen.core import ModeType, create_warmup_cosine_scheduler, create_warmup_constant_scheduler, create_plateau_scheduler, wrap_model_for_training
 from .diffusion_trainer_base import DiffusionTrainerBase
-from .optimizers import SAM
 from .results import TrainingStepResult
 from medgen.models import create_diffusion_model, get_model_type, is_transformer_model
 from medgen.losses import PerceptualLoss
@@ -124,40 +122,23 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if spatial_dims == 2:
             self.image_size: int = cfg.model.image_size
         else:
-            # 3D volume dimensions
-            self.volume_height: int = cfg.volume.height
-            self.volume_width: int = cfg.volume.width
-            self.volume_depth: int = cfg.volume.depth
+            # 3D volume dimensions (with defaults for robustness)
+            self.volume_height: int = cfg.volume.get('height', 256)
+            self.volume_width: int = cfg.volume.get('width', 256)
+            self.volume_depth: int = cfg.volume.get('depth', 160)
             # For compatibility with 2D code that uses image_size
-            self.image_size: int = cfg.volume.height
+            self.image_size: int = cfg.volume.get('height', 256)
 
         self.eta_min: float = cfg.training.get('eta_min', 1e-6)
 
         # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
         is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
-        self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.perceptual_weight
+        self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.get('perceptual_weight', 0.0)
 
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
         if self.is_main_process:
             logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss}")
-
-        # SAM (Sharpness-Aware Minimization)
-        # DEPRECATED: SAM/ASAM requires 2x compute cost with minimal benefit for diffusion models.
-        # Consider using gradient_noise, curriculum, or timestep_jitter instead.
-        sam_cfg = cfg.training.get('sam', {})
-        self.use_sam: bool = sam_cfg.get('enabled', False)
-        self.sam_rho: float = sam_cfg.get('rho', 0.05)
-        self.sam_adaptive: bool = sam_cfg.get('adaptive', False)
-        if self.use_sam:
-            import warnings
-            warnings.warn(
-                "SAM/ASAM optimizer is DEPRECATED and will be removed in a future version. "
-                "SAM requires 2x compute cost with minimal benefit for diffusion models. "
-                "Consider using gradient_noise, curriculum, or timestep_jitter instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
         # Optimizer settings
         optimizer_cfg = cfg.training.get('optimizer', {})
@@ -456,9 +437,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if feature_batch_size is None:
                 if spatial_dims == 3:
                     # 3D: use larger batch for slice-wise extraction
-                    feature_batch_size = max(32, cfg.training.batch_size * 16)
+                    feature_batch_size = max(32, cfg.training.get('batch_size', 16) * 16)
                 else:
-                    feature_batch_size = cfg.training.batch_size
+                    feature_batch_size = cfg.training.get('batch_size', 16)
             # Use absolute cache_dir from paths config, fallback to relative
             gen_cache_dir = gen_cfg.get('cache_dir', None)
             if gen_cache_dir is None:
@@ -677,10 +658,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     "Either use model=default (UNet) or disable omega_conditioning/mode_embedding."
                 )
         else:
-            channels = tuple(self.cfg.model.channels)
-            attention_levels = tuple(self.cfg.model.attention_levels)
-            num_res_blocks = self.cfg.model.num_res_blocks
-            num_head_channels = self.cfg.model.num_head_channels
+            channels = tuple(self.cfg.model.get('channels', [128, 256, 256, 512]))
+            attention_levels = tuple(self.cfg.model.get('attention_levels', [False, False, True, True]))
+            num_res_blocks = self.cfg.model.get('num_res_blocks', 2)
+            num_head_channels = self.cfg.model.get('num_head_channels', 0)
 
             raw_model = DiffusionModelUNet(
                 spatial_dims=self.cfg.model.get('spatial_dims', 2),
@@ -865,8 +846,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
             compile_fused = False
         elif self.sda is not None:
             compile_fused = False
-        elif self.use_sam:
-            compile_fused = False
         elif self.use_mode_embedding:
             compile_fused = False
         elif self.use_omega_conditioning:
@@ -883,7 +862,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         self._setup_compiled_forward(compile_fused)
 
-        # Setup optimizer (with optional SAM wrapper)
+        # Setup optimizer
         # Determine which parameters to train
         if self.use_controlnet:
             if self.controlnet_freeze_unet:
@@ -901,23 +880,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         else:
             train_params = self.model_raw.parameters()
 
-        if self.use_sam:
-            self.optimizer = SAM(
-                train_params,
-                base_optimizer=AdamW,
-                rho=self.sam_rho,
-                adaptive=self.sam_adaptive,
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay,
-            )
-            if self.is_main_process:
-                logger.info(f"Using SAM optimizer (rho={self.sam_rho}, adaptive={self.sam_adaptive})")
-        else:
-            self.optimizer = AdamW(
-                train_params,
-                lr=self.learning_rate,
-                weight_decay=self.weight_decay,
-            )
+        self.optimizer = AdamW(
+            train_params,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
 
         if self.is_main_process and self.weight_decay > 0:
             logger.info(f"Using weight decay: {self.weight_decay}")
@@ -997,8 +964,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
             self.ema = EMA(
                 self.model_raw,
                 beta=self.ema_decay,
-                update_after_step=self.cfg.training.ema.update_after_step,
-                update_every=self.cfg.training.ema.update_every,
+                update_after_step=self.cfg.training.ema.get('update_after_step', 100),
+                update_every=self.cfg.training.ema.get('update_every', 10),
             )
             if self.is_main_process:
                 logger.info(f"EMA enabled with decay={self.ema_decay}")
@@ -1616,128 +1583,42 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 # Add SDA loss to total
                 total_loss = total_loss + self.sda_weight * sda_loss
 
-        if self.use_sam:
-            # SAM requires two forward-backward passes
-            # Save values before second pass (CUDA graphs may overwrite tensors)
-            total_loss_val = total_loss.item()
-            mse_loss_val = mse_loss.item()
-            p_loss_val = p_loss.item()
-            # First pass: compute gradient and perturb weights
+        # Optimizer step (with gradient scaler for 3D AMP)
+        if self.scaler is not None:
+            # 3D path: use gradient scaler
+            self.scaler.scale(total_loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model_raw.parameters(), max_norm=self.cfg.training.get('gradient_clip_norm', 1.0)
+            )
+            self._add_gradient_noise(self._global_step)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            # 2D path: standard backward
             total_loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
+                self.model_raw.parameters(), max_norm=self.cfg.training.get('gradient_clip_norm', 1.0)
             )
-            self.optimizer.first_step(zero_grad=True)
+            self._add_gradient_noise(self._global_step)
+            self.optimizer.step()
 
-            # Second pass: compute gradient at perturbed point
-            # Need to recompute forward pass with same batch data
-            with autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
-                    keys = list(images.keys())
-                    total_loss_2, _, _, _, _ = self._compiled_forward_dual(
-                        self.model, self.perceptual_loss_fn, model_input, timesteps,
-                        images[keys[0]], images[keys[1]], noise[keys[0]], noise[keys[1]],
-                        noisy_images[keys[0]], noisy_images[keys[1]],
-                        self.perceptual_weight, self.strategy_name, self.num_timesteps,
-                    )
-                elif self._use_compiled_forward and self.mode_name in (ModeType.SEG, ModeType.BRAVO):
-                    total_loss_2, _, _, _ = self._compiled_forward_single(
-                        self.model, self.perceptual_loss_fn, model_input, timesteps,
-                        images, noise, noisy_images,
-                        self.perceptual_weight, self.strategy_name, self.num_timesteps,
-                    )
-                elif self.score_aug is not None:
-                    # ScoreAug path - recompute with same augmentation (omega)
-                    # Skip perceptual loss in SAM second pass (augmented space, minor contribution)
-                    if self.use_omega_conditioning and self.use_mode_embedding:
-                        prediction_2 = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
-                    elif self.use_omega_conditioning:
-                        prediction_2 = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
-                    elif self.use_mode_embedding:
-                        prediction_2 = self.model(aug_input, timesteps, mode_id=mode_id)
-                    else:
-                        prediction_2 = self.strategy.predict_noise_or_velocity(self.model, aug_input, timesteps)
-                    if isinstance(aug_velocity, dict):
-                        keys = list(aug_velocity.keys())
-                        mse_loss_2 = (((prediction_2[:, 0:1] - aug_velocity[keys[0]]) ** 2).mean() +
-                                      ((prediction_2[:, 1:2] - aug_velocity[keys[1]]) ** 2).mean()) / 2
-                    else:
-                        mse_loss_2 = ((prediction_2 - aug_velocity) ** 2).mean()
-                    total_loss_2 = mse_loss_2  # MSE only, perceptual loss not recomputed
-                else:
-                    # Standard path - recompute
-                    if self.use_mode_embedding:
-                        prediction_2 = self.model(model_input, timesteps, mode_id=mode_id)
-                    else:
-                        prediction_2 = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
-                    mse_loss_2, predicted_clean_2 = self.strategy.compute_loss(prediction_2, images, noise, noisy_images, timesteps)
-                    if self.use_min_snr:
-                        mse_loss_2 = self._compute_min_snr_weighted_mse(prediction_2, images, noise, timesteps)
-                    if self.perceptual_weight > 0:
-                        if self.space.scale_factor > 1:
-                            pred_decoded_2 = self.space.decode_batch(predicted_clean_2)
-                            images_decoded_2 = self.space.decode_batch(images)
-                        else:
-                            pred_decoded_2, images_decoded_2 = predicted_clean_2, images
-                        p_loss_2 = self.perceptual_loss_fn(pred_decoded_2.float(), images_decoded_2.float())
-                    else:
-                        p_loss_2 = torch.tensor(0.0, device=self.device)
-                    total_loss_2 = mse_loss_2 + self.perceptual_weight * p_loss_2
+        self._global_step += 1
 
-            total_loss_2.backward()
-            self.optimizer.second_step(zero_grad=True)
+        if self.use_ema:
+            self._update_ema()
 
-            if self.use_ema:
-                self._update_ema()
+        # Track gradient norm
+        if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
+            grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+            self._unified_metrics.update_grad_norm(grad_val)
 
-            # Track gradient norm
-            if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
-                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-                self._unified_metrics.update_grad_norm(grad_val)
-
-            return TrainingStepResult(
-                total_loss=total_loss_val,
-                reconstruction_loss=0.0,  # Not applicable for diffusion
-                perceptual_loss=p_loss_val,
-                mse_loss=mse_loss_val,
-            )
-        else:
-            # Standard optimizer step (with gradient scaler for 3D AMP)
-            if self.scaler is not None:
-                # 3D path: use gradient scaler
-                self.scaler.scale(total_loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
-                )
-                self._add_gradient_noise(self._global_step)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                # 2D path: standard backward
-                total_loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.model_raw.parameters(), max_norm=self.cfg.training.gradient_clip_norm
-                )
-                self._add_gradient_noise(self._global_step)
-                self.optimizer.step()
-
-            self._global_step += 1
-
-            if self.use_ema:
-                self._update_ema()
-
-            # Track gradient norm
-            if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
-                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-                self._unified_metrics.update_grad_norm(grad_val)
-
-            return TrainingStepResult(
-                total_loss=total_loss.item(),
-                reconstruction_loss=0.0,  # Not applicable for diffusion
-                perceptual_loss=p_loss.item(),
-                mse_loss=mse_loss.item(),
-            )
+        return TrainingStepResult(
+            total_loss=total_loss.item(),
+            reconstruction_loss=0.0,  # Not applicable for diffusion
+            perceptual_loss=p_loss.item(),
+            mse_loss=mse_loss.item(),
+        )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> Tuple[float, float, float]:
         """Train the model for one epoch.
@@ -2106,8 +1987,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self.use_multi_gpu:
                 try:
                     dist.destroy_process_group()
-                except Exception as e:
-                    logger.warning(f"Error destroying process group: {e}")
+                except RuntimeError as e:
+                    # Expected during abnormal shutdown (e.g., process already terminated)
+                    logger.debug(f"Process group cleanup (rank={self.rank}): {e}")
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using batch_size=1 to avoid OOM during torch.compile."""

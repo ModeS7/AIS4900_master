@@ -4,7 +4,7 @@ Provides a standardized return type for train_step() across all trainers,
 enabling generic training loop handling and consistent logging.
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 
@@ -32,14 +32,6 @@ class TrainingStepResult:
     adversarial_loss: float = 0.0
     discriminator_loss: float = 0.0
     mse_loss: float = 0.0
-
-    def to_dict(self) -> Dict[str, float]:
-        """Convert to dict, excluding zero values for cleaner logging."""
-        return {k: v for k, v in asdict(self).items() if v != 0.0}
-
-    def to_full_dict(self) -> Dict[str, float]:
-        """Convert to dict with all fields (including zeros)."""
-        return asdict(self)
 
     def to_legacy_dict(self, reg_key: Optional[str] = 'kl') -> Dict[str, float]:
         """Convert to legacy dict format for backward compatibility.

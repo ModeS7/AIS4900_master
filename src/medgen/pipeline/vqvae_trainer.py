@@ -9,7 +9,6 @@ and implements VQ-VAE-specific functionality:
 - Gradient checkpointing for memory efficiency (3D)
 - Segmentation mode (seg_mode) for mask compression (3D only)
 """
-import itertools
 import logging
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -19,7 +18,6 @@ from omegaconf import DictConfig
 from torch import nn
 from torch.amp import autocast
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 # Disable MONAI MetaTensor tracking BEFORE importing MONAI modules
 from monai.data import set_track_meta
@@ -30,7 +28,6 @@ from monai.networks.nets import VQVAE
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompressionTrainer
 from .results import TrainingStepResult
-from .utils import create_epoch_iterator, get_vram_usage
 from medgen.metrics import CodebookTracker
 
 logger = logging.getLogger(__name__)
@@ -92,6 +89,16 @@ class VQVAETrainer(BaseCompressionTrainer):
         >>> trainer.setup_model()
         >>> trainer.train(train_loader, train_dataset, val_loader)
     """
+
+    # Config section names for VQ-VAE
+    _CONFIG_SECTION_2D = 'vqvae'
+    _CONFIG_SECTION_3D = 'vqvae_3d'
+
+    # VQ-VAE-specific defaults: 3D uses different perceptual/adv weights
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D = 0.001
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D = 0.002
+    _DEFAULT_ADV_WEIGHT_2D = 0.01
+    _DEFAULT_ADV_WEIGHT_3D = 0.005
 
     def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize VQ-VAE trainer.
@@ -183,34 +190,6 @@ class VQVAETrainer(BaseCompressionTrainer):
             VQVAETrainer configured for 3D volumes.
         """
         return cls(cfg, spatial_dims=3, **kwargs)
-
-    def _get_disc_lr(self, cfg: DictConfig) -> float:
-        """Get discriminator LR from vqvae/vqvae_3d config."""
-        section = 'vqvae_3d' if self.spatial_dims == 3 else 'vqvae'
-        if section in cfg:
-            return cfg[section].get('disc_lr', 5e-4)
-        return 5e-4
-
-    def _get_perceptual_weight(self, cfg: DictConfig) -> float:
-        """Get perceptual weight from vqvae/vqvae_3d config."""
-        section = 'vqvae_3d' if self.spatial_dims == 3 else 'vqvae'
-        if section in cfg:
-            return cfg[section].get('perceptual_weight', 0.002 if self.spatial_dims == 3 else 0.001)
-        return 0.001
-
-    def _get_adv_weight(self, cfg: DictConfig) -> float:
-        """Get adversarial weight from vqvae/vqvae_3d config."""
-        section = 'vqvae_3d' if self.spatial_dims == 3 else 'vqvae'
-        if section in cfg:
-            return cfg[section].get('adv_weight', 0.005 if self.spatial_dims == 3 else 0.01)
-        return 0.01
-
-    def _get_disable_gan(self, cfg: DictConfig) -> bool:
-        """Determine if GAN is disabled from vqvae/vqvae_3d config."""
-        section = 'vqvae_3d' if self.spatial_dims == 3 else 'vqvae'
-        if section in cfg:
-            return cfg[section].get('disable_gan', False)
-        return False
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for VQ-VAE."""
@@ -341,169 +320,45 @@ class VQVAETrainer(BaseCompressionTrainer):
             meta['image_size'] = self.image_size
         return meta
 
-    def train_step(self, batch: Any) -> TrainingStepResult:
-        """Execute VQ-VAE training step with VQ loss.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Template method hooks for train_step() and train_epoch()
+    # ─────────────────────────────────────────────────────────────────────────
 
-        Args:
-            batch: Input batch.
+    def _forward_for_training(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """VQ-VAE forward pass for training.
 
-        Returns:
-            TrainingStepResult with all loss components.
+        Returns (reconstruction, vq_loss).
+        Note: vq_loss already includes commitment_cost weighting from the model.
         """
-        images, mask = self._prepare_batch(batch)
-        grad_clip = self.cfg.training.get('gradient_clip_norm', 1.0)
+        reconstruction, vq_loss = self.model(images)
+        return reconstruction, vq_loss
 
-        d_loss = torch.tensor(0.0, device=self.device)
-        adv_loss = torch.tensor(0.0, device=self.device)
+    def _get_loss_key(self) -> str:
+        """VQ-VAE uses 'vq' as regularization loss key."""
+        return 'vq'
 
-        # ==================== Discriminator Step (2D only, before generator) ====================
-        if self.spatial_dims == 2 and not self.disable_gan:
-            with torch.no_grad():
-                with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-                    reconstruction_for_d, _ = self.model(images)
-            d_loss = self._train_discriminator_step(images, reconstruction_for_d)
+    def _get_postfix_metrics(
+        self, avg_so_far: Dict[str, float], current_losses: Dict[str, float]
+    ) -> Dict[str, str]:
+        """VQ-VAE-specific progress bar: shows VQ loss."""
+        return {
+            'G': f"{avg_so_far.get('gen', 0):.4f}",
+            'VQ': f"{avg_so_far.get('vq', 0):.4f}",
+            'D': f"{avg_so_far.get('disc', 0):.4f}",
+        }
 
-        # ==================== Generator Step ====================
-        self.optimizer.zero_grad(set_to_none=True)
-
-        with autocast('cuda', enabled=True, dtype=self.weight_dtype):
-            # VQVAE forward returns (reconstruction, vq_loss)
-            reconstruction, vq_loss = self.model(images)
-
-            # Compute reconstruction loss based on mode
-            if self.seg_mode and self.seg_loss_fn is not None:
-                # Segmentation loss: BCE + Dice + Boundary
-                seg_loss, seg_breakdown = self.seg_loss_fn(reconstruction, images)
-                l1_loss = seg_loss  # Reuse variable for total seg loss
-                p_loss = torch.tensor(0.0, device=self.device)
-                # Track breakdown for epoch averaging
-                if hasattr(self, '_epoch_seg_breakdown'):
-                    for key in seg_breakdown:
-                        self._epoch_seg_breakdown[key] += seg_breakdown[key]
-            else:
-                # Standard L1 reconstruction loss
-                l1_loss = torch.nn.functional.l1_loss(reconstruction, images)
-
-                # Perceptual loss (standard 2D or 2.5D for 3D)
-                p_loss = self._compute_perceptual_loss(reconstruction, images)
-
-            # Adversarial loss
-            if not self.disable_gan:
-                adv_loss = self._compute_adversarial_loss(reconstruction)
-
-            # Total generator loss
-            # Note: vq_loss already includes commitment_cost weighting from the model
-            g_loss = (
-                l1_loss
-                + self.perceptual_weight * p_loss
-                + vq_loss
-                + self.adv_weight * adv_loss
-            )
-
-        g_loss.backward()
-
-        # Gradient clipping
-        grad_norm_g = 0.0
-        if grad_clip > 0:
-            grad_norm_g = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=grad_clip
-            ).item()
-
-        self.optimizer.step()
-
-        # Track gradient norm
-        if self.log_grad_norm:
-            self._grad_norm_tracker.update(grad_norm_g)
-
-        # Update EMA
-        self._update_ema()
-
-        # ==================== Discriminator Step (3D: after generator) ====================
-        if self.spatial_dims == 3 and not self.disable_gan:
-            d_loss = self._train_discriminator_step(images, reconstruction.detach())
-
-        return TrainingStepResult(
-            total_loss=g_loss.item(),
-            reconstruction_loss=l1_loss.item(),
-            perceptual_loss=p_loss.item() if isinstance(p_loss, torch.Tensor) else p_loss,
-            regularization_loss=vq_loss.item(),
-            adversarial_loss=adv_loss.item() if isinstance(adv_loss, torch.Tensor) else adv_loss,
-            discriminator_loss=d_loss.item() if isinstance(d_loss, torch.Tensor) else d_loss,
-        )
-
-    def train_epoch(self, data_loader: DataLoader, epoch: int) -> Dict[str, float]:
-        """Train VQ-VAE for one epoch.
-
-        Args:
-            data_loader: Training data loader.
-            epoch: Current epoch number.
-
-        Returns:
-            Dict with average losses.
-        """
-        self.model.train()
-        if not self.disable_gan and self.discriminator is not None:
-            self.discriminator.train()
-
-        # Use unified loss accumulator
-        self._loss_accumulator.reset()
-
-        # Initialize seg breakdown tracking for this epoch
+    def _on_train_epoch_start(self, epoch: int) -> None:
+        """Initialize seg breakdown tracking for this epoch."""
         if self.seg_mode:
             self._epoch_seg_breakdown = {'bce': 0.0, 'dice': 0.0, 'boundary': 0.0}
 
-        if self.spatial_dims == 3:
-            # 3D: Use tqdm directly with itertools.islice for limit_batches
-            disable_pbar = not self.is_main_process or self.is_cluster
-            total = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-            iterator = itertools.islice(data_loader, self.limit_train_batches) if self.limit_train_batches else data_loader
-            epoch_iter = tqdm(iterator, desc=f"Epoch {epoch}", disable=disable_pbar, total=total)
-        else:
-            # 2D: Use create_epoch_iterator helper
-            epoch_iter = create_epoch_iterator(
-                data_loader, epoch, self.is_cluster, self.is_main_process,
-                limit_batches=self.limit_train_batches
-            )
-
-        for step, batch in enumerate(epoch_iter):
-            result = self.train_step(batch)
-            losses = result.to_legacy_dict('vq')
-
-            # Step profiler to mark training step boundary
-            self._profiler_step()
-
-            # Accumulate with unified system
-            self._loss_accumulator.update(losses)
-
-            if hasattr(epoch_iter, 'set_postfix'):
-                avg_so_far = self._loss_accumulator.compute()
-                epoch_iter.set_postfix(
-                    G=f"{avg_so_far.get('gen', 0):.4f}",
-                    VQ=f"{avg_so_far.get('vq', 0):.4f}",
-                    D=f"{avg_so_far.get('disc', 0):.4f}"
-                )
-
-            if epoch == 1 and step == 0 and self.is_main_process:
-                logger.info(get_vram_usage(self.device))
-
-        # Compute average losses using unified system
-        avg_losses = self._loss_accumulator.compute()
-
-        # Log training metrics using unified system
-        self._log_training_metrics_unified(epoch, avg_losses)
-
-        # Log seg breakdown if in seg_mode using unified system
-        if self.seg_mode and self.is_main_process:
-            n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
-            seg_breakdown = {
-                'bce': self._epoch_seg_breakdown['bce'] / n_batches,
-                'dice': self._epoch_seg_breakdown['dice'] / n_batches,
-                'boundary': self._epoch_seg_breakdown['boundary'] / n_batches,
-            }
-            for key, value in seg_breakdown.items():
-                self._unified_metrics.update_loss(key, value, phase='train')
-
-        return avg_losses
+    def _on_train_epoch_end(self, epoch: int, avg_losses: Dict[str, float]) -> None:
+        """Log seg breakdown if in seg_mode."""
+        if self.seg_mode and self.is_main_process and hasattr(self, '_epoch_seg_breakdown'):
+            n_batches = getattr(self, '_last_epoch_batch_count', 1)
+            for key, value in self._epoch_seg_breakdown.items():
+                avg_val = value / max(n_batches, 1)
+                self._unified_metrics.update_loss(key, avg_val, phase='train')
 
     def _forward_for_validation(
         self,

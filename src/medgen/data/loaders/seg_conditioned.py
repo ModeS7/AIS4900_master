@@ -17,7 +17,11 @@ from omegaconf import DictConfig
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import (
+    DistributedArgs,
+    create_dataloader,
+    validate_mode_requirements,
+)
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.utils import extract_slices_single
 
@@ -98,7 +102,7 @@ def create_seg_conditioned_dataloader(
     # Default: 0.0 for FiLM mode, 0.15 for input conditioning mode
     cfg_dropout_prob = float(size_bin_cfg.get('cfg_dropout_prob', cfg.mode.get('cfg_dropout_prob', 0.0)))
 
-    validate_modality_exists(data_dir, 'seg')
+    validate_mode_requirements(data_dir, 'seg_conditioned', validate_modality_exists)
 
     transform = build_standard_transform(image_size)
 
@@ -132,22 +136,12 @@ def create_seg_conditioned_dataloader(
         max_count=max_count,
     )
 
-    # Setup distributed sampler
-    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
-        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
-    )
-
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         train_dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=shuffle,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        cfg,
+        batch_size=batch_size,
+        shuffle=True,
+        distributed_args=DistributedArgs(use_distributed, rank, world_size),
     )
 
     return dataloader, train_dataset
@@ -173,6 +167,7 @@ def create_seg_conditioned_validation_dataloader(
     val_dir = os.path.join(cfg.paths.data_dir, "val")
 
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
     image_size = cfg.model.image_size
@@ -193,9 +188,9 @@ def create_seg_conditioned_validation_dataloader(
     max_count = int(size_bin_cfg.get('max_count', 10))
 
     try:
-        validate_modality_exists(val_dir, 'seg')
+        validate_mode_requirements(val_dir, 'seg_conditioned', validate_modality_exists)
     except ValueError as e:
-        logger.warning(f"Validation directory misconfigured: {e}")
+        logger.warning(f"Seg conditioned validation data not available in {val_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -219,19 +214,15 @@ def create_seg_conditioned_validation_dataloader(
         max_count=max_count,
     )
 
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
     val_generator = torch.Generator().manual_seed(42)
 
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         val_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,
         drop_last=True,
         generator=val_generator,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -253,6 +244,7 @@ def create_seg_conditioned_test_dataloader(
     test_dir = os.path.join(cfg.paths.data_dir, "test_new")
 
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
     image_size = cfg.model.image_size
@@ -265,9 +257,9 @@ def create_seg_conditioned_test_dataloader(
     fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
 
     try:
-        validate_modality_exists(test_dir, 'seg')
+        validate_mode_requirements(test_dir, 'seg_conditioned', validate_modality_exists)
     except ValueError as e:
-        logger.warning(f"Test directory misconfigured: {e}")
+        logger.warning(f"Seg conditioned test data not available in {test_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -289,16 +281,11 @@ def create_seg_conditioned_test_dataloader(
         cfg_dropout_prob=0.0,
     )
 
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         test_dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=False,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset

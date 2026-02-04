@@ -227,8 +227,16 @@ class DiffusionStrategy(ABC):
 
         Returns:
             Noisy images in same format as input.
+
+        Raises:
+            TypeError: If noise is not a dict when clean_images is a dict.
+            ValueError: If dict keys don't match between clean_images and noise.
         """
         if isinstance(clean_images, dict):
+            if not isinstance(noise, dict):
+                raise TypeError(f"noise must be dict when clean_images is dict, got {type(noise).__name__}")
+            if set(clean_images.keys()) != set(noise.keys()):
+                raise ValueError(f"Key mismatch: images={set(clean_images.keys())}, noise={set(noise.keys())}")
             return {
                 key: self.scheduler.add_noise(clean_images[key], noise[key], timesteps)
                 for key in clean_images.keys()
@@ -346,11 +354,20 @@ class DDPMStrategy(DiffusionStrategy):
         )
         return self.scheduler
 
-    def predict_noise_or_velocity(self, model, model_input, timesteps):
+    def predict_noise_or_velocity(
+        self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
         """DDPM predicts noise"""
         return model(x=model_input, timesteps=timesteps)
 
-    def compute_loss(self, prediction, target_images, noise, noisy_images, timesteps):
+    def compute_loss(
+        self,
+        prediction: torch.Tensor,
+        target_images: ImageOrDict,
+        noise: ImageOrDict,
+        noisy_images: ImageOrDict,
+        timesteps: torch.Tensor,
+    ) -> Tuple[torch.Tensor, ImageOrDict]:
         """
         Compute DDPM loss
 
@@ -415,9 +432,9 @@ class DDPMStrategy(DiffusionStrategy):
 
     def sample_timesteps(
         self,
-        images,
+        images: ImageOrDict,
         curriculum_range: Optional[Tuple[float, float]] = None,
-    ):
+    ) -> torch.Tensor:
         # Extract batch size from images
         if isinstance(images, dict):
             batch_size = list(images.values())[0].shape[0]
@@ -441,11 +458,11 @@ class DDPMStrategy(DiffusionStrategy):
 
     def generate(
         self,
-        model,
-        model_input,
-        num_steps,
-        device,
-        use_progress_bars=False,
+        model: nn.Module,
+        model_input: torch.Tensor,
+        num_steps: int,
+        device: torch.device,
+        use_progress_bars: bool = False,
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
@@ -453,7 +470,7 @@ class DDPMStrategy(DiffusionStrategy):
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
         latent_channels: int = 1,
-    ):
+    ) -> torch.Tensor:
         """
         Generate using DDPM sampling
 
@@ -648,11 +665,20 @@ class RFlowStrategy(DiffusionStrategy):
         )
         return self.scheduler
 
-    def predict_noise_or_velocity(self, model, model_input, timesteps):
+    def predict_noise_or_velocity(
+        self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
         """RFlow predicts velocity"""
         return model(x=model_input, timesteps=timesteps)
 
-    def compute_loss(self, prediction, target_images, noise, noisy_images, timesteps):
+    def compute_loss(
+        self,
+        prediction: torch.Tensor,
+        target_images: ImageOrDict,
+        noise: ImageOrDict,
+        noisy_images: ImageOrDict,
+        timesteps: torch.Tensor,
+    ) -> Tuple[torch.Tensor, ImageOrDict]:
         """
         Compute RFlow loss (velocity prediction)
 
@@ -706,9 +732,9 @@ class RFlowStrategy(DiffusionStrategy):
 
     def sample_timesteps(
         self,
-        images,
+        images: ImageOrDict,
         curriculum_range: Optional[Tuple[float, float]] = None,
-    ):
+    ) -> torch.Tensor:
         # Extract batch size and device from images
         if isinstance(images, dict):
             sample_tensor = list(images.values())[0]
@@ -734,11 +760,11 @@ class RFlowStrategy(DiffusionStrategy):
 
     def generate(
         self,
-        model,
-        model_input,
-        num_steps,
-        device,
-        use_progress_bars=False,
+        model: nn.Module,
+        model_input: torch.Tensor,
+        num_steps: int,
+        device: torch.device,
+        use_progress_bars: bool = False,
         omega: Optional[torch.Tensor] = None,
         mode_id: Optional[torch.Tensor] = None,
         size_bins: Optional[torch.Tensor] = None,
@@ -746,7 +772,7 @@ class RFlowStrategy(DiffusionStrategy):
         cfg_scale: float = 1.0,
         cfg_scale_end: Optional[float] = None,
         latent_channels: int = 1,
-    ):
+    ) -> torch.Tensor:
         """
         Generate using RFlow sampling
 

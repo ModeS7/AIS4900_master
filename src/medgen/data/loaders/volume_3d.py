@@ -177,6 +177,20 @@ class Base3DVolumeDataset(Dataset):
         load_seg: bool = False,
         augmentation: Optional[Callable] = None,
     ) -> None:
+        # Validate data directory exists
+        if not os.path.isdir(data_dir):
+            raise NotADirectoryError(f"Data directory not found: {data_dir}")
+
+        # Validate parameter ranges
+        if height <= 0 or width <= 0:
+            raise ValueError(f"height and width must be > 0, got height={height}, width={width}")
+        if pad_depth_to <= 0:
+            raise ValueError(f"pad_depth_to must be > 0, got {pad_depth_to}")
+        if slice_step <= 0:
+            raise ValueError(f"slice_step must be > 0, got {slice_step}")
+        if pad_mode not in ('replicate', 'constant', 'reflect'):
+            raise ValueError(f"pad_mode must be 'replicate', 'constant', or 'reflect', got '{pad_mode}'")
+
         self.data_dir = data_dir
         self.height = height
         self.width = width

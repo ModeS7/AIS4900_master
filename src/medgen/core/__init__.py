@@ -28,6 +28,10 @@ from .validation import (
     validate_3d_config,
     validate_latent_config,
     validate_regional_logging,
+    validate_strategy_config,
+    validate_ema_config,
+    validate_optimizer_config,
+    validate_augmentation_config,
     run_validation,
 )
 from .model_utils import wrap_model_for_training
@@ -69,6 +73,10 @@ __all__ = [
     'validate_3d_config',
     'validate_latent_config',
     'validate_regional_logging',
+    'validate_strategy_config',
+    'validate_ema_config',
+    'validate_optimizer_config',
+    'validate_augmentation_config',
     'run_validation',
     # Model utilities
     'wrap_model_for_training',

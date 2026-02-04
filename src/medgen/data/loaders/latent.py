@@ -21,9 +21,30 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import (
+    DataLoaderConfig,
+    DistributedArgs,
+    create_dataloader,
+    setup_distributed_sampler,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_checkpoint_path(checkpoint_path: str) -> None:
+    """Validate checkpoint path exists and is readable.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+        PermissionError: If checkpoint file is not readable.
+    """
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    if not os.access(checkpoint_path, os.R_OK):
+        raise PermissionError(f"Cannot read checkpoint: {checkpoint_path}")
 
 
 class LatentDataset(Dataset):
@@ -51,6 +72,10 @@ class LatentDataset(Dataset):
         mode: str,
         spatial_dims: Optional[int] = None,
     ) -> None:
+        # Validate cache directory exists
+        if not os.path.isdir(cache_dir):
+            raise NotADirectoryError(f"Cache directory not found: {cache_dir}")
+
         self.cache_dir = cache_dir
         self.mode = mode
 
@@ -76,8 +101,10 @@ class LatentDataset(Dataset):
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
                 return metadata.get('spatial_dims', 2)
-            except (json.JSONDecodeError, IOError):
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"Corrupted metadata JSON at {metadata_path}: {e}. Falling back to detection.")
+            except IOError as e:
+                logger.debug(f"Could not read metadata at {metadata_path}: {e}. Falling back to detection.")
 
         # Fallback: check first sample's latent shape
         if self.files:
@@ -671,25 +698,12 @@ def create_latent_dataloader(
 
     dataset = LatentDataset(split_cache_dir, mode, spatial_dims=spatial_dims)
 
-    batch_size = batch_size or cfg.training.batch_size
-
-    # Setup distributed sampler
-    sampler, batch_size_per_gpu, actual_shuffle = setup_distributed_sampler(
-        dataset, use_distributed, rank, world_size, batch_size, shuffle=shuffle
-    )
-
-    # Get DataLoader settings
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=actual_shuffle,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        cfg,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        distributed_args=DistributedArgs(use_distributed, rank, world_size),
     )
 
     return dataloader, dataset
@@ -719,6 +733,7 @@ def create_latent_validation_dataloader(
     val_cache_dir = os.path.join(cache_dir, 'val')
 
     if not os.path.exists(val_cache_dir):
+        logger.debug(f"Validation cache directory not found: {val_cache_dir}")
         return None
 
     batch_size = batch_size or cfg.training.batch_size
@@ -729,20 +744,17 @@ def create_latent_validation_dataloader(
 
     dataset = LatentDataset(val_cache_dir, mode, spatial_dims=spatial_dims)
 
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
     # Fixed seed for reproducible validation
     val_generator = torch.Generator().manual_seed(42)
-    dataloader = DataLoader(
+
+    dataloader = create_dataloader(
         dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=True,  # Shuffle for diverse worst_batch
         drop_last=True,
         generator=val_generator,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        scale_batch_for_distributed=False,  # Already adjusted above
     )
 
     return dataloader, dataset
@@ -770,22 +782,18 @@ def create_latent_test_dataloader(
     test_cache_dir = os.path.join(cache_dir, 'test_new')
 
     if not os.path.exists(test_cache_dir):
+        logger.debug(f"Test cache directory not found: {test_cache_dir}")
         return None
 
     batch_size = batch_size or cfg.training.batch_size
 
     dataset = LatentDataset(test_cache_dir, mode, spatial_dims=spatial_dims)
 
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    dataloader = create_dataloader(
         dataset,
+        cfg,
         batch_size=batch_size,
         shuffle=False,  # Test must be deterministic
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, dataset
@@ -808,7 +816,11 @@ def detect_compression_type(checkpoint_path: str) -> str:
 
     Returns:
         Compression type: 'vae', 'dcae', or 'vqvae'.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
     """
+    _validate_checkpoint_path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     # Check for config in checkpoint
@@ -844,7 +856,11 @@ def detect_spatial_dims(checkpoint_path: str) -> int:
 
     Returns:
         Spatial dimensions: 2 or 3.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
     """
+    _validate_checkpoint_path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     # Check for spatial_dims in config
@@ -881,7 +897,11 @@ def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') ->
 
     Returns:
         Spatial scale factor (8 for VAE/VQ-VAE, 32/64 for DC-AE).
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
     """
+    _validate_checkpoint_path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('config', {})
 
@@ -921,7 +941,11 @@ def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto')
 
     Returns:
         Number of latent channels.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
     """
+    _validate_checkpoint_path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('config', {})
 
@@ -976,7 +1000,13 @@ def load_compression_model(
 
     Returns:
         Tuple of (model, detected_type, spatial_dims, scale_factor, latent_channels).
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+        ValueError: If compression type is unknown.
     """
+    _validate_checkpoint_path(checkpoint_path)
+
     # Auto-detect type if needed
     if compression_type == 'auto':
         compression_type = detect_compression_type(checkpoint_path)

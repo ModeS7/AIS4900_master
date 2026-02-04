@@ -11,7 +11,11 @@ from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_diffusion_augmentation, build_vae_augmentation
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import (
+    create_dataloader as create_dataloader_from_dataset,
+    DistributedArgs,
+    validate_mode_requirements,
+)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -60,13 +64,10 @@ def create_dual_image_dataloader(
 
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size
-    batch_size = cfg.training.batch_size
 
     # Validate all modalities exist before loading
-    for key in image_keys:
-        validate_modality_exists(data_dir, key)
-    if conditioning:
-        validate_modality_exists(data_dir, conditioning)
+    # dual mode requires both image_keys + conditioning (seg)
+    validate_mode_requirements(data_dir, 'dual', validate_modality_exists, image_keys=image_keys)
 
     transform = build_standard_transform(image_size)
 
@@ -99,23 +100,12 @@ def create_dual_image_dataloader(
         train_dataset = CFGDropoutDataset(train_dataset, cfg_dropout_prob=cfg_dropout_prob)
         logger.info(f"CFG dropout enabled for dual mode: {cfg_dropout_prob:.0%} probability")
 
-    # Setup distributed sampler and batch size
-    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
-        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
-    )
-
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create DataLoader using unified helper
+    dataloader = create_dataloader_from_dataset(
         train_dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=shuffle,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        cfg=cfg,
+        shuffle=True,
+        distributed_args=DistributedArgs(use_distributed, rank, world_size),
     )
 
     return dataloader, train_dataset
@@ -144,9 +134,11 @@ def create_dual_image_validation_dataloader(
     val_dir = os.path.join(cfg.paths.data_dir, "val")
 
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
     if len(image_keys) != 2:
+        logger.warning(f"Dual mode requires exactly 2 image keys, got {len(image_keys)}: {image_keys}")
         return None
 
     image_size = cfg.model.image_size
@@ -158,12 +150,9 @@ def create_dual_image_validation_dataloader(
 
     # Validate modalities exist
     try:
-        for key in image_keys:
-            validate_modality_exists(val_dir, key)
-        if conditioning:
-            validate_modality_exists(val_dir, conditioning)
+        validate_mode_requirements(val_dir, 'dual', validate_modality_exists, image_keys=image_keys)
     except ValueError as e:
-        logger.warning(f"Validation directory exists but is misconfigured: {e}")
+        logger.warning(f"Validation data for dual mode (keys={image_keys}) not available in {val_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -182,17 +171,12 @@ def create_dual_image_validation_dataloader(
     merged = merge_sequences(datasets_dict)
     val_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None))
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create validation DataLoader using unified helper
+    dataloader = create_dataloader_from_dataset(
         val_dataset,
+        cfg=cfg,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -218,9 +202,11 @@ def create_dual_image_test_dataloader(
     test_dir = os.path.join(cfg.paths.data_dir, "test_new")
 
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
     if len(image_keys) != 2:
+        logger.warning(f"Dual mode requires exactly 2 image keys, got {len(image_keys)}: {image_keys}")
         return None
 
     image_size = cfg.model.image_size
@@ -228,12 +214,9 @@ def create_dual_image_test_dataloader(
 
     # Validate modalities exist
     try:
-        for key in image_keys:
-            validate_modality_exists(test_dir, key)
-        if conditioning:
-            validate_modality_exists(test_dir, conditioning)
+        validate_mode_requirements(test_dir, 'dual', validate_modality_exists, image_keys=image_keys)
     except ValueError as e:
-        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        logger.warning(f"Test data for dual mode (keys={image_keys}) not available in {test_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -252,17 +235,12 @@ def create_dual_image_test_dataloader(
     merged = merge_sequences(datasets_dict)
     test_dataset = extract_slices_dual(merged, has_seg=(conditioning is not None))
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create test DataLoader using unified helper
+    dataloader = create_dataloader_from_dataset(
         test_dataset,
+        cfg=cfg,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset

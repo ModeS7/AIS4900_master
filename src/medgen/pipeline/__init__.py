@@ -46,9 +46,6 @@ from medgen.metrics import (
     create_worst_batch_figure,
 )
 
-# Optimizers (from optimizers/ subdirectory)
-from .optimizers import SAM
-
 # Training step result
 from .results import TrainingStepResult
 
@@ -106,8 +103,6 @@ __all__ = [
     'measure_model_flops',
     'WorstBatchTracker',
     'create_worst_batch_figure',
-    # Optimizers
-    'SAM',
     # Training step result
     'TrainingStepResult',
     # Test evaluation

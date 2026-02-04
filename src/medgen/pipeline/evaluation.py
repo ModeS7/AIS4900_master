@@ -232,119 +232,128 @@ def evaluate_test_set(
             n_batches += 1
             n_samples += batch_size
 
-    model_to_use.train()
+    # Restore model to training mode (using try/finally for robustness)
+    try:
+        model_to_use.train()
 
-    # Handle empty test set
-    if n_batches == 0:
-        logger.warning(f"Test set ({label}) is empty, skipping evaluation")
-        return {}
+        # Handle empty test set
+        if n_batches == 0:
+            logger.warning(f"Test set ({label}) is empty, skipping evaluation")
+            return {}
 
-    # Compute averages
-    metrics = {
-        'mse': total_mse / n_batches,
-        'msssim': total_msssim / n_batches,
-        'psnr': total_psnr / n_batches,
-        'n_samples': n_samples,
-    }
-    if trainer.log_lpips:
-        metrics['lpips'] = total_lpips / n_batches
-
-    # Log results
-    logger.info(f"Test Results - {label} ({n_samples} samples):")
-    logger.info(f"  MSE:     {metrics['mse']:.6f}")
-    logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
-    logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
-    if 'lpips' in metrics:
-        logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
-
-    # Save results to JSON
-    results_path = os.path.join(trainer.save_dir, f'test_results_{label}.json')
-    with open(results_path, 'w') as f:
-        json.dump(metrics, f, indent=2)
-    logger.info(f"Test results saved to: {results_path}")
-
-    # Log to TensorBoard using unified system
-    tb_prefix = f'test_{label}'
-    if trainer.writer is not None and trainer._unified_metrics is not None:
-        # Compute volume 3D MS-SSIM first so it can be included in test_metrics
-        msssim_3d = None
-        if trainer.log_msssim:
-            msssim_3d = compute_volume_3d_msssim(trainer, 0, data_split='test_new')
-            if msssim_3d is not None:
-                metrics['msssim_3d'] = msssim_3d
-
-        # Build test metrics dict for unified logging
-        test_metrics = {
-            'PSNR': metrics['psnr'],
-            'MS-SSIM': metrics['msssim'],
-            'MSE': metrics['mse'],
+        # Compute averages
+        metrics = {
+            'mse': total_mse / n_batches,
+            'msssim': total_msssim / n_batches,
+            'psnr': total_psnr / n_batches,
+            'n_samples': n_samples,
         }
+        if trainer.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
+
+        # Log results
+        logger.info(f"Test Results - {label} ({n_samples} samples):")
+        logger.info(f"  MSE:     {metrics['mse']:.6f}")
+        logger.info(f"  MS-SSIM: {metrics['msssim']:.4f}")
+        logger.info(f"  PSNR:    {metrics['psnr']:.2f} dB")
         if 'lpips' in metrics:
-            test_metrics['LPIPS'] = metrics['lpips']
-        if msssim_3d is not None:
-            test_metrics['MS-SSIM-3D'] = msssim_3d
+            logger.info(f"  LPIPS:   {metrics['lpips']:.4f}")
 
-        trainer._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
+        # Save results to JSON
+        results_path = os.path.join(trainer.save_dir, f'test_results_{label}.json')
+        with open(results_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Test results saved to: {results_path}")
 
-        # Log timestep bin losses using unified system
-        counts = timestep_loss_count.cpu()
-        sums = timestep_loss_sum.cpu()
-        timestep_bins = {}
-        for bin_idx in range(num_timestep_bins):
-            bin_start = bin_idx / num_timestep_bins
-            bin_end = (bin_idx + 1) / num_timestep_bins
-            count = counts[bin_idx].item()
-            if count > 0:
-                avg_loss = (sums[bin_idx] / count).item()
-                timestep_bins[f'{bin_start:.1f}-{bin_end:.1f}'] = avg_loss
-        if timestep_bins:
-            trainer._unified_metrics.log_test_timesteps(timestep_bins, prefix=tb_prefix)
+        # Log to TensorBoard using unified system
+        tb_prefix = f'test_{label}'
+        if trainer.writer is not None and trainer._unified_metrics is not None:
+            # Compute volume 3D MS-SSIM first so it can be included in test_metrics
+            msssim_3d = None
+            if trainer.log_msssim:
+                msssim_3d = compute_volume_3d_msssim(trainer, 0, data_split='test_new')
+                if msssim_3d is not None:
+                    metrics['msssim_3d'] = msssim_3d
 
-        # Log regional metrics via unified system
-        if regional_tracker is not None:
-            trainer._unified_metrics.log_test_regional(regional_tracker, prefix=tb_prefix)
-
-        # Create visualization of worst batch (uses unified metrics)
-        if worst_batch_data is not None:
-            # Build display metrics
-            display_metrics = {'MS-SSIM': metrics['msssim'], 'PSNR': metrics['psnr']}
+            # Build test metrics dict for unified logging
+            test_metrics = {
+                'PSNR': metrics['psnr'],
+                'MS-SSIM': metrics['msssim'],
+                'MSE': metrics['mse'],
+            }
             if 'lpips' in metrics:
-                display_metrics['LPIPS'] = metrics['lpips']
+                test_metrics['LPIPS'] = metrics['lpips']
+            if msssim_3d is not None:
+                test_metrics['MS-SSIM-3D'] = msssim_3d
 
-            fig_path = os.path.join(trainer.save_dir, f'test_worst_batch_{label}.png')
-            trainer._unified_metrics.log_worst_batch(
-                original=worst_batch_data['original'],
-                reconstructed=worst_batch_data['generated'],
-                loss=metrics.get('mse', 0.0),
-                epoch=0,
-                tag_prefix=tb_prefix,
-                timesteps=worst_batch_data['timesteps'],
-                save_path=fig_path,
-                display_metrics=display_metrics,
-            )
-            logger.info(f"Test worst batch saved to: {fig_path}")
+            trainer._unified_metrics.log_test(test_metrics, prefix=tb_prefix)
 
-        # Compute generation quality metrics (FID, KID, CMMD) if enabled
-        if trainer._gen_metrics is not None:
-            try:
-                logger.info("Computing generation metrics (FID, KID, CMMD)...")
-                test_gen_results = trainer._gen_metrics.compute_test_metrics(
-                    model_to_use, trainer.strategy, trainer.mode, test_loader
+            # Log timestep bin losses using unified system
+            counts = timestep_loss_count.cpu()
+            sums = timestep_loss_sum.cpu()
+            timestep_bins = {}
+            for bin_idx in range(num_timestep_bins):
+                bin_start = bin_idx / num_timestep_bins
+                bin_end = (bin_idx + 1) / num_timestep_bins
+                count = counts[bin_idx].item()
+                if count > 0:
+                    avg_loss = (sums[bin_idx] / count).item()
+                    timestep_bins[f'{bin_start:.1f}-{bin_end:.1f}'] = avg_loss
+            if timestep_bins:
+                trainer._unified_metrics.log_test_timesteps(timestep_bins, prefix=tb_prefix)
+
+            # Log regional metrics via unified system
+            if regional_tracker is not None:
+                trainer._unified_metrics.log_test_regional(regional_tracker, prefix=tb_prefix)
+
+            # Create visualization of worst batch (uses unified metrics)
+            if worst_batch_data is not None:
+                # Build display metrics
+                display_metrics = {'MS-SSIM': metrics['msssim'], 'PSNR': metrics['psnr']}
+                if 'lpips' in metrics:
+                    display_metrics['LPIPS'] = metrics['lpips']
+
+                fig_path = os.path.join(trainer.save_dir, f'test_worst_batch_{label}.png')
+                trainer._unified_metrics.log_worst_batch(
+                    original=worst_batch_data['original'],
+                    reconstructed=worst_batch_data['generated'],
+                    loss=metrics.get('mse', 0.0),
+                    epoch=0,
+                    tag_prefix=tb_prefix,
+                    timesteps=worst_batch_data['timesteps'],
+                    save_path=fig_path,
+                    display_metrics=display_metrics,
                 )
-                # Log to TensorBoard via unified metrics
-                exported = trainer._unified_metrics.log_test_generation(test_gen_results, prefix=tb_prefix)
-                metrics.update(exported)
-                # Log to console
-                if 'FID' in test_gen_results:
-                    logger.info(f"  FID:     {test_gen_results['FID']:.4f}")
-                if 'KID_mean' in test_gen_results:
-                    logger.info(f"  KID:     {test_gen_results['KID_mean']:.4f} +/- {test_gen_results.get('KID_std', 0):.4f}")
-                if 'CMMD' in test_gen_results:
-                    logger.info(f"  CMMD:    {test_gen_results['CMMD']:.4f}")
-            except Exception as e:
-                logger.warning(f"Generation metrics computation failed: {e}")
+                logger.info(f"Test worst batch saved to: {fig_path}")
 
-    return metrics
+            # Compute generation quality metrics (FID, KID, CMMD) if enabled
+            if trainer._gen_metrics is not None:
+                try:
+                    logger.info("Computing generation metrics (FID, KID, CMMD)...")
+                    test_gen_results = trainer._gen_metrics.compute_test_metrics(
+                        model_to_use, trainer.strategy, trainer.mode, test_loader
+                    )
+                    # Log to TensorBoard via unified metrics
+                    exported = trainer._unified_metrics.log_test_generation(test_gen_results, prefix=tb_prefix)
+                    metrics.update(exported)
+                    # Log to console
+                    if 'FID' in test_gen_results:
+                        logger.info(f"  FID:     {test_gen_results['FID']:.4f}")
+                    if 'KID_mean' in test_gen_results:
+                        logger.info(f"  KID:     {test_gen_results['KID_mean']:.4f} +/- {test_gen_results.get('KID_std', 0):.4f}")
+                    if 'CMMD' in test_gen_results:
+                        logger.info(f"  CMMD:    {test_gen_results['CMMD']:.4f}")
+                except torch.cuda.OutOfMemoryError as e:
+                    logger.warning(f"Generation metrics skipped due to OOM: {e}")
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    logger.exception("Generation metrics computation failed on test set")
+
+        return metrics
+
+    finally:
+        # Ensure model is in train mode even if an exception occurred
+        model_to_use.train()
 
 
 def compute_volume_3d_msssim(
@@ -499,17 +508,17 @@ def compute_volume_3d_msssim(
             total_msssim_3d += msssim_3d
             n_volumes += 1
 
-    model_to_use.train()
-
-    # Restore random state to not affect subsequent training epochs
-    torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
-
-    if n_volumes == 0:
-        return None
-
-    return total_msssim_3d / n_volumes
+    # Restore model state and RNG (use try/finally for robustness)
+    try:
+        model_to_use.train()
+        if n_volumes == 0:
+            return None
+        return total_msssim_3d / n_volumes
+    finally:
+        # Ensure RNG state is ALWAYS restored
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
 
 
 def compute_volume_3d_msssim_native(
@@ -638,17 +647,17 @@ def compute_volume_3d_msssim_native(
             total_msssim_3d += msssim_3d
             n_volumes += 1
 
-    model_to_use.train()
-
-    # Restore RNG state
-    torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
-
-    if n_volumes == 0:
-        return None
-
-    return total_msssim_3d / n_volumes
+    # Restore model state and RNG (use try/finally for robustness)
+    try:
+        model_to_use.train()
+        if n_volumes == 0:
+            return None
+        return total_msssim_3d / n_volumes
+    finally:
+        # Ensure RNG state is ALWAYS restored
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
 
 
 def create_test_reconstruction_figure(

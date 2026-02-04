@@ -45,7 +45,6 @@ def get_metadata_extra(trainer: 'DiffusionTrainer') -> Dict[str, Any]:
         'num_timesteps': trainer.num_timesteps,
         'batch_size': trainer.batch_size,
         'learning_rate': trainer.learning_rate,
-        'use_sam': trainer.use_sam,
         'use_ema': trainer.use_ema,
         'created_at': datetime.now().isoformat(),
     }
@@ -144,9 +143,15 @@ def measure_model_flops(
             timesteps=timesteps[:1] if isinstance(timesteps, torch.Tensor) else timesteps,
             is_main_process=trainer.is_main_process,
         )
+    except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+        if trainer.is_main_process:
+            logger.warning(f"FLOPs measurement failed (OOM or CUDA error): {e}")
+    except StopIteration:
+        if trainer.is_main_process:
+            logger.warning("FLOPs measurement failed: empty dataloader")
     except Exception as e:
         if trainer.is_main_process:
-            logger.warning(f"Could not measure FLOPs: {e}")
+            logger.exception("FLOPs measurement failed unexpectedly")
 
 
 def update_metadata_final(

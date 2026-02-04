@@ -37,10 +37,15 @@ from medgen.core import (
     validate_common_config,
     validate_model_config,
     validate_diffusion_config,
+    validate_training_config,
     validate_strategy_mode_compatibility,
     validate_3d_config,
     validate_latent_config,
     validate_regional_logging,
+    validate_strategy_config,
+    validate_ema_config,
+    validate_optimizer_config,
+    validate_augmentation_config,
     run_validation,
 )
 from medgen.data.loaders.latent import (
@@ -72,10 +77,15 @@ def validate_config(cfg: DictConfig) -> None:
         validate_common_config,
         validate_model_config,
         validate_diffusion_config,
+        validate_training_config,
         validate_strategy_mode_compatibility,
         validate_3d_config,
         validate_latent_config,
         validate_regional_logging,
+        validate_strategy_config,
+        validate_ema_config,
+        validate_optimizer_config,
+        validate_augmentation_config,
     ])
 
 

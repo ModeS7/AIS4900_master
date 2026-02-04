@@ -8,10 +8,10 @@ Provides shared functions to reduce duplication across loader modules:
 """
 import logging
 import os
-import random
 from dataclasses import dataclass
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
+import torch
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler
 
@@ -84,7 +84,18 @@ def setup_distributed_sampler(
         - sampler: DistributedSampler or None
         - batch_size_per_gpu: Adjusted batch size for this GPU
         - actual_shuffle: Whether DataLoader should shuffle
+
+    Raises:
+        ValueError: If world_size <= 0, batch_size <= 0, or rank out of range.
     """
+    # Validate parameters
+    if world_size <= 0:
+        raise ValueError(f"world_size must be > 0, got {world_size}")
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    if use_distributed and not (0 <= rank < world_size):
+        raise ValueError(f"rank must be in [0, {world_size}), got {rank}")
+
     if use_distributed:
         sampler = DistributedSampler(
             dataset,
@@ -116,11 +127,14 @@ class GroupedBatchSampler(Sampler[List[int]]):
         batch_size: Number of samples per batch.
         shuffle: Whether to shuffle groups and samples within groups each epoch.
         drop_last: Whether to drop the last incomplete batch in each group.
+        generator: Optional torch.Generator for reproducible shuffling.
 
     Example:
         >>> # Dataset with 100 samples, 4 groups (mode_ids 0-3)
         >>> group_ids = [sample[2] for sample in dataset]  # Extract mode_ids
-        >>> sampler = GroupedBatchSampler(group_ids, batch_size=16)
+        >>> generator = torch.Generator()
+        >>> generator.manual_seed(42)
+        >>> sampler = GroupedBatchSampler(group_ids, batch_size=16, generator=generator)
         >>> loader = DataLoader(dataset, batch_sampler=sampler)
     """
 
@@ -130,10 +144,18 @@ class GroupedBatchSampler(Sampler[List[int]]):
         batch_size: int,
         shuffle: bool = True,
         drop_last: bool = False,
+        generator: Optional[torch.Generator] = None,
     ):
+        # Validate parameters
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        if not group_ids:
+            raise ValueError("group_ids cannot be empty")
+
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
+        self.generator = generator
 
         # Build index groups: {group_id: [sample_indices]}
         self.groups: dict[int, List[int]] = {}
@@ -150,15 +172,17 @@ class GroupedBatchSampler(Sampler[List[int]]):
 
     def __iter__(self) -> Iterator[List[int]]:
         """Yield batches of indices, each batch from a single group."""
-        # Shuffle group order
+        # Shuffle group order using torch for reproducibility
         group_order = self.group_ids.copy()
         if self.shuffle:
-            random.shuffle(group_order)
+            perm = torch.randperm(len(group_order), generator=self.generator)
+            group_order = [group_order[i] for i in perm.tolist()]
 
         for gid in group_order:
             indices = self.groups[gid].copy()
             if self.shuffle:
-                random.shuffle(indices)
+                perm = torch.randperm(len(indices), generator=self.generator)
+                indices = [indices[i] for i in perm.tolist()]
 
             # Yield full batches
             for start in range(0, len(indices), self.batch_size):
@@ -233,6 +257,7 @@ def create_dataloader(
     distributed_args: Optional[DistributedArgs] = None,
     loader_config: Optional[DataLoaderConfig] = None,
     scale_batch_for_distributed: bool = True,
+    generator: Optional[torch.Generator] = None,
 ) -> DataLoader:
     """Create DataLoader with standard configuration.
 
@@ -253,6 +278,8 @@ def create_dataloader(
         scale_batch_for_distributed: If True, divide batch_size by world_size
             for distributed training. Set False for 3D volumes where batch_size
             is typically 1-2 and shouldn't be divided.
+        generator: Optional torch.Generator for reproducible shuffling.
+            Useful for validation loaders that need deterministic ordering.
 
     Returns:
         Configured DataLoader.
@@ -312,6 +339,7 @@ def create_dataloader(
         num_workers=dl_cfg.num_workers,
         prefetch_factor=dl_cfg.prefetch_factor,
         persistent_workers=dl_cfg.persistent_workers,
+        generator=generator,
     )
 
 
@@ -393,3 +421,59 @@ def check_seg_available(data_dir: str, validate_fn: callable) -> bool:
         return True
     except ValueError:
         return False
+
+
+def validate_mode_requirements(
+    data_dir: str,
+    mode: str,
+    validate_fn: callable,
+    image_keys: Optional[List[str]] = None,
+    require_seg: bool = True,
+) -> None:
+    """Validate all modalities required for a training mode.
+
+    Centralizes validation logic to avoid duplicated if/elif chains across loaders.
+
+    Args:
+        data_dir: Path to data directory.
+        mode: Training mode ('seg', 'bravo', 'dual', 'multi', 'multi_modality',
+              'seg_conditioned', 'seg_conditioned_input', 'dual_vae', 'multi_modality_vae').
+        validate_fn: Function to validate existence (e.g., validate_modality_exists).
+        image_keys: Optional explicit keys (for dual/multi modes).
+        require_seg: If False, skip seg validation even if mode would normally require it.
+            Useful for VAE training where seg is optional.
+
+    Raises:
+        ValueError: If required modalities are missing or mode is unknown.
+
+    Example:
+        >>> from medgen.data import validate_modality_exists
+        >>> validate_mode_requirements('/data/train', 'bravo', validate_modality_exists)
+        >>> validate_mode_requirements('/data/train', 'dual', validate_modality_exists,
+        ...                            image_keys=['t1_pre', 't1_gd'])
+        >>> # VAE training (no seg required):
+        >>> validate_mode_requirements('/data/train', 'multi_modality', validate_modality_exists,
+        ...                            image_keys=['bravo', 'flair'], require_seg=False)
+    """
+    if mode == 'seg':
+        validate_fn(data_dir, 'seg')
+    elif mode == 'bravo':
+        validate_fn(data_dir, 'bravo')
+        if require_seg:
+            validate_fn(data_dir, 'seg')
+    elif mode in ('dual', 'dual_vae'):
+        keys = image_keys or ['t1_pre', 't1_gd']
+        for key in keys:
+            validate_fn(data_dir, key)
+        if require_seg and mode != 'dual_vae':
+            validate_fn(data_dir, 'seg')
+    elif mode in ('multi', 'multi_modality', 'multi_modality_vae'):
+        keys = image_keys or ['bravo', 'flair', 't1_pre', 't1_gd']
+        for key in keys:
+            validate_fn(data_dir, key)
+        if require_seg and mode != 'multi_modality_vae':
+            validate_fn(data_dir, 'seg')
+    elif mode in ('seg_conditioned', 'seg_conditioned_input'):
+        validate_fn(data_dir, 'seg')
+    else:
+        raise ValueError(f"Unknown mode: {mode}")

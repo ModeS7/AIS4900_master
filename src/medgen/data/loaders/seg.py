@@ -93,6 +93,28 @@ class SegDataset(TorchDataset):
             return_bin_maps: If True, return spatial bin maps for input conditioning.
             max_count: Max count per bin for normalization (default: 10).
         """
+        # Validate data directory exists
+        if not os.path.isdir(data_dir):
+            raise NotADirectoryError(f"Data directory not found: {data_dir}")
+
+        # Validate parameter ranges
+        if num_bins <= 0:
+            raise ValueError(f"num_bins must be > 0, got {num_bins}")
+        if height <= 0 or width <= 0:
+            raise ValueError(f"height and width must be > 0, got height={height}, width={width}")
+        if pad_depth_to <= 0:
+            raise ValueError(f"pad_depth_to must be > 0, got {pad_depth_to}")
+        if slice_step <= 0:
+            raise ValueError(f"slice_step must be > 0, got {slice_step}")
+        if not (0 <= cfg_dropout_prob <= 1):
+            raise ValueError(f"cfg_dropout_prob must be in [0, 1], got {cfg_dropout_prob}")
+        if max_count <= 0:
+            raise ValueError(f"max_count must be > 0, got {max_count}")
+        if not all(v > 0 for v in voxel_spacing):
+            raise ValueError(f"All voxel_spacing values must be > 0, got {voxel_spacing}")
+        if bin_edges != sorted(bin_edges):
+            raise ValueError(f"bin_edges must be sorted ascending, got {bin_edges}")
+
         self.data_dir = data_dir
         self.bin_edges = bin_edges
         self.num_bins = num_bins
@@ -329,6 +351,7 @@ def create_seg_validation_dataloader(
     """
     val_dir = os.path.join(cfg.paths.data_dir, 'val')
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -380,6 +403,7 @@ def create_seg_test_dataloader(
     """
     test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)

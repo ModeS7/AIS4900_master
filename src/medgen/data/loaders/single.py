@@ -8,12 +8,15 @@ import logging
 import os
 from typing import Literal, Optional, Tuple
 
-import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
 from medgen.augmentation import build_diffusion_augmentation, build_vae_augmentation
-from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.common import (
+    create_dataloader as create_dataloader_from_dataset,
+    DistributedArgs,
+    validate_mode_requirements,
+)
 from medgen.data.dataset import (
     NiFTIDataset,
     build_standard_transform,
@@ -53,14 +56,9 @@ def create_dataloader(
     """
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size
-    batch_size = cfg.training.batch_size
 
     # Validate modalities exist before loading
-    if image_type == 'seg':
-        validate_modality_exists(data_dir, 'seg')
-    elif image_type == 'bravo':
-        validate_modality_exists(data_dir, 'bravo')
-        validate_modality_exists(data_dir, 'seg')
+    validate_mode_requirements(data_dir, image_type, validate_modality_exists)
 
     transform = build_standard_transform(image_size)
 
@@ -97,23 +95,12 @@ def create_dataloader(
     else:
         raise ValueError(f"Unknown image_type: {image_type}")
 
-    # Setup distributed sampler and batch size
-    sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(
-        train_dataset, use_distributed, rank, world_size, batch_size, shuffle=True
-    )
-
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create DataLoader using unified helper
+    dataloader = create_dataloader_from_dataset(
         train_dataset,
-        batch_size=batch_size_per_gpu,
-        sampler=sampler,
-        shuffle=shuffle,
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
+        cfg=cfg,
+        shuffle=True,
+        distributed_args=DistributedArgs(use_distributed, rank, world_size),
     )
 
     return dataloader, train_dataset
@@ -140,6 +127,7 @@ def create_validation_dataloader(
     val_dir = os.path.join(cfg.paths.data_dir, "val")
 
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
     image_size = cfg.model.image_size
@@ -151,15 +139,9 @@ def create_validation_dataloader(
 
     # Validate modalities exist
     try:
-        if image_type == 'seg':
-            validate_modality_exists(val_dir, 'seg')
-        elif image_type == 'bravo':
-            validate_modality_exists(val_dir, 'bravo')
-            validate_modality_exists(val_dir, 'seg')
-        else:
-            return None
+        validate_mode_requirements(val_dir, image_type, validate_modality_exists)
     except ValueError as e:
-        logger.warning(f"Validation directory exists but is misconfigured: {e}")
+        logger.warning(f"Validation data for {image_type} mode not available in {val_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -181,22 +163,14 @@ def create_validation_dataloader(
         merged = merge_sequences(datasets_dict)
         val_dataset = extract_slices_dual(merged, has_seg=True)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    # Validation loader: shuffle with fixed seed for reproducibility + diverse batches
-    # Fixed generator ensures same batch composition across epochs/runs
-    val_generator = torch.Generator().manual_seed(42)
-    dataloader = DataLoader(
+    # Create validation DataLoader using unified helper
+    # Shuffle with fixed seed for reproducibility + diverse batches
+    dataloader = create_dataloader_from_dataset(
         val_dataset,
+        cfg=cfg,
         batch_size=batch_size,
         shuffle=True,  # Shuffle for diverse worst_batch visualization
         drop_last=True,  # Ensure consistent batch sizes
-        generator=val_generator,  # Fixed seed for reproducibility
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, val_dataset
@@ -220,6 +194,7 @@ def create_test_dataloader(
     test_dir = os.path.join(cfg.paths.data_dir, "test_new")
 
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
     image_size = cfg.model.image_size
@@ -227,15 +202,9 @@ def create_test_dataloader(
 
     # Validate modalities exist
     try:
-        if image_type == 'seg':
-            validate_modality_exists(test_dir, 'seg')
-        elif image_type == 'bravo':
-            validate_modality_exists(test_dir, 'bravo')
-            validate_modality_exists(test_dir, 'seg')
-        else:
-            return None
+        validate_mode_requirements(test_dir, image_type, validate_modality_exists)
     except ValueError as e:
-        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        logger.warning(f"Test data for {image_type} mode not available in {test_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -257,17 +226,12 @@ def create_test_dataloader(
         merged = merge_sequences(datasets_dict)
         test_dataset = extract_slices_dual(merged, has_seg=True)
 
-    # Get DataLoader settings from config
-    dl_cfg = DataLoaderConfig.from_cfg(cfg)
-
-    dataloader = DataLoader(
+    # Create test DataLoader using unified helper
+    dataloader = create_dataloader_from_dataset(
         test_dataset,
+        cfg=cfg,
         batch_size=batch_size,
         shuffle=False,  # Test must be deterministic for reproducible metrics
-        pin_memory=dl_cfg.pin_memory,
-        num_workers=dl_cfg.num_workers,
-        prefetch_factor=dl_cfg.prefetch_factor,
-        persistent_workers=dl_cfg.persistent_workers,
     )
 
     return dataloader, test_dataset

@@ -39,18 +39,21 @@ def visualize_samples(
     if not trainer.is_main_process:
         return
 
-    model.eval()
+    try:
+        model.eval()
 
-    if trainer.spatial_dims == 3:
-        # 3D: Generate samples using cached training batch for real conditioning
-        visualize_samples_3d(trainer, model, epoch)
-        # 3D: Also log denoising trajectory if enabled
-        if trainer.log_intermediate_steps:
-            visualize_denoising_trajectory_3d(trainer, model, epoch)
-    else:
-        # 2D: Delegate to ValidationVisualizer
-        if trainer.visualizer is not None and train_dataset is not None:
-            trainer.visualizer.generate_samples(model, train_dataset, epoch)
+        if trainer.spatial_dims == 3:
+            # 3D: Generate samples using cached training batch for real conditioning
+            visualize_samples_3d(trainer, model, epoch)
+            # 3D: Also log denoising trajectory if enabled
+            if trainer.log_intermediate_steps:
+                visualize_denoising_trajectory_3d(trainer, model, epoch)
+        else:
+            # 2D: Delegate to ValidationVisualizer
+            if trainer.visualizer is not None and train_dataset is not None:
+                trainer.visualizer.generate_samples(model, train_dataset, epoch)
+    finally:
+        model.train()
 
 
 @torch.no_grad()
@@ -187,13 +190,16 @@ def visualize_denoising_trajectory(
     if not trainer.is_main_process:
         return
 
-    model.eval()
+    try:
+        model.eval()
 
-    if trainer.spatial_dims == 3:
-        visualize_denoising_trajectory_3d(trainer, model, epoch, num_steps)
-    else:
-        # 2D: Delegate to ValidationVisualizer (if it has this method)
-        pass  # 2D trajectory visualization handled separately
+        if trainer.spatial_dims == 3:
+            visualize_denoising_trajectory_3d(trainer, model, epoch, num_steps)
+        else:
+            # 2D: Delegate to ValidationVisualizer (if it has this method)
+            pass  # 2D trajectory visualization handled separately
+    finally:
+        model.train()
 
 
 @torch.no_grad()

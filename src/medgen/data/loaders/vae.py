@@ -18,6 +18,7 @@ from medgen.augmentation import build_vae_augmentation, create_vae_collate_fn
 from medgen.data.loaders.common import (
     DistributedArgs,
     create_dataloader,
+    validate_mode_requirements,
 )
 from medgen.data.dataset import (
     NiFTIDataset,
@@ -62,10 +63,11 @@ def create_vae_dataloader(
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size
 
-    # Validate modalities exist before loading
+    # Validate modalities exist before loading (no seg required for VAE)
     if modality == 'dual':
-        for key in ['t1_pre', 't1_gd']:
-            validate_modality_exists(data_dir, key)
+        validate_mode_requirements(
+            data_dir, 'dual', validate_modality_exists, require_seg=False
+        )
     else:
         validate_modality_exists(data_dir, modality)
 
@@ -161,20 +163,22 @@ def create_vae_validation_dataloader(
 
     # Check if validation directory exists
     if not os.path.exists(val_dir):
+        logger.debug(f"Validation directory not found: {val_dir}")
         return None
 
     image_size = cfg.model.image_size
     batch_size = batch_size or cfg.training.batch_size
 
-    # Validate modalities exist in val directory
+    # Validate modalities exist in val directory (no seg required for VAE)
     try:
         if modality == 'dual':
-            for key in ['t1_pre', 't1_gd']:
-                validate_modality_exists(val_dir, key)
+            validate_mode_requirements(
+                val_dir, 'dual', validate_modality_exists, require_seg=False
+            )
         else:
             validate_modality_exists(val_dir, modality)
     except ValueError as e:
-        logger.warning(f"Validation directory exists but is misconfigured: {e}")
+        logger.warning(f"Validation data for {modality} mode not available in {val_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -249,20 +253,22 @@ def create_vae_test_dataloader(
 
     # Check if test directory exists
     if not os.path.exists(test_dir):
+        logger.debug(f"Test directory not found: {test_dir}")
         return None
 
     image_size = cfg.model.image_size
     batch_size = batch_size or cfg.training.batch_size
 
-    # Validate modalities exist in test directory
+    # Validate modalities exist in test directory (no seg required for VAE)
     try:
         if modality == 'dual':
-            for key in ['t1_pre', 't1_gd']:
-                validate_modality_exists(test_dir, key)
+            validate_mode_requirements(
+                test_dir, 'dual', validate_modality_exists, require_seg=False
+            )
         else:
             validate_modality_exists(test_dir, modality)
     except ValueError as e:
-        logger.warning(f"Test directory exists but is misconfigured: {e}")
+        logger.warning(f"Test data for {modality} mode not available in {test_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)
@@ -340,19 +346,21 @@ def create_vae_volume_validation_dataloader(
     data_dir = os.path.join(cfg.paths.data_dir, data_split)
 
     if not os.path.exists(data_dir):
+        logger.debug(f"Volume data directory not found: {data_dir}")
         return None
 
     image_size = cfg.model.image_size
 
-    # Validate modalities exist
+    # Validate modalities exist (no seg required for VAE)
     try:
         if modality == 'dual':
-            for key in ['t1_pre', 't1_gd']:
-                validate_modality_exists(data_dir, key)
+            validate_mode_requirements(
+                data_dir, 'dual', validate_modality_exists, require_seg=False
+            )
         else:
             validate_modality_exists(data_dir, modality)
     except ValueError as e:
-        logger.warning(f"Volume validation directory misconfigured: {e}")
+        logger.warning(f"Volume data for {modality} mode not available in {data_dir}: {e}")
         return None
 
     transform = build_standard_transform(image_size)

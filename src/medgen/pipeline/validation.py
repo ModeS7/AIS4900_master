@@ -306,119 +306,125 @@ def compute_validation_losses(
                             t_norm, tumor_loss, bg_loss, int(tumor_px), int(bg_px)
                         )
 
-    model_to_use.train()
+    # Restore model state and RNG using try/finally for robustness
+    try:
+        model_to_use.train()
 
-    # Handle empty validation set
-    if n_batches == 0:
-        logger.warning("Validation set is empty, skipping metrics")
-        return {}, None
+        # Handle empty validation set
+        if n_batches == 0:
+            logger.warning("Validation set is empty, skipping metrics")
+            return {}, None
 
-    metrics = {
-        'mse': total_mse / n_batches,
-        'perceptual': total_perc / n_batches,
-        'total': total_loss / n_batches,
-        'msssim': total_msssim / n_batches,
-        'psnr': total_psnr / n_batches,
-    }
-    if trainer.log_lpips:
-        metrics['lpips'] = total_lpips / n_batches
+        metrics = {
+            'mse': total_mse / n_batches,
+            'perceptual': total_perc / n_batches,
+            'total': total_loss / n_batches,
+            'msssim': total_msssim / n_batches,
+            'psnr': total_psnr / n_batches,
+        }
+        if trainer.log_lpips:
+            metrics['lpips'] = total_lpips / n_batches
 
-    # Add Dice/IoU for seg modes
-    if is_seg_mode:
-        metrics['dice'] = total_dice / n_batches
-        metrics['iou'] = total_iou / n_batches
+        # Add Dice/IoU for seg modes
+        if is_seg_mode:
+            metrics['dice'] = total_dice / n_batches
+            metrics['iou'] = total_iou / n_batches
 
-    # Log to TensorBoard using unified system
-    if trainer.writer is not None and trainer._unified_metrics is not None:
-        # Update unified metrics with validation values
-        trainer._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
-        if trainer.perceptual_weight > 0:
-            trainer._unified_metrics.update_loss('Total', metrics['total'], phase='val')
-            trainer._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
+        # Log to TensorBoard using unified system
+        if trainer.writer is not None and trainer._unified_metrics is not None:
+            # Update unified metrics with validation values
+            trainer._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
+            if trainer.perceptual_weight > 0:
+                trainer._unified_metrics.update_loss('Total', metrics['total'], phase='val')
+                trainer._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
 
-        # Compute 3D MS-SSIM first so we can include it in metrics
-        msssim_3d = None
-        if trainer.log_msssim:
-            msssim_3d = trainer._compute_volume_3d_msssim(epoch, data_split='val')
-            if msssim_3d is not None:
-                metrics['msssim_3d'] = msssim_3d
+            # Compute 3D MS-SSIM first so we can include it in metrics
+            msssim_3d = None
+            if trainer.log_msssim:
+                msssim_3d = trainer._compute_volume_3d_msssim(epoch, data_split='val')
+                if msssim_3d is not None:
+                    metrics['msssim_3d'] = msssim_3d
 
-        # Update quality metrics using unified system
-        trainer._unified_metrics.update_validation_batch(
-            psnr=metrics['psnr'],
-            msssim=metrics['msssim'],
-            lpips=metrics.get('lpips'),
-            msssim_3d=msssim_3d,
-            dice=metrics.get('dice'),
-            iou=metrics.get('iou'),
-        )
+            # Update quality metrics using unified system
+            trainer._unified_metrics.update_validation_batch(
+                psnr=metrics['psnr'],
+                msssim=metrics['msssim'],
+                lpips=metrics.get('lpips'),
+                msssim_3d=msssim_3d,
+                dice=metrics.get('dice'),
+                iou=metrics.get('iou'),
+            )
 
-        # Log per-timestep validation losses using unified system
-        # NOTE: Must happen BEFORE log_validation() so timesteps are included
-        if trainer.log_timestep_losses:
-            counts = timestep_loss_count.cpu()
-            sums = timestep_loss_sum.cpu()
-            for i in range(num_timestep_bins):
-                if counts[i] > 0:
-                    avg_loss = (sums[i] / counts[i]).item()
-                    t_normalized = (i + 0.5) / num_timestep_bins  # Center of bin
-                    trainer._unified_metrics.update_timestep_loss(t_normalized, avg_loss)
+            # Log per-timestep validation losses using unified system
+            # NOTE: Must happen BEFORE log_validation() so timesteps are included
+            if trainer.log_timestep_losses:
+                counts = timestep_loss_count.cpu()
+                sums = timestep_loss_sum.cpu()
+                for i in range(num_timestep_bins):
+                    if counts[i] > 0:
+                        avg_loss = (sums[i] / counts[i]).item()
+                        t_normalized = (i + 0.5) / num_timestep_bins  # Center of bin
+                        trainer._unified_metrics.update_timestep_loss(t_normalized, avg_loss)
 
-        # Log validation metrics (now includes timesteps)
-        trainer._unified_metrics.log_validation(epoch)
+            # Log validation metrics (now includes timesteps)
+            trainer._unified_metrics.log_validation(epoch)
 
-        # Log per-channel metrics for dual/multi modes (via unified metrics)
-        if per_channel_metrics:
-            trainer._unified_metrics.log_per_channel_validation(per_channel_metrics, epoch)
+            # Log per-channel metrics for dual/multi modes (via unified metrics)
+            if per_channel_metrics:
+                trainer._unified_metrics.log_per_channel_validation(per_channel_metrics, epoch)
 
-        # Regional metrics are now logged via log_validation() using internal tracker
+            # Regional metrics are now logged via log_validation() using internal tracker
 
-        # Log timestep-region heatmap on figure epochs
-        if (epoch + 1) % trainer.figure_interval == 0 and trainer.log_timestep_region_losses:
-            trainer._unified_metrics.log_timestep_region_heatmap(epoch)
+            # Log timestep-region heatmap on figure epochs
+            if (epoch + 1) % trainer.figure_interval == 0 and trainer.log_timestep_region_losses:
+                trainer._unified_metrics.log_timestep_region_heatmap(epoch)
 
-        # Compute generation quality metrics (KID, CMMD)
-        if trainer._gen_metrics is not None:
-            # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-
-            try:
-                model_to_use = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
-                model_to_use.eval()
-
-                # Quick metrics every epoch
-                gen_results = trainer._gen_metrics.compute_epoch_metrics(
-                    model_to_use, trainer.strategy, trainer.mode
-                )
-                trainer._unified_metrics.log_generation(epoch, gen_results)
-
-                # Extended metrics at figure_interval
-                if (epoch + 1) % trainer.figure_interval == 0:
-                    extended_results = trainer._gen_metrics.compute_extended_metrics(
-                        model_to_use, trainer.strategy, trainer.mode
-                    )
-                    trainer._unified_metrics.log_generation(epoch, extended_results)
-
-                model_to_use.train()
-            except Exception as e:
-                logger.warning(f"Generation metrics computation failed: {e}")
-            finally:
-                # Always clean up after generation metrics to prevent memory buildup
+            # Compute generation quality metrics (KID, CMMD)
+            if trainer._gen_metrics is not None:
+                # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
-        # Record epoch history for JSON export (before reset)
-        trainer._unified_metrics.record_epoch_history(epoch)
+                try:
+                    gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
+                    gen_model.eval()
 
-        # Reset validation metrics for next epoch
-        trainer._unified_metrics.reset_validation()
+                    # Quick metrics every epoch
+                    gen_results = trainer._gen_metrics.compute_epoch_metrics(
+                        gen_model, trainer.strategy, trainer.mode
+                    )
+                    trainer._unified_metrics.log_generation(epoch, gen_results)
 
-    # Restore random state to not affect subsequent training epochs
-    torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
+                    # Extended metrics at figure_interval
+                    if (epoch + 1) % trainer.figure_interval == 0:
+                        extended_results = trainer._gen_metrics.compute_extended_metrics(
+                            gen_model, trainer.strategy, trainer.mode
+                        )
+                        trainer._unified_metrics.log_generation(epoch, extended_results)
 
-    return metrics, worst_batch_data
+                    gen_model.train()
+                except torch.cuda.OutOfMemoryError as e:
+                    logger.warning(f"Generation metrics skipped due to OOM: {e}")
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    logger.exception(f"Generation metrics computation failed at epoch {epoch}")
+                finally:
+                    # Always clean up after generation metrics to prevent memory buildup
+                    torch.cuda.empty_cache()
+
+            # Record epoch history for JSON export (before reset)
+            trainer._unified_metrics.record_epoch_history(epoch)
+
+            # Reset validation metrics for next epoch
+            trainer._unified_metrics.reset_validation()
+
+        return metrics, worst_batch_data
+
+    finally:
+        # Ensure RNG state is ALWAYS restored, even if an exception occurred
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, trainer.device)
 
 
 def compute_per_modality_validation(
@@ -439,82 +445,85 @@ def compute_per_modality_validation(
         return
 
     model_to_use = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
-    model_to_use.eval()
+    try:
+        model_to_use.eval()
 
-    for modality, loader in trainer.per_modality_val_loaders.items():
-        total_psnr = 0.0
-        total_lpips = 0.0
-        total_msssim = 0.0
-        n_batches = 0
+        for modality, loader in trainer.per_modality_val_loaders.items():
+            total_psnr = 0.0
+            total_lpips = 0.0
+            total_msssim = 0.0
+            n_batches = 0
 
-        # Initialize regional tracker for this modality
-        regional_tracker = None
-        if trainer.log_regional_losses:
-            regional_tracker = RegionalMetricsTracker(
-                image_size=trainer.image_size,
-                fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
-                loss_fn='mse',
-                device=trainer.device,
-            )
+            # Initialize regional tracker for this modality
+            regional_tracker = None
+            if trainer.log_regional_losses:
+                regional_tracker = RegionalMetricsTracker(
+                    image_size=trainer.image_size,
+                    fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
+                    loss_fn='mse',
+                    device=trainer.device,
+                )
 
-        with torch.no_grad():
-            for batch in loader:
-                prepared = trainer.mode.prepare_batch(batch, trainer.device)
-                images = prepared['images']
-                labels = prepared.get('labels')
+            with torch.no_grad():
+                for batch in loader:
+                    prepared = trainer.mode.prepare_batch(batch, trainer.device)
+                    images = prepared['images']
+                    labels = prepared.get('labels')
 
-                # Encode to diffusion space (identity for PixelSpace)
-                images = trainer.space.encode_batch(images)
-                if labels is not None:
-                    labels = trainer.space.encode(labels)
+                    # Encode to diffusion space (identity for PixelSpace)
+                    images = trainer.space.encode_batch(images)
+                    if labels is not None:
+                        labels = trainer.space.encode(labels)
 
-                labels_dict = {'labels': labels}
+                    labels_dict = {'labels': labels}
 
-                # Sample timesteps and noise
-                noise = torch.randn_like(images).to(trainer.device)
-                timesteps = trainer.strategy.sample_timesteps(images)
-                noisy_images = trainer.strategy.add_noise(images, noise, timesteps)
-                model_input = trainer.mode.format_model_input(noisy_images, labels_dict)
+                    # Sample timesteps and noise
+                    noise = torch.randn_like(images).to(trainer.device)
+                    timesteps = trainer.strategy.sample_timesteps(images)
+                    noisy_images = trainer.strategy.add_noise(images, noise, timesteps)
+                    model_input = trainer.mode.format_model_input(noisy_images, labels_dict)
 
-                # Predict
-                prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
-                _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+                    # Predict
+                    prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
-                # Compute metrics
-                total_psnr += compute_psnr(predicted_clean, images)
+                    # Compute metrics
+                    total_psnr += compute_psnr(predicted_clean, images)
+                    if trainer.log_lpips:
+                        total_lpips += compute_lpips(predicted_clean, images, device=trainer.device)
+                    total_msssim += compute_msssim(predicted_clean, images)
+
+                    # Regional tracking (tumor vs background)
+                    if regional_tracker is not None and labels is not None:
+                        regional_tracker.update(predicted_clean, images, labels)
+
+                    n_batches += 1
+
+            # Compute averages and log per-modality metrics (via unified metrics)
+            if n_batches > 0:
+                modality_metrics = {
+                    'psnr': total_psnr / n_batches,
+                    'msssim': total_msssim / n_batches,
+                }
+
                 if trainer.log_lpips:
-                    total_lpips += compute_lpips(predicted_clean, images, device=trainer.device)
-                total_msssim += compute_msssim(predicted_clean, images)
+                    modality_metrics['lpips'] = total_lpips / n_batches
 
-                # Regional tracking (tumor vs background)
-                if regional_tracker is not None and labels is not None:
-                    regional_tracker.update(predicted_clean, images, labels)
+                # Compute 3D MS-SSIM for this modality
+                if trainer.log_msssim:
+                    msssim_3d = trainer._compute_volume_3d_msssim(
+                        epoch, data_split='val', modality_override=modality
+                    )
+                    if msssim_3d is not None:
+                        modality_metrics['msssim_3d'] = msssim_3d
 
-                n_batches += 1
+                # Log via unified metrics
+                trainer._unified_metrics.log_per_modality_validation(modality_metrics, modality, epoch)
 
-        # Compute averages and log per-modality metrics (via unified metrics)
-        if n_batches > 0:
-            modality_metrics = {
-                'psnr': total_psnr / n_batches,
-                'msssim': total_msssim / n_batches,
-            }
-
-            if trainer.log_lpips:
-                modality_metrics['lpips'] = total_lpips / n_batches
-
-            # Compute 3D MS-SSIM for this modality
-            if trainer.log_msssim:
-                msssim_3d = trainer._compute_volume_3d_msssim(
-                    epoch, data_split='val', modality_override=modality
-                )
-                if msssim_3d is not None:
-                    modality_metrics['msssim_3d'] = msssim_3d
-
-            # Log via unified metrics
-            trainer._unified_metrics.log_per_modality_validation(modality_metrics, modality, epoch)
-
-            # Log regional metrics for this modality via unified system
-            if regional_tracker is not None:
-                trainer._unified_metrics.log_validation_regional(
-                    regional_tracker, epoch, modality_override=modality
-                )
+                # Log regional metrics for this modality via unified system
+                if regional_tracker is not None:
+                    trainer._unified_metrics.log_validation_regional(
+                        regional_tracker, epoch, modality_override=modality
+                    )
+    finally:
+        model_to_use.train()

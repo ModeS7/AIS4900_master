@@ -63,6 +63,17 @@ class BatchData:
             )
             if len(data) == 2:
                 first, second = data
+
+                # Validate types before calling .dim()
+                if not isinstance(first, Tensor):
+                    raise TypeError(
+                        f"BatchData.from_raw: first element is {type(first).__name__}, expected Tensor"
+                    )
+                if not isinstance(second, Tensor):
+                    raise TypeError(
+                        f"BatchData.from_raw: second element is {type(second).__name__}, expected Tensor"
+                    )
+
                 # Distinguish (images, labels) from (seg, size_bins)
                 if second.dim() == 1:
                     # size_bins is 1D
@@ -73,6 +84,14 @@ class BatchData:
 
             elif len(data) == 3:
                 first, second, third = data
+
+                # Validate types before calling .dim()
+                for i, elem in enumerate([first, second, third]):
+                    if not isinstance(elem, Tensor):
+                        raise TypeError(
+                            f"BatchData.from_raw: element {i} is {type(elem).__name__}, expected Tensor"
+                        )
+
                 if second.dim() == 1:
                     # (seg, size_bins, bin_maps)
                     return cls(images=first, size_bins=second, bin_maps=third)
