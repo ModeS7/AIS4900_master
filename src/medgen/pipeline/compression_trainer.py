@@ -38,6 +38,8 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
+from medgen.core.defaults import COMPRESSION_DEFAULTS
+from medgen.core.dict_utils import get_with_fallbacks
 from medgen.losses import LPIPSLoss, PerceptualLoss
 from medgen.metrics import (
     GradientNormTracker,
@@ -202,12 +204,12 @@ class BaseCompressionTrainer(BaseTrainer):
     _CONFIG_SECTION_3D: str = 'vae_3d'  # Override in subclass
 
     # Default config values - subclasses can override these class attributes
-    _DEFAULT_DISC_LR_2D: float = 5e-4
-    _DEFAULT_DISC_LR_3D: float = 5e-4
-    _DEFAULT_PERCEPTUAL_WEIGHT_2D: float = 0.001
-    _DEFAULT_PERCEPTUAL_WEIGHT_3D: float = 0.001
-    _DEFAULT_ADV_WEIGHT_2D: float = 0.01
-    _DEFAULT_ADV_WEIGHT_3D: float = 0.01
+    _DEFAULT_DISC_LR_2D: float = COMPRESSION_DEFAULTS.disc_lr_2d
+    _DEFAULT_DISC_LR_3D: float = COMPRESSION_DEFAULTS.disc_lr_3d
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D: float = COMPRESSION_DEFAULTS.perceptual_weight_2d
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D: float = COMPRESSION_DEFAULTS.perceptual_weight_3d
+    _DEFAULT_ADV_WEIGHT_2D: float = COMPRESSION_DEFAULTS.adv_weight_2d
+    _DEFAULT_ADV_WEIGHT_3D: float = COMPRESSION_DEFAULTS.adv_weight_3d
 
     def _get_config_section(self) -> str:
         """Get the config section name for this trainer's spatial_dims."""
@@ -701,8 +703,8 @@ class BaseCompressionTrainer(BaseTrainer):
         # 3D-specific handling
         if self.spatial_dims == 3:
             if isinstance(batch, dict):
-                images = batch.get('image', batch.get('images'))
-                mask = batch.get('mask', batch.get('seg'))
+                images = get_with_fallbacks(batch, 'image', 'images')
+                mask = get_with_fallbacks(batch, 'seg', 'mask')
             elif isinstance(batch, (list, tuple)):
                 images = batch[0]
                 mask = batch[1] if len(batch) > 1 else None
@@ -1916,7 +1918,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
         # Legacy loading (backward compatibility)
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         # Load model weights
         self.model_raw.load_state_dict(checkpoint['model_state_dict'])
@@ -2023,7 +2025,7 @@ class BaseCompressionTrainer(BaseTrainer):
             model_name: Name for logging (e.g., "VAE", "VQ-VAE").
         """
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             if 'model_state_dict' in checkpoint:
                 raw_model.load_state_dict(checkpoint['model_state_dict'])
                 if self.is_main_process:
@@ -2053,7 +2055,7 @@ class BaseCompressionTrainer(BaseTrainer):
             model_name: Name for logging (e.g., "3D VAE", "3D VQ-VAE").
         """
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             if 'model_state_dict' in checkpoint:
                 state_dict = checkpoint['model_state_dict']
                 # Remove 'model.' prefix if present (from Checkpointed* wrappers)

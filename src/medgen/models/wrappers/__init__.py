@@ -17,6 +17,7 @@ Usage:
 """
 
 from .base_embed import create_zero_init_mlp, create_film_mlp
+from .device_utils import get_model_device, move_module_to_model_device
 
 from .mode_embed import (
     ModeEmbedModelWrapper,
@@ -51,6 +52,9 @@ __all__ = [
     # Base utilities
     'create_zero_init_mlp',
     'create_film_mlp',
+    # Device utilities
+    'get_model_device',
+    'move_module_to_model_device',
     # Mode embedding
     'ModeEmbedModelWrapper',
     'ModeEmbedDropoutModelWrapper',

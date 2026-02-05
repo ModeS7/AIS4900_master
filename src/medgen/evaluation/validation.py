@@ -14,6 +14,7 @@ from torch import nn
 from torch.amp import autocast
 from torch.utils.data import DataLoader
 
+from medgen.core.dict_utils import get_with_fallbacks
 from medgen.metrics import (
     WorstBatchTracker,
     compute_dice,
@@ -128,8 +129,8 @@ class ValidationRunner:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Default batch preparation."""
         if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
+            images = get_with_fallbacks(batch, 'image', 'images')
+            mask = get_with_fallbacks(batch, 'seg', 'mask')
         elif isinstance(batch, (list, tuple)):
             images = batch[0]
             mask = batch[1] if len(batch) > 1 else None

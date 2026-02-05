@@ -61,7 +61,7 @@ def evaluate_test_set(
     if checkpoint_name is not None:
         checkpoint_path = os.path.join(trainer.save_dir, f"checkpoint_{checkpoint_name}.pt")
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=trainer.device)
+            checkpoint = torch.load(checkpoint_path, map_location=trainer.device, weights_only=False)
             trainer.model_raw.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
 
@@ -347,8 +347,8 @@ def evaluate_test_set(
                 except torch.cuda.OutOfMemoryError as e:
                     logger.warning(f"Generation metrics skipped due to OOM: {e}")
                     torch.cuda.empty_cache()
-                except Exception:
-                    logger.exception("Generation metrics computation failed on test set")
+                except (RuntimeError, ValueError) as e:
+                    logger.exception(f"Generation metrics computation failed on test set: {e}")
 
         return metrics
 

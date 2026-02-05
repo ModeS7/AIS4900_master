@@ -406,8 +406,8 @@ def compute_validation_losses(
                 except torch.cuda.OutOfMemoryError as e:
                     logger.warning(f"Generation metrics skipped due to OOM: {e}")
                     torch.cuda.empty_cache()
-                except Exception:
-                    logger.exception(f"Generation metrics computation failed at epoch {epoch}")
+                except (RuntimeError, ValueError) as e:
+                    logger.exception(f"Generation metrics computation failed at epoch {epoch}: {e}")
                 finally:
                     # Always clean up after generation metrics to prevent memory buildup
                     torch.cuda.empty_cache()

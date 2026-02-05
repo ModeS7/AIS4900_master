@@ -271,6 +271,9 @@ class CheckpointManager:
         """
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
+        # Validate checkpoint version
+        self._validate_checkpoint_version(checkpoint)
+
         # Validate checkpoint
         if 'model_state_dict' not in checkpoint:
             raise ValueError(f"Invalid checkpoint: missing model_state_dict in {path}")
@@ -310,6 +313,38 @@ class CheckpointManager:
             'best_metric': checkpoint.get('best_metric'),
             'checkpoint': checkpoint,  # Full checkpoint for extra state access
         }
+
+    def _validate_checkpoint_version(self, checkpoint: dict) -> None:
+        """Validate checkpoint version compatibility.
+
+        Args:
+            checkpoint: Loaded checkpoint dict.
+
+        Raises:
+            ValueError: If major version mismatch (breaking changes).
+        """
+        saved_version = checkpoint.get('checkpoint_manager_version')
+        if saved_version is None:
+            logger.debug("Legacy checkpoint without version info")
+            return
+
+        try:
+            major_saved, minor_saved = map(int, saved_version.split('.'))
+            major_curr, minor_curr = map(int, self.VERSION.split('.'))
+        except ValueError:
+            logger.warning(f"Invalid version format: {saved_version}")
+            return
+
+        if major_saved != major_curr:
+            raise ValueError(
+                f"Incompatible checkpoint version: saved={saved_version}, current={self.VERSION}. "
+                f"Major version mismatch indicates breaking changes."
+            )
+        if minor_saved > minor_curr:
+            logger.warning(
+                f"Checkpoint from newer version: saved={saved_version}, current={self.VERSION}. "
+                f"Some saved features may be ignored."
+            )
 
     def _load_model_state(
         self,

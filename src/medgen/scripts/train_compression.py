@@ -76,7 +76,7 @@ from .common import (
 # Enable CUDA optimizations at module import
 setup_cuda_optimizations()
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -310,24 +310,24 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     in_channels = override_vae_channels(cfg, mode)
 
     # Log resolved config
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Build extra info for header
     extra_info = _build_extra_info(trainer_config, cfg)
 
     # Log training header
-    log.info("")
-    log.info("=" * 60)
-    log.info(f"Training {trainer_config.display_name} for {mode} mode{extra_info}")
-    log.info(f"Channels: {in_channels} | Image size: {cfg.model.image_size}")
-    log.info(f"Batch size: {cfg.training.batch_size} | Epochs: {cfg.training.epochs}")
-    log.info(f"Multi-GPU: {use_multi_gpu} | EMA: {cfg.training.use_ema}")
-    log.info("=" * 60)
-    log.info("")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"Training {trainer_config.display_name} for {mode} mode{extra_info}")
+    logger.info(f"Channels: {in_channels} | Image size: {cfg.model.image_size}")
+    logger.info(f"Batch size: {cfg.training.batch_size} | Epochs: {cfg.training.epochs}")
+    logger.info(f"Multi-GPU: {use_multi_gpu} | EMA: {cfg.training.use_ema}")
+    logger.info("=" * 60)
+    logger.info("")
 
     # Create trainer
     trainer = trainer_config.trainer_class(cfg)
-    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
+    logger.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create dataloaders
     augment = cfg.training.get('augment', True)
@@ -359,7 +359,7 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
             world_size=trainer.world_size if use_multi_gpu else 1,
             augment=augment,
         )
-        log.info(f"Training on multi_modality mode (modalities: {image_keys})")
+        logger.info(f"Training on multi_modality mode (modalities: {image_keys})")
 
         val_result = create_multi_modality_validation_dataloader(
             cfg=cfg,
@@ -391,16 +391,16 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
         val_result = create_vae_validation_dataloader(cfg=cfg, modality=mode)
         val_loader = val_result[0] if val_result else None
 
-    log.info(f"Training dataset: {len(train_dataset)} samples")
+    logger.info(f"Training dataset: {len(train_dataset)} samples")
     if val_loader:
-        log.info(f"Validation batches: {len(val_loader)}")
+        logger.info(f"Validation batches: {len(val_loader)}")
     else:
-        log.info("No val/ directory found - using train samples for validation")
+        logger.info("No val/ directory found - using train samples for validation")
 
     # Setup model
     pretrained_checkpoint = cfg.get('pretrained_checkpoint', None)
     if pretrained_checkpoint:
-        log.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
+        logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
     # Train
@@ -443,29 +443,29 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     in_channels = override_vae_channels(cfg, mode)
 
     # Log resolved config
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Build extra info
     extra_info = _build_extra_info_3d(trainer_config, cfg)
 
     # Log training header
-    log.info("")
-    log.info("=" * 60)
-    log.info(f"Training {trainer_config.display_name} for {mode} mode")
-    log.info(f"Channels: {in_channels}")
-    log.info(f"Volume: {cfg.volume.width}x{cfg.volume.height}x{cfg.volume.depth}")
-    log.info(extra_info)
-    log.info(f"Batch size: {cfg.training.batch_size} | Epochs: {cfg.training.epochs}")
-    log.info(f"Multi-GPU: {use_multi_gpu}")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"Training {trainer_config.display_name} for {mode} mode")
+    logger.info(f"Channels: {in_channels}")
+    logger.info(f"Volume: {cfg.volume.width}x{cfg.volume.height}x{cfg.volume.depth}")
+    logger.info(extra_info)
+    logger.info(f"Batch size: {cfg.training.batch_size} | Epochs: {cfg.training.epochs}")
+    logger.info(f"Multi-GPU: {use_multi_gpu}")
     if is_multi_modality:
         image_keys = get_image_keys(cfg, is_3d=True)
-        log.info(f"Modalities: {image_keys}")
-    log.info("=" * 60)
-    log.info("")
+        logger.info(f"Modalities: {image_keys}")
+    logger.info("=" * 60)
+    logger.info("")
 
     # Create trainer using .create_3d() factory
     trainer = trainer_config.trainer_class.create_3d(cfg)
-    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
+    logger.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create 3D dataloaders
     if is_multi_modality:
@@ -483,7 +483,7 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
             rank=trainer.rank if use_multi_gpu else 0,
             world_size=trainer.world_size if use_multi_gpu else 1,
         )
-    log.info(f"Training dataset: {len(train_dataset)} volumes")
+    logger.info(f"Training dataset: {len(train_dataset)} volumes")
 
     # Validation dataloader
     if is_multi_modality:
@@ -494,9 +494,9 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     val_loader = None
     if val_result is not None:
         val_loader, val_dataset = val_result
-        log.info(f"Validation dataset: {len(val_dataset)} volumes")
+        logger.info(f"Validation dataset: {len(val_dataset)} volumes")
     else:
-        log.info("No val/ directory found - using train samples for validation")
+        logger.info("No val/ directory found - using train samples for validation")
 
     # Per-modality validation loaders
     per_modality_val_loaders = {}
@@ -509,7 +509,7 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     # Setup model
     pretrained_checkpoint = cfg.get('pretrained_checkpoint', None)
     if pretrained_checkpoint:
-        log.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
+        logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
     # Train
@@ -595,7 +595,7 @@ def main(cfg: DictConfig) -> None:
     trainer_type = detect_trainer_type(cfg)
     trainer_config = TRAINER_REGISTRY[trainer_type]
 
-    log.info(f"Detected trainer type: {trainer_type} ({trainer_config.display_name})")
+    logger.info(f"Detected trainer type: {trainer_type} ({trainer_config.display_name})")
 
     # Validate configuration
     run_validation(cfg, [

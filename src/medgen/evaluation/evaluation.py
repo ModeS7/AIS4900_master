@@ -14,7 +14,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import nn
@@ -24,6 +24,8 @@ from tqdm import tqdm
 
 if TYPE_CHECKING:
     from medgen.metrics.unified import UnifiedMetrics
+
+from medgen.core.dict_utils import get_with_fallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def load_checkpoint_if_needed(
     if checkpoint_name is not None:
         checkpoint_path = os.path.join(save_dir, f"checkpoint_{checkpoint_name}.pt")
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
         else:
@@ -134,7 +136,7 @@ def log_metrics_to_tensorboard(
     metrics: dict[str, float],
     prefix: str,
     step: int = 0,
-    unified_metrics: Optional["UnifiedMetrics"] = None,
+    unified_metrics: "UnifiedMetrics | None" = None,
 ) -> None:
     """Log metrics to TensorBoard.
 
@@ -202,7 +204,7 @@ def log_test_per_modality(
     prefix: str,
     modality: str,
     step: int = 0,
-    unified_metrics: Optional["UnifiedMetrics"] = None,
+    unified_metrics: "UnifiedMetrics | None" = None,
 ) -> None:
     """Log per-modality test metrics to TensorBoard.
 
@@ -301,7 +303,7 @@ class BaseTestEvaluator(ABC):
         is_cluster: bool = False,
         worst_batch_figure_fn: Callable[[dict[str, Any]], Any] | None = None,
         modality_name: str | None = None,
-        unified_metrics: Optional["UnifiedMetrics"] = None,
+        unified_metrics: "UnifiedMetrics | None" = None,
     ):
         """Initialize test evaluator.
 
@@ -497,8 +499,8 @@ class BaseTestEvaluator(ABC):
             Tuple of (images_tensor, mask_tensor_or_None).
         """
         if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
+            images = get_with_fallbacks(batch, 'image', 'images')
+            mask = get_with_fallbacks(batch, 'seg', 'mask')
         elif isinstance(batch, (list, tuple)):
             images = batch[0]
             mask = batch[1] if len(batch) > 1 else None
@@ -604,7 +606,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         image_keys: list[str] | None = None,
         seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
         modality_name: str | None = None,
-        unified_metrics: Optional["UnifiedMetrics"] = None,
+        unified_metrics: "UnifiedMetrics | None" = None,
     ):
         """Initialize 2D compression evaluator.
 
@@ -825,7 +827,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
                 'IoU': batch_metrics.get('iou', 0.0),
             }
         else:
-            loss = batch_metrics.get('l1', batch_metrics.get('mse', 0.0))
+            loss = get_with_fallbacks(batch_metrics, 'l1', 'mse', default=0.0)
             loss_breakdown = {
                 'L1': batch_metrics.get('l1', 0.0),
             }
@@ -871,7 +873,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         image_keys: list[str] | None = None,
         seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
         modality_name: str | None = None,
-        unified_metrics: Optional["UnifiedMetrics"] = None,
+        unified_metrics: "UnifiedMetrics | None" = None,
     ):
         """Initialize 3D compression evaluator.
 

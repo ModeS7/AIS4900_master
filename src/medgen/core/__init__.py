@@ -1,5 +1,13 @@
 """Core utilities and shared infrastructure."""
 
+from .defaults import (
+    CompressionDefaults,
+    VAE_DEFAULTS,
+    VQVAE_DEFAULTS,
+    DCAE_DEFAULTS,
+    COMPRESSION_DEFAULTS,
+)
+from .dict_utils import get_with_fallbacks, IMAGE_KEYS, MASK_KEYS, PATIENT_KEYS
 from .constants import (
     ModeType,
     BINARY_THRESHOLD_GT,
@@ -37,6 +45,17 @@ from .validation import (
 from .model_utils import wrap_model_for_training
 
 __all__ = [
+    # Defaults
+    'CompressionDefaults',
+    'VAE_DEFAULTS',
+    'VQVAE_DEFAULTS',
+    'DCAE_DEFAULTS',
+    'COMPRESSION_DEFAULTS',
+    # Dict utilities
+    'get_with_fallbacks',
+    'IMAGE_KEYS',
+    'MASK_KEYS',
+    'PATIENT_KEYS',
     # Enums
     'ModeType',
     # Constants

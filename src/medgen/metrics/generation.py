@@ -44,6 +44,7 @@ import torch.nn.functional as F
 from torch.amp import autocast
 from torch.utils.data import DataLoader, Dataset
 
+from medgen.core.dict_utils import get_with_fallbacks
 from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES, compute_size_bins
 
 from .feature_extractors import BiomedCLIPFeatures, ResNet50Features
@@ -303,7 +304,7 @@ def compute_fid(
         fid = diff_squared + trace_term
         return float(fid)
 
-    except Exception as e:
+    except (ValueError, np.linalg.LinAlgError) as e:
         logger.warning(f"FID computation failed: {e}")
         return float('inf')
 
@@ -375,8 +376,8 @@ class ReferenceFeatureCache:
         for batch in dataloader:
             # Handle different batch formats
             if isinstance(batch, dict):
-                images = batch.get('images', batch.get('image'))
-                masks = batch.get('seg', batch.get('mask', batch.get('labels')))
+                images = get_with_fallbacks(batch, 'image', 'images')
+                masks = get_with_fallbacks(batch, 'seg', 'mask', 'labels')
             elif isinstance(batch, (tuple, list)):
                 if len(batch) == 2:
                     images, masks = batch
@@ -448,9 +449,9 @@ class ReferenceFeatureCache:
             logger.info(f"Loading cached reference features from {cache_file}")
             cached = torch.load(cache_file, map_location='cpu', weights_only=True)
             # Support both old (inception) and new (resnet) cache format
-            self.train_resnet = cached.get('train_resnet', cached.get('train_inception'))
+            self.train_resnet = get_with_fallbacks(cached, 'train_resnet', 'train_inception')
             self.train_biomed = cached['train_biomed']
-            self.val_resnet = cached.get('val_resnet', cached.get('val_inception'))
+            self.val_resnet = get_with_fallbacks(cached, 'val_resnet', 'val_inception')
             self.val_biomed = cached['val_biomed']
             logger.info(
                 f"Loaded: train={self.train_resnet.shape[0]}, "
@@ -619,8 +620,8 @@ class GenerationMetrics:
                     local_seg_idx = 0  # Seg is at channel 0
                 else:
                     # Pixel dataset: image and seg at same resolution
-                    image = data.get('image', data.get('images'))
-                    seg_data = data.get('seg', data.get('mask', data.get('labels')))
+                    image = get_with_fallbacks(data, 'image', 'images')
+                    seg_data = get_with_fallbacks(data, 'seg', 'mask', 'labels')
 
                     if image is None or seg_data is None:
                         samples_without_seg += 1
@@ -1140,7 +1141,7 @@ class GenerationMetrics:
             results[f'Diversity/{prefix}LPIPS'] = lpips_div
             results[f'Diversity/{prefix}MSSSIM'] = msssim_div
 
-        except Exception as e:
+        except (RuntimeError, ValueError, torch.cuda.OutOfMemoryError) as e:
             logger.warning(f"Diversity computation failed: {e}")
 
         return results

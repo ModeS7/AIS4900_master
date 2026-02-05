@@ -27,6 +27,7 @@ from medgen.data.loaders.datasets import (
     create_size_bin_maps,
 )
 
+from .common import get_validated_split_dir
 from .volume_3d import (
     VolumeConfig,
     _create_loader,
@@ -350,9 +351,8 @@ def create_seg_validation_dataloader(
     Returns:
         Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
-        logger.debug(f"Validation directory not found: {val_dir}")
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val', logger)
+    if val_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -402,9 +402,8 @@ def create_seg_test_dataloader(
     Returns:
         Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    if not os.path.exists(test_dir):
-        logger.debug(f"Test directory not found: {test_dir}")
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, 'test_new', logger)
+    if test_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)

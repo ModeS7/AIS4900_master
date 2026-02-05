@@ -5,7 +5,7 @@ including visualization helpers for reconstruction figures, heatmaps, and
 generated samples. Used by UnifiedMetrics for all TensorBoard operations.
 """
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -311,7 +311,7 @@ def format_console_summary(
     train_losses: dict[str, float],
     val_metrics: dict[str, float],
     uses_image_quality: bool,
-    time_estimator: Optional["EpochTimeEstimator"] = None,
+    time_estimator: "EpochTimeEstimator | None" = None,
 ) -> str:
     """Format epoch completion summary for console.
 

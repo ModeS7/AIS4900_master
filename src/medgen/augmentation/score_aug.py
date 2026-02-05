@@ -24,6 +24,7 @@ v2 mode adds structured masking patterns:
 """
 
 import random
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -272,6 +273,29 @@ PATTERN_NAMES = [
 NUM_PATTERNS = 16
 
 
+@lru_cache(maxsize=256)  # 16 patterns x 16 size combinations
+def _cached_generate_pattern_mask(
+    pattern_id: int,
+    H: int,
+    W: int,
+    D: int | None,
+    spatial_dims: int,
+) -> torch.Tensor:
+    """Thread-safe cached pattern mask generation.
+
+    LRU cache provides:
+    - Automatic size bounding (maxsize=256)
+    - Thread-safe operations (GIL + atomic dict)
+    - LRU eviction when full
+    """
+    return generate_pattern_mask(pattern_id, H, W, D=D, spatial_dims=spatial_dims)
+
+
+def clear_pattern_cache() -> None:
+    """Clear the pattern mask cache. Call between training runs if needed."""
+    _cached_generate_pattern_mask.cache_clear()
+
+
 class ScoreAugTransform:
     """Applies transforms to noisy input and target per ScoreAug paper.
 
@@ -367,9 +391,6 @@ class ScoreAugTransform:
             self._enabled_patterns.extend([8, 9, 10, 11])
         if patterns_patch_dropout:
             self._enabled_patterns.extend([12, 13, 14, 15])
-
-        # Cache for pattern masks (generated lazily per image size)
-        self._pattern_cache: dict[tuple[int, ...], torch.Tensor] = {}
 
     def sample_transform(self) -> tuple[str, dict[str, Any]]:
         """Sample a random transform with equal probability (per paper).
@@ -548,6 +569,8 @@ class ScoreAugTransform:
     def _get_pattern_mask(self, pattern_id: int, x: torch.Tensor) -> torch.Tensor:
         """Get cached pattern mask, generating if needed.
 
+        Thread-safe via module-level LRU cache.
+
         Args:
             pattern_id: Pattern index (0-15)
             x: Input tensor to get dimensions and device from
@@ -557,18 +580,11 @@ class ScoreAugTransform:
         """
         if self.spatial_dims == 2:
             H, W = x.shape[-2], x.shape[-1]
-            cache_key = (pattern_id, H, W)
-            if cache_key not in self._pattern_cache:
-                mask = generate_pattern_mask(pattern_id, H, W, spatial_dims=2)
-                self._pattern_cache[cache_key] = mask
+            mask = _cached_generate_pattern_mask(pattern_id, H, W, None, 2)
         else:
             D, H, W = x.shape[-3], x.shape[-2], x.shape[-1]
-            cache_key = (pattern_id, D, H, W)
-            if cache_key not in self._pattern_cache:
-                mask = generate_pattern_mask(pattern_id, H, W, D=D, spatial_dims=3)
-                self._pattern_cache[cache_key] = mask
-
-        return self._pattern_cache[cache_key].to(x.device)
+            mask = _cached_generate_pattern_mask(pattern_id, H, W, D, 3)
+        return mask.to(x.device)
 
     def _apply_pattern(self, x: torch.Tensor, pattern_id: int) -> torch.Tensor:
         """Apply fixed pattern mask to tensor.
@@ -1328,11 +1344,14 @@ class OmegaTimeEmbed(nn.Module):
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
         """Set omega encoding for next forward pass.
 
-        Uses in-place copy to maintain buffer identity for torch.compile.
+        Uses in-place copy which is atomic for single CUDA kernel.
+        Buffer identity preserved for torch.compile compatibility.
 
         Args:
             omega_encoding: Tensor [1, OMEGA_ENCODING_DIM]
         """
+        # Ensure source is on same device and contiguous for atomic copy
+        omega_encoding = omega_encoding.to(self._omega_encoding.device).contiguous()
         self._omega_encoding.copy_(omega_encoding)
 
     def forward(self, t_emb: torch.Tensor) -> torch.Tensor:
@@ -1391,6 +1410,9 @@ class ScoreAugModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, Any] | None = None,
+        # Deprecated individual params (kept for backward compat)
         omega: dict[str, Any] | None = None,
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -1399,12 +1421,20 @@ class ScoreAugModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W] or [B, C, D, H, W]
             timesteps: Timestep tensor [B]
-            omega: Optional augmentation parameters for conditioning
-            mode_id: Optional mode ID for intensity scaling (0=bravo, 1=flair, etc.)
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'omega': ScoreAug parameters dict
+                - 'mode_id': Mode ID tensor for intensity scaling
+            omega: (Deprecated) Use conditioning={'omega': ...} instead.
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W] or [B, C_out, D, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            omega = conditioning.get('omega', omega)
+            mode_id = conditioning.get('mode_id', mode_id)
+
         # Encode omega + mode_id as (1, 36) - broadcasts to batch in MLP
         # Using fixed shape keeps torch.compile happy
         omega_encoding = encode_omega(omega, x.device, mode_id=mode_id, spatial_dims=self.spatial_dims)

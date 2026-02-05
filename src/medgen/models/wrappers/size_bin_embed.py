@@ -19,6 +19,7 @@ import torch
 from torch import nn
 
 from .base_embed import create_zero_init_mlp
+from .device_utils import move_module_to_model_device
 
 # Default bin configuration (aligned with RANO-BM thresholds)
 # 7 bins: 6 bounded + 1 overflow (30+mm)
@@ -221,21 +222,17 @@ class SizeBinModelWrapper(nn.Module):
             per_bin_embed_dim=per_bin_embed_dim,
         )
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.size_bin_time_embed)
         model.time_embed = self.size_bin_time_embed
-
-        # Ensure size_bin_time_embed is on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.size_bin_time_embed = self.size_bin_time_embed.to(device)
-            model.time_embed = self.size_bin_time_embed
-        except StopIteration:
-            pass  # Model has no parameters, keep on CPU
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         size_bins: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with size bin conditioning.
@@ -243,11 +240,17 @@ class SizeBinModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            size_bins: Optional size bin tensor [B, num_bins] with counts per bin.
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'size_bins': Size bin tensor [B, num_bins] with counts per bin
+            size_bins: (Deprecated) Use conditioning={'size_bins': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            size_bins = conditioning.get('size_bins', size_bins)
+
         batch_size = x.shape[0]
 
         # Prepare size bins

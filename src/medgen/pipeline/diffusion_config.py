@@ -14,9 +14,12 @@ This module provides:
 These classes consolidate the configuration extraction logic from DiffusionTrainer,
 making it reusable and testable.
 """
+import logging
 from dataclasses import dataclass, field
 
 from omegaconf import DictConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -529,8 +532,6 @@ def validate_score_aug_config(
 
     # Mode intensity scaling not supported in 3D
     if config.use_mode_intensity_scaling and spatial_dims == 3:
-        import logging
-        logger = logging.getLogger(__name__)
         if is_main_process:
             logger.warning(
                 "mode_intensity_scaling is not supported in 3D diffusion "

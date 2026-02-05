@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 from pathlib import Path
 
@@ -30,6 +31,8 @@ import torch
 from tqdm import tqdm
 
 from medgen.diffusion import load_vae_for_latent_space
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args():
@@ -130,16 +133,16 @@ def main():
     device = torch.device(args.device)
 
     # Load VAE
-    print(f"Loading VAE from: {args.vae_checkpoint}")
+    logger.info(f"Loading VAE from: {args.vae_checkpoint}")
     space = load_vae_for_latent_space(args.vae_checkpoint, device)
     space.vae.eval()
 
-    print(f"VAE scale factor: {space.scale_factor}x")
-    print(f"Latent channels: {space.latent_channels}")
+    logger.info(f"VAE scale factor: {space.scale_factor}x")
+    logger.info(f"Latent channels: {space.latent_channels}")
 
     # Get modalities
     modalities = get_modalities(args.mode)
-    print(f"Modalities: {modalities}")
+    logger.info(f"Modalities: {modalities}")
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -147,7 +150,7 @@ def main():
     # Find all patients
     data_dir = Path(args.data_dir)
     patients = sorted([d.name for d in data_dir.iterdir() if d.is_dir()])
-    print(f"Found {len(patients)} patients")
+    logger.info(f"Found {len(patients)} patients")
 
     # Process each patient
     for patient in tqdm(patients, desc="Encoding patients"):
@@ -158,7 +161,7 @@ def main():
         for modality in modalities:
             nifti_path = patient_dir / f"{modality}.nii.gz"
             if not nifti_path.exists():
-                print(f"  Warning: {nifti_path} not found, skipping")
+                logger.warning(f"{nifti_path} not found, skipping")
                 continue
 
             # Load NIfTI to get number of slices
@@ -180,7 +183,7 @@ def main():
 
             # Validate shapes before stacking
             if not latents:
-                print(f"  Warning: No slices encoded for {modality}, skipping")
+                logger.warning(f"No slices encoded for {modality}, skipping")
                 continue
 
             ref_shape = latents[0].shape
@@ -198,8 +201,8 @@ def main():
             output_path = output_patient_dir / f"{modality}_latent.pt"
             torch.save(latents, output_path)
 
-    print(f"\nDone! Latents saved to: {args.output_dir}")
-    print(f"Latent shape per slice: [1, {space.latent_channels}, {args.image_size // space.scale_factor}, {args.image_size // space.scale_factor}]")
+    logger.info(f"Done! Latents saved to: {args.output_dir}")
+    logger.info(f"Latent shape per slice: [1, {space.latent_channels}, {args.image_size // space.scale_factor}, {args.image_size // space.scale_factor}]")
 
 
 if __name__ == "__main__":

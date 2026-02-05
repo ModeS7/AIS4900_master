@@ -71,7 +71,7 @@ class ResNet50Features(nn.Module):
 
             if checkpoint_path and checkpoint_path.exists():
                 model = models.resnet50(weights=None)
-                state_dict = torch.load(checkpoint_path, map_location='cpu')
+                state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
                 model.load_state_dict(state_dict, strict=False)
                 logger.info(f"Loaded RadImageNet weights from {checkpoint_path}")
             else:
@@ -83,7 +83,7 @@ class ResNet50Features(nn.Module):
                         verbose=False,
                     )
                     logger.info("Loaded RadImageNet weights from torch.hub")
-                except Exception as e:
+                except (FileNotFoundError, RuntimeError, ImportError) as e:
                     logger.warning(f"RadImageNet not available ({e}), falling back to ImageNet")
                     model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
         else:
@@ -105,7 +105,7 @@ class ResNet50Features(nn.Module):
             try:
                 model = torch.compile(model, mode="reduce-overhead")
                 logger.info("ResNet50 compiled with torch.compile")
-            except Exception as e:
+            except RuntimeError as e:
                 logger.warning(f"torch.compile failed for ResNet50: {e}")
         else:
             logger.info("ResNet50 loaded without torch.compile (load/unload mode)")
@@ -243,7 +243,7 @@ class BiomedCLIPFeatures(nn.Module):
             try:
                 self._model = torch.compile(self._model, mode="reduce-overhead")
                 logger.info("BiomedCLIP compiled with torch.compile")
-            except Exception as e:
+            except RuntimeError as e:
                 logger.warning(f"torch.compile failed for BiomedCLIP: {e}")
         else:
             logger.info("BiomedCLIP loaded without torch.compile (load/unload mode)")

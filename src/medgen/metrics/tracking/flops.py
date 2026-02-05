@@ -65,7 +65,7 @@ def measure_model_flops(
         torch.cuda.empty_cache()  # Clean up after profiling
         return total_flops
 
-    except Exception as e:
+    except (RuntimeError, ImportError, torch.cuda.OutOfMemoryError) as e:
         logger.warning(f"FLOPs measurement failed: {e}")
         model.train()
         return 0

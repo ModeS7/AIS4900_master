@@ -541,10 +541,10 @@ class MultiDiffusionDataset(TorchDataset):
         """
         self.samples = samples
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx) -> dict[str, Any]:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         image, seg, mode_id = self.samples[idx]
         return {
             'image': torch.from_numpy(image).float(),

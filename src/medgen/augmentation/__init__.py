@@ -56,6 +56,7 @@ from .score_aug import (
     generate_pattern_mask,
     apply_mode_intensity_scale,
     inverse_mode_intensity_scale,
+    clear_pattern_cache,
     OMEGA_ENCODING_DIM,
 )
 
@@ -105,6 +106,7 @@ __all__ = [
     'generate_pattern_mask',
     'apply_mode_intensity_scale',
     'inverse_mode_intensity_scale',
+    'clear_pattern_cache',
     'OMEGA_ENCODING_DIM',
     # ScoreAug 3D
     'ScoreAugTransform3D',

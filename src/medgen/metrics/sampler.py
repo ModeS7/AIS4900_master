@@ -20,6 +20,8 @@ import torch.nn as nn
 from torch.amp import autocast
 from torch.utils.data import Dataset
 
+from medgen.core.dict_utils import get_with_fallbacks
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,8 +144,8 @@ def _parse_dataset_item(
             tensor = seg_data
             local_seg_idx = 0
         else:
-            image = data.get('image', data.get('images'))
-            seg_data = data.get('seg', data.get('mask', data.get('labels')))
+            image = get_with_fallbacks(data, 'image', 'images')
+            seg_data = get_with_fallbacks(data, 'seg', 'mask', 'labels')
 
             if image is None or seg_data is None:
                 return None

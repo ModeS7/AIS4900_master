@@ -406,3 +406,144 @@ class TestCheckpointEdgeCases:
         # Should not raise
         path = manager.save(epoch=1, metrics={})
         assert Path(path).exists()
+
+
+class TestCheckpointVersionValidation:
+    """Tests for checkpoint version validation."""
+
+    def test_legacy_checkpoint_without_version(self, temp_checkpoint_dir):
+        """Legacy checkpoint without version info loads successfully."""
+        from medgen.pipeline.checkpoint_manager import CheckpointManager
+
+        model = nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = temp_checkpoint_dir / 'legacy.pt'
+
+        # Create legacy checkpoint without version
+        torch.save({
+            'epoch': 5,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, path)
+
+        manager = CheckpointManager(
+            save_dir=str(temp_checkpoint_dir),
+            model=model,
+            optimizer=optimizer,
+        )
+
+        # Should load without error
+        metadata = manager.load(str(path))
+        assert metadata['epoch'] == 5
+
+    def test_same_version_loads_successfully(self, temp_checkpoint_dir):
+        """Checkpoint with same version loads successfully."""
+        from medgen.pipeline.checkpoint_manager import CheckpointManager
+
+        model = nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = temp_checkpoint_dir / 'same_version.pt'
+
+        manager = CheckpointManager(
+            save_dir=str(temp_checkpoint_dir),
+            model=model,
+            optimizer=optimizer,
+        )
+
+        # Create checkpoint with current version
+        torch.save({
+            'epoch': 10,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'checkpoint_manager_version': manager.VERSION,
+        }, path)
+
+        # Should load without error
+        metadata = manager.load(str(path))
+        assert metadata['epoch'] == 10
+
+    def test_newer_minor_version_warns(self, temp_checkpoint_dir, caplog):
+        """Checkpoint from newer minor version logs warning but loads."""
+        import logging
+        from medgen.pipeline.checkpoint_manager import CheckpointManager
+
+        model = nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = temp_checkpoint_dir / 'newer_minor.pt'
+
+        manager = CheckpointManager(
+            save_dir=str(temp_checkpoint_dir),
+            model=model,
+            optimizer=optimizer,
+        )
+
+        # Create checkpoint with newer minor version (1.9 > current 1.0)
+        torch.save({
+            'epoch': 15,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'checkpoint_manager_version': '1.9',
+        }, path)
+
+        # Should load but warn
+        with caplog.at_level(logging.WARNING):
+            metadata = manager.load(str(path))
+
+        assert metadata['epoch'] == 15
+        assert 'newer version' in caplog.text.lower()
+
+    def test_major_version_mismatch_raises(self, temp_checkpoint_dir):
+        """Checkpoint with different major version raises ValueError."""
+        from medgen.pipeline.checkpoint_manager import CheckpointManager
+
+        model = nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = temp_checkpoint_dir / 'major_mismatch.pt'
+
+        manager = CheckpointManager(
+            save_dir=str(temp_checkpoint_dir),
+            model=model,
+            optimizer=optimizer,
+        )
+
+        # Create checkpoint with major version mismatch
+        torch.save({
+            'epoch': 20,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'checkpoint_manager_version': '2.0',
+        }, path)
+
+        # Should raise ValueError
+        with pytest.raises(ValueError, match="Incompatible checkpoint version"):
+            manager.load(str(path))
+
+    def test_invalid_version_format_warns(self, temp_checkpoint_dir, caplog):
+        """Invalid version format logs warning but loads."""
+        import logging
+        from medgen.pipeline.checkpoint_manager import CheckpointManager
+
+        model = nn.Linear(10, 10)
+        optimizer = torch.optim.Adam(model.parameters())
+        path = temp_checkpoint_dir / 'invalid_version.pt'
+
+        manager = CheckpointManager(
+            save_dir=str(temp_checkpoint_dir),
+            model=model,
+            optimizer=optimizer,
+        )
+
+        # Create checkpoint with invalid version format
+        torch.save({
+            'epoch': 25,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'checkpoint_manager_version': 'invalid.format.here',
+        }, path)
+
+        # Should load but warn
+        with caplog.at_level(logging.WARNING):
+            metadata = manager.load(str(path))
+
+        assert metadata['epoch'] == 25
+        assert 'invalid version format' in caplog.text.lower()

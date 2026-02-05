@@ -18,6 +18,7 @@ import torch
 from torch import nn
 
 from .base_embed import create_film_mlp, create_zero_init_mlp
+from .device_utils import move_module_to_model_device
 
 # Mode ID mapping
 MODE_ID_MAP = {
@@ -185,21 +186,17 @@ class ModeEmbedModelWrapper(nn.Module):
         original_time_embed = model.time_embed
         self.mode_time_embed = ModeTimeEmbed(original_time_embed, embed_dim)
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.mode_time_embed)
         model.time_embed = self.mode_time_embed
-
-        # Ensure mode_time_embed is on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.mode_time_embed = self.mode_time_embed.to(device)
-            model.time_embed = self.mode_time_embed
-        except StopIteration:
-            pass  # Model has no parameters, keep on CPU
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with per-sample mode conditioning.
@@ -207,12 +204,17 @@ class ModeEmbedModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
-                Can contain different mode_ids for different samples.
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            mode_id = conditioning.get('mode_id', mode_id)
+
         # Encode mode_id as [B, 4] - per-sample encoding
         batch_size = x.shape[0]
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
@@ -261,21 +263,17 @@ class ModeEmbedDropoutModelWrapper(nn.Module):
         original_time_embed = model.time_embed
         self.mode_time_embed = ModeTimeEmbed(original_time_embed, embed_dim)
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.mode_time_embed)
         model.time_embed = self.mode_time_embed
-
-        # Ensure mode_time_embed is on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.mode_time_embed = self.mode_time_embed.to(device)
-            model.time_embed = self.mode_time_embed
-        except StopIteration:
-            pass  # Model has no parameters, keep on CPU
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with mode embedding dropout.
@@ -286,11 +284,17 @@ class ModeEmbedDropoutModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            mode_id = conditioning.get('mode_id', mode_id)
+
         batch_size = x.shape[0]
 
         # During training, randomly drop mode embedding
@@ -337,6 +341,9 @@ class NoModeModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass ignoring mode_id.
@@ -344,6 +351,7 @@ class NoModeModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
+            conditioning: Ignored - only present for API compatibility.
             mode_id: Ignored - only present for API compatibility.
 
         Returns:
@@ -457,14 +465,9 @@ class LateModeModelWrapper(nn.Module):
         # Create mode MLP for late injection
         self.mode_mlp = create_zero_init_mlp(MODE_ENCODING_DIM, embed_dim)
 
-        # Ensure on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.late_time_embed = self.late_time_embed.to(device)
-            self.mode_mlp = self.mode_mlp.to(device)
-            model.time_embed = self.late_time_embed
-        except StopIteration:
-            pass
+        # Ensure all modules are on same device as model
+        move_module_to_model_device(model, self.late_time_embed, self.mode_mlp)
+        model.time_embed = self.late_time_embed
 
         # Register hooks for late injection
         self._register_late_injection_hooks()
@@ -539,6 +542,9 @@ class LateModeModelWrapper(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with late mode injection.
@@ -546,11 +552,17 @@ class LateModeModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            mode_id = conditioning.get('mode_id', mode_id)
+
         batch_size = x.shape[0]
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
         self.late_time_embed.set_mode_encoding(mode_encoding)
@@ -674,21 +686,17 @@ class FiLMModeModelWrapper(nn.Module):
         original_time_embed = model.time_embed
         self.film_time_embed = FiLMModeTimeEmbed(original_time_embed, embed_dim)
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.film_time_embed)
         model.time_embed = self.film_time_embed
-
-        # Ensure film_time_embed is on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.film_time_embed = self.film_time_embed.to(device)
-            model.time_embed = self.film_time_embed
-        except StopIteration:
-            pass
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, torch.Tensor | None] | None = None,
+        # Deprecated individual params (kept for backward compat)
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass with FiLM mode conditioning.
@@ -696,11 +704,17 @@ class FiLMModeModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            mode_id = conditioning.get('mode_id', mode_id)
+
         batch_size = x.shape[0]
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)
         self.film_time_embed.set_mode_encoding(mode_encoding)

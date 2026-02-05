@@ -38,6 +38,15 @@ class DataLoaderConfig:
     pin_memory: bool
     persistent_workers: bool
 
+    def __post_init__(self):
+        """Validate configuration values."""
+        if self.num_workers < 0:
+            raise ValueError(f"num_workers must be >= 0, got {self.num_workers}")
+        if self.prefetch_factor is not None and self.prefetch_factor <= 0:
+            raise ValueError(f"prefetch_factor must be > 0 when set, got {self.prefetch_factor}")
+        if self.persistent_workers and self.num_workers == 0:
+            raise ValueError("persistent_workers=True requires num_workers > 0")
+
     @classmethod
     def from_cfg(cls, cfg: DictConfig) -> 'DataLoaderConfig':
         """Extract DataLoader settings from cfg.training.dataloader.
@@ -420,6 +429,47 @@ def check_seg_available(data_dir: str, validate_fn: callable) -> bool:
         return True
     except ValueError:
         return False
+
+
+def get_validated_split_dir(
+    base_dir: str,
+    split: str,
+    logger: logging.Logger | None = None,
+    raise_on_missing: bool = False,
+) -> str | None:
+    """Get split directory path if it exists.
+
+    This utility centralizes the common pattern of checking for split directories
+    (train, val, test_new) and returning None if not found.
+
+    Args:
+        base_dir: Base data directory path.
+        split: Split name ('train', 'val', 'test_new').
+        logger: Optional logger for debug messages.
+        raise_on_missing: If True, raise ValueError instead of returning None.
+
+    Returns:
+        Full path to split directory, or None if not found.
+
+    Raises:
+        ValueError: If raise_on_missing=True and directory doesn't exist.
+
+    Example:
+        >>> # Returns None if missing
+        >>> val_dir = get_validated_split_dir(data_dir, 'val', logger)
+        >>> if val_dir is None:
+        ...     return None
+        >>> # Or raise if required
+        >>> train_dir = get_validated_split_dir(data_dir, 'train', raise_on_missing=True)
+    """
+    split_dir = os.path.join(base_dir, split)
+    if not os.path.exists(split_dir):
+        if logger:
+            logger.debug(f"{split} directory not found: {split_dir}")
+        if raise_on_missing:
+            raise ValueError(f"Required directory not found: {split_dir}")
+        return None
+    return split_dir
 
 
 def validate_mode_requirements(

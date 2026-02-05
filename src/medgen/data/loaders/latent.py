@@ -21,9 +21,11 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from medgen.core.dict_utils import get_with_fallbacks
 from medgen.data.loaders.common import (
     DistributedArgs,
     create_dataloader,
+    get_validated_split_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -515,8 +517,8 @@ class LatentCacheBuilder:
             else:
                 images = batch[0]
         elif isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            seg_masks = batch.get('seg_mask', batch.get('seg'))
+            images = get_with_fallbacks(batch, 'image', 'images')
+            seg_masks = get_with_fallbacks(batch, 'seg', 'seg_mask')
             patient_ids = batch.get('patient_id')
             slice_indices = batch.get('slice_idx')
         elif isinstance(batch, np.ndarray):
@@ -540,9 +542,9 @@ class LatentCacheBuilder:
         patient_id = None
 
         if isinstance(batch, dict):
-            volume = batch.get('image', batch.get('volume'))
-            seg_mask = batch.get('seg_mask', batch.get('seg'))
-            patient_id = batch.get('patient_id', batch.get('patient'))
+            volume = get_with_fallbacks(batch, 'image', 'volume')
+            seg_mask = get_with_fallbacks(batch, 'seg', 'seg_mask')
+            patient_id = get_with_fallbacks(batch, 'patient_id', 'patient')
         elif isinstance(batch, tuple):
             if len(batch) >= 2:
                 volume, seg_mask = batch[0], batch[1]
@@ -689,10 +691,7 @@ def create_latent_dataloader(
     Returns:
         Tuple of (DataLoader, LatentDataset).
     """
-    split_cache_dir = os.path.join(cache_dir, split)
-
-    if not os.path.exists(split_cache_dir):
-        raise ValueError(f"Cache directory not found: {split_cache_dir}")
+    split_cache_dir = get_validated_split_dir(cache_dir, split, raise_on_missing=True)
 
     dataset = LatentDataset(split_cache_dir, mode, spatial_dims=spatial_dims)
 
@@ -728,10 +727,8 @@ def create_latent_validation_dataloader(
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if val cache doesn't exist.
     """
-    val_cache_dir = os.path.join(cache_dir, 'val')
-
-    if not os.path.exists(val_cache_dir):
-        logger.debug(f"Validation cache directory not found: {val_cache_dir}")
+    val_cache_dir = get_validated_split_dir(cache_dir, 'val', logger)
+    if val_cache_dir is None:
         return None
 
     batch_size = batch_size or cfg.training.batch_size
@@ -777,10 +774,8 @@ def create_latent_test_dataloader(
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if test cache doesn't exist.
     """
-    test_cache_dir = os.path.join(cache_dir, 'test_new')
-
-    if not os.path.exists(test_cache_dir):
-        logger.debug(f"Test cache directory not found: {test_cache_dir}")
+    test_cache_dir = get_validated_split_dir(cache_dir, 'test_new', logger)
+    if test_cache_dir is None:
         return None
 
     batch_size = batch_size or cfg.training.batch_size

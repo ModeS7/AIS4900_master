@@ -6,12 +6,11 @@ for monitoring training progress.
 """
 import logging
 import os
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import matplotlib
 
 matplotlib.use('Agg')
-from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -63,7 +62,7 @@ class ValidationVisualizer:
         space: DiffusionSpace | None = None,
         use_controlnet: bool = False,
         controlnet: nn.Module | None = None,
-        unified_metrics: Optional["UnifiedMetrics"] = None,
+        unified_metrics: "UnifiedMetrics | None" = None,
     ) -> None:
         self.cfg = cfg
         self.strategy = strategy
@@ -572,7 +571,7 @@ class ValidationVisualizer:
                     # Note: Validation metrics (MS-SSIM, PSNR, LPIPS) are logged via
                     # the unified metrics system in trainer.py using Validation/ prefix
 
-        except Exception as e:
+        except (RuntimeError, ValueError, OSError) as e:
             if self.is_main_process:
                 logger.warning(
                     f"Failed to generate validation samples at epoch {epoch}: {e}",

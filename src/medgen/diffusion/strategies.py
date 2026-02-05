@@ -80,6 +80,105 @@ class DiffusionStrategy(ABC):
         """
         return tensor[:, start:end]
 
+    def _prepare_cfg_context(
+        self,
+        cfg_scale: float,
+        size_bins: torch.Tensor | None,
+        bin_maps: torch.Tensor | None,
+        conditioning: torch.Tensor | None,
+        is_dual: bool,
+    ) -> dict[str, Any]:
+        """Prepare CFG context flags and unconditional tensors.
+
+        Centralizes the common pattern of determining which CFG modes are active
+        and creating the corresponding unconditional (zeros) tensors.
+
+        Args:
+            cfg_scale: Classifier-free guidance scale (1.0 = no guidance).
+            size_bins: Optional size bin conditioning [B, num_bins].
+            bin_maps: Optional spatial bin maps [B, num_bins, ...].
+            conditioning: Optional image conditioning (e.g., seg mask).
+            is_dual: Whether this is dual-image mode (no image CFG for dual).
+
+        Returns:
+            Dict with CFG context:
+                - use_cfg_size_bins: bool - CFG on size bins
+                - use_cfg_bin_maps: bool - CFG on spatial bin maps
+                - use_cfg_conditioning: bool - CFG on image conditioning
+                - uncond_size_bins: Tensor | None - zeros tensor for uncond size bins
+                - uncond_bin_maps: Tensor | None - zeros tensor for uncond bin maps
+                - uncond_conditioning: Tensor | None - zeros tensor for uncond conditioning
+        """
+        ctx: dict[str, Any] = {
+            'use_cfg_size_bins': cfg_scale > 1.0 and size_bins is not None,
+            'use_cfg_bin_maps': cfg_scale > 1.0 and bin_maps is not None,
+            'use_cfg_conditioning': cfg_scale > 1.0 and conditioning is not None and not is_dual,
+            'uncond_size_bins': None,
+            'uncond_bin_maps': None,
+            'uncond_conditioning': None,
+        }
+
+        if ctx['use_cfg_size_bins']:
+            ctx['uncond_size_bins'] = torch.zeros_like(size_bins)
+        if ctx['use_cfg_bin_maps']:
+            ctx['uncond_bin_maps'] = torch.zeros_like(bin_maps)
+        if ctx['use_cfg_conditioning']:
+            ctx['uncond_conditioning'] = torch.zeros_like(conditioning)
+
+        return ctx
+
+    def _apply_cfg_guidance(
+        self,
+        pred_uncond: torch.Tensor,
+        pred_cond: torch.Tensor,
+        cfg_scale: float,
+    ) -> torch.Tensor:
+        """Apply classifier-free guidance formula.
+
+        CFG: pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+
+        Args:
+            pred_uncond: Unconditional model prediction.
+            pred_cond: Conditional model prediction.
+            cfg_scale: Guidance scale (>1.0 for stronger conditioning).
+
+        Returns:
+            Guided prediction.
+        """
+        return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+
+    def _prepare_dual_model_input(
+        self,
+        noisy_pre: torch.Tensor,
+        noisy_gd: torch.Tensor,
+        conditioning: torch.Tensor,
+    ) -> torch.Tensor:
+        """Concatenate dual-image components for model input.
+
+        Args:
+            noisy_pre: Noisy pre-contrast image [B, 1, ...].
+            noisy_gd: Noisy post-gadolinium image [B, 1, ...].
+            conditioning: Conditioning tensor [B, 1, ...].
+
+        Returns:
+            Concatenated model input [B, 3, ...].
+        """
+        return torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
+
+    def _split_dual_predictions(
+        self,
+        prediction: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split dual predictions into pre and gd channels.
+
+        Args:
+            prediction: Model prediction [B, 2, ...].
+
+        Returns:
+            Tuple of (pred_pre, pred_gd), each [B, 1, ...].
+        """
+        return prediction[:, 0:1], prediction[:, 1:2]
+
     def _parse_model_input(
         self, model_input: torch.Tensor, latent_channels: int = 1
     ) -> ParsedModelInput:
@@ -303,6 +402,42 @@ class DiffusionStrategy(ABC):
         pass
 
     @abstractmethod
+    def compute_target(
+        self,
+        clean_images: ImageOrDict,
+        noise: ImageOrDict,
+    ) -> ImageOrDict:
+        """Compute training target from clean images and noise.
+
+        Args:
+            clean_images: Clean images (x_0).
+            noise: Gaussian noise (x_1 for RFlow, epsilon for DDPM).
+
+        Returns:
+            Target for loss computation (velocity for RFlow, noise for DDPM).
+        """
+        pass
+
+    @abstractmethod
+    def compute_predicted_clean(
+        self,
+        noisy_images: ImageOrDict,
+        prediction: ImageOrDict,
+        timesteps: torch.Tensor,
+    ) -> ImageOrDict:
+        """Compute predicted clean image from model output.
+
+        Args:
+            noisy_images: Noisy images at timestep t (x_t).
+            prediction: Model output (velocity or noise prediction).
+            timesteps: Current timesteps.
+
+        Returns:
+            Predicted clean images (x_0).
+        """
+        pass
+
+    @abstractmethod
     def generate(
         self,
         model: nn.Module,
@@ -360,6 +495,65 @@ class DDPMStrategy(DiffusionStrategy):
         """DDPM predicts noise"""
         return model(x=model_input, timesteps=timesteps)
 
+    def compute_target(
+        self,
+        clean_images: ImageOrDict,
+        noise: ImageOrDict,
+    ) -> ImageOrDict:
+        """DDPM predicts noise, so target is the noise itself."""
+        return noise
+
+    def compute_predicted_clean(
+        self,
+        noisy_images: ImageOrDict,
+        prediction: ImageOrDict,
+        timesteps: torch.Tensor,
+    ) -> ImageOrDict:
+        """Reconstruct clean from noise prediction: x_0 = (x_t - sqrt(1-a) * eps) / sqrt(a).
+
+        Args:
+            noisy_images: Noisy images at timestep t (x_t).
+            prediction: Model noise prediction (epsilon).
+            timesteps: Current timesteps (integer indices).
+
+        Returns:
+            Predicted clean images (x_0), clamped to [0, 1].
+        """
+        # Handle dual-image case
+        if isinstance(noisy_images, dict):
+            keys = list(noisy_images.keys())
+            # For dual mode, prediction has 2 channels
+            noise_pred_0 = self._slice_channel(prediction, 0, 1)
+            noise_pred_1 = self._slice_channel(prediction, 1, 2)
+
+            # Get alpha values
+            alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images[keys[0]].device)
+            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
+            sqrt_alpha_t = torch.sqrt(alpha_t)
+            sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
+
+            return {
+                keys[0]: torch.clamp(
+                    (noisy_images[keys[0]] - sqrt_one_minus_alpha_t * noise_pred_0) / sqrt_alpha_t,
+                    0, 1
+                ),
+                keys[1]: torch.clamp(
+                    (noisy_images[keys[1]] - sqrt_one_minus_alpha_t * noise_pred_1) / sqrt_alpha_t,
+                    0, 1
+                )
+            }
+        else:
+            # Single-image case
+            alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images.device)
+            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
+            sqrt_alpha_t = torch.sqrt(alpha_t)
+            sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
+
+            return torch.clamp(
+                (noisy_images - sqrt_one_minus_alpha_t * prediction) / sqrt_alpha_t,
+                0, 1
+            )
+
     def compute_loss(
         self,
         prediction: torch.Tensor,
@@ -383,50 +577,22 @@ class DDPMStrategy(DiffusionStrategy):
         Returns:
             (mse_loss, predicted_clean_images)
         """
-        device = prediction.device
+        # Get target (noise for DDPM)
+        target = self.compute_target(target_images, noise)
 
-        # Handle dual-image case
-        if isinstance(target_images, dict):
-            # prediction has 2 channels: [noise_pred_pre, noise_pred_post]
-            keys = list(target_images.keys())
-            noise_pred_pre = self._slice_channel(prediction, 0, 1)
-            noise_pred_post = self._slice_channel(prediction, 1, 2)
-
-            # Compute loss for each image
-            mse_loss_pre = F.mse_loss(noise_pred_pre.float(), noise[keys[0]].float())
-            mse_loss_post = F.mse_loss(noise_pred_post.float(), noise[keys[1]].float())
-            mse_loss = (mse_loss_pre + mse_loss_post) / 2
-
-            # Reconstruct clean images using passed noisy_images
-            alphas_cumprod = self.scheduler.alphas_cumprod.to(device)
-            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
-            sqrt_alpha_t = torch.sqrt(alpha_t)
-            sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
-
-            predicted_clean = {
-                keys[0]: torch.clamp(
-                    (noisy_images[keys[0]] - sqrt_one_minus_alpha_t * noise_pred_pre) / sqrt_alpha_t,
-                    0, 1
-                ),
-                keys[1]: torch.clamp(
-                    (noisy_images[keys[1]] - sqrt_one_minus_alpha_t * noise_pred_post) / sqrt_alpha_t,
-                    0, 1
-                )
-            }
-
+        # Compute loss
+        if isinstance(target, dict):
+            keys = list(target.keys())
+            noise_pred_0 = self._slice_channel(prediction, 0, 1)
+            noise_pred_1 = self._slice_channel(prediction, 1, 2)
+            mse_loss_0 = F.mse_loss(noise_pred_0.float(), target[keys[0]].float())
+            mse_loss_1 = F.mse_loss(noise_pred_1.float(), target[keys[1]].float())
+            mse_loss = (mse_loss_0 + mse_loss_1) / 2
         else:
-            # Single-image case
-            mse_loss = F.mse_loss(prediction.float(), noise.float())
+            mse_loss = F.mse_loss(prediction.float(), target.float())
 
-            alphas_cumprod = self.scheduler.alphas_cumprod.to(device)
-            alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
-            sqrt_alpha_t = torch.sqrt(alpha_t)
-            sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
-
-            predicted_clean = torch.clamp(
-                (noisy_images - sqrt_one_minus_alpha_t * prediction) / sqrt_alpha_t,
-                0, 1
-            )
+        # Compute predicted clean images
+        predicted_clean = self.compute_predicted_clean(noisy_images, prediction, timesteps)
 
         return mse_loss, predicted_clean
 
@@ -435,6 +601,18 @@ class DDPMStrategy(DiffusionStrategy):
         images: ImageOrDict,
         curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
+        """Sample random timesteps for training.
+
+        Args:
+            images: Input images tensor [B, C, H, W] or dict of tensors.
+                Used to determine batch size and device.
+            curriculum_range: Optional (min_t, max_t) tuple to restrict timestep
+                range for curriculum learning. Values in [0, 1] are scaled to
+                [0, num_train_timesteps].
+
+        Returns:
+            Integer tensor [B] of sampled timesteps in [0, num_train_timesteps).
+        """
         # Extract batch size from images
         if isinstance(images, dict):
             batch_size = list(images.values())[0].shape[0]
@@ -496,8 +674,6 @@ class DDPMStrategy(DiffusionStrategy):
             latent_channels: Number of noise channels (1 for pixel space, 4 for latent space).
         """
         batch_size = model_input.shape[0]
-        use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
-        use_cfg_bin_maps = cfg_scale > 1.0 and bin_maps is not None
 
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
         use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
@@ -513,16 +689,16 @@ class DDPMStrategy(DiffusionStrategy):
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
-        # CFG for conditioning (seg mask) - only for non-dual with conditioning
-        use_cfg_conditioning = cfg_scale > 1.0 and conditioning is not None and not is_dual
-
-        # Prepare unconditional inputs for CFG
-        if use_cfg_size_bins:
-            uncond_size_bins = torch.zeros_like(size_bins)
-        if use_cfg_bin_maps:
-            uncond_bin_maps = torch.zeros_like(bin_maps)
-        if use_cfg_conditioning:
-            uncond_conditioning = torch.zeros_like(conditioning)
+        # Prepare CFG context (flags and unconditional tensors)
+        cfg_ctx = self._prepare_cfg_context(
+            cfg_scale, size_bins, bin_maps, conditioning, is_dual
+        )
+        use_cfg_size_bins = cfg_ctx['use_cfg_size_bins']
+        use_cfg_bin_maps = cfg_ctx['use_cfg_bin_maps']
+        use_cfg_conditioning = cfg_ctx['use_cfg_conditioning']
+        uncond_size_bins = cfg_ctx['uncond_size_bins']
+        uncond_bin_maps = cfg_ctx['uncond_bin_maps']
+        uncond_conditioning = cfg_ctx['uncond_conditioning']
 
         # Sampling loop
         timesteps = list(self.scheduler.timesteps)
@@ -543,12 +719,11 @@ class DDPMStrategy(DiffusionStrategy):
 
             if is_dual:
                 # Dual-image: process each channel through model together
-                current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
+                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, conditioning)
                 noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                # Split predictions for each channel (works for both 2D and 3D)
-                noise_pred_pre = noise_pred[:, 0:1]
-                noise_pred_gd = noise_pred[:, 1:2]
+                # Split predictions for each channel
+                noise_pred_pre, noise_pred_gd = self._split_dual_predictions(noise_pred)
 
                 # Denoise each channel SEPARATELY using scheduler
                 noisy_pre, _ = self.scheduler.step(noise_pred_pre, t, noisy_pre)
@@ -564,18 +739,15 @@ class DDPMStrategy(DiffusionStrategy):
 
                 if use_cfg_bin_maps:
                     # CFG for bin_maps input conditioning (seg_conditioned_input mode)
-                    # bin_maps are spatial maps concatenated with noise
                     input_cond = torch.cat([noisy_images, bin_maps], dim=1)
                     input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
                     noise_pred_cond = self._call_model(
                         model, input_cond, timesteps_batch, omega, mode_id, None
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    noise_pred_cond = noise_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     noise_pred_uncond = self._call_model(
                         model, input_uncond, timesteps_batch, omega, mode_id, None
                     )
-                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
                 elif bin_maps is not None:
                     # bin_maps provided but no CFG - just concatenate and call model
                     input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
@@ -586,25 +758,21 @@ class DDPMStrategy(DiffusionStrategy):
                     # CFG for size_bins conditioning (FiLM mode)
                     noise_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    noise_pred_cond = noise_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     noise_pred_uncond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
                     )
-                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
                 elif use_cfg_conditioning:
                     # CFG for image conditioning (seg mask)
                     uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
                     noise_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    noise_pred_cond = noise_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     noise_pred_uncond = self._call_model(
                         model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
                     )
-                    noise_pred = noise_pred_uncond + current_cfg * (noise_pred_cond - noise_pred_uncond)
+                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
                 else:
                     noise_pred = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
@@ -671,6 +839,49 @@ class RFlowStrategy(DiffusionStrategy):
         """RFlow predicts velocity"""
         return model(x=model_input, timesteps=timesteps)
 
+    def compute_target(
+        self,
+        clean_images: ImageOrDict,
+        noise: ImageOrDict,
+    ) -> ImageOrDict:
+        """RFlow predicts velocity: v = x_0 - x_1 (clean - noise)."""
+        if isinstance(clean_images, dict):
+            return {k: clean_images[k] - noise[k] for k in clean_images.keys()}
+        return clean_images - noise
+
+    def compute_predicted_clean(
+        self,
+        noisy_images: ImageOrDict,
+        prediction: ImageOrDict,
+        timesteps: torch.Tensor,
+    ) -> ImageOrDict:
+        """Reconstruct clean from velocity: x_0 = x_t + t * v.
+
+        Args:
+            noisy_images: Noisy images at timestep t (x_t).
+            prediction: Model velocity prediction.
+            timesteps: Current timesteps (can be continuous or discrete).
+
+        Returns:
+            Predicted clean images (x_0), clamped to [0, 1].
+        """
+        # Get normalized timestep t in [0, 1]
+        t = timesteps.float() / self.scheduler.num_train_timesteps
+
+        # Handle dual-image case
+        if isinstance(noisy_images, dict):
+            keys = list(noisy_images.keys())
+            velocity_pred_0 = self._slice_channel(prediction, 0, 1)
+            velocity_pred_1 = self._slice_channel(prediction, 1, 2)
+            t_expanded = self._expand_to_broadcast(t, prediction)
+            return {
+                keys[0]: torch.clamp(noisy_images[keys[0]] + t_expanded * velocity_pred_0, 0, 1),
+                keys[1]: torch.clamp(noisy_images[keys[1]] + t_expanded * velocity_pred_1, 0, 1)
+            }
+        else:
+            t_expanded = self._expand_to_broadcast(t, prediction)
+            return torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
+
     def compute_loss(
         self,
         prediction: torch.Tensor,
@@ -694,39 +905,22 @@ class RFlowStrategy(DiffusionStrategy):
         Returns:
             (mse_loss, predicted_clean_images)
         """
-        # Get normalized timestep t in [0, 1] and expand for broadcasting
-        t = timesteps.float() / self.scheduler.num_train_timesteps
-        t = self._expand_to_broadcast(t, prediction)
+        # Get target (velocity for RFlow)
+        target = self.compute_target(target_images, noise)
 
-        # Handle dual-image case
-        if isinstance(target_images, dict):
-            keys = list(target_images.keys())
-            velocity_pred_pre = self._slice_channel(prediction, 0, 1)
-            velocity_pred_post = self._slice_channel(prediction, 1, 2)
-
-            # Target velocity is (clean - noise) = (x_0 - x_1)
-            # This matches MONAI RFlowScheduler convention
-            velocity_target_pre = target_images[keys[0]] - noise[keys[0]]
-            velocity_target_post = target_images[keys[1]] - noise[keys[1]]
-
-            mse_loss_pre = F.mse_loss(velocity_pred_pre.float(), velocity_target_pre.float())
-            mse_loss_post = F.mse_loss(velocity_pred_post.float(), velocity_target_post.float())
-            mse_loss = (mse_loss_pre + mse_loss_post) / 2
-
-            # Reconstruct clean from velocity: x_0 = x_t + t * v (since v = x_0 - x_1)
-            predicted_clean = {
-                keys[0]: torch.clamp(noisy_images[keys[0]] + t * velocity_pred_pre, 0, 1),
-                keys[1]: torch.clamp(noisy_images[keys[1]] + t * velocity_pred_post, 0, 1)
-            }
-
+        # Compute loss
+        if isinstance(target, dict):
+            keys = list(target.keys())
+            velocity_pred_0 = self._slice_channel(prediction, 0, 1)
+            velocity_pred_1 = self._slice_channel(prediction, 1, 2)
+            mse_loss_0 = F.mse_loss(velocity_pred_0.float(), target[keys[0]].float())
+            mse_loss_1 = F.mse_loss(velocity_pred_1.float(), target[keys[1]].float())
+            mse_loss = (mse_loss_0 + mse_loss_1) / 2
         else:
-            # Single-image case
-            # Target velocity is (clean - noise) = (x_0 - x_1)
-            velocity_target = target_images - noise
-            mse_loss = F.mse_loss(prediction.float(), velocity_target.float())
+            mse_loss = F.mse_loss(prediction.float(), target.float())
 
-            # Reconstruct clean from velocity: x_0 = x_t + t * v
-            predicted_clean = torch.clamp(noisy_images + t * prediction, 0, 1)
+        # Compute predicted clean images
+        predicted_clean = self.compute_predicted_clean(noisy_images, prediction, timesteps)
 
         return mse_loss, predicted_clean
 
@@ -735,6 +929,23 @@ class RFlowStrategy(DiffusionStrategy):
         images: ImageOrDict,
         curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
+        """Sample timesteps for RFlow training.
+
+        For RFlow with continuous timesteps (use_discrete_timesteps=False),
+        samples float timesteps in [0, num_train_timesteps]. For discrete mode,
+        samples integers like DDPM.
+
+        Args:
+            images: Input images tensor [B, C, H, W] or dict of tensors.
+                Used to determine batch size and device.
+            curriculum_range: Optional (min_t, max_t) tuple to restrict timestep
+                range for curriculum learning. Values in [0, 1] are scaled to
+                [0, num_train_timesteps].
+
+        Returns:
+            Tensor [B] of sampled timesteps. Float for continuous mode,
+            int for discrete mode.
+        """
         # Extract batch size and device from images
         if isinstance(images, dict):
             sample_tensor = list(images.values())[0]
@@ -806,8 +1017,6 @@ class RFlowStrategy(DiffusionStrategy):
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
         use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
         batch_size = model_input.shape[0]
-        use_cfg_size_bins = cfg_scale > 1.0 and size_bins is not None
-        use_cfg_bin_maps = cfg_scale > 1.0 and bin_maps is not None
 
         # Calculate numel based on spatial dimensions
         if model_input.dim() == 5:
@@ -825,16 +1034,16 @@ class RFlowStrategy(DiffusionStrategy):
         conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
-        # CFG for conditioning (seg mask) - only for non-dual with conditioning
-        use_cfg_conditioning = cfg_scale > 1.0 and conditioning is not None and not is_dual
-
-        # Prepare unconditional inputs for CFG
-        if use_cfg_size_bins:
-            uncond_size_bins = torch.zeros_like(size_bins)
-        if use_cfg_bin_maps:
-            uncond_bin_maps = torch.zeros_like(bin_maps)
-        if use_cfg_conditioning:
-            uncond_conditioning = torch.zeros_like(conditioning)
+        # Prepare CFG context (flags and unconditional tensors)
+        cfg_ctx = self._prepare_cfg_context(
+            cfg_scale, size_bins, bin_maps, conditioning, is_dual
+        )
+        use_cfg_size_bins = cfg_ctx['use_cfg_size_bins']
+        use_cfg_bin_maps = cfg_ctx['use_cfg_bin_maps']
+        use_cfg_conditioning = cfg_ctx['use_cfg_conditioning']
+        uncond_size_bins = cfg_ctx['uncond_size_bins']
+        uncond_bin_maps = cfg_ctx['uncond_bin_maps']
+        uncond_conditioning = cfg_ctx['uncond_conditioning']
 
         # Setup scheduler
         self.scheduler.set_timesteps(
@@ -868,12 +1077,11 @@ class RFlowStrategy(DiffusionStrategy):
 
             if is_dual:
                 # Dual-image: process each channel through model together
-                current_model_input = torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
+                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, conditioning)
                 velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
                 # Split predictions for each channel (works for both 2D and 3D)
-                velocity_pred_pre = velocity_pred[:, 0:1]
-                velocity_pred_gd = velocity_pred[:, 1:2]
+                velocity_pred_pre, velocity_pred_gd = self._split_dual_predictions(velocity_pred)
 
                 # Update each channel SEPARATELY using scheduler
                 noisy_pre, _ = self.scheduler.step(velocity_pred_pre, t, noisy_pre, next_timestep)
@@ -894,13 +1102,11 @@ class RFlowStrategy(DiffusionStrategy):
                     input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
                     velocity_pred_cond = self._call_model(
                         model, input_cond, timesteps_batch, omega, mode_id, None
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    velocity_pred_cond = velocity_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     velocity_pred_uncond = self._call_model(
                         model, input_uncond, timesteps_batch, omega, mode_id, None
                     )
-                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
+                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
                 elif bin_maps is not None:
                     # bin_maps provided but no CFG - just concatenate and call model
                     input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
@@ -911,27 +1117,21 @@ class RFlowStrategy(DiffusionStrategy):
                     # CFG for size_bins conditioning (FiLM mode)
                     velocity_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    velocity_pred_cond = velocity_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     velocity_pred_uncond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
                     )
-                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
+                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
                 elif use_cfg_conditioning:
                     # CFG for image conditioning (seg mask)
-                    # Conditional: noisy + seg_mask
-                    # Unconditional: noisy + zeros
                     uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
                     velocity_pred_cond = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    # Clone to prevent CUDA graph from overwriting the tensor
-                    velocity_pred_cond = velocity_pred_cond.clone()
+                    ).clone()  # Clone to prevent CUDA graph issues
                     velocity_pred_uncond = self._call_model(
                         model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
                     )
-                    velocity_pred = velocity_pred_uncond + current_cfg * (velocity_pred_cond - velocity_pred_uncond)
+                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
                 else:
                     velocity_pred = self._call_model(
                         model, current_model_input, timesteps_batch, omega, mode_id, size_bins

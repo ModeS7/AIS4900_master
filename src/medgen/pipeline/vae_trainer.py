@@ -22,6 +22,7 @@ set_track_meta(False)
 
 from monai.networks.nets import AutoencoderKL
 
+from medgen.core.defaults import VAE_DEFAULTS
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompressionTrainer
 
@@ -91,8 +92,8 @@ class VAETrainer(BaseCompressionTrainer):
     _CONFIG_SECTION_3D = 'vae_3d'
 
     # VAE-specific defaults: 3D uses lower disc_lr for stability
-    _DEFAULT_DISC_LR_2D = 5e-4
-    _DEFAULT_DISC_LR_3D = 1e-4
+    _DEFAULT_DISC_LR_2D = VAE_DEFAULTS.disc_lr_2d
+    _DEFAULT_DISC_LR_3D = VAE_DEFAULTS.disc_lr_3d
 
     def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize VAE trainer.

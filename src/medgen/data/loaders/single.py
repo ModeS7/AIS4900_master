@@ -19,6 +19,7 @@ from medgen.data.dataset import (
 )
 from medgen.data.loaders.common import (
     DistributedArgs,
+    get_validated_split_dir,
     validate_mode_requirements,
 )
 from medgen.data.loaders.common import (
@@ -131,10 +132,8 @@ def create_validation_dataloader(
     Returns:
         Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, "val")
-
-    if not os.path.exists(val_dir):
-        logger.debug(f"Validation directory not found: {val_dir}")
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, "val", logger)
+    if val_dir is None:
         return None
 
     image_size = cfg.model.image_size
@@ -198,10 +197,8 @@ def create_test_dataloader(
     Returns:
         Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
-
-    if not os.path.exists(test_dir):
-        logger.debug(f"Test directory not found: {test_dir}")
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, "test_new", logger)
+    if test_dir is None:
         return None
 
     image_size = cfg.model.image_size

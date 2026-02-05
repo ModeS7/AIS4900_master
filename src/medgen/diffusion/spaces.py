@@ -450,7 +450,7 @@ def load_vae_for_latent_space(
     """
     from monai.networks.nets import AutoencoderKL
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Try to get config from checkpoint
     if vae_config is None:

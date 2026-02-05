@@ -35,7 +35,7 @@ from medgen.downstream import (
 # Enable CUDA optimizations at module import
 setup_cuda_optimizations()
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def validate_config(cfg: DictConfig) -> None:
@@ -86,23 +86,23 @@ def main(cfg: DictConfig) -> None:
     spatial_dims = cfg.model.get('spatial_dims', 2)
 
     # Log configuration
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Log training header
-    log.info("")
-    log.info("=" * 60)
-    log.info("Downstream Segmentation Training")
-    log.info(f"Scenario: {scenario}")
-    log.info(f"Spatial dims: {spatial_dims}D")
-    log.info(f"Image size: {cfg.model.image_size}")
-    log.info(f"Batch size: {cfg.training.batch_size}")
-    log.info(f"Epochs: {cfg.training.epochs}")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("Downstream Segmentation Training")
+    logger.info(f"Scenario: {scenario}")
+    logger.info(f"Spatial dims: {spatial_dims}D")
+    logger.info(f"Image size: {cfg.model.image_size}")
+    logger.info(f"Batch size: {cfg.training.batch_size}")
+    logger.info(f"Epochs: {cfg.training.epochs}")
     if scenario in ('synthetic', 'mixed'):
-        log.info(f"Synthetic dir: {cfg.data.synthetic_dir}")
+        logger.info(f"Synthetic dir: {cfg.data.synthetic_dir}")
     if scenario == 'mixed':
-        log.info(f"Synthetic ratio: {cfg.data.synthetic_ratio}")
-    log.info("=" * 60)
-    log.info("")
+        logger.info(f"Synthetic ratio: {cfg.data.synthetic_ratio}")
+    logger.info("=" * 60)
+    logger.info("")
 
     # Create trainer
     if spatial_dims == 3:
@@ -110,7 +110,7 @@ def main(cfg: DictConfig) -> None:
     else:
         trainer = SegmentationTrainer.create_2d(cfg)
 
-    log.info(f"Validation: every {cfg.training.get('val_every', 1)} epoch(s), "
+    logger.info(f"Validation: every {cfg.training.get('val_every', 1)} epoch(s), "
              f"figures at interval {trainer.figure_interval}")
 
     # Create dataloaders
@@ -120,21 +120,21 @@ def main(cfg: DictConfig) -> None:
         split='train',
         spatial_dims=spatial_dims,
     )
-    log.info(f"Training dataset: {len(train_dataset)} samples")
+    logger.info(f"Training dataset: {len(train_dataset)} samples")
 
     # Validation dataloader (always uses real data)
     val_result = create_segmentation_val_dataloader(cfg, spatial_dims)
     if val_result is not None:
         val_loader, val_dataset = val_result
-        log.info(f"Validation dataset: {len(val_dataset)} samples")
+        logger.info(f"Validation dataset: {len(val_dataset)} samples")
     else:
         val_loader = None
-        log.info("No val/ directory found - using train samples for validation")
+        logger.info("No val/ directory found - using train samples for validation")
 
     # Setup model
     pretrained_checkpoint = cfg.get('pretrained_checkpoint', None)
     if pretrained_checkpoint:
-        log.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
+        logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
     # Train
@@ -148,7 +148,7 @@ def main(cfg: DictConfig) -> None:
     test_result = create_segmentation_test_dataloader(cfg, spatial_dims)
     if test_result is not None:
         test_loader, test_dataset = test_result
-        log.info(f"Running test evaluation on {len(test_dataset)} samples...")
+        logger.info(f"Running test evaluation on {len(test_dataset)} samples...")
 
         # Set test loader as val_loader for evaluation
         trainer.val_loader = test_loader
@@ -157,18 +157,18 @@ def main(cfg: DictConfig) -> None:
             log_figures=False,
         )
 
-        log.info("")
-        log.info("=" * 60)
-        log.info("Test Results")
-        log.info("=" * 60)
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Test Results")
+        logger.info("=" * 60)
         for key, value in test_metrics.items():
-            log.info(f"  {key}: {value:.4f}")
-        log.info("=" * 60)
+            logger.info(f"  {key}: {value:.4f}")
+        logger.info("=" * 60)
     else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+        logger.info("No test_new/ directory found - skipping test evaluation")
 
     trainer.close_writer()
-    log.info("Training complete!")
+    logger.info("Training complete!")
 
 
 if __name__ == "__main__":

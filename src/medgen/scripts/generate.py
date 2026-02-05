@@ -47,7 +47,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
 )
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def sample_random_size_bins(min_tumors: int = 1, max_tumors: int = 5) -> list[int]:
@@ -79,7 +79,7 @@ def auto_adjust_batch_size(base_batch_size: int, spatial_dims: int, device: torc
         else:
             adjusted = base_batch_size
 
-    log.info(f"GPU: {total_vram_gb:.1f}GB | Batch size: {base_batch_size} -> {adjusted}")
+    logger.info(f"GPU: {total_vram_gb:.1f}GB | Batch size: {base_batch_size} -> {adjusted}")
     return adjusted
 
 
@@ -219,13 +219,13 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     strategy.setup_scheduler(1000, cfg.image_size)
 
     # Load models
-    log.info("Loading segmentation model...")
+    logger.info("Loading segmentation model...")
     seg_model = load_diffusion_model(
         cfg.seg_model, device=device,
         in_channels=1, out_channels=1, compile_model=True
     )
 
-    log.info(f"Loading image model ({cfg.gen_mode})...")
+    logger.info(f"Loading image model ({cfg.gen_mode})...")
     if cfg.gen_mode == 'bravo':
         in_ch, out_ch = 2, 1
     else:  # dual
@@ -237,7 +237,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    log.info(f"Generating {cfg.num_images} samples...")
+    logger.info(f"Generating {cfg.num_images} samples...")
 
     current_image = cfg.current_image
     mask_cache: list[tuple[np.ndarray, int]] = []
@@ -270,7 +270,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if valid_in_batch == 0:
             consecutive_failures += 1
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                log.error(
+                logger.error(
                     f"No valid masks in {MAX_CONSECUTIVE_FAILURES} consecutive batches. "
                     f"Check seg model quality or adjust MAX_WHITE_PERCENTAGE threshold."
                 )
@@ -326,7 +326,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 combined = np.stack([images[0, 0].cpu().numpy(), images[0, 1].cpu().numpy(), mask], axis=-1)
             save_nifti(combined, str(output_path))
 
-    log.info(f"Saved {current_image} samples to {output_dir}")
+    logger.info(f"Saved {current_image} samples to {output_dir}")
 
 
 def save_bins_csv(bins_data: list[tuple[int, list[int]]], output_path: Path) -> None:
@@ -373,21 +373,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     if cfg.size_bins:
         fixed_bins = [int(x) for x in cfg.size_bins.split(',')]
         assert len(fixed_bins) == 7, "Size bins must have exactly 7 values"
-        log.info(f"Using fixed size bins: {fixed_bins}")
+        logger.info(f"Using fixed size bins: {fixed_bins}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Log output dimensions
     trim_slices = cfg.get('trim_slices', 10)
     output_depth = cfg.depth - trim_slices if trim_slices > 0 else cfg.depth
-    log.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
+    logger.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
 
     # Collect all bins info for CSV
     all_bins: list[tuple[int, list[int]]] = []
 
     # Mode: seg_conditioned only (just generate seg masks)
     if cfg.gen_mode == 'seg_conditioned':
-        log.info("Loading seg_conditioned model...")
+        logger.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
@@ -400,9 +400,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         num_bins = cfg.get('num_bins', 7)
         max_retries = cfg.get('max_retries', 10)
 
-        log.info(f"Generating {cfg.num_images} seg masks...")
+        logger.info(f"Generating {cfg.num_images} seg masks...")
         if validate_size_bins:
-            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
+            logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -433,14 +433,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         retries += 1
                         total_retries += 1
                         if cfg.verbose and retries == 1:
-                            log.warning(f"Sample {generated}: size bins mismatch "
+                            logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
                         continue
 
                 valid_mask = True
 
             if not valid_mask:
-                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+                logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
@@ -460,21 +460,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Log progress and clear cache periodically
             if generated % 10 == 0 or generated == cfg.num_images:
-                log.info(f"Progress: {generated}/{cfg.num_images}")
+                logger.info(f"Progress: {generated}/{cfg.num_images}")
                 torch.cuda.empty_cache()
 
         if total_retries > 0:
-            log.info(f"Generation complete. Total retries: {total_retries}")
+            logger.info(f"Generation complete. Total retries: {total_retries}")
 
     # Mode: bravo (full pipeline: seg -> bravo)
     elif cfg.gen_mode == 'bravo':
-        log.info("Loading seg_conditioned model...")
+        logger.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
         )
 
-        log.info("Loading bravo model...")
+        logger.info("Loading bravo model...")
         bravo_model = load_diffusion_model(
             cfg.image_model, device=device,
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
@@ -496,12 +496,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
         num_bins = cfg.get('num_bins', 7)
 
-        log.info(f"Generating {cfg.num_images} seg+bravo pairs...")
-        log.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
+        logger.info(f"Generating {cfg.num_images} seg+bravo pairs...")
+        logger.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
         if validate_brain_mask:
-            log.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
+            logger.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
         if validate_size_bins:
-            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
+            logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -534,7 +534,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                     total_retries += 1
                     if cfg.verbose and retries == 1:
                         overall_pct = np.mean(seg_binary)
-                        log.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
+                        logger.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
                     continue
 
                 # Validate size bins match conditioning
@@ -544,14 +544,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         retries += 1
                         total_retries += 1
                         if cfg.verbose and retries == 1:
-                            log.warning(f"Sample {generated}: size bins mismatch "
+                            logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
                         continue
 
                 valid_mask = True
 
             if not valid_mask:
-                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+                logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
             seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
 
@@ -575,9 +575,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                     brain_retries += 1
                     total_retries += 1
                     if cfg.verbose:
-                        log.warning(f"Sample {generated}: seg outside brain, discarding and retrying...")
+                        logger.warning(f"Sample {generated}: seg outside brain, discarding and retrying...")
                     if brain_retries >= max_brain_retries:
-                        log.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+                        logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
                         brain_retries = 0  # Reset for next sample
                     else:
                         continue  # Retry with new seg mask
@@ -607,15 +607,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Log progress and clear cache periodically
             if generated % 10 == 0 or generated == cfg.num_images:
-                log.info(f"Progress: {generated}/{cfg.num_images}")
+                logger.info(f"Progress: {generated}/{cfg.num_images}")
                 torch.cuda.empty_cache()
 
         if total_retries > 0:
-            log.info(f"Total retries: {total_retries} (seg validation + brain mask)")
+            logger.info(f"Total retries: {total_retries} (seg validation + brain mask)")
 
     # Mode: seg_conditioned_input (input channel conditioning - stronger than FiLM)
     elif cfg.gen_mode == 'seg_conditioned_input':
-        log.info("Loading seg_conditioned_input model...")
+        logger.info("Loading seg_conditioned_input model...")
         # Model has 8 input channels: 1 noisy_seg + 7 bin_maps
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
@@ -630,9 +630,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_count = cfg.get('max_count', 10)
         max_retries = cfg.get('max_retries', 10)
 
-        log.info(f"Generating {cfg.num_images} seg masks with input conditioning...")
+        logger.info(f"Generating {cfg.num_images} seg masks with input conditioning...")
         if validate_size_bins:
-            log.info("Size bin validation: enabled (verify generated seg matches conditioning)")
+            logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
         generated = 0
         total_retries = 0
@@ -669,14 +669,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         retries += 1
                         total_retries += 1
                         if cfg.verbose and retries == 1:
-                            log.warning(f"Sample {generated}: size bins mismatch "
+                            logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
                         continue
 
                 valid_mask = True
 
             if not valid_mask:
-                log.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+                logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
@@ -696,19 +696,19 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Log progress and clear cache periodically
             if generated % 10 == 0 or generated == cfg.num_images:
-                log.info(f"Progress: {generated}/{cfg.num_images}")
+                logger.info(f"Progress: {generated}/{cfg.num_images}")
                 torch.cuda.empty_cache()
 
         if total_retries > 0:
-            log.info(f"Generation complete. Total retries: {total_retries}")
+            logger.info(f"Generation complete. Total retries: {total_retries}")
 
     else:
         raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned', 'seg_conditioned_input', or 'bravo'.")
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")
-    log.info(f"Saved {len(all_bins)} samples to {output_dir}")
-    log.info(f"Bins info saved to {output_dir / 'bins.csv'}")
+    logger.info(f"Saved {len(all_bins)} samples to {output_dir}")
+    logger.info(f"Bins info saved to {output_dir / 'bins.csv'}")
 
 
 @hydra.main(version_base=None, config_path="../../../configs", config_name="generate")
@@ -726,12 +726,12 @@ def main(cfg: DictConfig) -> None:
     fov_mm = cfg.get('fov_mm', 240.0)
     voxel = compute_voxel_size(cfg.image_size, fov_mm)
 
-    log.info("=" * 60)
-    log.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.gen_mode} | Strategy: {cfg.strategy}")
-    log.info(f"Resolution: {cfg.image_size}x{cfg.image_size} | FOV: {fov_mm}mm | Voxel: {voxel[0]:.3f}mm")
-    log.info(f"Output: {output_dir}")
-    log.info(f"Paths: {cfg.paths.name}")
-    log.info("=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"Generation: {cfg.spatial_dims}D | Mode: {cfg.gen_mode} | Strategy: {cfg.strategy}")
+    logger.info(f"Resolution: {cfg.image_size}x{cfg.image_size} | FOV: {fov_mm}mm | Voxel: {voxel[0]:.3f}mm")
+    logger.info(f"Output: {output_dir}")
+    logger.info(f"Paths: {cfg.paths.name}")
+    logger.info("=" * 60)
 
     if cfg.spatial_dims == 2:
         if not cfg.seg_model or not cfg.image_model:
@@ -744,7 +744,7 @@ def main(cfg: DictConfig) -> None:
             raise ValueError("3D bravo mode requires seg_model and image_model")
         run_3d_pipeline(cfg, output_dir)
 
-    log.info("Generation complete!")
+    logger.info("Generation complete!")
 
 
 if __name__ == "__main__":

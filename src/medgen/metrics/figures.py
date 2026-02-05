@@ -13,6 +13,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from .visualization_constants import (
+    DIFFERENCE_HEATMAP_COLORMAP,
+    DUAL_FIGURE_HEIGHT,
+    FIGURE_HSPACE,
+    FIGURE_LABEL_FONTSIZE,
+    FIGURE_SUPTITLE_FONTSIZE,
+    FIGURE_TITLE_FONTSIZE,
+    FIGURE_WSPACE,
+    GRAYSCALE_COLORMAP,
+    IMAGE_VALUE_MAX,
+    IMAGE_VALUE_MIN,
+    MASK_CONTOUR_ALPHA,
+    MASK_CONTOUR_COLOR,
+    MASK_CONTOUR_LINEWIDTH,
+    SINGLE_FIGURE_HEIGHT,
+    SINGLE_FIGURE_WIDTH_PER_SAMPLE,
+)
+
 
 def create_reconstruction_figure(
     original: torch.Tensor | dict[str, torch.Tensor],
@@ -98,8 +116,8 @@ def _create_single_reconstruction_figure(
 
     # Create figure with minimal spacing - tight layout
     fig, axes = plt.subplots(
-        3, n_samples, figsize=(2.5 * n_samples, 7),
-        gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
+        3, n_samples, figsize=(SINGLE_FIGURE_WIDTH_PER_SAMPLE * n_samples, SINGLE_FIGURE_HEIGHT),
+        gridspec_kw={'hspace': FIGURE_HSPACE, 'wspace': FIGURE_WSPACE}
     )
     if n_samples == 1:
         axes = axes.reshape(3, 1)
@@ -110,26 +128,29 @@ def _create_single_reconstruction_figure(
         # Column title with timestep if provided
         if timesteps is not None:
             t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
-            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8, pad=2)
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=FIGURE_TITLE_FONTSIZE, pad=2)
 
         # Row 1: Original
-        axes[0, i].imshow(np.clip(orig_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[0, i].imshow(np.clip(orig_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         axes[0, i].axis('off')
 
         # Row 2: Generated (with optional mask contour)
-        axes[1, i].imshow(np.clip(gen_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[1, i].imshow(np.clip(gen_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         if mask_np is not None and mask_np.shape[0] > i:
-            axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+            axes[1, i].contour(mask_np[i, 0], colors=MASK_CONTOUR_COLOR,
+                               linewidths=MASK_CONTOUR_LINEWIDTH, alpha=MASK_CONTOUR_ALPHA)
         axes[1, i].axis('off')
 
         # Row 3: Difference heatmap
-        axes[2, i].imshow(diff[i], cmap='hot', vmin=0, vmax=diff.max())
+        axes[2, i].imshow(diff[i], cmap=DIFFERENCE_HEATMAP_COLORMAP, vmin=0, vmax=diff.max())
         axes[2, i].axis('off')
 
     # Add row labels on the left side
     for row, label in enumerate(row_labels):
         axes[row, 0].text(-0.02, 0.5, label, transform=axes[row, 0].transAxes,
-                          fontsize=9, va='center', ha='right', rotation=90)
+                          fontsize=FIGURE_LABEL_FONTSIZE, va='center', ha='right', rotation=90)
 
     # Build title
     full_title = title or ''
@@ -141,10 +162,11 @@ def _create_single_reconstruction_figure(
             full_title = metrics_str
 
     if full_title:
-        fig.suptitle(full_title, fontsize=10, y=0.98)
+        fig.suptitle(full_title, fontsize=FIGURE_SUPTITLE_FONTSIZE, y=0.98)
 
     # Tight margins - minimal whitespace
-    fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.02, hspace=0.02, wspace=0.02)
+    fig.subplots_adjust(left=0.05, right=0.98, top=0.92, bottom=0.02,
+                        hspace=FIGURE_HSPACE, wspace=FIGURE_WSPACE)
     return fig
 
 
@@ -196,8 +218,8 @@ def _create_dual_reconstruction_figure(
 
     # Create figure: 6 rows (3 per channel) with minimal spacing
     fig, axes = plt.subplots(
-        6, n_samples, figsize=(2.5 * n_samples, 14),
-        gridspec_kw={'hspace': 0.02, 'wspace': 0.02}
+        6, n_samples, figsize=(SINGLE_FIGURE_WIDTH_PER_SAMPLE * n_samples, DUAL_FIGURE_HEIGHT),
+        gridspec_kw={'hspace': FIGURE_HSPACE, 'wspace': FIGURE_WSPACE}
     )
     if n_samples == 1:
         axes = axes.reshape(6, 1)
@@ -214,36 +236,42 @@ def _create_dual_reconstruction_figure(
         # Column title with timestep if provided
         if timesteps is not None:
             t_val = timesteps[i].item() if isinstance(timesteps, torch.Tensor) else timesteps[i]
-            axes[0, i].set_title(f't={t_val:.0f}', fontsize=8, pad=2)
+            axes[0, i].set_title(f't={t_val:.0f}', fontsize=FIGURE_TITLE_FONTSIZE, pad=2)
 
         # Channel 1
-        axes[0, i].imshow(np.clip(orig1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[0, i].imshow(np.clip(orig1_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         axes[0, i].axis('off')
 
-        axes[1, i].imshow(np.clip(gen1_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[1, i].imshow(np.clip(gen1_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         if mask_np is not None and mask_np.shape[0] > i:
-            axes[1, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+            axes[1, i].contour(mask_np[i, 0], colors=MASK_CONTOUR_COLOR,
+                               linewidths=MASK_CONTOUR_LINEWIDTH, alpha=MASK_CONTOUR_ALPHA)
         axes[1, i].axis('off')
 
-        axes[2, i].imshow(diff1[i], cmap='hot', vmin=0, vmax=diff1.max())
+        axes[2, i].imshow(diff1[i], cmap=DIFFERENCE_HEATMAP_COLORMAP, vmin=0, vmax=diff1.max())
         axes[2, i].axis('off')
 
         # Channel 2
-        axes[3, i].imshow(np.clip(orig2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[3, i].imshow(np.clip(orig2_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         axes[3, i].axis('off')
 
-        axes[4, i].imshow(np.clip(gen2_ch[i], 0, 1), cmap='gray', vmin=0, vmax=1)
+        axes[4, i].imshow(np.clip(gen2_ch[i], IMAGE_VALUE_MIN, IMAGE_VALUE_MAX),
+                          cmap=GRAYSCALE_COLORMAP, vmin=IMAGE_VALUE_MIN, vmax=IMAGE_VALUE_MAX)
         if mask_np is not None and mask_np.shape[0] > i:
-            axes[4, i].contour(mask_np[i, 0], colors='red', linewidths=0.5, alpha=0.7)
+            axes[4, i].contour(mask_np[i, 0], colors=MASK_CONTOUR_COLOR,
+                               linewidths=MASK_CONTOUR_LINEWIDTH, alpha=MASK_CONTOUR_ALPHA)
         axes[4, i].axis('off')
 
-        axes[5, i].imshow(diff2[i], cmap='hot', vmin=0, vmax=diff2.max())
+        axes[5, i].imshow(diff2[i], cmap=DIFFERENCE_HEATMAP_COLORMAP, vmin=0, vmax=diff2.max())
         axes[5, i].axis('off')
 
     # Add row labels on the left side
     for row, label in enumerate(row_labels):
         axes[row, 0].text(-0.02, 0.5, label, transform=axes[row, 0].transAxes,
-                          fontsize=8, va='center', ha='right', rotation=90)
+                          fontsize=FIGURE_TITLE_FONTSIZE, va='center', ha='right', rotation=90)
 
     # Build title
     full_title = title or ''
@@ -255,10 +283,11 @@ def _create_dual_reconstruction_figure(
             full_title = metrics_str
 
     if full_title:
-        fig.suptitle(full_title, fontsize=10, y=0.98)
+        fig.suptitle(full_title, fontsize=FIGURE_SUPTITLE_FONTSIZE, y=0.98)
 
     # Tight margins - minimal whitespace
-    fig.subplots_adjust(left=0.06, right=0.98, top=0.94, bottom=0.02, hspace=0.02, wspace=0.02)
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.94, bottom=0.02,
+                        hspace=FIGURE_HSPACE, wspace=FIGURE_WSPACE)
     return fig
 
 

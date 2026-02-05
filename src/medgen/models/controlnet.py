@@ -225,7 +225,7 @@ def load_controlnet_checkpoint(
         device: Device to load to.
         strict: Whether to require exact key matching.
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     if 'controlnet_state_dict' in checkpoint:
         state_dict = checkpoint['controlnet_state_dict']

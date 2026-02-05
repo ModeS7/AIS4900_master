@@ -21,6 +21,7 @@ from medgen.data.dataset import (
 from medgen.data.loaders.common import (
     DistributedArgs,
     create_dataloader,
+    get_validated_split_dir,
     validate_mode_requirements,
 )
 from medgen.data.utils import extract_slices_single, extract_slices_single_with_seg
@@ -129,11 +130,8 @@ def create_multi_modality_validation_dataloader(
     Returns:
         Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, "val")
-
-    # Check if validation directory exists
-    if not os.path.exists(val_dir):
-        logger.debug(f"Validation directory not found: {val_dir}")
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, "val", logger)
+    if val_dir is None:
         return None
 
     # Validate modalities exist in val directory (no seg required for VAE)
@@ -214,11 +212,8 @@ def create_single_modality_validation_loader(
     Returns:
         DataLoader for single modality or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, "val")
-
-    # Check if validation directory exists
-    if not os.path.exists(val_dir):
-        logger.debug(f"Validation directory not found for {modality}: {val_dir}")
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, "val", logger)
+    if val_dir is None:
         return None
 
     # Validate modality exists in val directory
@@ -291,11 +286,8 @@ def create_multi_modality_test_dataloader(
     Returns:
         Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
-
-    # Check if test directory exists
-    if not os.path.exists(test_dir):
-        logger.debug(f"Test directory not found: {test_dir}")
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, "test_new", logger)
+    if test_dir is None:
         return None
 
     # Validate modalities exist in test directory (no seg required for VAE)

@@ -4,7 +4,7 @@ Slice extraction and sequence merging utilities.
 This module provides functions for extracting 2D slices from 3D NIfTI volumes
 and merging multiple MR sequences from the same patients.
 """
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -14,10 +14,13 @@ from medgen.augmentation import apply_augmentation
 from medgen.core.constants import BINARY_THRESHOLD_GT
 from medgen.data.dataset import NiFTIDataset
 
+if TYPE_CHECKING:
+    import albumentations as A
+
 try:
     import albumentations as A
 except ImportError:
-    A = None  # type: ignore
+    A = None  # type: ignore[assignment]
 
 
 def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD_GT) -> np.ndarray:
@@ -35,7 +38,7 @@ def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD_GT) -> np
 
 def extract_slices_single(
     nifti_dataset: Dataset,
-    augmentation: Optional["A.Compose"] = None
+    augmentation: "A.Compose | None" = None
 ) -> Dataset:
     """Extract 2D slices from 3D volumes for single-sequence training.
 
@@ -74,7 +77,7 @@ def extract_slices_single(
 def extract_slices_dual(
     merged_dataset: Dataset,
     has_seg: bool = True,
-    augmentation: Optional["A.Compose"] = None
+    augmentation: "A.Compose | None" = None
 ) -> Dataset:
     """Extract 2D slices from merged 3D volumes for multi-sequence training.
 
@@ -144,7 +147,7 @@ def extract_slices_dual(
 def extract_slices_single_with_seg(
     image_dataset: Dataset,
     seg_dataset: Dataset,
-    augmentation: Optional["A.Compose"] = None
+    augmentation: "A.Compose | None" = None
 ) -> Dataset:
     """Extract 2D slices with paired segmentation masks for regional metrics.
 

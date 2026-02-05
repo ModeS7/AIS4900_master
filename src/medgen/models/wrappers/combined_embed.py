@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from .base_embed import create_zero_init_mlp
+from .device_utils import move_module_to_model_device
 from .mode_embed import (
     MODE_ENCODING_DIM,
     FiLMModeModelWrapper,
@@ -185,7 +186,13 @@ class CombinedTimeEmbed(nn.Module):
         self._mode_encoding: torch.Tensor | None = None
 
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
-        """Set omega encoding for next forward pass."""
+        """Set omega encoding for next forward pass.
+
+        Uses in-place copy which is atomic for single CUDA kernel.
+        Buffer identity preserved for torch.compile compatibility.
+        """
+        # Ensure source is on same device and contiguous for atomic copy
+        omega_encoding = omega_encoding.to(self._omega_encoding.device).contiguous()
         self._omega_encoding.copy_(omega_encoding)
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
@@ -215,6 +222,8 @@ class CombinedTimeEmbed(nn.Module):
         mode_encoding: torch.Tensor,
     ):
         """Set both encodings for next forward pass."""
+        # Ensure source is on same device and contiguous for atomic copy
+        omega_encoding = omega_encoding.to(self._omega_encoding.device).contiguous()
         self._omega_encoding.copy_(omega_encoding)
         self._mode_encoding = mode_encoding
 
@@ -275,21 +284,17 @@ class CombinedModelWrapper(nn.Module):
         original_time_embed = model.time_embed
         self.combined_time_embed = CombinedTimeEmbed(original_time_embed, embed_dim)
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.combined_time_embed)
         model.time_embed = self.combined_time_embed
-
-        # Ensure combined_time_embed is on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.combined_time_embed = self.combined_time_embed.to(device)
-            model.time_embed = self.combined_time_embed
-        except StopIteration:
-            pass  # Model has no parameters, keep on CPU
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, Any] | None = None,
+        # Deprecated individual params (kept for backward compat)
         omega: dict[str, Any] | None = None,
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -298,13 +303,20 @@ class CombinedModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            omega: Optional ScoreAug parameters for conditioning
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
-                Can contain different mode_ids for different samples.
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'omega': ScoreAug parameters dict
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            omega: (Deprecated) Use conditioning={'omega': ...} instead.
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            omega = conditioning.get('omega', omega)
+            mode_id = conditioning.get('mode_id', mode_id)
+
         # Encode both conditioning signals
         batch_size = x.shape[0]
         # Pass mode_id to encode_omega to include mode intensity scaling info (dims 32-35)
@@ -362,7 +374,13 @@ class CombinedFiLMTimeEmbed(nn.Module):
         self._mode_encoding: torch.Tensor | None = None
 
     def set_omega_encoding(self, omega_encoding: torch.Tensor):
-        """Set omega encoding for next forward pass."""
+        """Set omega encoding for next forward pass.
+
+        Uses in-place copy which is atomic for single CUDA kernel.
+        Buffer identity preserved for torch.compile compatibility.
+        """
+        # Ensure source is on same device and contiguous for atomic copy
+        omega_encoding = omega_encoding.to(self._omega_encoding.device).contiguous()
         self._omega_encoding.copy_(omega_encoding)
 
     def set_mode_encoding(self, mode_encoding: torch.Tensor):
@@ -385,6 +403,8 @@ class CombinedFiLMTimeEmbed(nn.Module):
         mode_encoding: torch.Tensor,
     ):
         """Set both encodings for next forward pass."""
+        # Ensure source is on same device and contiguous for atomic copy
+        omega_encoding = omega_encoding.to(self._omega_encoding.device).contiguous()
         self._omega_encoding.copy_(omega_encoding)
         self._mode_encoding = mode_encoding
 
@@ -440,21 +460,17 @@ class CombinedFiLMModelWrapper(nn.Module):
         original_time_embed = model.time_embed
         self.combined_film_time_embed = CombinedFiLMTimeEmbed(original_time_embed, embed_dim)
 
-        # Replace the model's time_embed
+        # Replace the model's time_embed and ensure it's on same device
+        move_module_to_model_device(model, self.combined_film_time_embed)
         model.time_embed = self.combined_film_time_embed
-
-        # Ensure on same device as model
-        try:
-            device = next(model.parameters()).device
-            self.combined_film_time_embed = self.combined_film_time_embed.to(device)
-            model.time_embed = self.combined_film_time_embed
-        except StopIteration:
-            pass
 
     def forward(
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
+        *,
+        conditioning: dict[str, Any] | None = None,
+        # Deprecated individual params (kept for backward compat)
         omega: dict[str, Any] | None = None,
         mode_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -463,12 +479,20 @@ class CombinedFiLMModelWrapper(nn.Module):
         Args:
             x: Noisy input tensor [B, C, H, W]
             timesteps: Timestep tensor [B]
-            omega: Optional ScoreAug parameters for conditioning
-            mode_id: Optional mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd).
+            conditioning: Optional dict with conditioning params. Supported keys:
+                - 'omega': ScoreAug parameters dict
+                - 'mode_id': Mode ID tensor [B] (0=bravo, 1=flair, 2=t1_pre, 3=t1_gd)
+            omega: (Deprecated) Use conditioning={'omega': ...} instead.
+            mode_id: (Deprecated) Use conditioning={'mode_id': ...} instead.
 
         Returns:
             Model prediction [B, C_out, H, W]
         """
+        # Build conditioning from dict or individual params
+        if conditioning is not None:
+            omega = conditioning.get('omega', omega)
+            mode_id = conditioning.get('mode_id', mode_id)
+
         batch_size = x.shape[0]
         omega_encoding = _get_encode_omega()(omega, x.device, mode_id=mode_id)
         mode_encoding = encode_mode_id(mode_id, x.device, batch_size=batch_size)

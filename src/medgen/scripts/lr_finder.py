@@ -44,7 +44,7 @@ from medgen.diffusion import (
 
 setup_cuda_optimizations()
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def find_lr_diffusion(
@@ -142,7 +142,7 @@ def find_lr_diffusion(
             best_loss = smoothed_loss
 
         if step > 10 and smoothed_loss > diverge_th * best_loss:
-            log.info(f"Stopping early: loss diverged at LR={optimizer.param_groups[0]['lr']:.2e}")
+            logger.info(f"Stopping early: loss diverged at LR={optimizer.param_groups[0]['lr']:.2e}")
             break
 
         current_lr = optimizer.param_groups[0]['lr']
@@ -252,7 +252,7 @@ def find_lr_vae(
             best_loss = smoothed_loss
 
         if step > 10 and smoothed_loss > diverge_th * best_loss:
-            log.info(f"Stopping early: loss diverged at LR={optimizer.param_groups[0]['lr']:.2e}")
+            logger.info(f"Stopping early: loss diverged at LR={optimizer.param_groups[0]['lr']:.2e}")
             break
 
         current_lr = optimizer.param_groups[0]['lr']
@@ -377,11 +377,11 @@ def main(cfg: DictConfig) -> None:
 
     mode_name = cfg.mode.name
     strategy_name = cfg.get('strategy', {}).get('name', 'ddpm')
-    log.info("LR Finder Configuration:")
-    log.info(f"  Model type: {model_type}")
-    log.info(f"  Mode: {mode_name}")
-    log.info(f"  LR range: {min_lr:.2e} - {max_lr:.2e}")
-    log.info(f"  Steps: {num_steps}")
+    logger.info("LR Finder Configuration:")
+    logger.info(f"  Model type: {model_type}")
+    logger.info(f"  Mode: {mode_name}")
+    logger.info(f"  LR range: {min_lr:.2e} - {max_lr:.2e}")
+    logger.info(f"  Steps: {num_steps}")
 
     # Create dataloader and determine channels based on model type
     if model_type == 'vae':
@@ -434,14 +434,14 @@ def main(cfg: DictConfig) -> None:
             spatial_dims=2, network_type="squeeze", is_fake_3d=False
         ).to(device)
 
-        log.info("")
-        log.info("=" * 60)
-        log.info(f"LR Finder - VAE ({mode_name} mode)")
-        log.info(f"Image size: {cfg.model.image_size} | Channels: {n_channels}")
-        log.info(f"VAE params: {sum(p.numel() for p in model.parameters()):,}")
-        log.info("Note: GAN disabled for stable LR finding")
-        log.info("=" * 60)
-        log.info("")
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"LR Finder - VAE ({mode_name} mode)")
+        logger.info(f"Image size: {cfg.model.image_size} | Channels: {n_channels}")
+        logger.info(f"VAE params: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info("Note: GAN disabled for stable LR finding")
+        logger.info("=" * 60)
+        logger.info("")
 
         lrs, losses = find_lr_vae(
             model=model,
@@ -462,19 +462,19 @@ def main(cfg: DictConfig) -> None:
         # Discriminator LR is typically 5x generator LR
         suggested_disc_lr = suggested_lr * 5
 
-        log.info("")
-        log.info("=" * 60)
-        log.info("Results:")
-        log.info(f"  VAE LR:           {suggested_lr:.2e}")
-        log.info(f"  Discriminator LR: {suggested_disc_lr:.2e} (5x VAE)")
-        log.info("=" * 60)
-        log.info("")
-        log.info(f"Plot saved to: {plot_path}")
-        log.info("")
-        log.info("Suggested command:")
-        log.info(f"  python -m medgen.scripts.train_vae mode={mode_name} \\")
-        log.info(f"    training.learning_rate={suggested_lr:.2e} \\")
-        log.info(f"    vae.disc_lr={suggested_disc_lr:.2e}")
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Results:")
+        logger.info(f"  VAE LR:           {suggested_lr:.2e}")
+        logger.info(f"  Discriminator LR: {suggested_disc_lr:.2e} (5x VAE)")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info(f"Plot saved to: {plot_path}")
+        logger.info("")
+        logger.info("Suggested command:")
+        logger.info(f"  python -m medgen.scripts.train_vae mode={mode_name} \\")
+        logger.info(f"    training.learning_rate={suggested_lr:.2e} \\")
+        logger.info(f"    vae.disc_lr={suggested_disc_lr:.2e}")
 
     else:
         # Diffusion LR finder
@@ -507,13 +507,13 @@ def main(cfg: DictConfig) -> None:
             spatial_dims=2, network_type="squeeze", is_fake_3d=False
         ).to(device)
 
-        log.info("")
-        log.info("=" * 60)
-        log.info(f"LR Finder - Diffusion ({mode_name} mode, {strategy_name})")
-        log.info(f"Image size: {cfg.model.image_size}")
-        log.info(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
-        log.info("=" * 60)
-        log.info("")
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"LR Finder - Diffusion ({mode_name} mode, {strategy_name})")
+        logger.info(f"Image size: {cfg.model.image_size}")
+        logger.info(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info("=" * 60)
+        logger.info("")
 
         lrs, losses = find_lr_diffusion(
             model=model,
@@ -532,17 +532,17 @@ def main(cfg: DictConfig) -> None:
         plot_path = os.path.join(output_dir, 'lr_finder.png')
         suggested_lr = plot_lr_finder_diffusion(lrs, losses, plot_path)
 
-        log.info("")
-        log.info("=" * 60)
-        log.info("Results:")
-        log.info(f"  Suggested LR: {suggested_lr:.2e}")
-        log.info("=" * 60)
-        log.info("")
-        log.info(f"Plot saved to: {plot_path}")
-        log.info("")
-        log.info("Suggested command:")
-        log.info(f"  python -m medgen.scripts.train mode={mode_name} strategy={strategy_name} \\")
-        log.info(f"    training.learning_rate={suggested_lr:.2e}")
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Results:")
+        logger.info(f"  Suggested LR: {suggested_lr:.2e}")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info(f"Plot saved to: {plot_path}")
+        logger.info("")
+        logger.info("Suggested command:")
+        logger.info(f"  python -m medgen.scripts.train mode={mode_name} strategy={strategy_name} \\")
+        logger.info(f"    training.learning_rate={suggested_lr:.2e}")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ Consolidates the generation metrics logic from DiffusionTrainer into a reusable 
 """
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -37,7 +37,7 @@ class GenerationMetricsManager:
         image_size: int,
         device: torch.device,
         save_dir: str,
-        space: Optional['DiffusionSpace'] = None,
+        space: 'DiffusionSpace | None' = None,
         samples_per_epoch: int = 100,
         samples_extended: int = 500,
         samples_test: int = 1000,
@@ -119,7 +119,7 @@ class GenerationMetricsManager:
             size_bin_fov_mm=self.size_bin_fov_mm,
         )
 
-    def create_metrics(self) -> Optional['GenerationMetrics']:
+    def create_metrics(self) -> 'GenerationMetrics | None':
         """Create GenerationMetrics instance.
 
         Returns:
@@ -195,12 +195,12 @@ class GenerationMetricsManager:
         return self._initialized
 
     @property
-    def metrics(self) -> Optional['GenerationMetrics']:
+    def metrics(self) -> 'GenerationMetrics | None':
         """Get underlying GenerationMetrics instance."""
         return self._metrics
 
     @property
-    def config(self) -> Optional['GenerationMetricsConfig']:
+    def config(self) -> 'GenerationMetricsConfig | None':
         """Get configuration."""
         return self._config
 
@@ -276,7 +276,7 @@ def create_gen_metrics_manager_from_config(
     spatial_dims: int,
     device: torch.device,
     save_dir: str,
-    space: Optional['DiffusionSpace'] = None,
+    space: 'DiffusionSpace | None' = None,
     is_main_process: bool = True,
 ) -> GenerationMetricsManager:
     """Create GenerationMetricsManager from Hydra config.

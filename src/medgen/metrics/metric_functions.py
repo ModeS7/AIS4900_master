@@ -23,6 +23,7 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
+@torch.no_grad()
 def compute_kid(
     real_features: torch.Tensor,
     generated_features: torch.Tensor,
@@ -100,6 +101,7 @@ def compute_kid(
     return kid_mean, kid_std
 
 
+@torch.no_grad()
 def compute_cmmd(
     real_features: torch.Tensor,
     generated_features: torch.Tensor,
@@ -174,6 +176,7 @@ def compute_cmmd(
     return float(torch.sqrt(torch.clamp(mmd_squared, min=0)).item())
 
 
+@torch.no_grad()
 def compute_fid(
     real_features: torch.Tensor,
     generated_features: torch.Tensor,
@@ -226,7 +229,7 @@ def compute_fid(
         fid = diff_squared + trace_term
         return float(fid)
 
-    except Exception as e:
+    except (ValueError, np.linalg.LinAlgError) as e:
         logger.warning(f"FID computation failed: {e}")
         return float('inf')
 
@@ -301,6 +304,7 @@ def extract_features_3d(
     return torch.cat(all_features, dim=0)
 
 
+@torch.no_grad()
 def compute_kid_3d(
     real_volumes: torch.Tensor,
     generated_volumes: torch.Tensor,
@@ -333,6 +337,7 @@ def compute_kid_3d(
     return compute_kid(real_features, gen_features, subset_size, num_subsets)
 
 
+@torch.no_grad()
 def compute_cmmd_3d(
     real_volumes: torch.Tensor,
     generated_volumes: torch.Tensor,
@@ -363,6 +368,7 @@ def compute_cmmd_3d(
     return compute_cmmd(real_features, gen_features, kernel_bandwidth)
 
 
+@torch.no_grad()
 def compute_fid_3d(
     real_volumes: torch.Tensor,
     generated_volumes: torch.Tensor,

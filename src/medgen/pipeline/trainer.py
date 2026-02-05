@@ -149,7 +149,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
         if self.is_main_process:
-            logger.info(f"[DEBUG] use_fp32_loss = {self.use_fp32_loss}")
+            logger.debug(f"use_fp32_loss = {self.use_fp32_loss}")
 
         # Optimizer settings
         optimizer_cfg = cfg.training.get('optimizer', {})
@@ -209,234 +209,27 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Cached volume loaders for 3D MS-SSIM (avoid recreating datasets every epoch)
         self._volume_loaders_cache: dict[str, DataLoader] = {}
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Modular initialization (uses helper methods for cleaner code)
+        # ─────────────────────────────────────────────────────────────────────
+
         # ScoreAug initialization (applies transforms to noisy data)
-        self.score_aug = None
-        self.use_omega_conditioning = False
-        self.use_mode_intensity_scaling = False
-        self._apply_mode_intensity_scale = None  # Function reference (lazy import)
-        score_aug_cfg = cfg.training.get('score_aug', {})
-        if score_aug_cfg.get('enabled', False):
-            from medgen.augmentation import ScoreAugTransform
-            self.score_aug = ScoreAugTransform(
-                spatial_dims=spatial_dims,
-                rotation=score_aug_cfg.get('rotation', True),
-                flip=score_aug_cfg.get('flip', True),
-                translation=score_aug_cfg.get('translation', False),
-                cutout=score_aug_cfg.get('cutout', False),
-                compose=score_aug_cfg.get('compose', False),
-                compose_prob=score_aug_cfg.get('compose_prob', 0.5),
-                v2_mode=score_aug_cfg.get('v2_mode', False),
-                nondestructive_prob=score_aug_cfg.get('nondestructive_prob', 0.5),
-                destructive_prob=score_aug_cfg.get('destructive_prob', 0.5),
-                cutout_vs_pattern=score_aug_cfg.get('cutout_vs_pattern', 0.5),
-                patterns_checkerboard=score_aug_cfg.get('patterns_checkerboard', True),
-                patterns_grid_dropout=score_aug_cfg.get('patterns_grid_dropout', True),
-                patterns_coarse_dropout=score_aug_cfg.get('patterns_coarse_dropout', True),
-                patterns_patch_dropout=score_aug_cfg.get('patterns_patch_dropout', True),
-            )
-
-            self.use_omega_conditioning = score_aug_cfg.get('use_omega_conditioning', False)
-
-            # Mode intensity scaling: scales input by modality-specific factor (2D only)
-            # Forces model to use mode conditioning (similar to how rotation requires omega)
-            self.use_mode_intensity_scaling = score_aug_cfg.get('mode_intensity_scaling', False)
-            if self.use_mode_intensity_scaling:
-                if spatial_dims == 3:
-                    if self.is_main_process:
-                        logger.warning(
-                            "mode_intensity_scaling is not supported in 3D diffusion "
-                            "(requires mode_id from multi-modality mode). Ignoring."
-                        )
-                    self.use_mode_intensity_scaling = False
-                else:
-                    from medgen.augmentation import apply_mode_intensity_scale
-                    self._apply_mode_intensity_scale = apply_mode_intensity_scale
-
-            # Validate: rotation/flip require omega conditioning per ScoreAug paper
-            # Gaussian noise is rotation-invariant, allowing model to "cheat" without conditioning
-            has_spatial_transforms = (
-                score_aug_cfg.get('rotation', True) or score_aug_cfg.get('flip', True)
-            )
-            if has_spatial_transforms and not self.use_omega_conditioning:
-                raise ValueError(
-                    "ScoreAug rotation/flip require omega conditioning (per ScoreAug paper). "
-                    "Gaussian noise is rotation-invariant, allowing the model to detect "
-                    "rotation from noise patterns and 'cheat' by inverting before denoising. "
-                    "Fix: Set training.score_aug.use_omega_conditioning=true"
-                )
-
-            # Validate: mode_intensity_scaling requires omega conditioning + mode embedding
-            if self.use_mode_intensity_scaling and not self.use_omega_conditioning:
-                raise ValueError(
-                    "Mode intensity scaling requires omega conditioning. "
-                    "Fix: Set training.score_aug.use_omega_conditioning=true"
-                )
-
-            if self.is_main_process:
-                transforms = []
-                if score_aug_cfg.get('rotation', True):
-                    transforms.append('rotation')
-                if score_aug_cfg.get('flip', True):
-                    transforms.append('flip')
-                if score_aug_cfg.get('translation', False):
-                    transforms.append('translation')
-                if score_aug_cfg.get('cutout', False):
-                    transforms.append('cutout')
-                if score_aug_cfg.get('brightness', False) and spatial_dims == 2:
-                    transforms.append(f"brightness({score_aug_cfg.get('brightness_range', 1.2)})")
-                n_options = len(transforms) + 1
-                logger.info(
-                    f"ScoreAug {spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
-                    f"each with 1/{n_options} prob (uniform), "
-                    f"omega_conditioning={self.use_omega_conditioning}, "
-                    f"mode_intensity_scaling={self.use_mode_intensity_scaling}"
-                )
+        self._setup_score_aug()
 
         # SDA (Shifted Data Augmentation) initialization
-        # Unlike ScoreAug (transforms noisy data), SDA transforms CLEAN data
-        # and uses a shifted noise level to prevent leakage
-        self.sda = None
-        self.sda_weight = 1.0
-        sda_cfg = cfg.training.get('sda', {})
-        if sda_cfg.get('enabled', False):
-            # SDA and ScoreAug are mutually exclusive
-            if self.score_aug is not None:
-                if self.is_main_process:
-                    logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
-            else:
-                # Unified SDATransform handles both 2D and 3D based on input dims
-                from medgen.augmentation import SDATransform
-                self.sda = SDATransform(
-                    rotation=sda_cfg.get('rotation', True),
-                    flip=sda_cfg.get('flip', True),
-                    noise_shift=sda_cfg.get('noise_shift', 0.1),
-                    prob=sda_cfg.get('prob', 0.5),
-                )
-                self.sda_weight = sda_cfg.get('weight', 1.0)
+        self._setup_sda()
 
-                if self.is_main_process:
-                    transforms = []
-                    if sda_cfg.get('rotation', True):
-                        transforms.append('rotation')
-                    if sda_cfg.get('flip', True):
-                        transforms.append('flip')
-                    logger.info(
-                        f"SDA {spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
-                        f"noise_shift={sda_cfg.get('noise_shift', 0.1)}, "
-                        f"prob={sda_cfg.get('prob', 0.5)}, weight={self.sda_weight}"
-                    )
+        # Mode embedding and size bin embedding
+        self._setup_conditional_embeddings()
 
-        # Mode embedding for multi-modality training
-        self.use_mode_embedding = cfg.mode.get('use_mode_embedding', False)
-        self.mode_embedding_strategy = cfg.mode.get('mode_embedding_strategy', 'full')
-        self.mode_embedding_dropout = cfg.mode.get('mode_embedding_dropout', 0.2)
-        self.late_mode_start_level = cfg.mode.get('late_mode_start_level', 2)
+        # DC-AE 1.5: Augmented Diffusion Training
+        self._setup_augmented_diffusion()
 
-        if self.use_mode_embedding and self.is_main_process:
-            logger.info(
-                f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
-                f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
-            )
+        # Log training tricks configuration
+        self._log_training_tricks_config()
 
-        # Size bin embedding for seg_conditioned mode
-        self.use_size_bin_embedding = (self.mode_name == 'seg_conditioned')
-        if self.use_size_bin_embedding:
-            size_bin_cfg = cfg.mode.get('size_bins', {})
-            bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
-            # Default: len(edges) bins (6 bounded + 1 overflow for >= last edge)
-            self.size_bin_num_bins = size_bin_cfg.get('num_bins', len(bin_edges))
-            self.size_bin_max_count = size_bin_cfg.get('max_count_per_bin', 10)
-            self.size_bin_embed_dim = size_bin_cfg.get('embedding_dim', 32)
-            if self.is_main_process:
-                logger.info(
-                    f"Size bin embedding enabled: num_bins={self.size_bin_num_bins}, "
-                    f"max_count={self.size_bin_max_count}, embed_dim={self.size_bin_embed_dim}"
-                )
-
-        # DC-AE 1.5: Augmented Diffusion Training (channel masking for latent diffusion)
-        aug_diff_cfg = cfg.training.get('augmented_diffusion', {})
-        self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
-        self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
-        self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
-        self._aug_diff_channel_steps: list[int] | None = None  # Computed lazily
-
-        if self.augmented_diffusion_enabled and self.is_main_process:
-            # Only effective for latent diffusion
-            if self.space.scale_factor > 1:
-                logger.info(
-                    f"DC-AE 1.5 Augmented Diffusion Training enabled: "
-                    f"min_channels={self.aug_diff_min_channels}, step={self.aug_diff_channel_step}"
-                )
-            else:
-                logger.warning(
-                    "Augmented Diffusion Training enabled but using pixel space. "
-                    "This has no effect - only applies to latent diffusion."
-                )
-
-        # Log gradient noise configuration
-        grad_noise_cfg = cfg.training.get('gradient_noise', {})
-        if grad_noise_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(
-                f"Gradient noise injection enabled: "
-                f"sigma={grad_noise_cfg.get('sigma', 0.01)}, decay={grad_noise_cfg.get('decay', 0.55)}"
-            )
-
-        # Log curriculum timestep configuration
-        curriculum_cfg = cfg.training.get('curriculum', {})
-        if curriculum_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(
-                f"Curriculum timestep scheduling enabled: "
-                f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
-                f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
-                f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
-            )
-
-        # Log "clean" regularization techniques
-        jitter_cfg = cfg.training.get('timestep_jitter', {})
-        if jitter_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
-
-        self_cond_cfg = cfg.training.get('self_conditioning', {})
-        if self_cond_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
-
-        feat_cfg = cfg.training.get('feature_perturbation', {})
-        if feat_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(
-                f"Feature perturbation enabled: std={feat_cfg.get('std', 0.1)}, "
-                f"layers={feat_cfg.get('layers', ['mid'])}"
-            )
-
-        noise_aug_cfg = cfg.training.get('noise_augmentation', {})
-        if noise_aug_cfg.get('enabled', False) and self.is_main_process:
-            logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
-
-        # Note on conditioning dropout for classifier-free guidance:
-        # - seg_conditioned mode: CFG dropout handled in dataloader (cfg_dropout_prob in config)
-        # - bravo/dual 2D: ~65-75% natural dropout from tumor-free slices
-        # - bravo/dual 3D: NO natural dropout - every volume has tumors
-
-        # Region-weighted loss (per-pixel weighting by tumor size)
-        # Only applies to conditional modes (bravo, dual, multi) where seg mask is available
-        self.regional_weight_computer: RegionalWeightComputer | None = None
-        rw_cfg = cfg.training.get('regional_weighting', {})
-        if rw_cfg.get('enabled', False):
-            if self.mode.is_conditional:
-                self.regional_weight_computer = create_regional_weight_computer(cfg)
-                if self.is_main_process:
-                    weights = rw_cfg.get('weights', {})
-                    logger.info(
-                        f"Region-weighted loss enabled: "
-                        f"tiny={weights.get('tiny', 2.5)}, small={weights.get('small', 1.8)}, "
-                        f"medium={weights.get('medium', 1.4)}, large={weights.get('large', 1.2)}, "
-                        f"bg={rw_cfg.get('background_weight', 1.0)}"
-                    )
-            else:
-                if self.is_main_process:
-                    logger.warning(
-                        "Regional weighting enabled but mode is not conditional (seg mode). "
-                        "Skipping - regional weighting requires segmentation mask as conditioning."
-                    )
+        # Region-weighted loss
+        self._setup_regional_weighting()
 
         # Generation quality metrics (KID, CMMD) for overfitting detection
         self._gen_metrics: GenerationMetrics | None = None
@@ -505,30 +298,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
         else:
             self._gen_metrics_config = None
 
-        # ControlNet configuration (for pixel-resolution conditioning in latent diffusion)
-        controlnet_cfg = cfg.get('controlnet', {})
-        self.use_controlnet: bool = controlnet_cfg.get('enabled', False)
-        self.controlnet_freeze_unet: bool = controlnet_cfg.get('freeze_unet', True)
-        self.controlnet_scale: float = controlnet_cfg.get('conditioning_scale', 1.0)
-        self.controlnet_cfg_dropout_prob: float = controlnet_cfg.get('cfg_dropout_prob', 0.15)
-        self.controlnet: nn.Module | None = None
-
-        # Stage 1 mode: Train UNet without conditioning (in_channels=out_channels)
-        # This prepares the UNet for Stage 2 ControlNet training
-        # The model learns unconditional denoising, then ControlNet adds conditioning
-        self.controlnet_stage1: bool = controlnet_cfg.get('stage1', False)
-
-        if self.controlnet_stage1 and self.is_main_process:
-            logger.info(
-                "ControlNet Stage 1: Training unconditional UNet (in_channels=out_channels). "
-                "Use this checkpoint for Stage 2 with controlnet.enabled=true"
-            )
-
-        if self.use_controlnet and self.is_main_process:
-            logger.info(
-                f"ControlNet Stage 2: freeze_unet={self.controlnet_freeze_unet}, "
-                f"conditioning_scale={self.controlnet_scale}"
-            )
+        # ControlNet configuration
+        self._setup_controlnet()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Convenience Constructors
@@ -559,6 +330,320 @@ class DiffusionTrainer(DiffusionTrainerBase):
             DiffusionTrainer with spatial_dims=3.
         """
         return cls(cfg, spatial_dims=3, **kwargs)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Initialization Helpers (modular setup methods)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _setup_score_aug(self) -> None:
+        """Initialize ScoreAug transform and related settings.
+
+        Sets up:
+        - self.score_aug: ScoreAugTransform instance or None
+        - self.use_omega_conditioning: bool
+        - self.use_mode_intensity_scaling: bool
+        - self._apply_mode_intensity_scale: function reference or None
+
+        Validates ScoreAug configuration constraints (rotation/flip require omega).
+        """
+        from .diffusion_config import ScoreAugConfig, validate_score_aug_config
+
+        score_aug_cfg = ScoreAugConfig.from_hydra(self.cfg)
+
+        self.score_aug = None
+        self.use_omega_conditioning = False
+        self.use_mode_intensity_scaling = False
+        self._apply_mode_intensity_scale = None
+
+        if not score_aug_cfg.enabled:
+            return
+
+        # Validate configuration constraints
+        validate_score_aug_config(score_aug_cfg, self.spatial_dims, self.is_main_process)
+
+        # Create ScoreAugTransform
+        from medgen.augmentation import ScoreAugTransform
+        self.score_aug = ScoreAugTransform(
+            spatial_dims=self.spatial_dims,
+            rotation=score_aug_cfg.rotation,
+            flip=score_aug_cfg.flip,
+            translation=score_aug_cfg.translation,
+            cutout=score_aug_cfg.cutout,
+            compose=score_aug_cfg.compose,
+            compose_prob=score_aug_cfg.compose_prob,
+            v2_mode=score_aug_cfg.v2_mode,
+            nondestructive_prob=score_aug_cfg.nondestructive_prob,
+            destructive_prob=score_aug_cfg.destructive_prob,
+            cutout_vs_pattern=score_aug_cfg.cutout_vs_pattern,
+            patterns_checkerboard=score_aug_cfg.patterns_checkerboard,
+            patterns_grid_dropout=score_aug_cfg.patterns_grid_dropout,
+            patterns_coarse_dropout=score_aug_cfg.patterns_coarse_dropout,
+            patterns_patch_dropout=score_aug_cfg.patterns_patch_dropout,
+        )
+
+        self.use_omega_conditioning = score_aug_cfg.use_omega_conditioning
+
+        # Mode intensity scaling (2D only)
+        self.use_mode_intensity_scaling = score_aug_cfg.use_mode_intensity_scaling
+        if self.use_mode_intensity_scaling:
+            if self.spatial_dims == 3:
+                if self.is_main_process:
+                    logger.warning(
+                        "mode_intensity_scaling is not supported in 3D diffusion. Ignoring."
+                    )
+                self.use_mode_intensity_scaling = False
+            else:
+                from medgen.augmentation import apply_mode_intensity_scale
+                self._apply_mode_intensity_scale = apply_mode_intensity_scale
+
+        # Log configuration
+        if self.is_main_process:
+            transforms = []
+            if score_aug_cfg.rotation:
+                transforms.append('rotation')
+            if score_aug_cfg.flip:
+                transforms.append('flip')
+            if score_aug_cfg.translation:
+                transforms.append('translation')
+            if score_aug_cfg.cutout:
+                transforms.append('cutout')
+            if score_aug_cfg.brightness and self.spatial_dims == 2:
+                transforms.append(f"brightness({score_aug_cfg.brightness_range})")
+            n_options = len(transforms) + 1
+            logger.info(
+                f"ScoreAug {self.spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
+                f"each with 1/{n_options} prob (uniform), "
+                f"omega_conditioning={self.use_omega_conditioning}, "
+                f"mode_intensity_scaling={self.use_mode_intensity_scaling}"
+            )
+
+    def _setup_sda(self) -> None:
+        """Initialize SDA (Shifted Data Augmentation) transform.
+
+        Sets up:
+        - self.sda: SDATransform instance or None
+        - self.sda_weight: float
+
+        SDA is mutually exclusive with ScoreAug.
+        """
+        from .diffusion_config import SDAConfig
+
+        sda_cfg = SDAConfig.from_hydra(self.cfg)
+
+        self.sda = None
+        self.sda_weight = 1.0
+
+        if not sda_cfg.enabled:
+            return
+
+        # SDA and ScoreAug are mutually exclusive
+        if self.score_aug is not None:
+            if self.is_main_process:
+                logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
+            return
+
+        from medgen.augmentation import SDATransform
+        self.sda = SDATransform(
+            rotation=sda_cfg.rotation,
+            flip=sda_cfg.flip,
+            noise_shift=sda_cfg.noise_shift,
+            prob=sda_cfg.prob,
+        )
+        self.sda_weight = sda_cfg.weight
+
+        if self.is_main_process:
+            transforms = []
+            if sda_cfg.rotation:
+                transforms.append('rotation')
+            if sda_cfg.flip:
+                transforms.append('flip')
+            logger.info(
+                f"SDA {self.spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
+                f"noise_shift={sda_cfg.noise_shift}, prob={sda_cfg.prob}, weight={self.sda_weight}"
+            )
+
+    def _setup_conditional_embeddings(self) -> None:
+        """Initialize mode embedding and size bin embedding settings.
+
+        Sets up:
+        - self.use_mode_embedding: bool
+        - self.mode_embedding_strategy: str
+        - self.mode_embedding_dropout: float
+        - self.late_mode_start_level: int
+        - self.use_size_bin_embedding: bool
+        - self.size_bin_num_bins: int
+        - self.size_bin_max_count: int
+        - self.size_bin_embed_dim: int
+        """
+        from .diffusion_config import ModeEmbeddingConfig, SizeBinConfig
+
+        mode_cfg = ModeEmbeddingConfig.from_hydra(self.cfg)
+        size_bin_cfg = SizeBinConfig.from_hydra(self.cfg, self.mode_name)
+
+        # Mode embedding
+        self.use_mode_embedding = mode_cfg.enabled
+        self.mode_embedding_strategy = mode_cfg.strategy
+        self.mode_embedding_dropout = mode_cfg.dropout
+        self.late_mode_start_level = mode_cfg.late_start_level
+
+        if self.use_mode_embedding and self.is_main_process:
+            logger.info(
+                f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
+                f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
+            )
+
+        # Size bin embedding
+        self.use_size_bin_embedding = size_bin_cfg.enabled
+        if self.use_size_bin_embedding:
+            self.size_bin_num_bins = size_bin_cfg.num_bins
+            self.size_bin_max_count = size_bin_cfg.max_count
+            self.size_bin_embed_dim = size_bin_cfg.embed_dim
+            if self.is_main_process:
+                logger.info(
+                    f"Size bin embedding enabled: num_bins={self.size_bin_num_bins}, "
+                    f"max_count={self.size_bin_max_count}, embed_dim={self.size_bin_embed_dim}"
+                )
+
+    def _setup_augmented_diffusion(self) -> None:
+        """Initialize DC-AE 1.5 augmented diffusion training settings.
+
+        Sets up:
+        - self.augmented_diffusion_enabled: bool
+        - self.aug_diff_min_channels: int
+        - self.aug_diff_channel_step: int
+        - self._aug_diff_channel_steps: list[int] | None
+        """
+        from .diffusion_config import AugmentedDiffusionConfig
+
+        aug_cfg = AugmentedDiffusionConfig.from_hydra(self.cfg)
+
+        self.augmented_diffusion_enabled = aug_cfg.enabled
+        self.aug_diff_min_channels = aug_cfg.min_channels
+        self.aug_diff_channel_step = aug_cfg.channel_step
+        self._aug_diff_channel_steps = None  # Computed lazily
+
+        if self.augmented_diffusion_enabled and self.is_main_process:
+            if self.space.scale_factor > 1:
+                logger.info(
+                    f"DC-AE 1.5 Augmented Diffusion Training enabled: "
+                    f"min_channels={self.aug_diff_min_channels}, step={self.aug_diff_channel_step}"
+                )
+            else:
+                logger.warning(
+                    "Augmented Diffusion Training enabled but using pixel space. "
+                    "This has no effect - only applies to latent diffusion."
+                )
+
+    def _setup_regional_weighting(self) -> None:
+        """Initialize region-weighted loss computer.
+
+        Sets up:
+        - self.regional_weight_computer: RegionalWeightComputer | None
+        """
+        from .diffusion_config import RegionalWeightingConfig
+
+        rw_cfg = RegionalWeightingConfig.from_hydra(self.cfg)
+
+        self.regional_weight_computer = None
+
+        if not rw_cfg.enabled:
+            return
+
+        if self.mode.is_conditional:
+            self.regional_weight_computer = create_regional_weight_computer(self.cfg)
+            if self.is_main_process:
+                logger.info(
+                    f"Region-weighted loss enabled: "
+                    f"tiny={rw_cfg.tiny_weight}, small={rw_cfg.small_weight}, "
+                    f"medium={rw_cfg.medium_weight}, large={rw_cfg.large_weight}, "
+                    f"bg={rw_cfg.background_weight}"
+                )
+        else:
+            if self.is_main_process:
+                logger.warning(
+                    "Regional weighting enabled but mode is not conditional (seg mode). "
+                    "Skipping - regional weighting requires segmentation mask as conditioning."
+                )
+
+    def _setup_controlnet(self) -> None:
+        """Initialize ControlNet configuration.
+
+        Sets up:
+        - self.use_controlnet: bool
+        - self.controlnet_freeze_unet: bool
+        - self.controlnet_scale: float
+        - self.controlnet_cfg_dropout_prob: float
+        - self.controlnet: nn.Module | None
+        - self.controlnet_stage1: bool
+        """
+        from .diffusion_config import ControlNetConfig
+
+        cn_cfg = ControlNetConfig.from_hydra(self.cfg)
+
+        self.use_controlnet = cn_cfg.enabled
+        self.controlnet_freeze_unet = cn_cfg.freeze_unet
+        self.controlnet_scale = cn_cfg.conditioning_scale
+        self.controlnet_cfg_dropout_prob = cn_cfg.cfg_dropout_prob
+        self.controlnet = None
+        self.controlnet_stage1 = cn_cfg.stage1
+
+        if self.controlnet_stage1 and self.is_main_process:
+            logger.info(
+                "ControlNet Stage 1: Training unconditional UNet (in_channels=out_channels). "
+                "Use this checkpoint for Stage 2 with controlnet.enabled=true"
+            )
+
+        if self.use_controlnet and self.is_main_process:
+            logger.info(
+                f"ControlNet Stage 2: freeze_unet={self.controlnet_freeze_unet}, "
+                f"conditioning_scale={self.controlnet_scale}"
+            )
+
+    def _log_training_tricks_config(self) -> None:
+        """Log configuration for various training tricks."""
+        if not self.is_main_process:
+            return
+
+        # Gradient noise
+        grad_noise_cfg = self.cfg.training.get('gradient_noise', {})
+        if grad_noise_cfg.get('enabled', False):
+            logger.info(
+                f"Gradient noise injection enabled: "
+                f"sigma={grad_noise_cfg.get('sigma', 0.01)}, decay={grad_noise_cfg.get('decay', 0.55)}"
+            )
+
+        # Curriculum
+        curriculum_cfg = self.cfg.training.get('curriculum', {})
+        if curriculum_cfg.get('enabled', False):
+            logger.info(
+                f"Curriculum timestep scheduling enabled: "
+                f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
+                f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
+                f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
+            )
+
+        # Timestep jitter
+        jitter_cfg = self.cfg.training.get('timestep_jitter', {})
+        if jitter_cfg.get('enabled', False):
+            logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
+
+        # Self-conditioning
+        self_cond_cfg = self.cfg.training.get('self_conditioning', {})
+        if self_cond_cfg.get('enabled', False):
+            logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
+
+        # Feature perturbation
+        feat_cfg = self.cfg.training.get('feature_perturbation', {})
+        if feat_cfg.get('enabled', False):
+            logger.info(
+                f"Feature perturbation enabled: std={feat_cfg.get('std', 0.1)}, "
+                f"layers={feat_cfg.get('layers', ['mid'])}"
+            )
+
+        # Noise augmentation
+        noise_aug_cfg = self.cfg.training.get('noise_augmentation', {})
+        if noise_aug_cfg.get('enabled', False):
+            logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
@@ -630,6 +715,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
             return LatentSegConditionedMode(latent_channels)
 
         return modes[mode]()
+
+    def _clear_caches(self) -> None:
+        """Clear internal caches. Call between training runs or when switching datasets.
+
+        Clears:
+        - _cached_train_batch: Cached training samples for visualization
+        - _volume_loaders_cache: Cached DataLoaders for 3D MS-SSIM
+        """
+        self._cached_train_batch = None
+        self._volume_loaders_cache.clear()
+        if self.is_main_process:
+            logger.debug("Cleared trainer caches")
 
     def setup_model(self, train_dataset: Dataset) -> None:
         """Initialize model, optimizer, and loss functions.
@@ -1288,112 +1385,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
             else:
                 # ScoreAug path: transform noisy input and target together
                 if self.score_aug is not None:
-                    # Compute velocity target BEFORE ScoreAug
-                    if self.strategy_name == 'rflow':
-                        if isinstance(images, dict):
-                            velocity_target = {k: images[k] - noise[k] for k in images.keys()}
-                        else:
-                            velocity_target = images - noise
-                    else:
-                        # DDPM predicts noise
-                        velocity_target = noise
-
-                    # For dual mode, stack velocity targets for joint transform
-                    if isinstance(velocity_target, dict):
-                        keys = list(velocity_target.keys())
-                        stacked_target = torch.cat([velocity_target[k] for k in keys], dim=1)
-                        aug_input, aug_target, omega = self.score_aug(model_input, stacked_target)
-                        # Unstack back to dict
-                        aug_velocity = {
-                            keys[0]: aug_target[:, 0:1],
-                            keys[1]: aug_target[:, 1:2],
-                        }
-                    else:
-                        aug_input, aug_velocity, omega = self.score_aug(model_input, velocity_target)
-
-                    # Apply mode intensity scaling if enabled (after ScoreAug, before model)
-                    # This scales the input by a modality-specific factor, forcing the model
-                    # to use mode conditioning to correctly predict the unscaled target
-                    if self.use_mode_intensity_scaling and mode_id is not None:
-                        aug_input, _ = self._apply_mode_intensity_scale(aug_input, mode_id)
-
-                    # Get prediction from augmented input
-                    if self.use_omega_conditioning and self.use_mode_embedding:
-                        # Model is CombinedModelWrapper, pass both omega and mode_id
-                        prediction = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
-                    elif self.use_omega_conditioning:
-                        # Model is ScoreAugModelWrapper, pass omega and mode_id for conditioning
-                        prediction = self.model(aug_input, timesteps, omega=omega, mode_id=mode_id)
-                    elif self.use_mode_embedding:
-                        # Model is ModeEmbedModelWrapper, pass mode_id for conditioning
-                        prediction = self.model(aug_input, timesteps, mode_id=mode_id)
-                    else:
-                        prediction = self.strategy.predict_noise_or_velocity(self.model, aug_input, timesteps)
-
-                    # Compute MSE loss with augmented target
-                    if isinstance(aug_velocity, dict):
-                        keys = list(aug_velocity.keys())
-                        pred_0 = prediction[:, 0:1, :, :]
-                        pred_1 = prediction[:, 1:2, :, :]
-                        mse_loss = (((pred_0 - aug_velocity[keys[0]]) ** 2).mean() +
-                                    ((pred_1 - aug_velocity[keys[1]]) ** 2).mean()) / 2
-                    else:
-                        mse_loss = ((prediction - aug_velocity) ** 2).mean()
-
-                    # Compute predicted_clean in augmented space, then inverse transform
-                    if self.perceptual_weight > 0:
-                        # Reconstruct from augmented noisy images
-                        if isinstance(noisy_images, dict):
-                            keys = list(noisy_images.keys())
-                            # Apply same transform to noisy_images for reconstruction
-                            stacked_noisy = torch.cat([noisy_images[k] for k in keys], dim=1)
-                            aug_noisy = self.score_aug.apply_omega(stacked_noisy, omega)
-                            aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
-
-                            if self.strategy_name == 'rflow':
-                                t_norm = timesteps.float() / float(self.num_timesteps)
-                                t_exp = t_norm.view(-1, 1, 1, 1)
-                                aug_clean = {k: torch.clamp(aug_noisy_dict[k] + t_exp * prediction[:, i:i+1], 0, 1)
-                                             for i, k in enumerate(keys)}
-                            else:
-                                aug_clean = {k: torch.clamp(aug_noisy_dict[k] - prediction[:, i:i+1], 0, 1)
-                                             for i, k in enumerate(keys)}
-
-                            # Inverse transform to original space
-                            inv_clean = {k: self.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
-                            if any(v is None for v in inv_clean.values()):
-                                # Non-invertible transform (rotation/flip), skip perceptual loss
-                                if self.perceptual_weight > 0:
-                                    logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
-                                p_loss = torch.tensor(0.0, device=self.device)
-                                predicted_clean = aug_clean  # Use augmented for metrics
-                            else:
-                                predicted_clean = inv_clean
-                                p_loss = self.perceptual_loss_fn(predicted_clean.float(), images.float())
-                        else:
-                            # Single channel mode
-                            aug_noisy = self.score_aug.apply_omega(noisy_images, omega)
-                            if self.strategy_name == 'rflow':
-                                t_norm = timesteps.float() / float(self.num_timesteps)
-                                t_exp = t_norm.view(-1, 1, 1, 1)
-                                aug_clean = torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
-                            else:
-                                aug_clean = torch.clamp(aug_noisy - prediction, 0, 1)
-
-                            inv_clean = self.score_aug.inverse_apply_omega(aug_clean, omega)
-                            if inv_clean is None:
-                                # Non-invertible transform (rotation/flip), skip perceptual loss
-                                if self.perceptual_weight > 0:
-                                    logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
-                                p_loss = torch.tensor(0.0, device=self.device)
-                                predicted_clean = aug_clean
-                            else:
-                                predicted_clean = inv_clean
-                                p_loss = self.perceptual_loss_fn(predicted_clean.float(), images.float())
-                    else:
-                        p_loss = torch.tensor(0.0, device=self.device)
-                        predicted_clean = images  # Placeholder for metrics
-
+                    from .training_tricks import compute_scoreaug_loss
+                    mse_loss, p_loss, predicted_clean = compute_scoreaug_loss(
+                        self, model_input, timesteps, images, noise, noisy_images, mode_id
+                    )
                     total_loss = mse_loss + self.perceptual_weight * p_loss
 
                 else:
@@ -1471,104 +1466,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # SDA (Shifted Data Augmentation) path
             # Unlike ScoreAug, SDA transforms CLEAN data before noise addition
             # and uses shifted timesteps to prevent leakage
-            sda_loss = torch.tensor(0.0, device=self.device)
             if self.sda is not None and self.score_aug is None:
-                # Apply SDA to clean images
-                if isinstance(images, dict):
-                    # Dual mode - apply same transform to both
-                    keys = list(images.keys())
-                    stacked_images = torch.cat([images[k] for k in keys], dim=1)
-                    aug_stacked, sda_info = self.sda(stacked_images)
-
-                    if sda_info is not None:
-                        # Unstack augmented images
-                        aug_images_dict = {
-                            keys[0]: aug_stacked[:, 0:1],
-                            keys[1]: aug_stacked[:, 1:2],
-                        }
-
-                        # Shift timesteps for augmented path
-                        shifted_timesteps = self.sda.shift_timesteps(timesteps)
-
-                        # Transform noise to match transformed images
-                        aug_noise_dict = {
-                            k: self.sda.apply_to_target(noise[k], sda_info)
-                            for k in keys
-                        }
-
-                        # Add TRANSFORMED noise at SHIFTED timesteps
-                        aug_noisy_dict = {
-                            k: self.strategy.add_noise(aug_images_dict[k], aug_noise_dict[k], shifted_timesteps)
-                            for k in keys
-                        }
-
-                        # Format input and get prediction
-                        aug_labels_dict = {'labels': labels}
-                        aug_model_input = self.mode.format_model_input(aug_noisy_dict, aug_labels_dict)
-
-                        if self.use_mode_embedding:
-                            aug_prediction = self.model(aug_model_input, shifted_timesteps, mode_id=mode_id)
-                        else:
-                            aug_prediction = self.strategy.predict_noise_or_velocity(
-                                self.model, aug_model_input, shifted_timesteps
-                            )
-
-                        # Compute augmented target using transformed images and noise
-                        if self.strategy_name == 'rflow':
-                            # Velocity = T(x_0) - T(noise)
-                            aug_velocity = {
-                                k: aug_images_dict[k] - aug_noise_dict[k]
-                                for k in keys
-                            }
-                            aug_mse = sum(
-                                ((aug_prediction[:, i:i+1] - aug_velocity[k]) ** 2).mean()
-                                for i, k in enumerate(keys)
-                            ) / len(keys)
-                        else:
-                            # DDPM: target is transformed noise (already computed)
-                            aug_mse = sum(
-                                ((aug_prediction[:, i:i+1] - aug_noise_dict[k]) ** 2).mean()
-                                for i, k in enumerate(keys)
-                            ) / len(keys)
-
-                        sda_loss = aug_mse
-                else:
-                    # Single channel mode
-                    aug_images, sda_info = self.sda(images)
-
-                    if sda_info is not None:
-                        # Shift timesteps for augmented path
-                        shifted_timesteps = self.sda.shift_timesteps(timesteps)
-
-                        # Transform noise to match transformed images
-                        aug_noise = self.sda.apply_to_target(noise, sda_info)
-
-                        # Add TRANSFORMED noise at SHIFTED timesteps
-                        aug_noisy = self.strategy.add_noise(aug_images, aug_noise, shifted_timesteps)
-
-                        # Format input and get prediction
-                        aug_labels_dict = {'labels': labels}
-                        aug_model_input = self.mode.format_model_input(aug_noisy, aug_labels_dict)
-
-                        if self.use_mode_embedding:
-                            aug_prediction = self.model(aug_model_input, shifted_timesteps, mode_id=mode_id)
-                        else:
-                            aug_prediction = self.strategy.predict_noise_or_velocity(
-                                self.model, aug_model_input, shifted_timesteps
-                            )
-
-                        # Compute augmented target using transformed images and noise
-                        if self.strategy_name == 'rflow':
-                            # Velocity = T(x_0) - T(noise)
-                            aug_velocity = aug_images - aug_noise
-                            aug_mse = ((aug_prediction - aug_velocity) ** 2).mean()
-                        else:
-                            # DDPM: target is transformed noise (already computed)
-                            aug_mse = ((aug_prediction - aug_noise) ** 2).mean()
-
-                        sda_loss = aug_mse
-
-                # Add SDA loss to total
+                from .training_tricks import compute_sda_loss
+                sda_loss = compute_sda_loss(
+                    self, images, noise, timesteps, labels, mode_id
+                )
                 total_loss = total_loss + self.sda_weight * sda_loss
 
         # Optimizer step (with gradient scaler for 3D AMP)
@@ -1787,6 +1689,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             pixel_val_loader: Optional pixel-space val loader for reference features.
                 Only needed when val_loader is latent space.
         """
+        # Clear caches from any previous run
+        self._clear_caches()
+
         total_start = time.time()
         self.val_loader = val_loader
 
@@ -1890,6 +1795,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 avg_loss, avg_mse, avg_perceptual = self.train_epoch(train_loader, epoch)
 
                 if self.use_multi_gpu:
+                    # Synchronize all ranks before collective operation to prevent deadlock
+                    dist.barrier()
                     loss_tensor = torch.tensor([avg_loss, avg_mse, avg_perceptual], device=self.device)
                     dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
                     avg_loss, avg_mse, avg_perceptual = (loss_tensor / self.world_size).cpu().numpy()

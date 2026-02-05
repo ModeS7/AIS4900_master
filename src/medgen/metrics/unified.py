@@ -39,7 +39,7 @@ Usage:
     self._unified_metrics.reset_validation()
 """
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -2002,7 +2002,7 @@ class UnifiedMetrics:
         epoch: int,
         total_epochs: int,
         elapsed_time: float,
-        time_estimator: Optional["EpochTimeEstimator"] = None,
+        time_estimator: "EpochTimeEstimator | None" = None,
     ):
         """Log epoch completion summary to console.
 

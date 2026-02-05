@@ -59,7 +59,7 @@ from medgen.pipeline import DiffusionTrainer
 # Enable CUDA optimizations
 setup_cuda_optimizations()
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def validate_config(cfg: DictConfig) -> None:
@@ -98,7 +98,7 @@ def main(cfg: DictConfig) -> None:
     validate_config(cfg)
 
     # Log resolved configuration
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Detect spatial dimensions (2D or 3D)
     spatial_dims = cfg.model.get('spatial_dims', 2)
@@ -160,25 +160,25 @@ def main(cfg: DictConfig) -> None:
             checkpoint_hash = LatentCacheBuilder.compute_checkpoint_hash(compression_checkpoint)
             cache_dir = f"{cfg.paths.data_dir}-latents-{compression_type}-{checkpoint_hash}"
 
-        log.info(f"Loaded {compression_type} compression model from {compression_checkpoint}")
-        log.info(f"Scale factor: {scale_factor}x, Latent channels: {latent_channels}")
-        log.info(f"Latent cache directory: {cache_dir}")
+        logger.info(f"Loaded {compression_type} compression model from {compression_checkpoint}")
+        logger.info(f"Scale factor: {scale_factor}x, Latent channels: {latent_channels}")
+        logger.info(f"Latent cache directory: {cache_dir}")
     else:
         space = PixelSpace()
         space_name = "pixel"
 
-    log.info("")
-    log.info("=" * 60)
-    log.info(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
-    log.info(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
-    log.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
-    log.info(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
-    log.info("=" * 60)
-    log.info("")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
+    logger.info(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
+    logger.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
+    logger.info(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
+    logger.info("=" * 60)
+    logger.info("")
 
     # Create trainer
     trainer = DiffusionTrainer(cfg, space=space)
-    log.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
+    logger.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Get mode configuration using ModeFactory
     mode_config = ModeFactory.get_mode_config(cfg)
@@ -212,7 +212,7 @@ def main(cfg: DictConfig) -> None:
             train_cache_dir, compression_checkpoint, require_seg_mask=require_seg_mask
         ):
             if auto_encode:
-                log.info("Train cache invalid/missing, encoding dataset...")
+                logger.info("Train cache invalid/missing, encoding dataset...")
                 # Create pixel dataloader temporarily for encoding (no augmentation)
                 _, pixel_dataset = ModeFactory.create_pixel_loader_for_latent_cache(
                     cfg, mode_config, split='train'
@@ -233,7 +233,7 @@ def main(cfg: DictConfig) -> None:
                 val_cache_dir, compression_checkpoint, require_seg_mask=require_seg_mask
             ):
                 if auto_encode:
-                    log.info("Val cache invalid/missing, encoding dataset...")
+                    logger.info("Val cache invalid/missing, encoding dataset...")
                     try:
                         _, val_pixel_dataset = ModeFactory.create_pixel_loader_for_latent_cache(
                             cfg, mode_config, split='val'
@@ -244,9 +244,9 @@ def main(cfg: DictConfig) -> None:
                             num_workers=latent_cfg.get('num_workers', 4),
                         )
                     except ValueError:
-                        log.warning("No validation data found for cache building")
+                        logger.warning("No validation data found for cache building")
                 else:
-                    log.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
+                    logger.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
 
         # Create latent dataloaders (for training)
         dataloader, train_dataset = create_latent_dataloader(
@@ -259,12 +259,12 @@ def main(cfg: DictConfig) -> None:
             rank=trainer.rank if use_multi_gpu else 0,
             world_size=trainer.world_size if use_multi_gpu else 1,
         )
-        log.info(f"Training dataset (latent): {len(train_dataset)} samples")
+        logger.info(f"Training dataset (latent): {len(train_dataset)} samples")
 
         # Create pixel-space loaders for reference feature caching
         # FID/KID metrics are computed in pixel space, not latent space
         image_type = ModeFactory.get_image_type_for_mode(mode_config.mode)
-        log.info(f"Creating pixel-space loaders for reference features (type: {image_type})")
+        logger.info(f"Creating pixel-space loaders for reference features (type: {image_type})")
         pixel_train_loader, _ = ModeFactory.create_pixel_loader_for_latent_cache(
             cfg, mode_config, split='train'
         )
@@ -282,7 +282,7 @@ def main(cfg: DictConfig) -> None:
             augment=augment,
         )
 
-        log.info(f"Training dataset: {len(train_dataset)} slices")
+        logger.info(f"Training dataset: {len(train_dataset)} slices")
         # Pixel-space training: no separate loaders needed for reference features
         pixel_train_loader = None
         pixel_val_loader = None
@@ -308,13 +308,13 @@ def main(cfg: DictConfig) -> None:
         per_modality_val_loaders = ModeFactory.create_per_modality_val_loaders(cfg, mode_config)
         if per_modality_val_loaders:
             trainer.per_modality_val_loaders = per_modality_val_loaders
-            log.info(f"Per-modality validation loaders: {list(per_modality_val_loaders.keys())}")
+            logger.info(f"Per-modality validation loaders: {list(per_modality_val_loaders.keys())}")
 
     if val_result is not None:
         val_loader, val_dataset = val_result
-        log.info(f"Validation dataset: {len(val_dataset)} samples")
+        logger.info(f"Validation dataset: {len(val_dataset)} samples")
     else:
-        log.info("No val/ directory found - using train loss for best model selection")
+        logger.info("No val/ directory found - using train loss for best model selection")
 
     # Setup model
     trainer.setup_model(train_dataset)
@@ -340,12 +340,12 @@ def main(cfg: DictConfig) -> None:
 
     if test_result is not None:
         test_loader, test_dataset = test_result
-        log.info(f"Test dataset: {len(test_dataset)} slices")
+        logger.info(f"Test dataset: {len(test_dataset)} slices")
         # Evaluate on both best and latest checkpoints
         trainer.evaluate_test_set(test_loader, checkpoint_name="best")
         trainer.evaluate_test_set(test_loader, checkpoint_name="latest")
     else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+        logger.info("No test_new/ directory found - skipping test evaluation")
 
     # Close TensorBoard writer after all logging
     trainer.close_writer()
@@ -379,20 +379,20 @@ def _train_3d(cfg: DictConfig) -> None:
     # Get mode configuration using ModeFactory (available for both latent and pixel paths)
     mode_config = ModeFactory.get_mode_config(cfg)
 
-    log.info("")
-    log.info("=" * 60)
-    log.info("3D Volumetric Diffusion Training")
-    log.info(f"Mode: {mode} | Strategy: {strategy}")
-    log.info(f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width}")
-    log.info("=" * 60)
-    log.info("")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("3D Volumetric Diffusion Training")
+    logger.info(f"Mode: {mode} | Strategy: {strategy}")
+    logger.info(f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width}")
+    logger.info("=" * 60)
+    logger.info("")
 
     # Check latent diffusion config
     latent_cfg = cfg.get('latent', {})
     use_latent = latent_cfg.get('enabled', False)
 
     if use_latent:
-        log.info("=== Latent Diffusion Mode ===")
+        logger.info("=== Latent Diffusion Mode ===")
 
         # Get checkpoint path
         checkpoint_path = latent_cfg.get('compression_checkpoint')
@@ -403,7 +403,7 @@ def _train_3d(cfg: DictConfig) -> None:
         spatial_dims_cfg = latent_cfg.get('spatial_dims', 'auto')
 
         # Load 3D compression model (returns model, type, dims, scale_factor, latent_channels)
-        log.info(f"Loading compression model from: {checkpoint_path}")
+        logger.info(f"Loading compression model from: {checkpoint_path}")
         compression_model, comp_type, detected_dims, detected_scale, detected_latent_ch = load_compression_model(
             checkpoint_path,
             compression_type,
@@ -421,7 +421,7 @@ def _train_3d(cfg: DictConfig) -> None:
                 raise ValueError(
                     f"slicewise_encoding=true requires 2D compression model, got {detected_dims}D."
                 )
-            log.info("Slicewise encoding: 2D encoder will be applied slice-by-slice to 3D volumes")
+            logger.info("Slicewise encoding: 2D encoder will be applied slice-by-slice to 3D volumes")
         else:
             # Standard mode: expect 3D encoder for 3D volume training
             if detected_dims != 3:
@@ -435,26 +435,26 @@ def _train_3d(cfg: DictConfig) -> None:
         depth_scale_factor = latent_cfg.get('depth_scale_factor') or scale_factor
         latent_channels = latent_cfg.get('latent_channels') or detected_latent_ch
 
-        log.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
-        log.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
+        logger.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
+        logger.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
 
         # Load separate seg compression model if specified (dual-encoder setup)
         seg_compression_model = None
         seg_checkpoint_path = latent_cfg.get('seg_compression_checkpoint')
         if seg_checkpoint_path is not None:
-            log.info(f"Loading SEG compression model from: {seg_checkpoint_path}")
+            logger.info(f"Loading SEG compression model from: {seg_checkpoint_path}")
             seg_compression_model, seg_comp_type, _, _, _ = load_compression_model(
                 seg_checkpoint_path,
                 compression_type,  # Use same type as bravo encoder
                 device,
                 spatial_dims=spatial_dims_cfg,
             )
-            log.info(f"Loaded SEG encoder: {seg_comp_type}")
+            logger.info(f"Loaded SEG encoder: {seg_comp_type}")
 
         # Check for slicewise encoding (2D encoder applied slice-by-slice for 3D)
         slicewise_encoding = latent_cfg.get('slicewise_encoding', False)
         if slicewise_encoding:
-            log.info("Using slicewise encoding: 2D encoder applied slice-by-slice")
+            logger.info("Using slicewise encoding: 2D encoder applied slice-by-slice")
 
         # Setup cache directory - include checkpoint hash(es) to avoid conflicts
         # between different compression models with same type (e.g., 4x vs 8x VQ-VAE)
@@ -468,7 +468,7 @@ def _train_3d(cfg: DictConfig) -> None:
                 cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{combined_hash}"
             else:
                 cache_dir = f"{cfg.paths.data_dir}-latents-{comp_type}-3d-{checkpoint_hash}"
-        log.info(f"Cache directory: {cache_dir}")
+        logger.info(f"Cache directory: {cache_dir}")
 
         # Create cache builder
         cache_builder = LatentCacheBuilder3D(
@@ -513,10 +513,10 @@ def _train_3d(cfg: DictConfig) -> None:
                             f"Set latent.auto_encode=true to build cache automatically."
                         )
                     else:
-                        log.info(f"No {split} cache found (optional)")
+                        logger.info(f"No {split} cache found (optional)")
                         continue
 
-                log.info(f"Building {split} cache (this may take a while)...")
+                logger.info(f"Building {split} cache (this may take a while)...")
 
                 # Map mode to modality for pixel dataset loading
                 # bravo_seg_cond uses bravo.nii.gz, seg_conditioned uses seg.nii.gz, etc.
@@ -528,14 +528,14 @@ def _train_3d(cfg: DictConfig) -> None:
                 elif split == 'val':
                     result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
                     if result is None:
-                        log.warning(f"No {split} data found, skipping")
+                        logger.warning(f"No {split} data found, skipping")
                         continue
                     pixel_loader, pixel_dataset = result
                 else:  # test_new
                     # Check if test_new directory exists
                     test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
                     if not os.path.exists(test_dir):
-                        log.info("No test_new data found, skipping test cache")
+                        logger.info("No test_new data found, skipping test cache")
                         continue
                     # Use SingleModality3DDatasetWithSeg for test data
                     pixel_dataset = SingleModality3DDatasetWithSeg(
@@ -558,20 +558,20 @@ def _train_3d(cfg: DictConfig) -> None:
         train_loader, train_dataset = create_latent_3d_dataloader(
             cfg, cache_dir, 'train', mode
         )
-        log.info(f"Train dataset (latent): {len(train_dataset)} volumes")
+        logger.info(f"Train dataset (latent): {len(train_dataset)} volumes")
 
         val_result = create_latent_3d_validation_dataloader(cfg, cache_dir, mode)
         if val_result is not None:
             val_loader, val_dataset = val_result
-            log.info(f"Val dataset (latent): {len(val_dataset)} volumes")
+            logger.info(f"Val dataset (latent): {len(val_dataset)} volumes")
         else:
             val_loader = None
-            log.warning("No validation dataset found")
+            logger.warning("No validation dataset found")
 
         # Create pixel-space loaders for reference feature caching
         # FID/KID metrics are computed in pixel space, not latent space
         pixel_modality = get_modality_for_mode(mode)
-        log.info(f"Creating pixel-space loaders for reference features (modality: {pixel_modality})")
+        logger.info(f"Creating pixel-space loaders for reference features (modality: {pixel_modality})")
         pixel_train_loader, _ = create_vae_3d_dataloader(cfg, pixel_modality)
         pixel_val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
@@ -591,20 +591,20 @@ def _train_3d(cfg: DictConfig) -> None:
 
     else:
         # Pixel-space training using ModeFactory
-        log.info("=== Pixel-Space Mode ===")
+        logger.info("=== Pixel-Space Mode ===")
 
         # Create train dataloader using unified factory (mode_config defined at top of function)
         train_loader, train_dataset = ModeFactory.create_train_dataloader(cfg, mode_config)
-        log.info(f"Train dataset: {len(train_dataset)} volumes")
+        logger.info(f"Train dataset: {len(train_dataset)} volumes")
 
         # Create validation dataloader
         val_result = ModeFactory.create_val_dataloader(cfg, mode_config)
         if val_result is not None:
             val_loader, val_dataset = val_result
-            log.info(f"Val dataset: {len(val_dataset)} volumes")
+            logger.info(f"Val dataset: {len(val_dataset)} volumes")
         else:
             val_loader = None
-            log.warning("No validation dataset found")
+            logger.warning("No validation dataset found")
 
         space = PixelSpace()
         # Pixel-space training: no separate loaders needed for reference features
@@ -612,18 +612,18 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_loader = None
 
     # Create and setup trainer
-    log.info("=== Creating 3D Trainer ===")
+    logger.info("=== Creating 3D Trainer ===")
     trainer = DiffusionTrainer.create_3d(cfg, space=space)
     trainer.setup_model(train_dataset)
 
     # Log model info
-    log.info(f"Model parameters: {sum(p.numel() for p in trainer.model.parameters()):,}")
-    log.info(f"Space: {type(space).__name__}")
+    logger.info(f"Model parameters: {sum(p.numel() for p in trainer.model.parameters()):,}")
+    logger.info(f"Space: {type(space).__name__}")
     if hasattr(space, 'scale_factor'):
-        log.info(f"Space scale factor: {space.scale_factor}x")
+        logger.info(f"Space scale factor: {space.scale_factor}x")
 
     # Train
-    log.info("=== Starting Training ===")
+    logger.info("=== Starting Training ===")
     trainer.train(
         train_loader, train_dataset,
         val_loader=val_loader,
@@ -637,7 +637,7 @@ def _train_3d(cfg: DictConfig) -> None:
     use_latent = cfg.latent.get('enabled', False)
 
     if run_test and os.path.exists(test_dir):
-        log.info("=== Test Evaluation ===")
+        logger.info("=== Test Evaluation ===")
 
         # Create test dataloader based on mode and latent/pixel space
         test_result = None
@@ -648,17 +648,17 @@ def _train_3d(cfg: DictConfig) -> None:
                 from medgen.data.loaders.latent import create_latent_test_dataloader
                 test_result = create_latent_test_dataloader(cfg, cache_dir, mode)
                 if test_result is None:
-                    log.warning("No test cache found for latent diffusion")
+                    logger.warning("No test cache found for latent diffusion")
             else:
                 # Pixel-space test dataloader using ModeFactory
                 # Note: mode_config was set in the pixel-space training branch
                 test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
-        except Exception as e:
-            log.warning(f"Could not create test dataloader: {e}")
+        except (RuntimeError, ValueError, FileNotFoundError) as e:
+            logger.warning(f"Could not create test dataloader: {e}")
 
         if test_result is not None:
             test_loader, test_dataset = test_result
-            log.info(f"Test dataset: {len(test_dataset)} volumes")
+            logger.info(f"Test dataset: {len(test_dataset)} volumes")
 
             # Evaluate best checkpoint
             trainer.evaluate_test_set(test_loader, checkpoint_name='best')
@@ -666,10 +666,10 @@ def _train_3d(cfg: DictConfig) -> None:
             # Evaluate latest checkpoint
             trainer.evaluate_test_set(test_loader, checkpoint_name='latest')
         else:
-            log.warning("No test dataset found or could not create dataloader")
+            logger.warning("No test dataset found or could not create dataloader")
     else:
         if run_test:
-            log.info("No test_new/ directory found - skipping test evaluation")
+            logger.info("No test_new/ directory found - skipping test evaluation")
 
     # Close TensorBoard writer
     trainer.close_writer()

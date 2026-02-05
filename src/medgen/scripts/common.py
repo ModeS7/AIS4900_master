@@ -11,7 +11,7 @@ from omegaconf import DictConfig, open_dict
 
 from medgen.core import ModeType
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def override_vae_channels(cfg: DictConfig, mode: str) -> int:

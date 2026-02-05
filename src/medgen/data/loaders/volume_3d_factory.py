@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from torch.utils.data import DataLoader, Dataset
 
-from .common import DataLoaderConfig, DistributedArgs, create_dataloader
+from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
 from .volume_3d_datasets import (
     DualVolume3DDataset,
     MultiModality3DDataset,
@@ -52,6 +52,22 @@ class VolumeConfig:
     _train_width: int | None = None
     # DataLoader config (stored as DataLoaderConfig)
     _loader_config: DataLoaderConfig = None
+
+    def __post_init__(self):
+        """Validate configuration values."""
+        if self.height <= 0:
+            raise ValueError(f"height must be > 0, got {self.height}")
+        if self.width <= 0:
+            raise ValueError(f"width must be > 0, got {self.width}")
+        if self.pad_depth_to <= 0:
+            raise ValueError(f"pad_depth_to must be > 0, got {self.pad_depth_to}")
+        if self.slice_step < 1:
+            raise ValueError(f"slice_step must be >= 1, got {self.slice_step}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+        valid_pad_modes = ('replicate', 'constant', 'reflect')
+        if self.pad_mode not in valid_pad_modes:
+            raise ValueError(f"pad_mode must be one of {valid_pad_modes}, got '{self.pad_mode}'")
 
     @classmethod
     def from_cfg(cls, cfg) -> 'VolumeConfig':
@@ -297,8 +313,8 @@ def create_vae_3d_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -320,8 +336,8 @@ def create_vae_3d_test_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    if not os.path.exists(test_dir):
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, 'test_new')
+    if test_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -396,8 +412,8 @@ def create_vae_3d_multi_modality_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -417,8 +433,8 @@ def create_vae_3d_multi_modality_test_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    if not os.path.exists(test_dir):
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, 'test_new')
+    if test_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -442,8 +458,8 @@ def create_vae_3d_single_modality_validation_loader(
     Returns:
         DataLoader for single modality or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     # Check if modality exists in any patient directory
@@ -537,8 +553,8 @@ def create_segmentation_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     dataset = Volume3DDataset(
@@ -620,8 +636,8 @@ def create_single_modality_validation_dataloader_with_seg(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     # No CFG dropout during validation

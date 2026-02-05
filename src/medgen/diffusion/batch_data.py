@@ -105,11 +105,23 @@ class BatchData:
         raise ValueError(f"Unknown batch format: {type(data)}")
 
     def to_device(self, device: torch.device) -> 'BatchData':
-        """Move all tensors to device."""
+        """Move all tensors to device.
+
+        Handles MONAI MetaTensors by converting to regular tensors first
+        to avoid metadata issues during device transfer.
+        """
+        def _move(x: Tensor | None) -> Tensor | None:
+            if x is None:
+                return None
+            # Handle MONAI MetaTensors - convert to plain tensor first
+            if hasattr(x, 'as_tensor'):
+                return x.as_tensor().to(device)
+            return x.to(device)
+
         return BatchData(
-            images=self.images.to(device) if self.images is not None else None,
-            labels=self.labels.to(device) if self.labels is not None else None,
-            size_bins=self.size_bins.to(device) if self.size_bins is not None else None,
-            bin_maps=self.bin_maps.to(device) if self.bin_maps is not None else None,
-            mode_id=self.mode_id.to(device) if self.mode_id is not None else None,
+            images=_move(self.images),
+            labels=_move(self.labels),
+            size_bins=_move(self.size_bins),
+            bin_maps=_move(self.bin_maps),
+            mode_id=_move(self.mode_id),
         )

@@ -702,8 +702,8 @@ class BaseTrainer(ABC):
                 logger.warning(f"FLOPs measurement failed (OOM or CUDA error): {e}")
             except StopIteration:
                 logger.warning("FLOPs measurement failed: empty dataloader")
-            except Exception:
-                logger.exception("FLOPs measurement failed unexpectedly")
+            except (ImportError, AssertionError) as e:
+                logger.exception(f"FLOPs measurement failed unexpectedly: {e}")
 
         # Setup PyTorch profiler if enabled
         self._profiler = self._setup_profiler()

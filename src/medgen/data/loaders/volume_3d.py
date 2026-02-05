@@ -20,6 +20,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -33,7 +34,8 @@ from monai.transforms import (
 )
 from torch.utils.data import DataLoader, Dataset
 
-from .common import DataLoaderConfig, DistributedArgs, create_dataloader
+from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
+from .volume_3d_factory import VolumeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -70,90 +72,6 @@ def build_3d_augmentation(seg_mode: bool = False, include_seg: bool = False) -> 
     ]
 
     return Compose(transforms)
-
-
-@dataclass
-class VolumeConfig:
-    """Configuration extracted from Hydra config for 3D volume loading.
-
-    Supports separate train/val resolutions for efficient training:
-    - Train at lower resolution (e.g., 128×128) for speed
-    - Validate at full resolution (e.g., 256×256) for accurate metrics
-    """
-    height: int
-    width: int
-    pad_depth_to: int
-    pad_mode: str
-    slice_step: int
-    batch_size: int
-    load_seg: bool
-    image_keys: list
-    # Optional training resolution (defaults to height/width)
-    _train_height: int | None = None
-    _train_width: int | None = None
-    # DataLoader config (stored as DataLoaderConfig)
-    _loader_config: DataLoaderConfig = None
-
-    @classmethod
-    def from_cfg(cls, cfg) -> 'VolumeConfig':
-        """Extract volume configuration from Hydra config object."""
-        logging_cfg = cfg.training.get('logging', {})
-        loader_config = DataLoaderConfig.from_cfg(cfg)
-
-        # Get optional train resolution (null in config becomes None)
-        train_height = cfg.volume.get('train_height', None)
-        train_width = cfg.volume.get('train_width', None)
-
-        return cls(
-            height=cfg.volume.height,
-            width=cfg.volume.width,
-            pad_depth_to=cfg.volume.pad_depth_to,
-            pad_mode=cfg.volume.get('pad_mode', 'replicate'),
-            slice_step=cfg.volume.get('slice_step', 1),
-            batch_size=cfg.training.batch_size,
-            load_seg=logging_cfg.get('regional_losses', False),
-            image_keys=cfg.mode.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd']),
-            _train_height=train_height,
-            _train_width=train_width,
-            _loader_config=loader_config,
-        )
-
-    @property
-    def train_height(self) -> int:
-        """Height for training (may be lower resolution)."""
-        return self._train_height if self._train_height is not None else self.height
-
-    @property
-    def train_width(self) -> int:
-        """Width for training (may be lower resolution)."""
-        return self._train_width if self._train_width is not None else self.width
-
-    @property
-    def uses_reduced_train_resolution(self) -> bool:
-        """Whether training uses lower resolution than validation."""
-        return self.train_height != self.height or self.train_width != self.width
-
-    @property
-    def loader_config(self) -> DataLoaderConfig:
-        """Get DataLoaderConfig for create_dataloader()."""
-        return self._loader_config
-
-    # Legacy properties for backwards compatibility
-    @property
-    def num_workers(self) -> int:
-        return self._loader_config.num_workers
-
-    @property
-    def prefetch_factor(self) -> int | None:
-        return self._loader_config.prefetch_factor
-
-    @property
-    def pin_memory(self) -> bool:
-        return self._loader_config.pin_memory
-
-    @property
-    def persistent_workers(self) -> bool:
-        return self._loader_config.persistent_workers
 
 
 class Base3DVolumeDataset(Dataset):
@@ -383,7 +301,7 @@ class Volume3DDataset(Base3DVolumeDataset):
     def __len__(self) -> int:
         return len(self.patients)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
         nifti_path = os.path.join(patient_dir, f"{self.modality}.nii.gz")
@@ -443,7 +361,7 @@ class DualVolume3DDataset(Base3DVolumeDataset):
     def __len__(self) -> int:
         return len(self.patients)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
@@ -609,8 +527,8 @@ def create_vae_3d_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -632,8 +550,8 @@ def create_vae_3d_test_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    if not os.path.exists(test_dir):
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, 'test_new')
+    if test_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -700,7 +618,7 @@ class MultiModality3DDataset(Base3DVolumeDataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict:
+    def __getitem__(self, idx: int) -> dict[str, Any]:
         p_idx, modality = self.samples[idx]
         patient = self.patients[p_idx]
         patient_dir = os.path.join(self.data_dir, patient)
@@ -817,8 +735,8 @@ def create_vae_3d_multi_modality_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -838,8 +756,8 @@ def create_vae_3d_multi_modality_test_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    if not os.path.exists(test_dir):
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, 'test_new')
+    if test_dir is None:
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
@@ -934,8 +852,8 @@ def create_vae_3d_single_modality_validation_loader(
     Returns:
         DataLoader for single modality or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     # Check if modality exists in any patient directory
@@ -1109,8 +1027,8 @@ def create_segmentation_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     dataset = Volume3DDataset(
@@ -1192,8 +1110,8 @@ def create_single_modality_validation_dataloader_with_seg(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, 'val')
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    if val_dir is None:
         return None
 
     # No CFG dropout during validation

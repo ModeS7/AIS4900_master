@@ -11,7 +11,7 @@ Key difference from naive channel masking:
 Reference: DC-Gen (https://arxiv.org/abs/2412.09612)
 """
 import logging
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -221,7 +221,7 @@ class StructuredAutoencoderDC(nn.Module):
         x: torch.Tensor,
         latent_channels: int | None = None,
         return_dict: bool = True,
-    ) -> Union[tuple[torch.Tensor], "EncoderOutput"]:
+    ) -> 'tuple[torch.Tensor] | EncoderOutput':
         """Encode input to latent space with optional channel restriction.
 
         Args:
@@ -264,7 +264,7 @@ class StructuredAutoencoderDC(nn.Module):
         self,
         z: torch.Tensor,
         return_dict: bool = True,
-    ) -> Union[tuple[torch.Tensor], "DecoderOutput"]:
+    ) -> 'tuple[torch.Tensor] | DecoderOutput':
         """Decode latent to output image.
 
         The decoder automatically handles variable input channels via the

@@ -39,7 +39,7 @@ from medgen.core import (
 from medgen.data import create_conditioning_wrapper
 from medgen.models.wrappers.size_bin_embed import SizeBinModelWrapper
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 WrapperType = Literal['raw', 'score_aug', 'mode_embed', 'combined', 'size_bin']
@@ -104,7 +104,7 @@ def detect_wrapper_type(state_dict: dict[str, Any]) -> WrapperType:
 
     # Has model prefix but no recognized MLPs - could be a different wrapper
     # Fall back to raw and let strict loading fail if incompatible
-    log.warning(
+    logger.warning(
         "Model has 'model.' prefix but no recognized conditioning MLPs. "
         "Attempting to load as raw model."
     )
@@ -186,7 +186,7 @@ def load_diffusion_model_with_metadata(
 
     # Detect wrapper type
     wrapper_type = detect_wrapper_type(state_dict)
-    log.info(f"Detected model type: {wrapper_type}")
+    logger.info(f"Detected model type: {wrapper_type}")
 
     # Extract config and architecture params
     # Architecture can be in multiple places depending on checkpoint format:
@@ -230,9 +230,9 @@ def load_diffusion_model_with_metadata(
 
     # Log architecture info
     if 'channels' in arch_config:
-        log.info(f"Using architecture from checkpoint: channels={channels}, norm_num_groups={norm_num_groups}")
+        logger.info(f"Using architecture from checkpoint: channels={channels}, norm_num_groups={norm_num_groups}")
     else:
-        log.info(f"Using default architecture: channels={channels}")
+        logger.info(f"Using default architecture: channels={channels}")
 
     # Create base model
     base_model = DiffusionModelUNet(
@@ -259,7 +259,7 @@ def load_diffusion_model_with_metadata(
             use_mode=(wrapper_type in ('mode_embed', 'combined')),
             embed_dim=embed_dim,
         )
-        log.info(f"Applied {wrapper_name} conditioning wrapper")
+        logger.info(f"Applied {wrapper_name} conditioning wrapper")
     elif wrapper_type == 'size_bin':
         # Size bin wrapper for seg_conditioned mode
         # Get num_bins from checkpoint config if available
@@ -270,7 +270,7 @@ def load_diffusion_model_with_metadata(
             embed_dim=embed_dim,
             num_bins=num_bins,
         )
-        log.info(f"Applied SizeBinModelWrapper (num_bins={num_bins})")
+        logger.info(f"Applied SizeBinModelWrapper (num_bins={num_bins})")
     else:
         raise ValueError(f"Unknown wrapper type: {wrapper_type}")
 
@@ -283,7 +283,7 @@ def load_diffusion_model_with_metadata(
 
     # Optionally compile
     if compile_model:
-        log.info("Compiling model with torch.compile...")
+        logger.info("Compiling model with torch.compile...")
         model = torch.compile(model, mode="reduce-overhead")
 
     # Extract epoch

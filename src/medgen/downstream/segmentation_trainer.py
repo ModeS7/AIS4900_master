@@ -209,7 +209,7 @@ class SegmentationTrainer(BaseTrainer):
             logger.warning(f"Checkpoint not found: {checkpoint_path}")
             return
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         if 'model_state_dict' in checkpoint:
             self.model_raw.load_state_dict(checkpoint['model_state_dict'])

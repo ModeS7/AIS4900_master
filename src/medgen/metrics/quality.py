@@ -13,6 +13,7 @@ Caching:
 - Use clear_metric_caches() to clear all caches when needed
 """
 import logging
+import threading
 import traceback
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -24,25 +25,94 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Rate-limit NaN warnings (avoid log spam)
-_msssim_nan_warned: bool = False
-_lpips_nan_warned: bool = False
+# =============================================================================
+# MS-SSIM Constants
+# =============================================================================
+
+# MS-SSIM scale thresholds (minimum image size for each scale count)
+# With kernel size 11, minimum size = 11 * 2^(num_scales-1) + 1
+MSSSIM_5_SCALE_MIN_SIZE = 176  # 5 scales: 11 * 16 + 1 = 177
+MSSSIM_4_SCALE_MIN_SIZE = 88   # 4 scales: 11 * 8 + 1 = 89
+MSSSIM_3_SCALE_MIN_SIZE = 44   # 3 scales: 11 * 4 + 1 = 45
+MSSSIM_2_SCALE_MIN_SIZE = 22   # 2 scales: 11 * 2 + 1 = 23
+
+# MS-SSIM weights for different scale counts
+MSSSIM_5_SCALE_WEIGHTS = (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
+MSSSIM_4_SCALE_WEIGHTS = (0.0448, 0.2856, 0.3001, 0.3695)
+MSSSIM_3_SCALE_WEIGHTS = (0.0448, 0.2856, 0.6696)
+MSSSIM_2_SCALE_WEIGHTS = (0.5, 0.5)
+
+# =============================================================================
+# PSNR Constants
+# =============================================================================
+
+PSNR_MSE_EPSILON = 1e-10
+
+# =============================================================================
+# 3D Processing Constants
+# =============================================================================
+
+LPIPS_3D_CHUNK_SIZE = 32
+
+
+class _WarningFlags:
+    """Thread-safe warning flags to rate-limit log messages."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._msssim_warned = False
+        self._lpips_warned = False
+
+    def warn_msssim_once(self, log, message: str) -> bool:
+        """Log warning if not already warned. Returns True if logged."""
+        with self._lock:
+            if not self._msssim_warned:
+                self._msssim_warned = True
+                log.warning(message)
+                return True
+        return False
+
+    def warn_lpips_once(self, log, message: str) -> bool:
+        """Log warning if not already warned. Returns True if logged."""
+        with self._lock:
+            if not self._lpips_warned:
+                self._lpips_warned = True
+                log.warning(message)
+                return True
+        return False
+
+    def reset_msssim(self) -> None:
+        with self._lock:
+            self._msssim_warned = False
+
+    def reset_lpips(self) -> None:
+        with self._lock:
+            self._lpips_warned = False
+
+    def reset_all(self) -> None:
+        with self._lock:
+            self._msssim_warned = False
+            self._lpips_warned = False
+
+
+_warning_flags = _WarningFlags()
+
+# Lock for torch.compile operations (not thread-safe)
+_compile_lock = threading.Lock()
 
 
 def reset_msssim_nan_warning() -> None:
     """Reset MS-SSIM NaN warning flag. Call at start of each validation run."""
-    global _msssim_nan_warned
-    _msssim_nan_warned = False
+    _warning_flags.reset_msssim()
 
 
 def reset_lpips_nan_warning() -> None:
     """Reset LPIPS NaN warning flag. Call at start of each validation run."""
-    global _lpips_nan_warned
-    _lpips_nan_warned = False
+    _warning_flags.reset_lpips()
 
 
 def clear_metric_caches() -> None:
-    """Clear all cached metric instances.
+    """Clear all cached metric instances and warning flags.
 
     Call this when:
     - Running multiple training runs in the same process
@@ -52,11 +122,9 @@ def clear_metric_caches() -> None:
     This clears both MS-SSIM and LPIPS cached instances (via lru_cache),
     and resets NaN warning flags.
     """
-    global _msssim_nan_warned, _lpips_nan_warned
     _get_msssim_metric.cache_clear()
     _get_lpips_metric.cache_clear()
-    _msssim_nan_warned = False
-    _lpips_nan_warned = False
+    _warning_flags.reset_all()
     logger.debug("Cleared metric caches (MS-SSIM, LPIPS)")
 
 
@@ -65,10 +133,6 @@ def _get_weights_for_size(min_size: int) -> tuple[float, ...]:
 
     MS-SSIM requires minimum image size for each scale (halved at each level).
     With kernel size 11, minimum size = 11 * 2^(num_scales-1) + 1.
-    - 5 scales: 11 * 16 + 1 = 177
-    - 4 scales: 11 * 8 + 1 = 89
-    - 3 scales: 11 * 4 + 1 = 45
-    - 2 scales: 11 * 2 + 1 = 23
 
     Args:
         min_size: Minimum spatial dimension of the image.
@@ -76,18 +140,18 @@ def _get_weights_for_size(min_size: int) -> tuple[float, ...]:
     Returns:
         Tuple of weights for MS-SSIM scales.
     """
-    if min_size > 176:
+    if min_size > MSSSIM_5_SCALE_MIN_SIZE:
         # 5 scales (default) - needs 177+ pixels
-        return (0.0448, 0.2856, 0.3001, 0.2363, 0.1333)
-    elif min_size > 88:
+        return MSSSIM_5_SCALE_WEIGHTS
+    elif min_size > MSSSIM_4_SCALE_MIN_SIZE:
         # 4 scales - needs 89+ pixels
-        return (0.0448, 0.2856, 0.3001, 0.3695)
-    elif min_size > 44:
+        return MSSSIM_4_SCALE_WEIGHTS
+    elif min_size > MSSSIM_3_SCALE_MIN_SIZE:
         # 3 scales - needs 45+ pixels
-        return (0.0448, 0.2856, 0.6696)
+        return MSSSIM_3_SCALE_WEIGHTS
     else:
         # 2 scales - minimum for very small images
-        return (0.5, 0.5)
+        return MSSSIM_2_SCALE_WEIGHTS
 
 
 @lru_cache(maxsize=8)
@@ -201,15 +265,15 @@ def compute_msssim(
 
             # Handle NaN values (can occur with edge cases like early epoch garbage)
             if torch.isnan(result).any():
-                global _msssim_nan_warned
-                if not _msssim_nan_warned:
-                    logger.warning("MS-SSIM returned NaN values, replacing with 0 (logging once per validation)")
-                    _msssim_nan_warned = True
+                _warning_flags.warn_msssim_once(
+                    logger,
+                    "MS-SSIM returned NaN values, replacing with 0 (logging once per validation)"
+                )
                 result = torch.nan_to_num(result, nan=0.0)
 
             return float(result.mean().item())
 
-    except Exception as e:
+    except (RuntimeError, ValueError, torch.cuda.OutOfMemoryError) as e:
         # Log full traceback at debug level for debugging, summary at warning level
         logger.warning(f"MS-SSIM computation failed: {e}")
         logger.debug(f"MS-SSIM traceback:\n{traceback.format_exc()}")
@@ -255,12 +319,14 @@ def _get_lpips_metric(
 
     # Apply torch.compile for faster inference
     # reduce-overhead is best for repeated small batch inference
+    # Use lock since torch.compile is not thread-safe
     if use_compile:
-        try:
-            metric = torch.compile(metric, mode="reduce-overhead")
-            logger.debug("LPIPS metric compiled with torch.compile")
-        except Exception as e:
-            logger.warning(f"torch.compile failed for LPIPS, using uncompiled: {e}")
+        with _compile_lock:
+            try:
+                metric = torch.compile(metric, mode="reduce-overhead")
+                logger.debug("LPIPS metric compiled with torch.compile")
+            except RuntimeError as e:
+                logger.warning(f"torch.compile failed for LPIPS, using uncompiled: {e}")
 
     return metric
 
@@ -334,15 +400,15 @@ def compute_lpips(
 
             # Handle NaN values (can occur with edge cases)
             if isinstance(result, torch.Tensor) and torch.isnan(result).any():
-                global _lpips_nan_warned
-                if not _lpips_nan_warned:
-                    logger.warning("LPIPS returned NaN values, replacing with 0 (logging once per validation)")
-                    _lpips_nan_warned = True
+                _warning_flags.warn_lpips_once(
+                    logger,
+                    "LPIPS returned NaN values, replacing with 0 (logging once per validation)"
+                )
                 result = torch.nan_to_num(result, nan=0.0)
 
             return float(result.item()) if isinstance(result, torch.Tensor) else float(result)
 
-    except Exception as e:
+    except (RuntimeError, ValueError, torch.cuda.OutOfMemoryError) as e:
         # Log full traceback at debug level for debugging, summary at warning level
         logger.warning(f"LPIPS computation failed: {e}")
         logger.debug(f"LPIPS traceback:\n{traceback.format_exc()}")
@@ -536,6 +602,7 @@ def compute_iou(
 # Diversity Metrics (sample-to-sample variation)
 # =============================================================================
 
+@torch.no_grad()
 def compute_lpips_diversity(
     samples: torch.Tensor,
     device: torch.device | None = None,
@@ -579,6 +646,7 @@ def compute_lpips_diversity(
     return total_lpips / num_pairs if num_pairs > 0 else 0.0
 
 
+@torch.no_grad()
 def compute_msssim_diversity(
     samples: torch.Tensor,
     data_range: float = 1.0,
@@ -618,6 +686,7 @@ def compute_msssim_diversity(
     return total_diversity / num_pairs if num_pairs > 0 else 0.0
 
 
+@torch.no_grad()
 def compute_lpips_diversity_3d(
     volumes: torch.Tensor,
     device: torch.device | None = None,
@@ -664,6 +733,7 @@ def compute_lpips_diversity_3d(
     return total_diversity / num_slices if num_slices > 0 else 0.0
 
 
+@torch.no_grad()
 def compute_msssim_diversity_3d(
     volumes: torch.Tensor,
     data_range: float = 1.0,

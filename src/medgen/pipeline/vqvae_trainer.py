@@ -25,6 +25,7 @@ set_track_meta(False)
 
 from monai.networks.nets import VQVAE
 
+from medgen.core.defaults import VQVAE_DEFAULTS
 from medgen.metrics import CodebookTracker
 
 from .checkpointing import BaseCheckpointedModel
@@ -95,10 +96,10 @@ class VQVAETrainer(BaseCompressionTrainer):
     _CONFIG_SECTION_3D = 'vqvae_3d'
 
     # VQ-VAE-specific defaults: 3D uses different perceptual/adv weights
-    _DEFAULT_PERCEPTUAL_WEIGHT_2D = 0.001
-    _DEFAULT_PERCEPTUAL_WEIGHT_3D = 0.002
-    _DEFAULT_ADV_WEIGHT_2D = 0.01
-    _DEFAULT_ADV_WEIGHT_3D = 0.005
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D = VQVAE_DEFAULTS.perceptual_weight_2d
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D = VQVAE_DEFAULTS.perceptual_weight_3d
+    _DEFAULT_ADV_WEIGHT_2D = VQVAE_DEFAULTS.adv_weight_2d
+    _DEFAULT_ADV_WEIGHT_3D = VQVAE_DEFAULTS.adv_weight_3d
 
     def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize VQ-VAE trainer.

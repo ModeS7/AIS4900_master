@@ -24,6 +24,8 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
+from medgen.core.defaults import DCAE_DEFAULTS
+from medgen.core.dict_utils import get_with_fallbacks
 from medgen.metrics import create_worst_batch_figure
 
 # Import 3D components for module-level export
@@ -67,12 +69,12 @@ class DCAETrainer(BaseCompressionTrainer):
     _CONFIG_SECTION_3D = 'dcae_3d'
 
     # DC-AE-specific defaults: higher perceptual weight, no adversarial loss by default
-    _DEFAULT_DISC_LR_2D = 5e-4
-    _DEFAULT_DISC_LR_3D = 1e-4
-    _DEFAULT_PERCEPTUAL_WEIGHT_2D = 0.1
-    _DEFAULT_PERCEPTUAL_WEIGHT_3D = 0.1
-    _DEFAULT_ADV_WEIGHT_2D = 0.0
-    _DEFAULT_ADV_WEIGHT_3D = 0.0
+    _DEFAULT_DISC_LR_2D = DCAE_DEFAULTS.disc_lr_2d
+    _DEFAULT_DISC_LR_3D = DCAE_DEFAULTS.disc_lr_3d
+    _DEFAULT_PERCEPTUAL_WEIGHT_2D = DCAE_DEFAULTS.perceptual_weight_2d
+    _DEFAULT_PERCEPTUAL_WEIGHT_3D = DCAE_DEFAULTS.perceptual_weight_3d
+    _DEFAULT_ADV_WEIGHT_2D = DCAE_DEFAULTS.adv_weight_2d
+    _DEFAULT_ADV_WEIGHT_3D = DCAE_DEFAULTS.adv_weight_3d
 
     def __init__(self, cfg: DictConfig, spatial_dims: int = 2) -> None:
         """Initialize DC-AE trainer.
@@ -410,7 +412,7 @@ class DCAETrainer(BaseCompressionTrainer):
                 logger.warning(f"Checkpoint not found: {checkpoint_path}")
             return
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         if 'model_state_dict' in checkpoint:
             raw_model.load_state_dict(checkpoint['model_state_dict'])
@@ -524,8 +526,8 @@ class DCAETrainer(BaseCompressionTrainer):
         # 2D-specific handling
         mask = None
         if isinstance(batch, dict):
-            images = batch.get('image', batch.get('images'))
-            mask = batch.get('mask', batch.get('seg'))
+            images = get_with_fallbacks(batch, 'image', 'images')
+            mask = get_with_fallbacks(batch, 'seg', 'mask')
         elif isinstance(batch, (tuple, list)):
             images = batch[0]
             if len(batch) > 1:
@@ -750,11 +752,33 @@ class DCAETrainer(BaseCompressionTrainer):
         if self.spatial_dims == 2:
             # DC-AE 2D needs wrapper for encode-decode cycle measurement
             class DCAEForward(nn.Module):
-                def __init__(self, model):
+                """Wrapper module for DC-AE encode-decode cycle.
+
+                Used for FLOPs measurement of the full autoencoder forward pass.
+                Wraps a DC-AE model to perform encode -> decode in a single forward call.
+
+                Args:
+                    model: DC-AE model with encode() and decode() methods.
+                """
+
+                def __init__(self, model: nn.Module) -> None:
+                    """Initialize the forward wrapper.
+
+                    Args:
+                        model: DC-AE model instance to wrap.
+                    """
                     super().__init__()
                     self.model = model
 
-                def forward(self, x):
+                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                    """Perform full encode-decode cycle.
+
+                    Args:
+                        x: Input tensor [B, C, H, W] or [B, C, D, H, W].
+
+                    Returns:
+                        Reconstructed tensor with same shape as input.
+                    """
                     latent = self.model.encode(x, return_dict=False)[0]
                     return self.model.decode(latent, return_dict=False)[0]
 

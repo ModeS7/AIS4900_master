@@ -137,7 +137,7 @@ def load_sample_slices(
         dataset = NiFTIDataset(data_dir=data_dir, mr_sequence=modality, transform=transform)
         if len(dataset) == 0:
             raise ValueError("Dataset is empty")
-    except Exception as e:
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
         logger.warning(f"Failed to load dataset: {e}")
         logger.info("Falling back to synthetic data")
         return generate_synthetic_slices(image_size, n_samples)

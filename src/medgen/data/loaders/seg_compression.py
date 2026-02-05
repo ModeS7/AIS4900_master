@@ -26,7 +26,7 @@ from medgen.data.dataset import (
     build_standard_transform,
     validate_modality_exists,
 )
-from medgen.data.loaders.common import DistributedArgs, create_dataloader
+from medgen.data.loaders.common import DistributedArgs, create_dataloader, get_validated_split_dir
 
 # Import consolidated classes and functions from datasets.py
 from medgen.data.loaders.datasets import (
@@ -133,9 +133,8 @@ def create_seg_compression_validation_dataloader(
     Returns:
         Tuple of (DataLoader, val_dataset) or None if val/ doesn't exist.
     """
-    val_dir = os.path.join(cfg.paths.data_dir, "val")
-
-    if not os.path.exists(val_dir):
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, "val", logger)
+    if val_dir is None:
         return None
 
     # Validate seg modality exists
@@ -188,9 +187,8 @@ def create_seg_compression_test_dataloader(
     Returns:
         Tuple of (DataLoader, test_dataset) or None if test_new/ doesn't exist.
     """
-    test_dir = os.path.join(cfg.paths.data_dir, "test_new")
-
-    if not os.path.exists(test_dir):
+    test_dir = get_validated_split_dir(cfg.paths.data_dir, "test_new", logger)
+    if test_dir is None:
         return None
 
     # Validate seg modality exists

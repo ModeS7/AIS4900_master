@@ -8,12 +8,15 @@ This module provides various training tricks:
 - Conditioning dropout (CFG)
 - Feature perturbation hooks
 - DC-AE 1.5 augmented diffusion
+- ScoreAug loss computation
+- SDA loss computation
 """
 import logging
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 if TYPE_CHECKING:
@@ -294,3 +297,372 @@ def create_aug_diff_mask(
     mask = torch.zeros(1, C, 1, 1, device=tensor.device, dtype=tensor.dtype)
     mask[:, :c_prime, :, :] = 1.0
     return mask
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ScoreAug Loss Computation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def compute_scoreaug_loss(
+    trainer: 'DiffusionTrainer',
+    model_input: Tensor,
+    timesteps: Tensor,
+    images: Tensor | dict[str, Tensor],
+    noise: Tensor | dict[str, Tensor],
+    noisy_images: Tensor | dict[str, Tensor],
+    mode_id: Tensor | None = None,
+) -> tuple[Tensor, Tensor, Tensor | dict[str, Tensor]]:
+    """Compute loss using ScoreAug augmentation.
+
+    ScoreAug transforms both the noisy input and the target together to maintain
+    consistency. This function handles the full ScoreAug training loop including:
+    - Computing velocity/noise target before ScoreAug
+    - Applying ScoreAug transform
+    - Optional mode intensity scaling
+    - Model prediction with appropriate conditioning
+    - MSE loss computation
+    - Perceptual loss with inverse transform (when applicable)
+
+    Args:
+        trainer: DiffusionTrainer instance (for accessing score_aug, model, strategy, etc.)
+        model_input: Formatted model input tensor (noisy + conditioning)
+        timesteps: Sampled timesteps
+        images: Clean images (tensor or dict for dual mode)
+        noise: Noise tensor (tensor or dict for dual mode)
+        noisy_images: Noisy images at timestep t
+        mode_id: Optional mode ID for multi-modality conditioning
+
+    Returns:
+        Tuple of (mse_loss, perceptual_loss, predicted_clean):
+        - mse_loss: MSE loss between prediction and augmented target
+        - perceptual_loss: Perceptual loss (0 if non-invertible transform or weight=0)
+        - predicted_clean: Predicted clean images for visualization
+
+    Note:
+        Requires trainer.score_aug to be set (i.e., ScoreAug is enabled).
+    """
+    # 1. Compute target BEFORE ScoreAug using strategy's compute_target method
+    target = trainer.strategy.compute_target(images, noise)
+
+    # 2. For dual mode, stack targets for joint transform
+    is_dual = isinstance(target, dict)
+    if is_dual:
+        keys = list(target.keys())
+        stacked_target = torch.cat([target[k] for k in keys], dim=1)
+        aug_input, aug_target_stacked, omega = trainer.score_aug(model_input, stacked_target)
+        # Unstack back to dict
+        aug_target = {
+            keys[0]: aug_target_stacked[:, 0:1],
+            keys[1]: aug_target_stacked[:, 1:2],
+        }
+    else:
+        aug_input, aug_target, omega = trainer.score_aug(model_input, target)
+
+    # 3. Apply mode intensity scaling if enabled (after ScoreAug, before model)
+    if trainer.use_mode_intensity_scaling and mode_id is not None:
+        aug_input, _ = trainer._apply_mode_intensity_scale(aug_input, mode_id)
+
+    # 4. Get prediction from augmented input with appropriate conditioning
+    prediction = _call_model_with_conditioning(
+        trainer, aug_input, timesteps, omega, mode_id
+    )
+
+    # 5. Compute MSE loss with augmented target
+    if is_dual:
+        pred_0 = prediction[:, 0:1, :, :]
+        pred_1 = prediction[:, 1:2, :, :]
+        mse_loss = (
+            F.mse_loss(pred_0.float(), aug_target[keys[0]].float()) +
+            F.mse_loss(pred_1.float(), aug_target[keys[1]].float())
+        ) / 2
+    else:
+        mse_loss = F.mse_loss(prediction.float(), aug_target.float())
+
+    # 6. Compute perceptual loss with inverse transform
+    p_loss, predicted_clean = _compute_perceptual_with_inverse(
+        trainer, prediction, noisy_images, images, timesteps, omega, is_dual
+    )
+
+    return mse_loss, p_loss, predicted_clean
+
+
+def _call_model_with_conditioning(
+    trainer: 'DiffusionTrainer',
+    model_input: Tensor,
+    timesteps: Tensor,
+    omega: dict[str, Any] | None,
+    mode_id: Tensor | None,
+) -> Tensor:
+    """Call model with appropriate omega/mode_id conditioning.
+
+    Handles the different combinations of conditioning wrappers:
+    - CombinedModelWrapper (omega + mode_id)
+    - ScoreAugModelWrapper (omega only)
+    - ModeEmbedModelWrapper (mode_id only)
+    - Raw model (no conditioning)
+
+    Args:
+        trainer: DiffusionTrainer instance
+        model_input: Formatted input tensor
+        timesteps: Timestep tensor
+        omega: ScoreAug omega parameters (dict with rotation, flip, etc.)
+        mode_id: Mode ID tensor for multi-modality
+
+    Returns:
+        Model prediction tensor
+    """
+    if trainer.use_omega_conditioning:
+        # Both CombinedModelWrapper and ScoreAugModelWrapper accept omega + mode_id
+        return trainer.model(model_input, timesteps, omega=omega, mode_id=mode_id)
+    elif trainer.use_mode_embedding:
+        return trainer.model(model_input, timesteps, mode_id=mode_id)
+    else:
+        return trainer.strategy.predict_noise_or_velocity(trainer.model, model_input, timesteps)
+
+
+def _compute_perceptual_with_inverse(
+    trainer: 'DiffusionTrainer',
+    prediction: Tensor,
+    noisy_images: Tensor | dict[str, Tensor],
+    clean_images: Tensor | dict[str, Tensor],
+    timesteps: Tensor,
+    omega: dict[str, Any],
+    is_dual: bool,
+) -> tuple[Tensor, Tensor | dict[str, Tensor]]:
+    """Compute perceptual loss, applying inverse transform if available.
+
+    For ScoreAug, we need to:
+    1. Apply the same omega transform to noisy_images
+    2. Reconstruct clean from velocity/noise prediction
+    3. Inverse transform to original space
+    4. Compute perceptual loss if transform was invertible
+
+    Args:
+        trainer: DiffusionTrainer instance
+        prediction: Model prediction (velocity or noise)
+        noisy_images: Noisy images at timestep t (tensor or dict)
+        clean_images: Original clean images for perceptual loss target
+        timesteps: Timestep tensor
+        omega: ScoreAug omega parameters
+        is_dual: Whether this is dual-image mode
+
+    Returns:
+        Tuple of (perceptual_loss, predicted_clean):
+        - perceptual_loss: Perceptual loss (0 if non-invertible or weight=0)
+        - predicted_clean: Predicted clean images for visualization
+    """
+    device = prediction.device
+
+    # If perceptual weight is 0, skip computation
+    if trainer.perceptual_weight <= 0:
+        # Return placeholder for predicted_clean
+        return torch.tensor(0.0, device=device), clean_images
+
+    # Compute predicted clean in augmented space, then inverse transform
+    if is_dual:
+        keys = list(noisy_images.keys())
+        # Apply same transform to noisy_images for reconstruction
+        stacked_noisy = torch.cat([noisy_images[k] for k in keys], dim=1)
+        aug_noisy = trainer.score_aug.apply_omega(stacked_noisy, omega)
+        aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
+
+        # Reconstruct clean from prediction
+        if trainer.strategy_name == 'rflow':
+            t_norm = timesteps.float() / float(trainer.num_timesteps)
+            t_exp = t_norm.view(-1, 1, 1, 1)
+            aug_clean = {
+                k: torch.clamp(aug_noisy_dict[k] + t_exp * prediction[:, i:i+1], 0, 1)
+                for i, k in enumerate(keys)
+            }
+        else:
+            aug_clean = {
+                k: torch.clamp(aug_noisy_dict[k] - prediction[:, i:i+1], 0, 1)
+                for i, k in enumerate(keys)
+            }
+
+        # Inverse transform to original space
+        inv_clean = {k: trainer.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
+        if any(v is None for v in inv_clean.values()):
+            # Non-invertible transform (rotation/flip), skip perceptual loss
+            logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
+            return torch.tensor(0.0, device=device), aug_clean
+        else:
+            # Compute perceptual loss with wrapper that handles dicts
+            p_loss = trainer.perceptual_loss_fn(inv_clean.float(), clean_images.float())
+            return p_loss, inv_clean
+    else:
+        # Single channel mode
+        aug_noisy = trainer.score_aug.apply_omega(noisy_images, omega)
+        if trainer.strategy_name == 'rflow':
+            t_norm = timesteps.float() / float(trainer.num_timesteps)
+            t_exp = t_norm.view(-1, 1, 1, 1)
+            aug_clean = torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
+        else:
+            aug_clean = torch.clamp(aug_noisy - prediction, 0, 1)
+
+        inv_clean = trainer.score_aug.inverse_apply_omega(aug_clean, omega)
+        if inv_clean is None:
+            # Non-invertible transform (rotation/flip), skip perceptual loss
+            logger.debug("Perceptual loss skipped: non-invertible ScoreAug transform applied")
+            return torch.tensor(0.0, device=device), aug_clean
+        else:
+            p_loss = trainer.perceptual_loss_fn(inv_clean.float(), clean_images.float())
+            return p_loss, inv_clean
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SDA (Shifted Data Augmentation) Loss Computation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def compute_sda_loss(
+    trainer: 'DiffusionTrainer',
+    images: Tensor | dict[str, Tensor],
+    noise: Tensor | dict[str, Tensor],
+    timesteps: Tensor,
+    labels: Tensor | None,
+    mode_id: Tensor | None = None,
+) -> Tensor:
+    """Compute SDA (Shifted Data Augmentation) loss.
+
+    SDA transforms CLEAN images (unlike ScoreAug which transforms noisy data),
+    then adds noise at SHIFTED timesteps to prevent temporal distribution leakage.
+    The model learns to denoise both original and augmented data.
+
+    The key insight is that if we transform clean images and add noise at the
+    same timestep, the model could learn to "cheat" by detecting the transform
+    from noise patterns. Shifting timesteps prevents this.
+
+    Args:
+        trainer: DiffusionTrainer instance
+        images: Clean images (tensor or dict for dual mode)
+        noise: Noise tensor (tensor or dict for dual mode)
+        timesteps: Original sampled timesteps
+        labels: Optional conditioning labels (e.g., seg mask)
+        mode_id: Optional mode ID for multi-modality
+
+    Returns:
+        SDA loss component (weighted by trainer.sda_weight before adding to total).
+        Returns 0 if SDA didn't apply a transform this call.
+
+    Note:
+        Requires trainer.sda to be set (i.e., SDA is enabled).
+        SDA is mutually exclusive with ScoreAug.
+    """
+    device = images.device if not isinstance(images, dict) else next(iter(images.values())).device
+    is_dual = isinstance(images, dict)
+
+    if is_dual:
+        return _compute_sda_loss_dual(trainer, images, noise, timesteps, labels, mode_id)
+    else:
+        return _compute_sda_loss_single(trainer, images, noise, timesteps, labels, mode_id)
+
+
+def _compute_sda_loss_single(
+    trainer: 'DiffusionTrainer',
+    images: Tensor,
+    noise: Tensor,
+    timesteps: Tensor,
+    labels: Tensor | None,
+    mode_id: Tensor | None,
+) -> Tensor:
+    """Compute SDA loss for single-channel mode."""
+    device = images.device
+
+    # Apply SDA to clean images
+    aug_images, sda_info = trainer.sda(images)
+
+    # If no transform was applied, return zero loss
+    if sda_info is None:
+        return torch.tensor(0.0, device=device)
+
+    # Shift timesteps for augmented path
+    shifted_timesteps = trainer.sda.shift_timesteps(timesteps)
+
+    # Transform noise to match transformed images
+    aug_noise = trainer.sda.apply_to_target(noise, sda_info)
+
+    # Add TRANSFORMED noise at SHIFTED timesteps
+    aug_noisy = trainer.strategy.add_noise(aug_images, aug_noise, shifted_timesteps)
+
+    # Format input and get prediction
+    aug_labels_dict = {'labels': labels}
+    aug_model_input = trainer.mode.format_model_input(aug_noisy, aug_labels_dict)
+
+    if trainer.use_mode_embedding:
+        aug_prediction = trainer.model(aug_model_input, shifted_timesteps, mode_id=mode_id)
+    else:
+        aug_prediction = trainer.strategy.predict_noise_or_velocity(
+            trainer.model, aug_model_input, shifted_timesteps
+        )
+
+    # Compute augmented target using strategy's compute_target method
+    aug_target = trainer.strategy.compute_target(aug_images, aug_noise)
+
+    # Compute MSE loss
+    return F.mse_loss(aug_prediction.float(), aug_target.float())
+
+
+def _compute_sda_loss_dual(
+    trainer: 'DiffusionTrainer',
+    images: dict[str, Tensor],
+    noise: dict[str, Tensor],
+    timesteps: Tensor,
+    labels: Tensor | None,
+    mode_id: Tensor | None,
+) -> Tensor:
+    """Compute SDA loss for dual-image mode."""
+    keys = list(images.keys())
+    device = images[keys[0]].device
+
+    # Stack images for joint transform
+    stacked_images = torch.cat([images[k] for k in keys], dim=1)
+    aug_stacked, sda_info = trainer.sda(stacked_images)
+
+    # If no transform was applied, return zero loss
+    if sda_info is None:
+        return torch.tensor(0.0, device=device)
+
+    # Unstack augmented images
+    aug_images_dict = {
+        keys[0]: aug_stacked[:, 0:1],
+        keys[1]: aug_stacked[:, 1:2],
+    }
+
+    # Shift timesteps for augmented path
+    shifted_timesteps = trainer.sda.shift_timesteps(timesteps)
+
+    # Transform noise to match transformed images
+    aug_noise_dict = {
+        k: trainer.sda.apply_to_target(noise[k], sda_info)
+        for k in keys
+    }
+
+    # Add TRANSFORMED noise at SHIFTED timesteps
+    aug_noisy_dict = {
+        k: trainer.strategy.add_noise(aug_images_dict[k], aug_noise_dict[k], shifted_timesteps)
+        for k in keys
+    }
+
+    # Format input and get prediction
+    aug_labels_dict = {'labels': labels}
+    aug_model_input = trainer.mode.format_model_input(aug_noisy_dict, aug_labels_dict)
+
+    if trainer.use_mode_embedding:
+        aug_prediction = trainer.model(aug_model_input, shifted_timesteps, mode_id=mode_id)
+    else:
+        aug_prediction = trainer.strategy.predict_noise_or_velocity(
+            trainer.model, aug_model_input, shifted_timesteps
+        )
+
+    # Compute augmented target using strategy's compute_target method
+    aug_target_dict = trainer.strategy.compute_target(aug_images_dict, aug_noise_dict)
+
+    # Compute MSE loss for each channel
+    aug_mse = sum(
+        F.mse_loss(aug_prediction[:, i:i+1].float(), aug_target_dict[k].float())
+        for i, k in enumerate(keys)
+    ) / len(keys)
+
+    return aug_mse

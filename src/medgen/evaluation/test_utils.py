@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -50,7 +50,7 @@ def load_checkpoint_if_needed(
     if checkpoint_name is not None:
         checkpoint_path = os.path.join(save_dir, f"checkpoint_{checkpoint_name}.pt")
         if os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"Loaded {checkpoint_name} checkpoint for test evaluation")
         else:
@@ -132,7 +132,7 @@ def log_metrics_to_tensorboard(
     metrics: dict[str, float],
     prefix: str,
     step: int = 0,
-    unified_metrics: Optional["UnifiedMetrics"] = None,
+    unified_metrics: "UnifiedMetrics | None" = None,
 ) -> None:
     """Log metrics to TensorBoard.
 
@@ -200,7 +200,7 @@ def log_test_per_modality(
     prefix: str,
     modality: str,
     step: int = 0,
-    unified_metrics: Optional["UnifiedMetrics"] = None,
+    unified_metrics: "UnifiedMetrics | None" = None,
 ) -> None:
     """Log per-modality test metrics to TensorBoard.
 
@@ -273,7 +273,7 @@ class MetricsConfig:
 
 def create_compression_test_evaluator(
     trainer: 'BaseCompressionTrainer',
-) -> Union['CompressionTestEvaluator', 'Compression3DTestEvaluator']:
+) -> 'CompressionTestEvaluator | Compression3DTestEvaluator':
     """Create test evaluator for compression trainer.
 
     Factory that creates appropriate evaluator based on trainer.spatial_dims.

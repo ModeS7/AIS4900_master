@@ -12,6 +12,18 @@ import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# DDP Constants
+# =============================================================================
+
+# DDP timeout (prevents infinite hangs)
+DDP_TIMEOUT_MINUTES = 30
+
+# Port configuration for process group initialization
+DDP_PORT_MIN = 12000
+DDP_PORT_RANGE = 53000  # Port = DDP_PORT_MIN + (job_id % DDP_PORT_RANGE)
+DDP_DEFAULT_PORT = '12355'
+
 
 def setup_distributed() -> tuple[int, int, int, torch.device]:
     """Setup distributed training with dynamic port allocation.
@@ -45,12 +57,12 @@ def setup_distributed() -> tuple[int, int, int, torch.device]:
 
         if 'SLURM_JOB_ID' in os.environ:
             job_id = int(os.environ['SLURM_JOB_ID'])
-            port = 12000 + (job_id % 53000)
+            port = DDP_PORT_MIN + (job_id % DDP_PORT_RANGE)
             os.environ['MASTER_PORT'] = str(port)
             if rank == 0:
                 logger.info(f"Using dynamic port: {port} (from SLURM_JOB_ID: {job_id})")
         else:
-            os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
+            os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', DDP_DEFAULT_PORT)
     else:
         # Local multi-GPU or single-GPU environment
         rank = int(os.environ.get('RANK', 0))
@@ -64,7 +76,7 @@ def setup_distributed() -> tuple[int, int, int, torch.device]:
         init_method='env://',
         rank=rank,
         world_size=world_size,
-        timeout=datetime.timedelta(minutes=30),  # Prevent infinite hangs
+        timeout=datetime.timedelta(minutes=DDP_TIMEOUT_MINUTES),
     )
 
     return rank, local_rank, world_size, device
