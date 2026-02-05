@@ -376,7 +376,7 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
             create_loader_fn=create_single_modality_validation_loader,
             image_size=cfg.model.image_size,
             batch_size=cfg.training.batch_size,
-            log=log,
+            log=logger,
         )
     else:
         # Single/dual modality
@@ -428,7 +428,7 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     else:
         test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
 
-    run_test_evaluation(trainer, test_result, log)
+    run_test_evaluation(trainer, test_result, logger)
 
     trainer.close_writer()
 
@@ -503,7 +503,7 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     if is_multi_modality:
         image_keys = get_image_keys(cfg, is_3d=True)
         per_modality_val_loaders = create_per_modality_val_loaders_3d(
-            cfg, image_keys, create_vae_3d_single_modality_validation_loader, log
+            cfg, image_keys, create_vae_3d_single_modality_validation_loader, logger
         )
 
     # Setup model
@@ -526,7 +526,7 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     else:
         test_result = create_vae_3d_test_dataloader(cfg=cfg, modality=mode)
 
-    run_test_evaluation(trainer, test_result, log, eval_method="evaluate_test_set")
+    run_test_evaluation(trainer, test_result, logger, eval_method="evaluate_test_set")
 
     trainer.close_writer()
 

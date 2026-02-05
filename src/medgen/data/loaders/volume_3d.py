@@ -19,7 +19,6 @@ Data Augmentation:
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -34,7 +33,7 @@ from monai.transforms import (
 )
 from torch.utils.data import DataLoader, Dataset
 
-from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
+from .common import DistributedArgs, create_dataloader, get_validated_split_dir
 from .volume_3d_factory import VolumeConfig
 
 logger = logging.getLogger(__name__)

@@ -63,7 +63,7 @@ def run_test_evaluation(
     """
     if test_result is not None:
         test_loader, test_dataset = test_result
-        log.info(f"Test dataset: {len(test_dataset)} samples")
+        logger.info(f"Test dataset: {len(test_dataset)} samples")
 
         # Get the evaluation method (different trainers use different names)
         eval_fn = getattr(trainer, eval_method, None)
@@ -75,9 +75,9 @@ def run_test_evaluation(
             eval_fn(test_loader, checkpoint_name="best")
             eval_fn(test_loader, checkpoint_name="latest")
         else:
-            log.warning(f"Trainer has no {eval_method} or evaluate_test method")
+            logger.warning(f"Trainer has no {eval_method} or evaluate_test method")
     else:
-        log.info("No test_new/ directory found - skipping test evaluation")
+        logger.info("No test_new/ directory found - skipping test evaluation")
 
 
 def create_per_modality_val_loaders(
@@ -118,7 +118,7 @@ def create_per_modality_val_loaders(
         )
         if loader is not None:
             per_modality_val_loaders[modality] = loader
-            log.info(f"  Per-modality validation for {modality}: {len(loader.dataset)} samples")
+            logger.info(f"  Per-modality validation for {modality}: {len(loader.dataset)} samples")
 
     return per_modality_val_loaders
 
@@ -149,10 +149,10 @@ def create_per_modality_val_loaders_3d(
         loader = create_loader_fn(cfg, modality)
         if loader is not None:
             per_modality_val_loaders[modality] = loader
-            log.info(f"  Per-modality 3D validation for {modality}: {len(loader.dataset)} volumes")
+            logger.info(f"  Per-modality 3D validation for {modality}: {len(loader.dataset)} volumes")
 
     if per_modality_val_loaders:
-        log.info(f"Created {len(per_modality_val_loaders)} per-modality validation loaders")
+        logger.info(f"Created {len(per_modality_val_loaders)} per-modality validation loaders")
 
     return per_modality_val_loaders
 
@@ -197,22 +197,22 @@ def log_training_header(
         in_channels: Number of input channels.
         cfg: Configuration object.
         log: Logger instance.
-        extra_info: Additional key-value pairs to log.
+        extra_info: Additional key-value pairs to logger.
 
     Example:
         >>> log_training_header('VAE', mode, in_channels, cfg, log,
         ...     extra_info={'Latent channels': str(cfg.vae.latent_channels)})
     """
-    log.info("")
-    log.info("=" * 60)
-    log.info(f"Training {trainer_type} for {mode} mode")
-    log.info(f"Channels: {in_channels} | Image size: {cfg.model.image_size}")
-    log.info(f"Batch size: {cfg.training.batch_size}")
-    log.info(f"Epochs: {cfg.training.epochs}")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"Training {trainer_type} for {mode} mode")
+    logger.info(f"Channels: {in_channels} | Image size: {cfg.model.image_size}")
+    logger.info(f"Batch size: {cfg.training.batch_size}")
+    logger.info(f"Epochs: {cfg.training.epochs}")
 
     if extra_info:
         for key, value in extra_info.items():
-            log.info(f"{key}: {value}")
+            logger.info(f"{key}: {value}")
 
-    log.info("=" * 60)
-    log.info("")
+    logger.info("=" * 60)
+    logger.info("")

@@ -23,6 +23,7 @@ set_track_meta(False)
 from monai.networks.nets import AutoencoderKL
 
 from medgen.core.defaults import VAE_DEFAULTS
+
 from .checkpointing import BaseCheckpointedModel
 from .compression_trainer import BaseCompressionTrainer
 

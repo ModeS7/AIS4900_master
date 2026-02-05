@@ -53,7 +53,7 @@ from medgen.diffusion import (
     TrainingMode,
 )
 from medgen.evaluation import ValidationVisualizer
-from medgen.losses import PerceptualLoss, RegionalWeightComputer, create_regional_weight_computer
+from medgen.losses import PerceptualLoss, create_regional_weight_computer
 from medgen.metrics import UnifiedMetrics
 from medgen.models import (
     ControlNetConditionedUNet,
