@@ -7,6 +7,7 @@ Provides shared functionality for 2D and 3D regional metrics trackers:
 - Metric computation (pixel/voxel-weighted averages)
 - TensorBoard logging
 """
+import functools
 from abc import ABC, abstractmethod
 
 import torch
@@ -20,8 +21,10 @@ class BaseRegionalMetricsTracker(ABC):
     """Abstract base class for regional loss tracking.
 
     Provides shared methods for computing and logging regional metrics.
-    Subclasses must implement `__init__`, `reset`, and `update` methods
-    with dimension-specific logic.
+    Subclasses must implement `update` method with dimension-specific logic.
+
+    The base class handles accumulator initialization via reset().
+    Subclasses that override reset() must call super().reset().
 
     Attributes:
         fov_mm: Field of view in millimeters.
@@ -29,6 +32,39 @@ class BaseRegionalMetricsTracker(ABC):
         device: PyTorch device for computation.
         tumor_size_thresholds: RANO-BM clinical thresholds from constants.
     """
+
+    # Required accumulator attributes - initialized in reset()
+    count: int
+    tumor_error_sum: float
+    tumor_pixels_total: int
+    bg_error_sum: float
+    bg_pixels_total: int
+    size_error_sum: dict[str, float]
+    size_pixels: dict[str, int]
+
+    def __init_subclass__(cls, **kwargs):
+        """Validate that subclass reset() calls super().reset()."""
+        super().__init_subclass__(**kwargs)
+
+        if 'reset' in cls.__dict__:
+            original_reset = cls.__dict__['reset']
+
+            @functools.wraps(original_reset)
+            def validated_reset(self):
+                original_reset(self)
+                required_attrs = [
+                    'count', 'tumor_error_sum', 'tumor_pixels_total',
+                    'bg_error_sum', 'bg_pixels_total',
+                    'size_error_sum', 'size_pixels'
+                ]
+                missing = [attr for attr in required_attrs if not hasattr(self, attr)]
+                if missing:
+                    raise AttributeError(
+                        f"{cls.__name__}.reset() must initialize: {missing}. "
+                        f"Did you forget to call super().reset()?"
+                    )
+
+            cls.reset = validated_reset
 
     def __init__(
         self,
@@ -48,6 +84,9 @@ class BaseRegionalMetricsTracker(ABC):
         self.device = device or torch.device('cuda')
         self.tumor_size_thresholds = TUMOR_SIZE_THRESHOLDS_MM
 
+        # Initialize accumulators - guarantees attributes exist
+        self.reset()
+
     def _classify_tumor_size(self, diameter_mm: float) -> str:
         """Classify tumor by Feret diameter using RANO-BM thresholds.
 
@@ -62,20 +101,18 @@ class BaseRegionalMetricsTracker(ABC):
                 return size_name
         return 'large'  # Fallback for very large tumors
 
-    @abstractmethod
     def reset(self) -> None:
         """Reset accumulators for new validation run.
 
-        Subclasses must initialize:
-        - tumor_error_sum: float
-        - tumor_pixels_total or tumor_voxels_total: int
-        - bg_error_sum: float
-        - bg_pixels_total or bg_voxels_total: int
-        - count: int
-        - size_error_sum: Dict[str, float]
-        - size_pixels or size_voxels: Dict[str, int]
+        Subclasses that override this method must call super().reset().
         """
-        pass
+        self.count = 0
+        self.tumor_error_sum = 0.0
+        self.tumor_pixels_total = 0
+        self.bg_error_sum = 0.0
+        self.bg_pixels_total = 0
+        self.size_error_sum = {k: 0.0 for k in self.tumor_size_thresholds}
+        self.size_pixels = {k: 0 for k in self.tumor_size_thresholds}
 
     @abstractmethod
     def update(self, prediction: Tensor, target: Tensor, mask: Tensor) -> None:

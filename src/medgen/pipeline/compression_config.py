@@ -253,7 +253,7 @@ class CompressionConfigExtractor:
             perceptual_slice_fraction=self.get_perceptual_slice_fraction(),
             # EMA
             use_ema=self.cfg.training.get('use_ema', True),
-            ema_decay=self.cfg.training.get('ema', {}).get('decay', 0.999),
+            ema_decay=self.cfg.training.get('ema', {}).get('decay', 0.9999),
             # Precision
             pure_weights=precision_cfg.get('pure_weights', False),
             use_compile=self.cfg.training.get('use_compile', True),

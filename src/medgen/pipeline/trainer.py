@@ -336,314 +336,39 @@ class DiffusionTrainer(DiffusionTrainerBase):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _setup_score_aug(self) -> None:
-        """Initialize ScoreAug transform and related settings.
-
-        Sets up:
-        - self.score_aug: ScoreAugTransform instance or None
-        - self.use_omega_conditioning: bool
-        - self.use_mode_intensity_scaling: bool
-        - self._apply_mode_intensity_scale: function reference or None
-
-        Validates ScoreAug configuration constraints (rotation/flip require omega).
-        """
-        from .diffusion_config import ScoreAugConfig, validate_score_aug_config
-
-        score_aug_cfg = ScoreAugConfig.from_hydra(self.cfg)
-
-        self.score_aug = None
-        self.use_omega_conditioning = False
-        self.use_mode_intensity_scaling = False
-        self._apply_mode_intensity_scale = None
-
-        if not score_aug_cfg.enabled:
-            return
-
-        # Validate configuration constraints
-        validate_score_aug_config(score_aug_cfg, self.spatial_dims, self.is_main_process)
-
-        # Create ScoreAugTransform
-        from medgen.augmentation import ScoreAugTransform
-        self.score_aug = ScoreAugTransform(
-            spatial_dims=self.spatial_dims,
-            rotation=score_aug_cfg.rotation,
-            flip=score_aug_cfg.flip,
-            translation=score_aug_cfg.translation,
-            cutout=score_aug_cfg.cutout,
-            compose=score_aug_cfg.compose,
-            compose_prob=score_aug_cfg.compose_prob,
-            v2_mode=score_aug_cfg.v2_mode,
-            nondestructive_prob=score_aug_cfg.nondestructive_prob,
-            destructive_prob=score_aug_cfg.destructive_prob,
-            cutout_vs_pattern=score_aug_cfg.cutout_vs_pattern,
-            patterns_checkerboard=score_aug_cfg.patterns_checkerboard,
-            patterns_grid_dropout=score_aug_cfg.patterns_grid_dropout,
-            patterns_coarse_dropout=score_aug_cfg.patterns_coarse_dropout,
-            patterns_patch_dropout=score_aug_cfg.patterns_patch_dropout,
-        )
-
-        self.use_omega_conditioning = score_aug_cfg.use_omega_conditioning
-
-        # Mode intensity scaling (2D only)
-        self.use_mode_intensity_scaling = score_aug_cfg.use_mode_intensity_scaling
-        if self.use_mode_intensity_scaling:
-            if self.spatial_dims == 3:
-                if self.is_main_process:
-                    logger.warning(
-                        "mode_intensity_scaling is not supported in 3D diffusion. Ignoring."
-                    )
-                self.use_mode_intensity_scaling = False
-            else:
-                from medgen.augmentation import apply_mode_intensity_scale
-                self._apply_mode_intensity_scale = apply_mode_intensity_scale
-
-        # Log configuration
-        if self.is_main_process:
-            transforms = []
-            if score_aug_cfg.rotation:
-                transforms.append('rotation')
-            if score_aug_cfg.flip:
-                transforms.append('flip')
-            if score_aug_cfg.translation:
-                transforms.append('translation')
-            if score_aug_cfg.cutout:
-                transforms.append('cutout')
-            if score_aug_cfg.brightness and self.spatial_dims == 2:
-                transforms.append(f"brightness({score_aug_cfg.brightness_range})")
-            n_options = len(transforms) + 1
-            logger.info(
-                f"ScoreAug {self.spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
-                f"each with 1/{n_options} prob (uniform), "
-                f"omega_conditioning={self.use_omega_conditioning}, "
-                f"mode_intensity_scaling={self.use_mode_intensity_scaling}"
-            )
+        """Initialize ScoreAug transform and related settings."""
+        from .diffusion_init_helpers import setup_score_aug
+        setup_score_aug(self)
 
     def _setup_sda(self) -> None:
-        """Initialize SDA (Shifted Data Augmentation) transform.
-
-        Sets up:
-        - self.sda: SDATransform instance or None
-        - self.sda_weight: float
-
-        SDA is mutually exclusive with ScoreAug.
-        """
-        from .diffusion_config import SDAConfig
-
-        sda_cfg = SDAConfig.from_hydra(self.cfg)
-
-        self.sda = None
-        self.sda_weight = 1.0
-
-        if not sda_cfg.enabled:
-            return
-
-        # SDA and ScoreAug are mutually exclusive
-        if self.score_aug is not None:
-            if self.is_main_process:
-                logger.warning("SDA and ScoreAug are mutually exclusive. Disabling SDA.")
-            return
-
-        from medgen.augmentation import SDATransform
-        self.sda = SDATransform(
-            rotation=sda_cfg.rotation,
-            flip=sda_cfg.flip,
-            noise_shift=sda_cfg.noise_shift,
-            prob=sda_cfg.prob,
-        )
-        self.sda_weight = sda_cfg.weight
-
-        if self.is_main_process:
-            transforms = []
-            if sda_cfg.rotation:
-                transforms.append('rotation')
-            if sda_cfg.flip:
-                transforms.append('flip')
-            logger.info(
-                f"SDA {self.spatial_dims}D enabled: transforms=[{', '.join(transforms)}], "
-                f"noise_shift={sda_cfg.noise_shift}, prob={sda_cfg.prob}, weight={self.sda_weight}"
-            )
+        """Initialize SDA (Shifted Data Augmentation) transform."""
+        from .diffusion_init_helpers import setup_sda
+        setup_sda(self)
 
     def _setup_conditional_embeddings(self) -> None:
-        """Initialize mode embedding and size bin embedding settings.
-
-        Sets up:
-        - self.use_mode_embedding: bool
-        - self.mode_embedding_strategy: str
-        - self.mode_embedding_dropout: float
-        - self.late_mode_start_level: int
-        - self.use_size_bin_embedding: bool
-        - self.size_bin_num_bins: int
-        - self.size_bin_max_count: int
-        - self.size_bin_embed_dim: int
-        """
-        from .diffusion_config import ModeEmbeddingConfig, SizeBinConfig
-
-        mode_cfg = ModeEmbeddingConfig.from_hydra(self.cfg)
-        size_bin_cfg = SizeBinConfig.from_hydra(self.cfg, self.mode_name)
-
-        # Mode embedding
-        self.use_mode_embedding = mode_cfg.enabled
-        self.mode_embedding_strategy = mode_cfg.strategy
-        self.mode_embedding_dropout = mode_cfg.dropout
-        self.late_mode_start_level = mode_cfg.late_start_level
-
-        if self.use_mode_embedding and self.is_main_process:
-            logger.info(
-                f"Mode embedding enabled: strategy={self.mode_embedding_strategy}, "
-                f"dropout={self.mode_embedding_dropout}, late_start_level={self.late_mode_start_level}"
-            )
-
-        # Size bin embedding
-        self.use_size_bin_embedding = size_bin_cfg.enabled
-        if self.use_size_bin_embedding:
-            self.size_bin_num_bins = size_bin_cfg.num_bins
-            self.size_bin_max_count = size_bin_cfg.max_count
-            self.size_bin_embed_dim = size_bin_cfg.embed_dim
-            if self.is_main_process:
-                logger.info(
-                    f"Size bin embedding enabled: num_bins={self.size_bin_num_bins}, "
-                    f"max_count={self.size_bin_max_count}, embed_dim={self.size_bin_embed_dim}"
-                )
+        """Initialize mode embedding and size bin embedding settings."""
+        from .diffusion_init_helpers import setup_conditional_embeddings
+        setup_conditional_embeddings(self)
 
     def _setup_augmented_diffusion(self) -> None:
-        """Initialize DC-AE 1.5 augmented diffusion training settings.
-
-        Sets up:
-        - self.augmented_diffusion_enabled: bool
-        - self.aug_diff_min_channels: int
-        - self.aug_diff_channel_step: int
-        - self._aug_diff_channel_steps: list[int] | None
-        """
-        from .diffusion_config import AugmentedDiffusionConfig
-
-        aug_cfg = AugmentedDiffusionConfig.from_hydra(self.cfg)
-
-        self.augmented_diffusion_enabled = aug_cfg.enabled
-        self.aug_diff_min_channels = aug_cfg.min_channels
-        self.aug_diff_channel_step = aug_cfg.channel_step
-        self._aug_diff_channel_steps = None  # Computed lazily
-
-        if self.augmented_diffusion_enabled and self.is_main_process:
-            if self.space.scale_factor > 1:
-                logger.info(
-                    f"DC-AE 1.5 Augmented Diffusion Training enabled: "
-                    f"min_channels={self.aug_diff_min_channels}, step={self.aug_diff_channel_step}"
-                )
-            else:
-                logger.warning(
-                    "Augmented Diffusion Training enabled but using pixel space. "
-                    "This has no effect - only applies to latent diffusion."
-                )
+        """Initialize DC-AE 1.5 augmented diffusion training settings."""
+        from .diffusion_init_helpers import setup_augmented_diffusion
+        setup_augmented_diffusion(self)
 
     def _setup_regional_weighting(self) -> None:
-        """Initialize region-weighted loss computer.
-
-        Sets up:
-        - self.regional_weight_computer: RegionalWeightComputer | None
-        """
-        from .diffusion_config import RegionalWeightingConfig
-
-        rw_cfg = RegionalWeightingConfig.from_hydra(self.cfg)
-
-        self.regional_weight_computer = None
-
-        if not rw_cfg.enabled:
-            return
-
-        if self.mode.is_conditional:
-            self.regional_weight_computer = create_regional_weight_computer(self.cfg)
-            if self.is_main_process:
-                logger.info(
-                    f"Region-weighted loss enabled: "
-                    f"tiny={rw_cfg.tiny_weight}, small={rw_cfg.small_weight}, "
-                    f"medium={rw_cfg.medium_weight}, large={rw_cfg.large_weight}, "
-                    f"bg={rw_cfg.background_weight}"
-                )
-        else:
-            if self.is_main_process:
-                logger.warning(
-                    "Regional weighting enabled but mode is not conditional (seg mode). "
-                    "Skipping - regional weighting requires segmentation mask as conditioning."
-                )
+        """Initialize region-weighted loss computer."""
+        from .diffusion_init_helpers import setup_regional_weighting
+        setup_regional_weighting(self)
 
     def _setup_controlnet(self) -> None:
-        """Initialize ControlNet configuration.
-
-        Sets up:
-        - self.use_controlnet: bool
-        - self.controlnet_freeze_unet: bool
-        - self.controlnet_scale: float
-        - self.controlnet_cfg_dropout_prob: float
-        - self.controlnet: nn.Module | None
-        - self.controlnet_stage1: bool
-        """
-        from .diffusion_config import ControlNetConfig
-
-        cn_cfg = ControlNetConfig.from_hydra(self.cfg)
-
-        self.use_controlnet = cn_cfg.enabled
-        self.controlnet_freeze_unet = cn_cfg.freeze_unet
-        self.controlnet_scale = cn_cfg.conditioning_scale
-        self.controlnet_cfg_dropout_prob = cn_cfg.cfg_dropout_prob
-        self.controlnet = None
-        self.controlnet_stage1 = cn_cfg.stage1
-
-        if self.controlnet_stage1 and self.is_main_process:
-            logger.info(
-                "ControlNet Stage 1: Training unconditional UNet (in_channels=out_channels). "
-                "Use this checkpoint for Stage 2 with controlnet.enabled=true"
-            )
-
-        if self.use_controlnet and self.is_main_process:
-            logger.info(
-                f"ControlNet Stage 2: freeze_unet={self.controlnet_freeze_unet}, "
-                f"conditioning_scale={self.controlnet_scale}"
-            )
+        """Initialize ControlNet configuration."""
+        from .diffusion_init_helpers import setup_controlnet
+        setup_controlnet(self)
 
     def _log_training_tricks_config(self) -> None:
         """Log configuration for various training tricks."""
-        if not self.is_main_process:
-            return
-
-        # Gradient noise
-        grad_noise_cfg = self.cfg.training.get('gradient_noise', {})
-        if grad_noise_cfg.get('enabled', False):
-            logger.info(
-                f"Gradient noise injection enabled: "
-                f"sigma={grad_noise_cfg.get('sigma', 0.01)}, decay={grad_noise_cfg.get('decay', 0.55)}"
-            )
-
-        # Curriculum
-        curriculum_cfg = self.cfg.training.get('curriculum', {})
-        if curriculum_cfg.get('enabled', False):
-            logger.info(
-                f"Curriculum timestep scheduling enabled: "
-                f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
-                f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
-                f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
-            )
-
-        # Timestep jitter
-        jitter_cfg = self.cfg.training.get('timestep_jitter', {})
-        if jitter_cfg.get('enabled', False):
-            logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
-
-        # Self-conditioning
-        self_cond_cfg = self.cfg.training.get('self_conditioning', {})
-        if self_cond_cfg.get('enabled', False):
-            logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
-
-        # Feature perturbation
-        feat_cfg = self.cfg.training.get('feature_perturbation', {})
-        if feat_cfg.get('enabled', False):
-            logger.info(
-                f"Feature perturbation enabled: std={feat_cfg.get('std', 0.1)}, "
-                f"layers={feat_cfg.get('layers', ['mid'])}"
-            )
-
-        # Noise augmentation
-        noise_aug_cfg = self.cfg.training.get('noise_augmentation', {})
-        if noise_aug_cfg.get('enabled', False):
-            logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
+        from .diffusion_init_helpers import log_training_tricks_config
+        log_training_tricks_config(self)
 
     # ─────────────────────────────────────────────────────────────────────────
     # DC-AE 1.5: Augmented Diffusion Training Methods
@@ -661,14 +386,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _create_fallback_save_dir(self) -> str:
         """Create fallback save directory for diffusion trainer."""
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        # Use cfg directly since instance attributes may not be set yet
-        strategy_name = self.cfg.strategy.name
-        mode_name = self.cfg.mode.name
-        image_size = self.cfg.model.image_size
-        run_name = f"{exp_name}{strategy_name}_{image_size}_{timestamp}"
-        return os.path.join(self.cfg.paths.model_dir, 'diffusion_2d', mode_name, run_name)
+        from .diffusion_model_setup import create_fallback_save_dir
+        return create_fallback_save_dir(self)
 
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
@@ -729,319 +448,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             logger.debug("Cleared trainer caches")
 
     def setup_model(self, train_dataset: Dataset) -> None:
-        """Initialize model, optimizer, and loss functions.
-
-        Args:
-            train_dataset: Training dataset for model config extraction.
-        """
-        model_cfg = self.mode.get_model_config()
-
-        # Adjust channels for latent space
-        in_channels = self.space.get_latent_channels(model_cfg['in_channels'])
-        out_channels = self.space.get_latent_channels(model_cfg['out_channels'])
-
-        # For ControlNet Stage 1 or Stage 2: conditioning goes through ControlNet, not concatenation
-        # UNet in_channels = out_channels (no +1 for conditioning)
-        if self.use_controlnet or self.controlnet_stage1:
-            in_channels = out_channels
-            if self.is_main_process:
-                stage = "Stage 1 (prep)" if self.controlnet_stage1 else "Stage 2"
-                logger.info(f"ControlNet {stage}: UNet in_channels={in_channels} (no conditioning concatenation)")
-
-        if self.is_main_process and self.space.scale_factor > 1:
-            logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
-                       f"scale factor {self.space.scale_factor}x")
-
-        # Get model type and check if transformer-based
-        self.model_type = get_model_type(self.cfg)
-        self.is_transformer = is_transformer_model(self.cfg)
-
-        # Create raw model via factory
-        if self.is_transformer:
-            raw_model = create_diffusion_model(self.cfg, self.device, in_channels, out_channels)
-
-            if self.use_omega_conditioning or self.use_mode_embedding:
-                raise ValueError(
-                    "Omega/mode conditioning wrappers are not yet supported for transformer models. "
-                    "Either use model=default (UNet) or disable omega_conditioning/mode_embedding."
-                )
-        else:
-            channels = tuple(self.cfg.model.get('channels', [128, 256, 256, 512]))
-            attention_levels = tuple(self.cfg.model.get('attention_levels', [False, False, True, True]))
-            num_res_blocks = self.cfg.model.get('num_res_blocks', 2)
-            num_head_channels = self.cfg.model.get('num_head_channels', 0)
-
-            raw_model = DiffusionModelUNet(
-                spatial_dims=self.cfg.model.get('spatial_dims', 2),
-                in_channels=in_channels,
-                out_channels=out_channels,
-                channels=channels,
-                attention_levels=attention_levels,
-                num_res_blocks=num_res_blocks,
-                num_head_channels=num_head_channels,
-                norm_num_groups=self.cfg.model.get('norm_num_groups', 32),
-            ).to(self.device)
-
-        # Determine if DDPOptimizer should be disabled for large models
-        disable_ddp_opt = self.cfg.training.get('disable_ddp_optimizer', False)
-        if self.mode_name == ModeType.DUAL and self.image_size >= 256:
-            disable_ddp_opt = True
-
-        use_compile = self.cfg.training.get('use_compile', True)
-
-        # Handle embedding wrappers (UNet only)
-        if not self.is_transformer:
-            channels = tuple(self.cfg.model.channels)
-            time_embed_dim = 4 * channels[0]
-        else:
-            time_embed_dim = None
-
-        # Handle embedding wrappers: omega, mode, or both
-        if not self.is_transformer and (self.use_omega_conditioning or self.use_mode_embedding):
-            from medgen.data import create_conditioning_wrapper
-            wrapper, wrapper_name = create_conditioning_wrapper(
-                model=raw_model,
-                use_omega=self.use_omega_conditioning,
-                use_mode=self.use_mode_embedding,
-                embed_dim=time_embed_dim,
-                mode_strategy=self.mode_embedding_strategy,
-                mode_dropout_prob=self.mode_embedding_dropout,
-                late_mode_start_level=self.late_mode_start_level,
-            )
-            wrapper = wrapper.to(self.device)
-
-            if self.is_main_process:
-                logger.info(f"Conditioning: {wrapper_name} wrapper applied (embed_dim={time_embed_dim})")
-
-            if use_compile:
-                wrapper.model = torch.compile(wrapper.model, mode="default")
-                if self.is_main_process:
-                    logger.info(f"Single-GPU: Compiled inner UNet ({wrapper_name} wrapper uncompiled)")
-
-            self.model = wrapper
-            self.model_raw = wrapper
-
-        else:
-            self.model, self.model_raw = wrap_model_for_training(
-                raw_model,
-                use_multi_gpu=self.use_multi_gpu,
-                local_rank=self.local_rank if self.use_multi_gpu else 0,
-                use_compile=use_compile,
-                compile_mode="default",
-                disable_ddp_optimizer=disable_ddp_opt,
-                is_main_process=self.is_main_process,
-            )
-
-        # Block DDP with embedding wrappers - embeddings won't sync across GPUs
-        if self.use_multi_gpu and (self.use_omega_conditioning or self.use_mode_embedding):
-            raise ValueError(
-                "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
-                "Embeddings would NOT be synchronized across GPUs, causing silent training corruption. "
-                "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
-            )
-
-        # Handle size bin embedding for seg_conditioned mode
-        if self.use_size_bin_embedding:
-            from medgen.data import SizeBinModelWrapper
-
-            if self.is_transformer:
-                raise ValueError(
-                    "Size bin embedding is not supported with transformer models. "
-                    "Use model=default (UNet) for seg_conditioned mode."
-                )
-
-            # Get time_embed_dim from model
-            if time_embed_dim is None:
-                channels = tuple(self.cfg.model.channels)
-                time_embed_dim = 4 * channels[0]
-
-            # Wrap with size bin embedding
-            size_bin_wrapper = SizeBinModelWrapper(
-                model=self.model_raw,
-                embed_dim=time_embed_dim,
-                num_bins=self.size_bin_num_bins,
-                max_count=self.size_bin_max_count,
-                per_bin_embed_dim=self.size_bin_embed_dim,
-            ).to(self.device)
-
-            if self.is_main_process:
-                logger.info(
-                    f"Size bin embedding: wrapper applied (num_bins={self.size_bin_num_bins}, "
-                    f"embed_dim={time_embed_dim})"
-                )
-
-            self.model = size_bin_wrapper
-            self.model_raw = size_bin_wrapper
-
-            # Block DDP with size bin embedding
-            if self.use_multi_gpu:
-                raise ValueError(
-                    "DDP is not compatible with size bin embedding. "
-                    "Embeddings would NOT be synchronized across GPUs. "
-                    "Use single GPU for seg_conditioned mode."
-                )
-
-        # Setup ControlNet for pixel-resolution conditioning in latent diffusion
-        if self.use_controlnet:
-            if self.is_transformer:
-                raise ValueError("ControlNet is not supported with transformer models. Use model=default (UNet).")
-
-            # Determine latent channels for ControlNet
-            latent_channels = out_channels  # Same as UNet in_channels after ControlNet adjustment
-
-            # Create ControlNet matching UNet architecture
-            self.controlnet = create_controlnet_for_unet(
-                unet=self.model_raw,
-                cfg=self.cfg,
-                device=self.device,
-                spatial_dims=self.spatial_dims,
-                latent_channels=latent_channels,
-            )
-
-            # Enable gradient checkpointing if requested
-            controlnet_cfg = self.cfg.get('controlnet', {})
-            if controlnet_cfg.get('gradient_checkpointing', False):
-                if hasattr(self.controlnet, 'enable_gradient_checkpointing'):
-                    self.controlnet.enable_gradient_checkpointing()
-                    if self.is_main_process:
-                        logger.info("ControlNet gradient checkpointing enabled")
-
-            # Freeze UNet if configured (Stage 2 training)
-            if self.controlnet_freeze_unet:
-                freeze_unet_for_controlnet(self.model_raw)
-
-            # Create combined model wrapper
-            self.model = ControlNetConditionedUNet(
-                unet=self.model_raw,
-                controlnet=self.controlnet,
-                conditioning_scale=self.controlnet_scale,
-            )
-
-            if self.is_main_process:
-                num_params = sum(p.numel() for p in self.controlnet.parameters())
-                logger.info(f"ControlNet created: {num_params:,} parameters")
-
-        # Setup perceptual loss (skip for seg modes where perceptual_weight=0)
-        # This saves ~200MB GPU memory from loading ResNet50
-        cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
-        if self.perceptual_weight > 0:
-            self.perceptual_loss_fn = PerceptualLoss(
-                spatial_dims=2,
-                network_type="radimagenet_resnet50",
-                cache_dir=cache_dir,
-                pretrained=True,
-                device=self.device,
-                use_compile=use_compile,
-            )
-        else:
-            self.perceptual_loss_fn = None
-            if self.is_main_process:
-                logger.info("Perceptual loss disabled (perceptual_weight=0), skipping ResNet50 loading")
-
-        # Compile fused forward pass setup
-        # Compiled forward doesn't support mode_id parameter, so disable when using
-        # mode embedding or omega conditioning (wrappers need extra kwargs)
-        compile_fused = self.cfg.training.get('compile_fused_forward', True)
-        if self.use_multi_gpu or self.space.scale_factor > 1 or self.use_min_snr or self.regional_weight_computer is not None or self.score_aug is not None or self.sda is not None or self.use_mode_embedding or self.use_omega_conditioning or self.augmented_diffusion_enabled or self.use_controlnet or self.use_size_bin_embedding or self.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
-            compile_fused = False
-
-        self._setup_compiled_forward(compile_fused)
-
-        # Setup optimizer
-        # Determine which parameters to train
-        if self.use_controlnet:
-            if self.controlnet_freeze_unet:
-                # Stage 2: Only train ControlNet
-                train_params = list(self.controlnet.parameters())
-                if self.is_main_process:
-                    trainable = sum(p.numel() for p in train_params if p.requires_grad)
-                    logger.info(f"Training only ControlNet ({trainable:,} trainable params, UNet frozen)")
-            else:
-                # Joint training: Both UNet and ControlNet
-                train_params = list(self.model_raw.parameters()) + list(self.controlnet.parameters())
-                if self.is_main_process:
-                    trainable = sum(p.numel() for p in train_params if p.requires_grad)
-                    logger.info(f"Joint training: UNet + ControlNet ({trainable:,} trainable params)")
-        else:
-            train_params = self.model_raw.parameters()
-
-        self.optimizer = AdamW(
-            train_params,
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
-
-        if self.is_main_process and self.weight_decay > 0:
-            logger.info(f"Using weight decay: {self.weight_decay}")
-
-        # Learning rate scheduler (cosine, constant, or plateau)
-        self.scheduler_type = self.cfg.training.get('scheduler', 'cosine')
-        if self.scheduler_type == 'constant':
-            self.lr_scheduler = create_warmup_constant_scheduler(
-                self.optimizer,
-                warmup_epochs=self.warmup_epochs,
-                total_epochs=self.n_epochs,
-            )
-            if self.is_main_process:
-                logger.info("Using constant LR scheduler (warmup then constant)")
-        elif self.scheduler_type == 'plateau':
-            plateau_cfg = self.cfg.training.get('plateau', {})
-            self.lr_scheduler = create_plateau_scheduler(
-                self.optimizer,
-                mode='min',
-                factor=plateau_cfg.get('factor', 0.5),
-                patience=plateau_cfg.get('patience', 10),
-                min_lr=plateau_cfg.get('min_lr', 1e-6),
-            )
-            if self.is_main_process:
-                logger.info(
-                    f"Using ReduceLROnPlateau scheduler "
-                    f"(factor={plateau_cfg.get('factor', 0.5)}, patience={plateau_cfg.get('patience', 10)})"
-                )
-        else:
-            self.lr_scheduler = create_warmup_cosine_scheduler(
-                self.optimizer,
-                warmup_epochs=self.warmup_epochs,
-                total_epochs=self.n_epochs,
-                eta_min=self.eta_min,
-            )
-
-        # Create EMA wrapper if enabled
-        self._setup_ema()
-
-        # Initialize visualization helper
-        self.visualizer = ValidationVisualizer(
-            cfg=self.cfg,
-            strategy=self.strategy,
-            mode=self.mode,
-            writer=self.writer,
-            save_dir=self.save_dir,
-            device=self.device,
-            is_main_process=self.is_main_process,
-            space=self.space,
-            use_controlnet=self.use_controlnet,
-            controlnet=self.controlnet,
-        )
-
-        # Initialize generation metrics if enabled
-        if self._gen_metrics_config is not None and self._gen_metrics_config.enabled:
-            from medgen.metrics.generation import GenerationMetrics
-            self._gen_metrics = GenerationMetrics(
-                self._gen_metrics_config,
-                self.device,
-                self.save_dir,
-                space=self.space,
-                mode_name=self.mode_name,
-            )
-            if self.is_main_process:
-                logger.info("Generation metrics initialized (caching happens at training start)")
-
-        # Save metadata
-        if self.is_main_process:
-            self._save_metadata()
-
-        # Setup feature perturbation hooks if enabled
-        self._setup_feature_perturbation()
+        """Initialize model, optimizer, and loss functions."""
+        from .diffusion_model_setup import setup_model
+        setup_model(self, train_dataset)
 
     def _setup_ema(self) -> None:
         """Setup EMA wrapper if enabled."""
@@ -1137,117 +546,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _setup_compiled_forward(self, enabled: bool) -> None:
         """Setup compiled forward functions for fused model + loss computation."""
-        self._use_compiled_forward = enabled
-
-        if not enabled:
-            self._compiled_forward_single = None
-            self._compiled_forward_dual = None
-            return
-
-        # Capture use_fp32_loss for closure
-        use_fp32 = self.use_fp32_loss
-
-        # Define and compile forward functions
-        # When use_fp32=False, reproduces pre-Jan-7-2026 BF16 behavior
-        def _forward_single(
-            model: nn.Module,
-            perceptual_fn: nn.Module,
-            model_input: torch.Tensor,
-            timesteps: torch.Tensor,
-            images: torch.Tensor,
-            noise: torch.Tensor,
-            noisy_images: torch.Tensor,
-            perceptual_weight: float,
-            strategy_name: str,
-            num_train_timesteps: int,
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            prediction = model(model_input, timesteps)
-
-            if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
-                predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
-            else:
-                predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
-
-            if strategy_name == 'rflow':
-                target = images - noise
-                if use_fp32:
-                    # FP32: accurate gradients (recommended)
-                    mse_loss = ((prediction.float() - target.float()) ** 2).mean()
-                else:
-                    # BF16: reproduces old behavior (suboptimal gradients)
-                    mse_loss = ((prediction - target) ** 2).mean()
-            else:
-                if use_fp32:
-                    mse_loss = ((prediction.float() - noise.float()) ** 2).mean()
-                else:
-                    mse_loss = ((prediction - noise) ** 2).mean()
-
-            # Perceptual loss always uses FP32 (pretrained networks need it)
-            p_loss = perceptual_fn(predicted_clean.float(), images.float()) if perceptual_weight > 0 else torch.tensor(0.0, device=images.device)
-            total_loss = mse_loss + perceptual_weight * p_loss
-            return total_loss, mse_loss, p_loss, predicted_clean
-
-        def _forward_dual(
-            model: nn.Module,
-            perceptual_fn: nn.Module,
-            model_input: torch.Tensor,
-            timesteps: torch.Tensor,
-            images_0: torch.Tensor,
-            images_1: torch.Tensor,
-            noise_0: torch.Tensor,
-            noise_1: torch.Tensor,
-            noisy_0: torch.Tensor,
-            noisy_1: torch.Tensor,
-            perceptual_weight: float,
-            strategy_name: str,
-            num_train_timesteps: int,
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            prediction = model(model_input, timesteps)
-            pred_0 = prediction[:, 0:1, :, :]
-            pred_1 = prediction[:, 1:2, :, :]
-
-            if strategy_name == 'rflow':
-                t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
-                clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
-                target_0 = images_0 - noise_0
-                target_1 = images_1 - noise_1
-                if use_fp32:
-                    # FP32: accurate gradients (recommended)
-                    mse_loss = (((pred_0.float() - target_0.float()) ** 2).mean() + ((pred_1.float() - target_1.float()) ** 2).mean()) / 2
-                else:
-                    # BF16: reproduces old behavior (suboptimal gradients)
-                    mse_loss = (((pred_0 - target_0) ** 2).mean() + ((pred_1 - target_1) ** 2).mean()) / 2
-            else:
-                clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
-                if use_fp32:
-                    mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() + ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2
-                else:
-                    mse_loss = (((pred_0 - noise_0) ** 2).mean() + ((pred_1 - noise_1) ** 2).mean()) / 2
-
-            if perceptual_weight > 0:
-                # Perceptual loss always uses FP32 (pretrained networks need it)
-                p_loss = (perceptual_fn(clean_0.float(), images_0.float()) + perceptual_fn(clean_1.float(), images_1.float())) / 2
-            else:
-                p_loss = torch.tensor(0.0, device=images_0.device)
-
-            total_loss = mse_loss + perceptual_weight * p_loss
-            return total_loss, mse_loss, p_loss, clean_0, clean_1
-
-        self._compiled_forward_single = torch.compile(
-            _forward_single, mode="reduce-overhead", fullgraph=True
-        )
-        self._compiled_forward_dual = torch.compile(
-            _forward_dual, mode="reduce-overhead", fullgraph=True
-        )
-
-        if self.is_main_process:
-            precision = "FP32" if use_fp32 else "BF16 (legacy)"
-            logger.info(f"Compiled fused forward passes (CUDA graphs enabled, MSE precision: {precision})")
+        from .diffusion_model_setup import setup_compiled_forward
+        setup_compiled_forward(self, enabled)
 
     def _get_trainer_type(self) -> str:
         """Return trainer type for metadata."""
@@ -1621,19 +921,27 @@ class DiffusionTrainer(DiffusionTrainerBase):
         visualize_denoising_trajectory_3d(self, model, epoch, num_steps)
 
     @torch.no_grad()
-    def _generate_trajectory_3d(
+    def _generate_trajectory(
         self,
         model: nn.Module,
         model_input: torch.Tensor,
         num_steps: int = 25,
         capture_every: int = 5,
     ) -> list[torch.Tensor]:
-        """Generate samples while capturing intermediate states (3D)."""
-        from .visualization import generate_trajectory_3d
-        return generate_trajectory_3d(self, model, model_input, num_steps, capture_every)
+        """Generate samples while capturing intermediate states."""
+        from .visualization import generate_trajectory
+        return generate_trajectory(
+            model, model_input,
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            is_conditional=self.mode.is_conditional,
+            latent_channels=self.space.latent_channels,
+            scale_factor=self.space.scale_factor,
+            num_steps=num_steps,
+            capture_every=capture_every,
+        )
 
     @torch.no_grad()
-    def _generate_with_size_bins_3d(
+    def _generate_with_size_bins(
         self,
         model: nn.Module,
         noise: torch.Tensor,
@@ -1641,12 +949,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
         num_steps: int = 25,
         cfg_scale: float = 1.0,
     ) -> torch.Tensor:
-        """Generate 3D samples with size bin conditioning."""
-        from .visualization import generate_with_size_bins_3d
-        return generate_with_size_bins_3d(self, model, noise, size_bins, num_steps, cfg_scale)
+        """Generate samples with size bin conditioning."""
+        from .visualization import generate_with_size_bins
+        return generate_with_size_bins(
+            model, noise, size_bins,
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            num_steps=num_steps,
+            cfg_scale=cfg_scale,
+        )
 
     @torch.no_grad()
-    def _generate_trajectory_with_size_bins_3d(
+    def _generate_trajectory_with_size_bins(
         self,
         model: nn.Module,
         noise: torch.Tensor,
@@ -1654,9 +967,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
         num_steps: int = 25,
         capture_every: int = 5,
     ) -> list[torch.Tensor]:
-        """Generate 3D samples with size bins while capturing trajectory."""
-        from .visualization import generate_trajectory_with_size_bins_3d
-        return generate_trajectory_with_size_bins_3d(self, model, noise, size_bins, num_steps, capture_every)
+        """Generate samples with size bins while capturing trajectory."""
+        from .visualization import generate_trajectory_with_size_bins
+        return generate_trajectory_with_size_bins(
+            model, noise, size_bins,
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            num_steps=num_steps,
+            capture_every=capture_every,
+        )
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint using standardized format."""

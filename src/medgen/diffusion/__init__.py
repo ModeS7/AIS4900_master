@@ -30,6 +30,9 @@ from .strategies import (
     ParsedModelInput,
 )
 
+# Conditioning
+from .conditioning import ConditioningContext
+
 # Modes
 from .modes import (
     TrainingMode,
@@ -74,6 +77,8 @@ __all__ = [
     'DDPMStrategy',
     'RFlowStrategy',
     'ParsedModelInput',
+    # Conditioning
+    'ConditioningContext',
     # Modes
     'TrainingMode',
     'SegmentationMode',

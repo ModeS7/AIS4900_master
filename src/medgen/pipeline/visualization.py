@@ -145,8 +145,12 @@ def visualize_samples_3d(
     # Generate samples
     # Use CFG scale from generation metrics config (default 2.0)
     cfg_scale = trainer._gen_metrics_config.cfg_scale if trainer._gen_metrics_config is not None else 2.0
+    num_train_timesteps = trainer.scheduler.num_train_timesteps
     if trainer.use_size_bin_embedding and size_bins is not None:
-        samples = generate_with_size_bins_3d(trainer, noise, size_bins, num_steps=25, cfg_scale=cfg_scale)
+        samples = generate_with_size_bins(
+            model, noise, size_bins, num_train_timesteps,
+            num_steps=25, cfg_scale=cfg_scale,
+        )
     else:
         samples = trainer.strategy.generate(
             model,
@@ -244,10 +248,21 @@ def visualize_denoising_trajectory_3d(
         # Pixel space diffusion
         noise = torch.randn_like(cached_images[:1])
 
+    # Extract parameters for decoupled generation functions
+    num_train_timesteps = trainer.scheduler.num_train_timesteps
+    is_conditional = trainer.mode.is_conditional
+    latent_channels = trainer.space.latent_channels
+    scale_factor = trainer.space.scale_factor
+
     # Build model input with conditioning
     # For ControlNet (Stage 1 or 2): use only noise (no concatenation)
     if trainer.use_controlnet or trainer.controlnet_stage1:
-        trajectory = generate_trajectory_3d(trainer, model, noise, num_steps=25, capture_every=5)
+        trajectory = generate_trajectory(
+            model, noise, num_train_timesteps,
+            is_conditional=False,  # ControlNet: no channel concatenation
+            latent_channels=latent_channels, scale_factor=scale_factor,
+            num_steps=25, capture_every=5,
+        )
     elif isinstance(trainer.mode, SegmentationConditionedInputMode):
         # Input channel conditioning: concatenate noise with bin_maps
         cached_bin_maps = trainer._cached_train_batch.get('bin_maps')
@@ -256,11 +271,17 @@ def visualize_denoising_trajectory_3d(
             model_input = torch.cat([noise, bin_maps], dim=1)
         else:
             model_input = noise
-        trajectory = generate_trajectory_3d(trainer, model, model_input, num_steps=25, capture_every=5)
+        trajectory = generate_trajectory(
+            model, model_input, num_train_timesteps,
+            is_conditional=True,  # Has channel conditioning
+            latent_channels=latent_channels, scale_factor=scale_factor,
+            num_steps=25, capture_every=5,
+        )
     elif trainer.use_size_bin_embedding and cached_size_bins is not None:
         size_bins = cached_size_bins[:1]
-        trajectory = generate_trajectory_with_size_bins_3d(
-            trainer, noise, size_bins, num_steps=25, capture_every=5
+        trajectory = generate_trajectory_with_size_bins(
+            model, noise, size_bins, num_train_timesteps,
+            num_steps=25, capture_every=5,
         )
     elif trainer.mode.is_conditional and cached_labels is not None:
         labels = cached_labels[:1]
@@ -271,9 +292,19 @@ def visualize_denoising_trajectory_3d(
         else:
             labels_encoded = labels
         model_input = torch.cat([noise, labels_encoded], dim=1)
-        trajectory = generate_trajectory_3d(trainer, model, model_input, num_steps=25, capture_every=5)
+        trajectory = generate_trajectory(
+            model, model_input, num_train_timesteps,
+            is_conditional=True,
+            latent_channels=latent_channels, scale_factor=scale_factor,
+            num_steps=25, capture_every=5,
+        )
     else:
-        trajectory = generate_trajectory_3d(trainer, model, noise, num_steps=25, capture_every=5)
+        trajectory = generate_trajectory(
+            model, noise, num_train_timesteps,
+            is_conditional=False,
+            latent_channels=latent_channels, scale_factor=scale_factor,
+            num_steps=25, capture_every=5,
+        )
 
     # Log latent trajectory before decoding (for latent diffusion)
     if trainer.space.scale_factor > 1 and trainer._unified_metrics is not None:
@@ -289,19 +320,29 @@ def visualize_denoising_trajectory_3d(
 
 
 @torch.no_grad()
-def generate_trajectory_3d(
-    trainer: 'DiffusionTrainer',
+def generate_trajectory(
     model: nn.Module,
     model_input: Tensor,
+    num_train_timesteps: int,
+    is_conditional: bool,
+    latent_channels: int = 1,
+    scale_factor: int = 1,
     num_steps: int = 25,
     capture_every: int = 5,
 ) -> list[Tensor]:
-    """Generate samples while capturing intermediate states (3D).
+    """Generate samples while capturing intermediate states.
+
+    Works for both 2D [B, C, H, W] and 3D [B, C, D, H, W] tensors.
+    All tensor operations (torch.full, model forward, Euler step) are
+    dimension-agnostic.
 
     Args:
-        trainer: The DiffusionTrainer instance.
         model: Model to use for generation.
         model_input: Starting noisy tensor (may include conditioning).
+        num_train_timesteps: Number of training timesteps (from scheduler).
+        is_conditional: Whether mode is conditional (from mode.is_conditional).
+        latent_channels: Number of latent channels (from space.latent_channels).
+        scale_factor: Compression scale factor (1 = pixel space).
         num_steps: Total denoising steps.
         capture_every: Capture state every N steps.
 
@@ -309,8 +350,8 @@ def generate_trajectory_3d(
         List of intermediate tensors.
     """
     # Extract noise from model_input (first channels)
-    if trainer.mode.is_conditional and not trainer.use_size_bin_embedding:
-        in_ch = 1 if trainer.space.scale_factor == 1 else trainer.space.latent_channels
+    if is_conditional:
+        in_ch = 1 if scale_factor == 1 else latent_channels
         x = model_input[:, :in_ch].clone()
         conditioning = model_input[:, in_ch:]
     else:
@@ -319,7 +360,6 @@ def generate_trajectory_3d(
 
     trajectory = [x.clone()]
     dt = 1.0 / num_steps
-    num_train_timesteps = trainer.scheduler.num_train_timesteps
 
     for i in range(num_steps):
         t = 1.0 - i * dt
@@ -347,30 +387,33 @@ def generate_trajectory_3d(
 
 
 @torch.no_grad()
-def generate_with_size_bins_3d(
-    trainer: 'DiffusionTrainer',
+def generate_with_size_bins(
     model: nn.Module,
     noise: Tensor,
     size_bins: Tensor,
+    num_train_timesteps: int,
     num_steps: int = 25,
     cfg_scale: float = 1.0,
 ) -> Tensor:
-    """Generate 3D samples with size bin conditioning.
+    """Generate samples with size bin conditioning.
+
+    Works for both 2D [B, C, H, W] and 3D [B, C, D, H, W] tensors.
+    All tensor operations (Euler integration, model forward) are
+    dimension-agnostic.
 
     Args:
-        trainer: The DiffusionTrainer instance (for scheduler access).
-        model: The model to use for generation (may differ from trainer.model for EMA).
-        noise: Starting noise tensor.
-        size_bins: Size bin embedding tensor.
+        model: The model to use for generation (e.g., EMA model).
+        noise: Starting noise tensor [B, C, H, W] or [B, C, D, H, W].
+        size_bins: Size bin embedding tensor [B, num_bins].
+        num_train_timesteps: Number of training timesteps (from scheduler).
         num_steps: Number of denoising steps.
         cfg_scale: Classifier-free guidance scale (1.0 = no guidance).
 
     Returns:
-        Generated samples.
+        Generated samples tensor.
     """
     x = noise.clone()
     dt = 1.0 / num_steps
-    num_train_timesteps = trainer.scheduler.num_train_timesteps
     use_cfg = cfg_scale > 1.0
 
     # Prepare unconditional size_bins for CFG
@@ -398,21 +441,24 @@ def generate_with_size_bins_3d(
 
 
 @torch.no_grad()
-def generate_trajectory_with_size_bins_3d(
-    trainer: 'DiffusionTrainer',
+def generate_trajectory_with_size_bins(
     model: nn.Module,
     noise: Tensor,
     size_bins: Tensor,
+    num_train_timesteps: int,
     num_steps: int = 25,
     capture_every: int = 5,
 ) -> list[Tensor]:
-    """Generate 3D samples with size bins while capturing trajectory.
+    """Generate samples with size bins while capturing trajectory.
+
+    Works for both 2D [B, C, H, W] and 3D [B, C, D, H, W] tensors.
+    All tensor operations are dimension-agnostic.
 
     Args:
-        trainer: The DiffusionTrainer instance (for scheduler access).
-        model: The model to use for generation (may differ from trainer.model for EMA).
-        noise: Starting noise tensor.
-        size_bins: Size bin embedding tensor.
+        model: The model to use for generation (e.g., EMA model).
+        noise: Starting noise tensor [B, C, H, W] or [B, C, D, H, W].
+        size_bins: Size bin embedding tensor [B, num_bins].
+        num_train_timesteps: Number of training timesteps (from scheduler).
         num_steps: Total denoising steps.
         capture_every: Capture state every N steps.
 
@@ -422,7 +468,6 @@ def generate_trajectory_with_size_bins_3d(
     x = noise.clone()
     trajectory = [x.clone()]
     dt = 1.0 / num_steps
-    num_train_timesteps = trainer.scheduler.num_train_timesteps
 
     for i in range(num_steps):
         t = 1.0 - i * dt
@@ -436,3 +481,53 @@ def generate_trajectory_with_size_bins_3d(
             trajectory.append(x.clone())
 
     return trajectory
+
+
+# =============================================================================
+# Backward Compatibility Aliases (Deprecated)
+# =============================================================================
+# These aliases exist for backward compatibility with code that imported
+# the old _3d suffixed function names. They emit DeprecationWarning and
+# delegate to the unified functions above.
+
+
+def generate_trajectory_3d(*args, **kwargs):
+    """DEPRECATED: Use generate_trajectory() instead.
+
+    This function is dimension-agnostic and works for both 2D and 3D tensors.
+    """
+    import warnings
+    warnings.warn(
+        "generate_trajectory_3d is deprecated, use generate_trajectory",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return generate_trajectory(*args, **kwargs)
+
+
+def generate_with_size_bins_3d(*args, **kwargs):
+    """DEPRECATED: Use generate_with_size_bins() instead.
+
+    This function is dimension-agnostic and works for both 2D and 3D tensors.
+    """
+    import warnings
+    warnings.warn(
+        "generate_with_size_bins_3d is deprecated, use generate_with_size_bins",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return generate_with_size_bins(*args, **kwargs)
+
+
+def generate_trajectory_with_size_bins_3d(*args, **kwargs):
+    """DEPRECATED: Use generate_trajectory_with_size_bins() instead.
+
+    This function is dimension-agnostic and works for both 2D and 3D tensors.
+    """
+    import warnings
+    warnings.warn(
+        "generate_trajectory_with_size_bins_3d is deprecated, use generate_trajectory_with_size_bins",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return generate_trajectory_with_size_bins(*args, **kwargs)

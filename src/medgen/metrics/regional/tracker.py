@@ -75,7 +75,8 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
         loss_fn: str = 'mse',
         device: torch.device | None = None,
     ):
-        super().__init__(fov_mm=fov_mm, loss_fn=loss_fn, device=device)
+        # Subclass-specific setup BEFORE super().__init__
+        # (super().__init__ calls reset() which needs these attributes)
         self.spatial_dims = spatial_dims
 
         if spatial_dims == 2:
@@ -98,19 +99,13 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
         # Min area/voxel threshold
         self._min_area = 5
 
-        self.reset()
+        # super().__init__ calls reset() which initializes all accumulators
+        super().__init__(fov_mm=fov_mm, loss_fn=loss_fn, device=device)
 
     def reset(self) -> None:
         """Reset accumulators for new validation run."""
-        self.tumor_error_sum = 0.0
-        self.tumor_pixels_total = 0  # Used for both 2D and 3D
-        self.bg_error_sum = 0.0
-        self.bg_pixels_total = 0
-        self.count = 0
-
-        # Per-size accumulators (pixel/voxel-weighted)
-        self.size_error_sum = {k: 0.0 for k in self.tumor_size_thresholds}
-        self.size_pixels = {k: 0 for k in self.tumor_size_thresholds}
+        super().reset()
+        # No additional reset needed - all accumulators are in base class
 
     def update(
         self,

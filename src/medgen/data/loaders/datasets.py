@@ -163,6 +163,18 @@ def compute_size_bins(
     return bin_counts
 
 
+# =============================================================================
+# 3D-Specific Size Bin Functions (Intentionally Separate)
+# =============================================================================
+# NOTE: The following _3d functions use DIFFERENT ALGORITHMS from 2D:
+# - compute_feret_diameter_3d(): Computes 3D distance with anisotropic voxel
+#   spacing (depth, height, width can differ). 2D only has single pixel_spacing.
+# - compute_size_bins_3d(): Uses 3D connected components (26-connectivity vs
+#   8-connectivity in 2D), so tumors touching in depth count as ONE tumor.
+# These are NOT candidates for unification - they solve fundamentally different
+# geometric problems.
+
+
 def compute_feret_diameter_3d(
     binary_mask: np.ndarray,
     voxel_spacing: tuple[float, float, float],

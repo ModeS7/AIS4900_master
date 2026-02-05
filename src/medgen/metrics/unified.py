@@ -723,398 +723,64 @@ class UnifiedMetrics:
     # =========================================================================
 
     def log_training(self, epoch: int):
-        """Log all training metrics to TensorBoard.
-
-        Args:
-            epoch: Current epoch number.
-        """
-        if self.writer is None:
-            return
-
-        # Losses
-        for key, data in self._train_losses.items():
-            if data['count'] > 0:
-                self.writer.add_scalar(
-                    f'Loss/{key}_train',
-                    data['sum'] / data['count'],
-                    epoch,
-                )
-
-        # LR
-        if self._current_lr is not None:
-            self.writer.add_scalar('LR/Generator', self._current_lr, epoch)
-
-        # Grad norm
-        if self._grad_norm_count > 0:
-            self.writer.add_scalar(
-                'training/grad_norm_avg',
-                self._grad_norm_sum / self._grad_norm_count,
-                epoch,
-            )
-            self.writer.add_scalar('training/grad_norm_max', self._grad_norm_max, epoch)
-
-        # VRAM
-        if self._vram_allocated > 0:
-            self.writer.add_scalar('VRAM/allocated_GB', self._vram_allocated, epoch)
-            self.writer.add_scalar('VRAM/reserved_GB', self._vram_reserved, epoch)
-            self.writer.add_scalar('VRAM/max_allocated_GB', self._vram_max, epoch)
-
-        # FLOPs
-        if self._flops_epoch > 0:
-            self.writer.add_scalar('FLOPs/TFLOPs_epoch', self._flops_epoch, epoch)
-            self.writer.add_scalar('FLOPs/TFLOPs_total', self._flops_total, epoch)
-
-        # Codebook
-        if self._codebook_tracker is not None:
-            self._codebook_tracker.log_to_tensorboard(self.writer, epoch)
+        """Log all training metrics to TensorBoard."""
+        from .unified_logging import log_training
+        log_training(self, epoch)
 
     def log_validation(self, epoch: int):
-        """Log all validation metrics to TensorBoard.
-
-        Args:
-            epoch: Current epoch number.
-        """
-        if self.writer is None:
-            return
-
-        suffix = f'_{self.modality}' if self.modality else ''
-
-        # Losses
-        for key, data in self._val_losses.items():
-            if data['count'] > 0:
-                self.writer.add_scalar(
-                    f'Loss/{key}_val',
-                    data['sum'] / data['count'],
-                    epoch,
-                )
-
-        # Quality metrics (image modes)
-        if self.uses_image_quality:
-            if self._val_psnr_count > 0:
-                self.writer.add_scalar(
-                    f'Validation/PSNR{suffix}',
-                    self._val_psnr_sum / self._val_psnr_count,
-                    epoch,
-                )
-            if self._val_msssim_count > 0:
-                self.writer.add_scalar(
-                    f'Validation/MS-SSIM{suffix}',
-                    self._val_msssim_sum / self._val_msssim_count,
-                    epoch,
-                )
-            if self._val_lpips_count > 0:
-                self.writer.add_scalar(
-                    f'Validation/LPIPS{suffix}',
-                    self._val_lpips_sum / self._val_lpips_count,
-                    epoch,
-                )
-            if self._val_msssim_3d_count > 0:
-                self.writer.add_scalar(
-                    f'Validation/MS-SSIM-3D{suffix}',
-                    self._val_msssim_3d_sum / self._val_msssim_3d_count,
-                    epoch,
-                )
-
-        # Seg metrics (always log if computed)
-        if self._val_dice_count > 0:
-            self.writer.add_scalar(
-                f'Validation/Dice{suffix}',
-                self._val_dice_sum / self._val_dice_count,
-                epoch,
-            )
-        if self._val_iou_count > 0:
-            self.writer.add_scalar(
-                f'Validation/IoU{suffix}',
-                self._val_iou_sum / self._val_iou_count,
-                epoch,
-            )
-
-        # Validation timesteps (format: Timestep/0.0-0.1, Timestep/0.1-0.2, etc.)
-        for i in range(self.num_timestep_bins):
-            if self._val_timesteps['counts'][i] > 0:
-                # Convert bin index to normalized timestep range [0.0, 1.0]
-                bin_start = i / self.num_timestep_bins
-                bin_end = (i + 1) / self.num_timestep_bins
-                avg = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
-                self.writer.add_scalar(f'Timestep/{bin_start:.1f}-{bin_end:.1f}', avg, epoch)
-
-        # Regional
-        if self._regional_tracker is not None:
-            prefix = f'regional{suffix}' if suffix else 'regional'
-            self._regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+        """Log all validation metrics to TensorBoard."""
+        from .unified_logging import log_validation
+        log_validation(self, epoch)
 
     def log_generation(self, epoch: int, results: dict[str, float]):
-        """Log generation metrics to TensorBoard.
-
-        Args:
-            epoch: Current epoch number.
-            results: Dict of generation metric results (KID, CMMD, etc.).
-                Keys starting with 'Diversity/' go to 'Generation_Diversity/' section.
-        """
-        if self.writer is None:
-            return
-        for key, value in results.items():
-            if key.startswith('Diversity/'):
-                # Diversity metrics get their own section
-                metric_name = key[len('Diversity/'):]  # Remove 'Diversity/' prefix
-                self.writer.add_scalar(f'Generation_Diversity/{metric_name}', value, epoch)
-            else:
-                self.writer.add_scalar(f'Generation/{key}', value, epoch)
+        """Log generation metrics to TensorBoard."""
+        from .unified_logging import log_generation
+        log_generation(self, epoch, results)
 
     def log_test(self, metrics: dict[str, float], prefix: str = 'test_best'):
-        """Log test evaluation metrics.
+        """Log test evaluation metrics."""
+        from .unified_logging import log_test
+        log_test(self, metrics, prefix)
 
-        Args:
-            metrics: Dict of metric name -> value.
-            prefix: 'test_best' or 'test_latest'.
-        """
-        if self.writer is None:
-            return
-        suffix = f'_{self.modality}' if self.modality else ''
-        for key, value in metrics.items():
-            self.writer.add_scalar(f'{prefix}/{key}{suffix}', value, 0)
+    def log_test_generation(self, results: dict[str, float], prefix: str = 'test_best') -> dict[str, float]:
+        """Log test generation metrics (FID, KID, CMMD, diversity)."""
+        from .unified_logging import log_test_generation
+        return log_test_generation(self, results, prefix)
 
-    def log_test_generation(
-        self,
-        results: dict[str, float],
-        prefix: str = 'test_best',
-    ) -> dict[str, float]:
-        """Log test generation metrics (FID, KID, CMMD, diversity).
+    def log_test_regional(self, regional_tracker: Any, prefix: str = 'test_best'):
+        """Log regional metrics with modality suffix."""
+        from .unified_logging import log_test_regional
+        log_test_regional(self, regional_tracker, prefix)
 
-        Paths:
-        - Generation: {prefix}_generation/{key}{suffix} (e.g., test_best_generation/FID_bravo)
-        - Diversity: {prefix}_diversity/{key}{suffix} (e.g., test_best_diversity/LPIPS_bravo)
+    def log_validation_regional(self, regional_tracker: Any, epoch: int, modality_override: str | None = None):
+        """Log regional metrics for validation (supports per-modality tracking)."""
+        from .unified_logging import log_validation_regional
+        log_validation_regional(self, regional_tracker, epoch, modality_override)
 
-        Args:
-            results: Dict of metric name -> value from generation metrics computation.
-                Keys starting with 'Diversity/' go to diversity section.
-            prefix: 'test_best' or 'test_latest'.
+    def log_test_timesteps(self, timestep_bins: dict[str, float], prefix: str = 'test_best'):
+        """Log timestep bin losses."""
+        from .unified_logging import log_test_timesteps
+        log_test_timesteps(self, timestep_bins, prefix)
 
-        Returns:
-            Dict for JSON export (gen_fid, gen_diversity_lpips, etc.)
-        """
-        exported = {}
-        if self.writer is None:
-            return exported
+    def log_per_channel_validation(self, channel_metrics: dict[str, dict[str, float]], epoch: int):
+        """Log per-channel validation (dual/multi modes)."""
+        from .unified_logging import log_per_channel_validation
+        log_per_channel_validation(self, channel_metrics, epoch)
 
-        suffix = f'_{self.modality}' if self.modality else ''
+    def log_per_modality_validation(self, metrics: dict[str, float], modality: str, epoch: int):
+        """Log per-modality validation."""
+        from .unified_logging import log_per_modality_validation
+        log_per_modality_validation(self, metrics, modality, epoch)
 
-        for key, value in results.items():
-            if key.startswith('Diversity/'):
-                # Diversity metrics get their own section
-                metric_name = key[len('Diversity/'):]
-                self.writer.add_scalar(f'{prefix}_diversity/{metric_name}{suffix}', value, 0)
-                exported[f'gen_diversity_{metric_name.lower()}'] = value
-            else:
-                self.writer.add_scalar(f'{prefix}_generation/{key}{suffix}', value, 0)
-                exported[f'gen_{key.lower()}'] = value
+    def log_regularization_loss(self, loss_type: str, weighted_loss: float, epoch: int, unweighted_loss: float | None = None):
+        """Log regularization losses (KL for VAE, VQ for VQVAE)."""
+        from .unified_logging import log_regularization_loss
+        log_regularization_loss(self, loss_type, weighted_loss, epoch, unweighted_loss)
 
-        return exported
-
-    def log_test_regional(
-        self,
-        regional_tracker: Any,
-        prefix: str = 'test_best',
-    ):
-        """Log regional metrics with modality suffix.
-
-        Path: {prefix}_regional_{modality} for single-modality modes,
-              {prefix}_regional for multi-modality modes.
-
-        Args:
-            regional_tracker: RegionalMetricsTracker instance with accumulated metrics.
-            prefix: 'test_best' or 'test_latest'.
-        """
-        if self.writer is None or regional_tracker is None:
-            return
-
-        # Determine if single modality based on mode
-        is_single_modality = self.mode not in ('multi_modality', 'dual', 'multi')
-
-        if is_single_modality and self.modality:
-            regional_prefix = f'{prefix}_regional_{self.modality}'
-        else:
-            regional_prefix = f'{prefix}_regional'
-
-        regional_tracker.log_to_tensorboard(self.writer, 0, prefix=regional_prefix)
-
-    def log_validation_regional(
-        self,
-        regional_tracker: Any,
-        epoch: int,
-        modality_override: str | None = None,
-    ):
-        """Log regional metrics for validation (supports per-modality tracking).
-
-        Used for per-modality validation where each modality has its own tracker.
-        For regular validation, use update_regional() + log_validation() instead.
-
-        Path: regional_{modality} where modality comes from modality_override or self.modality.
-
-        Args:
-            regional_tracker: RegionalMetricsTracker instance with accumulated metrics.
-            epoch: Current epoch number.
-            modality_override: Optional modality name to use in prefix (for per-modality validation).
-                If None, uses self.modality.
-        """
-        if self.writer is None or regional_tracker is None:
-            return
-
-        modality = modality_override or self.modality
-        if modality:
-            regional_prefix = f'regional_{modality}'
-        else:
-            regional_prefix = 'regional'
-
-        regional_tracker.log_to_tensorboard(self.writer, epoch, prefix=regional_prefix)
-
-    def log_test_timesteps(
-        self,
-        timestep_bins: dict[str, float],
-        prefix: str = 'test_best',
-    ):
-        """Log timestep bin losses.
-
-        Path: {prefix}_timestep/{bin_name}{suffix}
-
-        Args:
-            timestep_bins: Dict mapping bin names (e.g., '0.0-0.1') to avg loss values.
-            prefix: 'test_best' or 'test_latest'.
-        """
-        if self.writer is None or not timestep_bins:
-            return
-
-        suffix = f'_{self.modality}' if self.modality else ''
-
-        for bin_name, loss in timestep_bins.items():
-            self.writer.add_scalar(f'{prefix}_timestep/{bin_name}{suffix}', loss, 0)
-
-    def log_per_channel_validation(
-        self,
-        channel_metrics: dict[str, dict[str, float]],
-        epoch: int,
-    ):
-        """Log per-channel validation (dual/multi modes).
-
-        Args:
-            channel_metrics: Dict mapping channel names to metric dicts.
-                e.g., {'t1_pre': {'psnr': 30.0, 'msssim': 0.95, 'lpips': 0.1, 'count': 10}, ...}
-        Paths: Validation/PSNR_t1_pre, Validation/MS-SSIM_t1_pre, etc.
-        """
-        if self.writer is None:
-            return
-
-        for channel_key, channel_data in channel_metrics.items():
-            count = channel_data.get('count', 0)
-            if count > 0:
-                suffix = f'_{channel_key}'
-                if 'psnr' in channel_data:
-                    avg_psnr = channel_data['psnr'] / count
-                    self.writer.add_scalar(f'Validation/PSNR{suffix}', avg_psnr, epoch)
-                if 'msssim' in channel_data:
-                    avg_msssim = channel_data['msssim'] / count
-                    self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', avg_msssim, epoch)
-                if 'lpips' in channel_data and channel_data.get('lpips', 0) > 0:
-                    avg_lpips = channel_data['lpips'] / count
-                    self.writer.add_scalar(f'Validation/LPIPS{suffix}', avg_lpips, epoch)
-
-    def log_per_modality_validation(
-        self,
-        metrics: dict[str, float],
-        modality: str,
-        epoch: int,
-    ):
-        """Log per-modality validation.
-
-        Args:
-            metrics: Dict of metric name -> value.
-                Image quality: {'psnr': 30.0, 'msssim': 0.95, 'lpips': 0.1, 'msssim_3d': 0.92}
-                Segmentation: {'dice': 0.85, 'iou': 0.75}
-            modality: Modality name (e.g., 'bravo', 't1_pre'). Empty string for no suffix.
-            epoch: Current epoch number.
-        Paths: Validation/PSNR_bravo, Validation/MS-SSIM-3D_bravo, Validation/Dice_bravo, etc.
-               Or Validation/PSNR, Validation/Dice if modality is empty.
-        """
-        if self.writer is None:
-            return
-
-        suffix = f'_{modality}' if modality else ''
-
-        # Image quality metrics
-        if 'psnr' in metrics and metrics['psnr'] is not None:
-            self.writer.add_scalar(f'Validation/PSNR{suffix}', metrics['psnr'], epoch)
-        if 'msssim' in metrics and metrics['msssim'] is not None:
-            self.writer.add_scalar(f'Validation/MS-SSIM{suffix}', metrics['msssim'], epoch)
-        if 'lpips' in metrics and metrics['lpips'] is not None:
-            self.writer.add_scalar(f'Validation/LPIPS{suffix}', metrics['lpips'], epoch)
-        if 'msssim_3d' in metrics and metrics['msssim_3d'] is not None:
-            self.writer.add_scalar(f'Validation/MS-SSIM-3D{suffix}', metrics['msssim_3d'], epoch)
-
-        # Segmentation metrics
-        if 'dice' in metrics and metrics['dice'] is not None:
-            self.writer.add_scalar(f'Validation/Dice{suffix}', metrics['dice'], epoch)
-        if 'iou' in metrics and metrics['iou'] is not None:
-            self.writer.add_scalar(f'Validation/IoU{suffix}', metrics['iou'], epoch)
-
-    def log_regularization_loss(
-        self,
-        loss_type: str,
-        weighted_loss: float,
-        epoch: int,
-        unweighted_loss: float | None = None,
-    ):
-        """Log regularization losses (KL for VAE, VQ for VQVAE).
-
-        Provides consistent TensorBoard paths for regularization losses
-        across all compression trainers.
-
-        Args:
-            loss_type: Type of regularization loss ('KL' or 'VQ').
-            weighted_loss: The weighted loss value (as used in total loss).
-            epoch: Current epoch number.
-            unweighted_loss: Optional unweighted loss value for monitoring.
-
-        Paths:
-            - Loss/{loss_type}_val (e.g., Loss/KL_val, Loss/VQ_val)
-            - Loss/{loss_type}_unweighted_val (if unweighted provided)
-        """
-        if self.writer is None:
-            return
-
-        self.writer.add_scalar(f'Loss/{loss_type}_val', weighted_loss, epoch)
-
-        if unweighted_loss is not None:
-            self.writer.add_scalar(f'Loss/{loss_type}_unweighted_val', unweighted_loss, epoch)
-
-    def log_codebook_metrics(
-        self,
-        codebook_tracker: Any,
-        epoch: int,
-        prefix: str = 'Codebook',
-    ) -> dict[str, float]:
-        """Log codebook metrics from external tracker (VQVAE).
-
-        Delegates to the codebook_tracker's log_to_tensorboard() method
-        while ensuring the logging goes through a unified writer reference.
-
-        Args:
-            codebook_tracker: CodebookTracker instance with accumulated metrics.
-            epoch: Current epoch number.
-            prefix: TensorBoard prefix for codebook metrics (default: 'Codebook').
-
-        Returns:
-            Dict with codebook metrics (perplexity, utilization, etc.)
-            for downstream use (e.g., adding to returned metrics dict).
-
-        Paths:
-            - {prefix}/perplexity
-            - {prefix}/utilization
-            - {prefix}/active_codes
-        """
-        if self.writer is None or codebook_tracker is None:
-            return {}
-
-        return codebook_tracker.log_to_tensorboard(self.writer, epoch, prefix=prefix)
+    def log_codebook_metrics(self, codebook_tracker: Any, epoch: int, prefix: str = 'Codebook') -> dict[str, float]:
+        """Log codebook metrics from external tracker (VQVAE)."""
+        from .unified_logging import log_codebook_metrics
+        return log_codebook_metrics(self, codebook_tracker, epoch, prefix)
 
     def update_validation_batch(
         self,
@@ -1190,62 +856,9 @@ class UnifiedMetrics:
             self._val_iou_count = 1
 
     def log_timestep_region_heatmap(self, epoch: int):
-        """Log 2D heatmap of loss by timestep bin and region.
-
-        Creates a visualization showing how loss varies across timesteps
-        for tumor vs background regions.
-
-        Args:
-            epoch: Current epoch number.
-        """
-        if self.writer is None:
-            return
-
-        # Check if we have any data
-        if not any(self._tr_tumor_count) and not any(self._tr_bg_count):
-            return
-
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        heatmap_data = np.zeros((self.num_timestep_bins, 2))
-        labels_timestep = []
-
-        for i in range(self.num_timestep_bins):
-            bin_start = i / self.num_timestep_bins
-            bin_end = (i + 1) / self.num_timestep_bins
-            labels_timestep.append(f'{bin_start:.1f}-{bin_end:.1f}')
-
-            # Tumor column
-            if self._tr_tumor_count[i] > 0:
-                heatmap_data[i, 0] = self._tr_tumor_sum[i] / self._tr_tumor_count[i]
-
-            # Background column
-            if self._tr_bg_count[i] > 0:
-                heatmap_data[i, 1] = self._tr_bg_sum[i] / self._tr_bg_count[i]
-
-        fig, ax = plt.subplots(figsize=(6, 10))
-        im = ax.imshow(heatmap_data, aspect='auto', cmap='YlOrRd')
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(['Tumor', 'Background'])
-        ax.set_yticks(range(self.num_timestep_bins))
-        ax.set_yticklabels(labels_timestep)
-        ax.set_xlabel('Region')
-        ax.set_ylabel('Timestep Range')
-        ax.set_title(f'Loss by Timestep & Region (Epoch {epoch})')
-        plt.colorbar(im, ax=ax, label='MSE Loss')
-
-        # Add text annotations
-        for i in range(self.num_timestep_bins):
-            for j in range(2):
-                ax.text(j, i, f'{heatmap_data[i, j]:.4f}',
-                        ha='center', va='center', color='black', fontsize=8)
-
-        plt.tight_layout()
-        self.writer.add_figure('loss/timestep_region_heatmap', fig, epoch)
-        plt.close(fig)
+        """Log 2D heatmap of loss by timestep bin and region."""
+        from .unified_logging import log_timestep_region_heatmap
+        log_timestep_region_heatmap(self, epoch)
 
     # =========================================================================
     # Helper Methods
@@ -1334,779 +947,88 @@ class UnifiedMetrics:
         self.reset_validation()
 
     def record_epoch_history(self, epoch: int):
-        """Record current epoch data to history for JSON export.
-
-        Call this BEFORE reset_validation() to capture the epoch's data.
-
-        Args:
-            epoch: Current epoch number.
-        """
-        # Regional history
-        if self._regional_tracker is not None:
-            metrics = self._regional_tracker.compute()
-            if metrics:
-                self._regional_history[str(epoch)] = {
-                    'tumor': metrics.get('tumor', 0),
-                    'background': metrics.get('background', 0),
-                    'tumor_bg_ratio': metrics.get('ratio', 0),
-                    'by_size': {
-                        'tiny': metrics.get('tumor_size_tiny', 0),
-                        'small': metrics.get('tumor_size_small', 0),
-                        'medium': metrics.get('tumor_size_medium', 0),
-                        'large': metrics.get('tumor_size_large', 0),
-                    }
-                }
-
-        # Timestep history
-        epoch_timesteps = {}
-        for i in range(self.num_timestep_bins):
-            if self._val_timesteps['counts'][i] > 0:
-                bin_start = i / self.num_timestep_bins
-                bin_end = (i + 1) / self.num_timestep_bins
-                bin_name = f'{bin_start:.1f}-{bin_end:.1f}'
-                epoch_timesteps[bin_name] = self._val_timesteps['sums'][i] / self._val_timesteps['counts'][i]
-        if epoch_timesteps:
-            self._timestep_history[str(epoch)] = epoch_timesteps
-
-        # Timestep-region history
-        epoch_tr = {}
-        for i in range(self.num_timestep_bins):
-            bin_start = i / self.num_timestep_bins
-            bin_label = f'{bin_start:.1f}'
-            tumor_avg = self._tr_tumor_sum[i] / max(self._tr_tumor_count[i], 1) if self._tr_tumor_count[i] > 0 else 0.0
-            bg_avg = self._tr_bg_sum[i] / max(self._tr_bg_count[i], 1) if self._tr_bg_count[i] > 0 else 0.0
-            epoch_tr[bin_label] = {
-                'tumor': tumor_avg,
-                'background': bg_avg,
-            }
-        if any(self._tr_tumor_count) or any(self._tr_bg_count):
-            self._timestep_region_history[str(epoch)] = epoch_tr
+        """Record current epoch data to history for JSON export."""
+        from .unified_history import record_epoch_history
+        record_epoch_history(self, epoch)
 
     def save_json_histories(self, save_dir: str):
-        """Save all history data to JSON files.
-
-        Args:
-            save_dir: Directory to save JSON files to.
-        """
-        import json
-        import os
-
-        import numpy as np
-
-        def convert_to_native(obj):
-            """Recursively convert numpy types to native Python types for JSON."""
-            if isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_native(v) for v in obj]
-            elif isinstance(obj, (np.floating, np.float32, np.float64)):
-                return float(obj)
-            elif isinstance(obj, (np.integer, np.int32, np.int64)):
-                return int(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            return obj
-
-        if self._regional_history:
-            filepath = os.path.join(save_dir, 'regional_losses.json')
-            with open(filepath, 'w') as f:
-                json.dump(convert_to_native(self._regional_history), f, indent=2)
-
-        if self._timestep_history:
-            filepath = os.path.join(save_dir, 'timestep_losses.json')
-            with open(filepath, 'w') as f:
-                json.dump(convert_to_native(self._timestep_history), f, indent=2)
-
-        if self._timestep_region_history:
-            filepath = os.path.join(save_dir, 'timestep_region_losses.json')
-            with open(filepath, 'w') as f:
-                json.dump(convert_to_native(self._timestep_region_history), f, indent=2)
+        """Save all history data to JSON files."""
+        from .unified_history import save_json_histories
+        save_json_histories(self, save_dir)
 
     # =========================================================================
     # Visualization Methods
     # =========================================================================
 
-    def log_reconstruction_figure(
-        self,
-        original: torch.Tensor,
-        reconstructed: torch.Tensor,
-        epoch: int,
-        mask: torch.Tensor | None = None,
-        timesteps: torch.Tensor | None = None,
-        tag: str = 'Figures/reconstruction',
-        max_samples: int = 8,
-        metrics: dict[str, float] | None = None,
-        save_path: str | None = None,
-    ):
-        """Log reconstruction comparison figure to TensorBoard.
-
-        Args:
-            original: Ground truth tensor [B, C, (D), H, W].
-            reconstructed: Reconstructed tensor [B, C, (D), H, W].
-            epoch: Current epoch number.
-            mask: Optional segmentation mask for contour overlay.
-            timesteps: Optional timesteps for column titles (diffusion).
-            tag: TensorBoard tag for the figure.
-            max_samples: Maximum number of samples to display.
-            metrics: Optional dict of metrics to show in subtitle.
-            save_path: Optional path to save figure as PNG file.
-        """
-        if self.writer is None and save_path is None:
-            return
-
-        import matplotlib.pyplot as plt
-
-        from .figures import create_reconstruction_figure
-
-        # Handle 3D volumes - extract multiple slices for visualization
-        if self.spatial_dims == 3:
-            original = self._extract_multiple_slices(original, num_slices=max_samples)
-            reconstructed = self._extract_multiple_slices(reconstructed, num_slices=max_samples)
-            if mask is not None:
-                mask = self._extract_multiple_slices(mask, num_slices=max_samples)
-            # For 3D, slices are from same volume - show timestep in metrics instead of per-column
-            if timesteps is not None and len(timesteps) > 0:
-                t_val = timesteps[0].item() if hasattr(timesteps[0], 'item') else timesteps[0]
-                metrics = metrics.copy() if metrics else {}
-                metrics['t'] = t_val
-            timesteps = None  # Don't show per-column (all slices have same timestep)
-
-        fig = create_reconstruction_figure(
-            original=original,
-            generated=reconstructed,
-            timesteps=timesteps,
-            mask=mask,
-            max_samples=max_samples,
-            metrics=metrics,
-        )
-
-        # Log to TensorBoard
-        if self.writer is not None:
-            self.writer.add_figure(tag, fig, epoch)
-
-        # Save to file if path provided
-        if save_path is not None:
-            fig.savefig(save_path, dpi=150, bbox_inches='tight')
-
-        plt.close(fig)
-
-    def log_worst_batch(
-        self,
-        original: torch.Tensor,
-        reconstructed: torch.Tensor,
-        loss: float,
-        epoch: int,
-        phase: str = 'train',
-        mask: torch.Tensor | None = None,
-        timesteps: torch.Tensor | None = None,
-        tag_prefix: str | None = None,
-        save_path: str | None = None,
-        display_metrics: dict[str, float] | None = None,
-    ):
-        """Log worst batch visualization to TensorBoard.
-
-        Args:
-            original: Ground truth tensor.
-            reconstructed: Reconstructed tensor.
-            loss: Loss value for this batch.
-            epoch: Current epoch number.
-            phase: 'train' or 'val' (used if tag_prefix not provided).
-            mask: Optional segmentation mask.
-            timesteps: Optional timesteps (diffusion).
-            tag_prefix: Optional custom prefix (e.g., 'Test_best'). If provided,
-                tag becomes '{tag_prefix}/worst_batch' instead of 'worst_batch/{phase}'.
-            save_path: Optional path to save figure as PNG file.
-            display_metrics: Optional metrics dict to display (e.g., {'MS-SSIM': 0.95}).
-                If not provided, uses {'loss': loss}.
-        """
-        if self.writer is None and save_path is None:
-            return
-
-        # Determine tag - use TensorBoard standard format: Validation/worst_batch
-        if tag_prefix is not None:
-            tag = f'{tag_prefix}/worst_batch'
-        else:
-            phase_cap = phase.capitalize()  # val -> Validation, train -> Train
-            tag = f'{phase_cap}/worst_batch'
-
-        # Determine metrics to display
-        metrics = display_metrics if display_metrics is not None else {'loss': loss}
-
-        self.log_reconstruction_figure(
-            original=original,
-            reconstructed=reconstructed,
-            epoch=epoch,
-            mask=mask,
-            timesteps=timesteps,
-            tag=tag,
-            metrics=metrics,
-            save_path=save_path,
-        )
-
-    def log_denoising_trajectory(
-        self,
-        trajectory: list,
-        epoch: int,
-        tag: str = 'denoising_trajectory',
-    ):
-        """Log denoising step visualization to TensorBoard.
-
-        Args:
-            trajectory: List of tensors showing denoising progress.
-            epoch: Current epoch number.
-            tag: TensorBoard tag prefix.
-        """
-        if self.writer is None or not trajectory:
-            return
-
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        # Stack trajectory into single tensor
-        steps = len(trajectory)
-        sample = trajectory[0]
-
-        # Handle 3D - take center slice
-        if self.spatial_dims == 3 and sample.dim() == 5:
-            trajectory = [self._extract_center_slice(t) for t in trajectory]
-            sample = trajectory[0]
-
-        # Create figure showing progression
-        fig, axes = plt.subplots(1, steps, figsize=(2.5 * steps, 3))
-        if steps == 1:
-            axes = [axes]
-
-        for i, step_tensor in enumerate(trajectory):
-            # Take first sample, first channel
-            if isinstance(step_tensor, torch.Tensor):
-                img = step_tensor[0, 0].cpu().float().numpy()
-            else:
-                img = step_tensor[0, 0]
-            axes[i].imshow(np.clip(img, 0, 1), cmap='gray', vmin=0, vmax=1)
-            axes[i].set_title(f'Step {i}', fontsize=8)
-            axes[i].axis('off')
-
-        fig.tight_layout()
-        self.writer.add_figure(f'{tag}/progression', fig, epoch)
-        plt.close(fig)
-
-    def log_generated_samples(
-        self,
-        samples: torch.Tensor,
-        epoch: int,
-        tag: str = 'Generated_Samples',
-        nrow: int = 4,
-        num_slices: int = 8,
-    ):
-        """Log generated samples grid to TensorBoard.
-
-        For 3D volumes, shows multiple evenly-spaced slices per sample.
-
-        Args:
-            samples: Generated samples [B, C, (D), H, W].
-            epoch: Current epoch number.
-            tag: TensorBoard tag.
-            nrow: Number of images per row in grid (2D only).
-            num_slices: Number of slices to show for 3D volumes.
-        """
-        if self.writer is None:
-            return
-
-        from torchvision.utils import make_grid
-
-        # Handle 3D - show multiple slices per sample
-        if self.spatial_dims == 3 and samples.dim() == 5:
-            self._log_generated_samples_3d(samples, epoch, tag, num_slices)
-            return
-
-        # 2D: simple grid
-        samples = torch.clamp(samples.float(), 0, 1)
-        grid = make_grid(samples, nrow=nrow, normalize=False, padding=2)
-        self.writer.add_image(tag, grid, epoch)
-
-    def _log_generated_samples_3d(
-        self,
-        samples: torch.Tensor,
-        epoch: int,
-        tag: str,
-        num_slices: int = 8,
-    ):
-        """Log 3D generated samples with multiple slices per sample.
-
-        Creates a figure with one row per sample, showing evenly-spaced
-        depth slices across columns.
-
-        Args:
-            samples: 5D tensor [B, C, D, H, W].
-            epoch: Current epoch number.
-            tag: TensorBoard tag.
-            num_slices: Number of slices per sample.
-        """
-        import matplotlib.pyplot as plt
-
-        B, C, D, H, W = samples.shape
-        samples = torch.clamp(samples.float(), 0, 1).cpu()
-
-        # Calculate slice indices (evenly spaced, avoiding edges)
-        margin = max(1, D // (num_slices + 2))
-        indices = torch.linspace(margin, D - margin - 1, num_slices).long().tolist()
-
-        # Create figure: rows = samples, cols = slices
-        fig, axes = plt.subplots(B, num_slices, figsize=(num_slices * 2, B * 2))
-
-        # Handle single sample case
-        if B == 1:
-            axes = axes.reshape(1, -1)
-
-        for b in range(B):
-            for s, slice_idx in enumerate(indices):
-                ax = axes[b, s]
-                # Get slice and handle channels
-                slice_img = samples[b, :, slice_idx, :, :]
-                if C == 1:
-                    ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
-                else:
-                    # Multi-channel: show first channel or RGB if 3
-                    ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
-
-                ax.set_xticks([])
-                ax.set_yticks([])
-
-                # Label top row with slice indices
-                if b == 0:
-                    ax.set_title(f'z={slice_idx}', fontsize=8)
-
-                # Label left column with sample number
-                if s == 0:
-                    ax.set_ylabel(f'Sample {b+1}', fontsize=8)
-
-        plt.tight_layout()
-        self.writer.add_figure(tag, fig, epoch)
-        plt.close(fig)
-
-    def log_latent_samples(
-        self,
-        samples: torch.Tensor,
-        epoch: int,
-        tag: str = 'Latent_Samples',
-        num_slices: int = 8,
-    ):
-        """Log latent space samples to TensorBoard (before decoding).
-
-        Visualizes multi-channel latent tensors with per-channel views
-        and a combined magnitude view. Useful for understanding latent
-        diffusion behavior.
-
-        Args:
-            samples: Latent samples [B, C_lat, (D), H, W].
-            epoch: Current epoch number.
-            tag: TensorBoard tag.
-            num_slices: Number of slices for 3D.
-        """
-        if self.writer is None:
-            return
-
-        # Handle 3D
-        if samples.dim() == 5:
-            self._log_latent_samples_3d(samples, epoch, tag, num_slices)
-            return
-
-        # 2D: [B, C_lat, H, W]
-        self._log_latent_samples_2d(samples, epoch, tag)
-
-    def _log_latent_samples_2d(
-        self,
-        samples: torch.Tensor,
-        epoch: int,
-        tag: str,
-    ):
-        """Log 2D latent samples with per-channel visualization.
-
-        Creates a figure showing:
-        - Each latent channel separately
-        - Combined magnitude view
-
-        Args:
-            samples: 4D tensor [B, C_lat, H, W].
-            epoch: Current epoch number.
-            tag: TensorBoard tag.
-        """
-        import matplotlib.pyplot as plt
-
-        B, C_lat, H, W = samples.shape
-        samples = samples.float().cpu()
-
-        # Show first sample only for clarity
-        sample = samples[0]  # [C_lat, H, W]
-
-        # Create figure: C_lat channels + 1 combined
-        n_cols = min(C_lat + 1, 5)  # Cap at 5 columns
-        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 2.5, 2.5))
-
-        if n_cols == 1:
-            axes = [axes]
-
-        # Normalize for visualization (latent values aren't in [0,1])
-        vmin, vmax = sample.min().item(), sample.max().item()
-
-        # Show individual channels
-        for c in range(min(C_lat, n_cols - 1)):
-            ax = axes[c]
-            im = ax.imshow(sample[c].numpy(), cmap='viridis', vmin=vmin, vmax=vmax)
-            ax.set_title(f'Ch {c}', fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        # Combined magnitude view (RMS across channels)
-        if n_cols > 1:
-            ax = axes[-1]
-            magnitude = torch.sqrt((sample ** 2).mean(dim=0))  # [H, W]
-            ax.imshow(magnitude.numpy(), cmap='magma')
-            ax.set_title('Magnitude', fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        fig.suptitle(f'Latent Space (range: [{vmin:.2f}, {vmax:.2f}])', fontsize=10)
-        plt.tight_layout()
-        self.writer.add_figure(tag, fig, epoch)
-        plt.close(fig)
-
-    def _log_latent_samples_3d(
-        self,
-        samples: torch.Tensor,
-        epoch: int,
-        tag: str,
-        num_slices: int = 8,
-    ):
-        """Log 3D latent samples with per-channel center slices.
-
-        Creates a figure showing center slice for each latent channel
-        plus combined magnitude view.
-
-        Args:
-            samples: 5D tensor [B, C_lat, D, H, W].
-            epoch: Current epoch number.
-            tag: TensorBoard tag.
-            num_slices: Not used (shows center slice per channel).
-        """
-        import matplotlib.pyplot as plt
-
-        B, C_lat, D, H, W = samples.shape
-        samples = samples.float().cpu()
-
-        # Show first sample, center depth slice
-        center_idx = D // 2
-        sample = samples[0, :, center_idx, :, :]  # [C_lat, H, W]
-
-        # Create figure: C_lat channels + 1 combined
-        n_cols = min(C_lat + 1, 5)  # Cap at 5 columns
-        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 2.5, 2.5))
-
-        if n_cols == 1:
-            axes = [axes]
-
-        # Normalize for visualization
-        vmin, vmax = sample.min().item(), sample.max().item()
-
-        # Show individual channels
-        for c in range(min(C_lat, n_cols - 1)):
-            ax = axes[c]
-            im = ax.imshow(sample[c].numpy(), cmap='viridis', vmin=vmin, vmax=vmax)
-            ax.set_title(f'Ch {c}', fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        # Combined magnitude view
-        if n_cols > 1:
-            ax = axes[-1]
-            magnitude = torch.sqrt((sample ** 2).mean(dim=0))  # [H, W]
-            ax.imshow(magnitude.numpy(), cmap='magma')
-            ax.set_title('Magnitude', fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        fig.suptitle(f'Latent Space z={center_idx} (range: [{vmin:.2f}, {vmax:.2f}])', fontsize=10)
-        plt.tight_layout()
-        self.writer.add_figure(tag, fig, epoch)
-        plt.close(fig)
-
-    def log_latent_trajectory(
-        self,
-        trajectory: list,
-        epoch: int,
-        tag: str = 'denoising_trajectory',
-    ):
-        """Log latent space denoising trajectory to TensorBoard.
-
-        Shows the magnitude of latent tensors at each step of denoising.
-        Uses same path structure as decoded trajectory with '_latent' suffix.
-
-        Args:
-            trajectory: List of latent tensors at different timesteps.
-            epoch: Current epoch number.
-            tag: TensorBoard tag (e.g., 'denoising_trajectory').
-        """
-        if self.writer is None or not trajectory:
-            return
-
-        import matplotlib.pyplot as plt
-
-        n_steps = len(trajectory)
-        first = trajectory[0]
-
-        # Determine if 2D or 3D
-        is_3d = first.dim() == 5
-
-        fig, axes = plt.subplots(1, n_steps, figsize=(n_steps * 2, 2.5))
-        if n_steps == 1:
-            axes = [axes]
-
-        for i, latent in enumerate(trajectory):
-            ax = axes[i]
-            latent = latent[0].float().cpu()  # First sample
-
-            if is_3d:
-                # Center slice, magnitude across channels
-                center_idx = latent.shape[1] // 2
-                slice_data = latent[:, center_idx, :, :]  # [C, H, W]
-            else:
-                slice_data = latent  # [C, H, W]
-
-            # Compute magnitude
-            magnitude = torch.sqrt((slice_data ** 2).mean(dim=0))  # [H, W]
-            ax.imshow(magnitude.numpy(), cmap='magma')
-            ax.set_title(f't={i}', fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-        fig.suptitle('Latent Denoising Trajectory (Magnitude)', fontsize=10)
-        plt.tight_layout()
-        self.writer.add_figure(f'{tag}/progression_latent', fig, epoch)
-        plt.close(fig)
-
-    def log_test_figure(
-        self,
-        original: torch.Tensor,
-        reconstructed: torch.Tensor,
-        prefix: str = 'test_best',
-        mask: torch.Tensor | None = None,
-        metrics: dict[str, float] | None = None,
-    ):
-        """Log test evaluation figure to TensorBoard.
-
-        Args:
-            original: Ground truth tensor.
-            reconstructed: Reconstructed tensor.
-            prefix: 'test_best' or 'test_latest'.
-            mask: Optional segmentation mask.
-            metrics: Optional dict of metrics for subtitle.
-        """
-        if self.writer is None:
-            return
-
-        self.log_reconstruction_figure(
-            original=original,
-            reconstructed=reconstructed,
-            epoch=0,  # Test uses step 0
-            mask=mask,
-            tag=f'{prefix}/reconstruction',
-            metrics=metrics,
-        )
+    def log_reconstruction_figure(self, original: torch.Tensor, reconstructed: torch.Tensor, epoch: int, mask: torch.Tensor | None = None, timesteps: torch.Tensor | None = None, tag: str = 'Figures/reconstruction', max_samples: int = 8, metrics: dict[str, float] | None = None, save_path: str | None = None):
+        """Log reconstruction comparison figure to TensorBoard."""
+        from .unified_visualization import log_reconstruction_figure
+        log_reconstruction_figure(self, original, reconstructed, epoch, mask, timesteps, tag, max_samples, metrics, save_path)
+
+    def log_worst_batch(self, original: torch.Tensor, reconstructed: torch.Tensor, loss: float, epoch: int, phase: str = 'train', mask: torch.Tensor | None = None, timesteps: torch.Tensor | None = None, tag_prefix: str | None = None, save_path: str | None = None, display_metrics: dict[str, float] | None = None):
+        """Log worst batch visualization to TensorBoard."""
+        from .unified_visualization import log_worst_batch
+        log_worst_batch(self, original, reconstructed, loss, epoch, phase, mask, timesteps, tag_prefix, save_path, display_metrics)
+
+    def log_denoising_trajectory(self, trajectory: list, epoch: int, tag: str = 'denoising_trajectory'):
+        """Log denoising step visualization to TensorBoard."""
+        from .unified_visualization import log_denoising_trajectory
+        log_denoising_trajectory(self, trajectory, epoch, tag)
+
+    def log_generated_samples(self, samples: torch.Tensor, epoch: int, tag: str = 'Generated_Samples', nrow: int = 4, num_slices: int = 8):
+        """Log generated samples grid to TensorBoard."""
+        from .unified_visualization import log_generated_samples
+        log_generated_samples(self, samples, epoch, tag, nrow, num_slices)
+
+    def log_latent_samples(self, samples: torch.Tensor, epoch: int, tag: str = 'Latent_Samples', num_slices: int = 8):
+        """Log latent space samples to TensorBoard (before decoding)."""
+        from .unified_visualization import log_latent_samples
+        log_latent_samples(self, samples, epoch, tag, num_slices)
+
+    def log_latent_trajectory(self, trajectory: list, epoch: int, tag: str = 'denoising_trajectory'):
+        """Log latent space denoising trajectory to TensorBoard."""
+        from .unified_visualization import log_latent_trajectory
+        log_latent_trajectory(self, trajectory, epoch, tag)
+
+    def log_test_figure(self, original: torch.Tensor, reconstructed: torch.Tensor, prefix: str = 'test_best', mask: torch.Tensor | None = None, metrics: dict[str, float] | None = None):
+        """Log test evaluation figure to TensorBoard."""
+        from .unified_visualization import log_test_figure
+        log_test_figure(self, original, reconstructed, prefix, mask, metrics)
 
     def _extract_center_slice(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Extract center slice from 3D volume.
+        """Extract center slice from 3D volume."""
+        from .unified_visualization import _extract_center_slice
+        return _extract_center_slice(self, tensor)
 
-        Args:
-            tensor: 5D tensor [B, C, D, H, W].
-
-        Returns:
-            4D tensor [B, C, H, W] with center depth slice.
-        """
-        if tensor.dim() == 5:
-            depth = tensor.shape[2]
-            center_idx = depth // 2
-            return tensor[:, :, center_idx, :, :]
-        return tensor
-
-    def _extract_multiple_slices(
-        self,
-        tensor: torch.Tensor,
-        num_slices: int = 8,
-    ) -> torch.Tensor:
-        """Extract multiple evenly-spaced slices from 3D volume.
-
-        For 3D worst_batch visualization, extracts N slices from the depth
-        dimension and returns them as a batch of 2D images.
-
-        Args:
-            tensor: 5D tensor [B, C, D, H, W] (typically B=1 for 3D).
-            num_slices: Number of slices to extract.
-
-        Returns:
-            4D tensor [N, C, H, W] with N evenly-spaced slices.
-        """
-        if tensor.dim() != 5:
-            return tensor
-
-        B, C, D, H, W = tensor.shape
-
-        # Clamp num_slices to available depth to avoid duplicate indices
-        num_slices = min(num_slices, D)
-        if num_slices <= 1:
-            # Return middle slice if only 1 available
-            mid = D // 2
-            return tensor[:, :, mid:mid+1, :, :].squeeze(2)  # [B, C, H, W]
-
-        # Calculate evenly spaced indices (avoid edges)
-        margin = max(1, D // (num_slices + 1))
-        if D - 2 * margin > 0 and num_slices > 1:
-            indices = [margin + i * (D - 2 * margin) // (num_slices - 1) for i in range(num_slices)]
-        else:
-            # Fall back to uniform spacing across entire depth
-            indices = [i * (D - 1) // (num_slices - 1) for i in range(num_slices)]
-        indices = [min(max(0, idx), D - 1) for idx in indices]  # Clamp to valid range
-
-        # Extract slices from first volume (3D typically has batch_size=1)
-        slices = [tensor[0, :, idx, :, :] for idx in indices]
-        return torch.stack(slices, dim=0)  # [num_slices, C, H, W]
+    def _extract_multiple_slices(self, tensor: torch.Tensor, num_slices: int = 8) -> torch.Tensor:
+        """Extract multiple evenly-spaced slices from 3D volume."""
+        from .unified_visualization import _extract_multiple_slices
+        return _extract_multiple_slices(self, tensor, num_slices)
 
     # =========================================================================
     # Tracker Integration Methods
     # =========================================================================
 
     def log_flops_from_tracker(self, flops_tracker: Any, epoch: int) -> None:
-        """Log FLOPs metrics from FLOPsTracker.
+        """Log FLOPs metrics from FLOPsTracker."""
+        from .unified_logging import log_flops_from_tracker
+        log_flops_from_tracker(self, flops_tracker, epoch)
 
-        Centralizes FLOPs logging through UnifiedMetrics instead of
-        direct writer.add_scalar calls in trainers.
+    def log_grad_norm_from_tracker(self, grad_tracker: Any, epoch: int, prefix: str = 'training/grad_norm') -> None:
+        """Log gradient norm stats from GradientNormTracker."""
+        from .unified_logging import log_grad_norm_from_tracker
+        log_grad_norm_from_tracker(self, grad_tracker, epoch, prefix)
 
-        Args:
-            flops_tracker: FLOPsTracker instance.
-            epoch: Current epoch number.
-        """
-        if self.writer is None or flops_tracker is None:
-            return
-        if not getattr(flops_tracker, '_measured', False):
-            return
-        if flops_tracker.forward_flops == 0:
-            return
-
-        completed_epochs = epoch + 1
-        self.writer.add_scalar('FLOPs/TFLOPs_epoch', flops_tracker.get_tflops_epoch(), epoch)
-        self.writer.add_scalar('FLOPs/TFLOPs_total', flops_tracker.get_tflops_total(completed_epochs), epoch)
-        self.writer.add_scalar('FLOPs/TFLOPs_bs1', flops_tracker.get_tflops_bs1(), epoch)
-
-    def log_grad_norm_from_tracker(
-        self,
-        grad_tracker: Any,
-        epoch: int,
-        prefix: str = 'training/grad_norm',
-    ) -> None:
-        """Log gradient norm stats from GradientNormTracker.
-
-        Centralizes gradient norm logging through UnifiedMetrics instead of
-        direct writer.add_scalar calls in trainers.
-
-        Args:
-            grad_tracker: GradientNormTracker instance.
-            epoch: Current epoch number.
-            prefix: TensorBoard prefix (default: 'training/grad_norm').
-        """
-        if self.writer is None or grad_tracker is None:
-            return
-        if grad_tracker.count == 0:
-            return
-
-        self.writer.add_scalar(f'{prefix}_avg', grad_tracker.get_avg(), epoch)
-        self.writer.add_scalar(f'{prefix}_max', grad_tracker.get_max(), epoch)
-
-    def log_sample_images(
-        self,
-        images: torch.Tensor,
-        tag: str,
-        epoch: int,
-    ) -> None:
-        """Log image grid to TensorBoard using add_images.
-
-        Centralizes image logging through UnifiedMetrics.
-
-        Args:
-            images: Tensor of images [N, C, H, W] normalized to [0, 1].
-            tag: TensorBoard tag (e.g., 'Generated_Images').
-            epoch: Current epoch number.
-        """
-        if self.writer is None:
-            return
-        self.writer.add_images(tag, images, epoch)
+    def log_sample_images(self, images: torch.Tensor, tag: str, epoch: int) -> None:
+        """Log image grid to TensorBoard using add_images."""
+        from .unified_logging import log_sample_images
+        log_sample_images(self, images, tag, epoch)
 
     # =========================================================================
     # Console Logging
     # =========================================================================
 
-    def log_console_summary(
-        self,
-        epoch: int,
-        total_epochs: int,
-        elapsed_time: float,
-        time_estimator: "EpochTimeEstimator | None" = None,
-    ):
-        """Log epoch completion summary to console.
-
-        Args:
-            epoch: Current epoch number (0-indexed).
-            total_epochs: Total number of epochs.
-            elapsed_time: Time taken for epoch in seconds.
-            time_estimator: Optional estimator for ETA calculation.
-        """
-        import time as time_module
-
-        timestamp = time_module.strftime("%H:%M:%S")
-        epoch_pct = ((epoch + 1) / total_epochs) * 100
-
-        train_losses = self.get_training_losses()
-        val_metrics = self.get_validation_metrics()
-
-        # Build loss string
-        loss_parts = []
-        total_loss = train_losses.get('Total') or train_losses.get('MSE') or 0
-        val_total = val_metrics.get('MSE') or val_metrics.get('Total') or 0
-        loss_parts.append(f"Loss: {total_loss:.4f}")
-        if val_total > 0:
-            loss_parts[-1] += f"(v:{val_total:.4f})"
-
-        for key in ['MSE', 'Perceptual', 'KL', 'VQ', 'BCE', 'Dice']:
-            if key in train_losses and key != 'Total':
-                loss_parts.append(f"{key}: {train_losses[key]:.4f}")
-
-        # Build validation metrics string
-        metric_parts = []
-        if self.uses_image_quality:
-            if 'MS-SSIM' in val_metrics:
-                metric_parts.append(f"MS-SSIM: {val_metrics['MS-SSIM']:.3f}")
-            if 'MS-SSIM-3D' in val_metrics:
-                metric_parts.append(f"MS-SSIM-3D: {val_metrics['MS-SSIM-3D']:.3f}")
-            if 'PSNR' in val_metrics:
-                metric_parts.append(f"PSNR: {val_metrics['PSNR']:.2f}")
-            if 'LPIPS' in val_metrics:
-                metric_parts.append(f"LPIPS: {val_metrics['LPIPS']:.3f}")
-        else:
-            if 'Dice' in val_metrics:
-                metric_parts.append(f"Dice: {val_metrics['Dice']:.3f}")
-            if 'IoU' in val_metrics:
-                metric_parts.append(f"IoU: {val_metrics['IoU']:.3f}")
-
-        # Combine all parts
-        all_parts = loss_parts + metric_parts
-        all_parts.append(f"Time: {elapsed_time:.1f}s")
-
-        # Add ETA if estimator provided
-        if time_estimator is not None:
-            time_estimator.update(elapsed_time)
-            eta_str = time_estimator.get_eta_string()
-            if eta_str:
-                all_parts.append(eta_str)
-
-        logger.info(
-            f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
-            + " | ".join(all_parts)
-        )
+    def log_console_summary(self, epoch: int, total_epochs: int, elapsed_time: float, time_estimator: "EpochTimeEstimator | None" = None):
+        """Log epoch completion summary to console."""
+        from .unified_history import log_console_summary
+        log_console_summary(self, epoch, total_epochs, elapsed_time, time_estimator)

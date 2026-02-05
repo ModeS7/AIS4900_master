@@ -417,6 +417,18 @@ def compute_lpips(
         return 0.0
 
 
+# =============================================================================
+# 3D-Specific Metric Functions (Intentionally Separate)
+# =============================================================================
+# NOTE: The following _3d functions use fundamentally different algorithms:
+# - compute_lpips_3d(): Uses 2.5D slice-by-slice computation because LPIPS
+#   relies on 2D pretrained networks (ImageNet/RadImageNet). Cannot unify.
+# - compute_fid_3d(), compute_kid_3d(), compute_cmmd_3d(): Use 2.5D feature
+#   extraction from InceptionV3/CLIP, which are 2D pretrained networks.
+# These are NOT candidates for unification - they solve the "3D metrics with
+# 2D pretrained networks" problem using a fundamentally different approach.
+
+
 def compute_lpips_3d(
     generated: torch.Tensor,
     reference: torch.Tensor,

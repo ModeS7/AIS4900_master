@@ -424,7 +424,7 @@ class DiffusionTrainerConfig:
             perceptual_weight=perceptual_weight,
             use_fp32_loss=cfg.training.get('use_fp32_loss', True),
             use_ema=cfg.training.get('use_ema', True),
-            ema_decay=cfg.training.ema.get('decay', 0.999),
+            ema_decay=cfg.training.ema.get('decay', 0.9999),
             # Scheduler
             scheduler_type=cfg.training.get('scheduler', 'cosine'),
             eta_min=cfg.training.get('eta_min', 1e-6),

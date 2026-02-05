@@ -1,8 +1,14 @@
 """Dataloader factory functions for diffusion and VAE training.
 
-Primary Entry Points:
-    - create_dataloader(): Unified factory for all dataloaders (RECOMMENDED)
-    - create_diffusion_dataloader(): Diffusion-specific factory
+Primary API (RECOMMENDED):
+    from medgen.data.loaders import DataLoaderFactory, LoaderConfig, ModelType, SpatialDims
+
+    config = LoaderConfig.from_hydra(cfg, ModelType.DIFFUSION, "bravo", "train")
+    loader, dataset = DataLoaderFactory.create(config)
+
+Legacy API (still works, for backward compatibility):
+    from medgen.data.loaders import create_dataloader, create_vae_dataloader
+    # These continue to work without deprecation warnings
 
 Dataset Classes (from datasets.py):
     - SegConditionedDataset: 2D seg with size bin conditioning
@@ -18,7 +24,15 @@ Utility Functions (from datasets.py):
 """
 
 # =============================================================================
-# Primary Exports (NEW - use these)
+# NEW Primary API (RECOMMENDED)
+# =============================================================================
+
+# Typed configuration and factory
+from .configs import LoaderConfig, ModelType, SpatialDims
+from .factory import DataLoaderFactory
+
+# =============================================================================
+# Primary Exports (unified loader interface)
 # =============================================================================
 
 # Base classes for unified 2D/3D loading
@@ -31,7 +45,7 @@ from .base import (
     validate_batch_format,
 )
 
-# Unified loader factory (RECOMMENDED entry point)
+# Unified loader factory (legacy interface, still works)
 from .unified import (
     create_dataloader,
     create_diffusion_dataloader,
@@ -163,6 +177,12 @@ from .seg_conditioned import (
 
 
 __all__ = [
+    # === NEW Primary API (RECOMMENDED) ===
+    'DataLoaderFactory',
+    'LoaderConfig',
+    'ModelType',
+    'SpatialDims',
+
     # === Primary API (use these) ===
     # Base classes
     'BaseDiffusionDataset',
@@ -171,7 +191,7 @@ __all__ = [
     'DictDatasetWrapper',
     'dict_collate_fn',
     'validate_batch_format',
-    # Unified factory (RECOMMENDED)
+    # Unified factory (legacy interface, still works)
     'create_dataloader',
     'create_diffusion_dataloader',
     'get_dataloader_info',

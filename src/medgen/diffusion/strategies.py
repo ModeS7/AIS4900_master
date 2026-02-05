@@ -4,8 +4,11 @@ Diffusion strategy implementations for image generation.
 This module provides abstract and concrete implementations of diffusion
 strategies including DDPM and Rectified Flow algorithms.
 """
+from __future__ import annotations
+
+import warnings
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +17,9 @@ from torch import nn
 from tqdm import tqdm
 
 from .protocols import DiffusionModel
+
+if TYPE_CHECKING:
+    from .conditioning import ConditioningContext
 
 ImageTensor = torch.Tensor
 ImageDict = dict[str, torch.Tensor]
@@ -529,8 +535,16 @@ class DiffusionStrategy(ABC):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
+        # NEW: Unified conditioning context
+        conditioning: ConditioningContext | None = None,
+        # DEPRECATED: Individual params (kept for backward compat)
         omega: torch.Tensor | None = None,
         mode_id: torch.Tensor | None = None,
+        size_bins: torch.Tensor | None = None,
+        bin_maps: torch.Tensor | None = None,
+        cfg_scale: float = 1.0,
+        cfg_scale_end: float | None = None,
+        latent_channels: int = 1,
     ) -> torch.Tensor:
         """Generate samples using the diffusion process.
 
@@ -540,11 +554,22 @@ class DiffusionStrategy(ABC):
             num_steps: Number of sampling steps.
             device: Computation device.
             use_progress_bars: Whether to show progress bars.
-            omega: Optional ScoreAug omega conditioning tensor.
-            mode_id: Optional mode ID tensor for multi-modality conditioning.
+            conditioning: Unified ConditioningContext (preferred). If provided,
+                individual params below are ignored.
+            omega: [DEPRECATED] ScoreAug omega conditioning tensor.
+            mode_id: [DEPRECATED] Mode ID tensor for multi-modality conditioning.
+            size_bins: [DEPRECATED] Size bin conditioning [B, num_bins] for FiLM.
+            bin_maps: [DEPRECATED] Spatial bin maps for input conditioning.
+            cfg_scale: [DEPRECATED] CFG scale (1.0 = no guidance).
+            cfg_scale_end: [DEPRECATED] End CFG scale for dynamic CFG.
+            latent_channels: [DEPRECATED] Noise channels (1=pixel, 4=latent).
 
         Returns:
             Generated image tensor.
+
+        Note:
+            The individual conditioning parameters (omega, mode_id, etc.) are
+            deprecated. Use conditioning=ConditioningContext(...) instead.
         """
         pass
 
@@ -725,6 +750,9 @@ class DDPMStrategy(DiffusionStrategy):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
+        # NEW: Unified conditioning context
+        conditioning: ConditioningContext | None = None,
+        # DEPRECATED: Individual params (kept for backward compat)
         omega: torch.Tensor | None = None,
         mode_id: torch.Tensor | None = None,
         size_bins: torch.Tensor | None = None,
@@ -747,20 +775,57 @@ class DDPMStrategy(DiffusionStrategy):
             num_steps: Number of sampling steps.
             device: Computation device.
             use_progress_bars: Whether to show progress bars.
-            omega: Optional ScoreAug omega conditioning tensor [B, 5].
-            mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
-            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode (FiLM).
-            bin_maps: Optional spatial bin maps [B, num_bins, ...] for seg_conditioned_input mode.
-                      These are concatenated with noise for input channel conditioning.
-            cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
-                       For dynamic CFG, this is the starting scale (at t=T, high noise).
-            cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
-            latent_channels: Number of noise channels (1 for pixel space, 4 for latent space).
+            conditioning: Unified ConditioningContext (preferred). If provided,
+                individual params below are ignored.
+            omega: [DEPRECATED] ScoreAug omega conditioning tensor [B, 5].
+            mode_id: [DEPRECATED] Mode ID tensor [B] for multi-modality conditioning.
+            size_bins: [DEPRECATED] Size bin conditioning [B, num_bins] for FiLM.
+            bin_maps: [DEPRECATED] Spatial bin maps [B, num_bins, ...] for input conditioning.
+            cfg_scale: [DEPRECATED] CFG scale (1.0 = no guidance).
+            cfg_scale_end: [DEPRECATED] End CFG scale for dynamic CFG.
+            latent_channels: [DEPRECATED] Noise channels (1 for pixel, 4 for latent).
         """
+        # Build context from individual params if not provided
+        if conditioning is None:
+            # Emit deprecation warning if using old API with conditioning params
+            has_old_conditioning = any([
+                omega is not None,
+                mode_id is not None,
+                size_bins is not None,
+                bin_maps is not None,
+            ])
+            if has_old_conditioning:
+                warnings.warn(
+                    "Passing conditioning params individually is deprecated. "
+                    "Use conditioning=ConditioningContext(...) instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+
+            from .conditioning import ConditioningContext
+            conditioning = ConditioningContext(
+                omega=omega,
+                mode_id=mode_id,
+                size_bins=size_bins,
+                bin_maps=bin_maps,
+                cfg_scale=cfg_scale,
+                cfg_scale_end=cfg_scale_end,
+                latent_channels=latent_channels,
+            )
+
+        # Extract from conditioning context
+        omega = conditioning.omega
+        mode_id = conditioning.mode_id
+        size_bins = conditioning.size_bins
+        bin_maps = conditioning.bin_maps
+        cfg_scale = conditioning.cfg_scale
+        cfg_scale_end = conditioning.cfg_scale_end
+        latent_channels = conditioning.latent_channels
+
         batch_size = model_input.shape[0]
 
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
-        use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
+        use_dynamic_cfg = conditioning.use_dynamic_cfg
 
         # Set timesteps for inference
         self.scheduler.set_timesteps(num_inference_steps=num_steps)
@@ -1018,6 +1083,9 @@ class RFlowStrategy(DiffusionStrategy):
         num_steps: int,
         device: torch.device,
         use_progress_bars: bool = False,
+        # NEW: Unified conditioning context
+        conditioning: ConditioningContext | None = None,
+        # DEPRECATED: Individual params (kept for backward compat)
         omega: torch.Tensor | None = None,
         mode_id: torch.Tensor | None = None,
         size_bins: torch.Tensor | None = None,
@@ -1044,20 +1112,55 @@ class RFlowStrategy(DiffusionStrategy):
             num_steps: Number of sampling steps.
             device: Computation device.
             use_progress_bars: Whether to show progress bars.
-            omega: Optional ScoreAug omega conditioning tensor [B, 5].
-            mode_id: Optional mode ID tensor [B] for multi-modality conditioning.
-            size_bins: Optional size bin conditioning [B, num_bins] for seg_conditioned mode (FiLM).
-            bin_maps: Optional spatial bin maps [B, num_bins, ...] for seg_conditioned_input mode.
-                      These are concatenated with noise for input channel conditioning.
-            cfg_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning).
-                       Works with size_bins, bin_maps, and image conditioning (seg mask).
-                       For dynamic CFG, this is the starting scale (at t=T, high noise).
-            cfg_scale_end: Optional ending CFG scale (at t=0, low noise). If None, uses constant cfg_scale.
-                          Set to 1.0 for "high CFG early, no CFG late" schedule.
-            latent_channels: Number of noise channels (1 for pixel space, 4 for latent space).
+            conditioning: Unified ConditioningContext (preferred). If provided,
+                individual params below are ignored.
+            omega: [DEPRECATED] ScoreAug omega conditioning tensor [B, 5].
+            mode_id: [DEPRECATED] Mode ID tensor [B] for multi-modality conditioning.
+            size_bins: [DEPRECATED] Size bin conditioning [B, num_bins] for FiLM.
+            bin_maps: [DEPRECATED] Spatial bin maps [B, num_bins, ...] for input conditioning.
+            cfg_scale: [DEPRECATED] CFG scale (1.0 = no guidance).
+            cfg_scale_end: [DEPRECATED] End CFG scale for dynamic CFG.
+            latent_channels: [DEPRECATED] Noise channels (1 for pixel, 4 for latent).
         """
+        # Build context from individual params if not provided
+        if conditioning is None:
+            # Emit deprecation warning if using old API with conditioning params
+            has_old_conditioning = any([
+                omega is not None,
+                mode_id is not None,
+                size_bins is not None,
+                bin_maps is not None,
+            ])
+            if has_old_conditioning:
+                warnings.warn(
+                    "Passing conditioning params individually is deprecated. "
+                    "Use conditioning=ConditioningContext(...) instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+
+            from .conditioning import ConditioningContext
+            conditioning = ConditioningContext(
+                omega=omega,
+                mode_id=mode_id,
+                size_bins=size_bins,
+                bin_maps=bin_maps,
+                cfg_scale=cfg_scale,
+                cfg_scale_end=cfg_scale_end,
+                latent_channels=latent_channels,
+            )
+
+        # Extract from conditioning context
+        omega = conditioning.omega
+        mode_id = conditioning.mode_id
+        size_bins = conditioning.size_bins
+        bin_maps = conditioning.bin_maps
+        cfg_scale = conditioning.cfg_scale
+        cfg_scale_end = conditioning.cfg_scale_end
+        latent_channels = conditioning.latent_channels
+
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
-        use_dynamic_cfg = cfg_scale_end is not None and cfg_scale_end != cfg_scale
+        use_dynamic_cfg = conditioning.use_dynamic_cfg
         batch_size = model_input.shape[0]
 
         # Calculate numel based on spatial dimensions
