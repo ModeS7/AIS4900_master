@@ -218,7 +218,7 @@ class DCAETrainer(BaseCompressionTrainer):
         exp_name = self.cfg.training.get('name', '')
         mode_name = self.cfg.mode.get('name', 'multi_modality')
 
-        if self._spatial_dims == 3:
+        if self.spatial_dims == 3:
             # Read from config since this may be called before base class sets attributes
             volume_height = self.cfg.volume.get('height', 256)
             volume_depth = self.cfg.volume.get('depth', 160)

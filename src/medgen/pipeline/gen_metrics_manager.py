@@ -165,11 +165,17 @@ class GenerationMetricsManager:
         if not self.enabled or self._metrics is None or self._initialized:
             return
 
-        # Set fixed conditioning for seg_conditioned mode
-        if self.mode_name in ('seg_conditioned', 'seg_conditioned_input') or self.mode_name == 'seg':
-            seg_channel_idx = 0
+        # Set fixed conditioning based on mode
+        # Match logic from visualization.py for consistency
+        if self.mode_name in ('seg_conditioned', 'seg_conditioned_input', 'seg'):
+            seg_channel_idx = 0  # Single channel: seg
+        elif self.mode_name in ('bravo', 'multi', 'multi_modality'):
+            seg_channel_idx = 1  # Channel layout: [image, seg]
+        elif self.mode_name == 'dual':
+            seg_channel_idx = 2  # Channel layout: [t1_pre, t1_gd, seg]
         else:
-            # For conditional modes, seg is typically channel 2 (after t1_pre, t1_gd)
+            # Default fallback with warning
+            logger.warning(f"Unknown mode '{self.mode_name}' for seg_channel_idx, defaulting to 2")
             seg_channel_idx = 2
 
         self._metrics.set_fixed_conditioning(

@@ -36,6 +36,134 @@ from medgen.data.utils import (
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Validation Helpers
+# =============================================================================
+
+def _validate_vae_modality(
+    data_dir: str,
+    modality: str,
+    context: str = "VAE",
+    raise_on_error: bool = False,
+) -> bool:
+    """Validate VAE modality requirements exist in directory.
+
+    For dual mode: requires t1_pre and t1_gd (no seg).
+    For single mode: requires the specified modality.
+
+    Args:
+        data_dir: Directory to check.
+        modality: 'dual', 'bravo', 't1_pre', 't1_gd', 'flair', or 'seg'.
+        context: Context for log message (e.g., "VAE validation").
+        raise_on_error: If True, raises ValueError. If False, logs warning.
+
+    Returns:
+        True if valid, False otherwise.
+
+    Raises:
+        ValueError: If raise_on_error=True and validation fails.
+    """
+    try:
+        if modality == 'dual':
+            validate_mode_requirements(
+                data_dir, 'dual', validate_modality_exists, require_seg=False
+            )
+        else:
+            validate_modality_exists(data_dir, modality)
+        return True
+    except ValueError as e:
+        if raise_on_error:
+            raise
+        logger.warning(f"{context} data for {modality} mode not available in {data_dir}: {e}")
+        return False
+
+
+# =============================================================================
+# Helper Functions for Seg Loading
+# =============================================================================
+
+def _try_load_seg_dataset(
+    data_dir: str,
+    transform,
+    context: str = "VAE"
+) -> NiFTIDataset | None:
+    """Try to load segmentation dataset for regional metrics.
+
+    Args:
+        data_dir: Directory containing NIfTI files.
+        transform: Transform to apply to data.
+        context: Context string for log message (e.g., "dual VAE training").
+
+    Returns:
+        NiFTIDataset if seg exists, None otherwise.
+    """
+    try:
+        validate_modality_exists(data_dir, 'seg')
+        return NiFTIDataset(data_dir=data_dir, mr_sequence='seg', transform=transform)
+    except ValueError as e:
+        logger.debug(f"Seg not available for {context} (regional metrics disabled): {e}")
+        return None
+
+
+def _create_single_modality_dataset(
+    data_dir: str,
+    modality: str,
+    transform,
+    context: str = "VAE",
+    augmentation=None
+) -> Dataset:
+    """Create single-modality dataset with optional segmentation.
+
+    Args:
+        data_dir: Directory containing NIfTI files.
+        modality: MR sequence name (e.g., 'bravo', 't1_pre').
+        transform: Transform to apply to data.
+        context: Context string for log message.
+        augmentation: Optional augmentation to apply.
+
+    Returns:
+        Dataset with optional seg for regional metrics.
+    """
+    nifti_dataset = NiFTIDataset(data_dir=data_dir, mr_sequence=modality, transform=transform)
+    seg_dataset = _try_load_seg_dataset(data_dir, transform, f"single {context}")
+
+    if seg_dataset is not None:
+        return extract_slices_single_with_seg(nifti_dataset, seg_dataset, augmentation=augmentation)
+    else:
+        return extract_slices_single(nifti_dataset, augmentation=augmentation)
+
+
+def _create_dual_modality_dataset(
+    data_dir: str,
+    transform,
+    context: str = "VAE",
+    augmentation=None
+) -> tuple[Dataset, bool]:
+    """Create dual-modality (t1_pre + t1_gd) dataset with optional segmentation.
+
+    Args:
+        data_dir: Directory containing NIfTI files.
+        transform: Transform to apply to data.
+        context: Context string for log message.
+        augmentation: Optional augmentation to apply.
+
+    Returns:
+        Tuple of (dataset, has_seg).
+    """
+    datasets_dict: dict[str, NiFTIDataset] = {}
+    for key in ['t1_pre', 't1_gd']:
+        datasets_dict[key] = NiFTIDataset(data_dir=data_dir, mr_sequence=key, transform=transform)
+
+    seg_dataset = _try_load_seg_dataset(data_dir, transform, f"dual {context}")
+    has_seg = seg_dataset is not None
+    if has_seg:
+        datasets_dict['seg'] = seg_dataset
+
+    merged = merge_sequences(datasets_dict)
+    dataset = extract_slices_dual(merged, has_seg=has_seg, augmentation=augmentation)
+    return dataset, has_seg
+
+
 def create_vae_dataloader(
     cfg: DictConfig,
     modality: str,
@@ -65,54 +193,19 @@ def create_vae_dataloader(
     image_size = cfg.model.image_size
 
     # Validate modalities exist before loading (no seg required for VAE)
-    if modality == 'dual':
-        validate_mode_requirements(
-            data_dir, 'dual', validate_modality_exists, require_seg=False
-        )
-    else:
-        validate_modality_exists(data_dir, modality)
+    _validate_vae_modality(data_dir, modality, "VAE training", raise_on_error=True)
 
     transform = build_standard_transform(image_size)
     aug = build_vae_augmentation(enabled=augment)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
-        image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: dict[str, NiFTIDataset] = {}
-        for key in image_keys:
-            datasets_dict[key] = NiFTIDataset(
-                data_dir=data_dir, mr_sequence=key, transform=transform
-            )
-        # Load seg for regional metrics if available
-        has_seg = False
-        try:
-            validate_modality_exists(data_dir, 'seg')
-            datasets_dict['seg'] = NiFTIDataset(
-                data_dir=data_dir, mr_sequence='seg', transform=transform
-            )
-            has_seg = True
-        except ValueError as e:
-            logger.debug(f"Seg not available for dual VAE training (regional metrics disabled): {e}")
-        merged = merge_sequences(datasets_dict)
-        train_dataset = extract_slices_dual(merged, has_seg=has_seg, augmentation=aug)
-    else:
-        # Single modality: 1 channel, optionally load seg for regional metrics
-        nifti_dataset = NiFTIDataset(
-            data_dir=data_dir, mr_sequence=modality, transform=transform
+        train_dataset, _ = _create_dual_modality_dataset(
+            data_dir, transform, context="VAE training", augmentation=aug
         )
-        # Try to load seg for regional metrics
-        try:
-            validate_modality_exists(data_dir, 'seg')
-            seg_dataset = NiFTIDataset(
-                data_dir=data_dir, mr_sequence='seg', transform=transform
-            )
-            train_dataset = extract_slices_single_with_seg(
-                nifti_dataset, seg_dataset, augmentation=aug
-            )
-        except ValueError as e:
-            # No seg available, proceed without regional metrics
-            logger.debug(f"Seg not available for single VAE training (regional metrics disabled): {e}")
-            train_dataset = extract_slices_single(nifti_dataset, augmentation=aug)
+    else:
+        train_dataset = _create_single_modality_dataset(
+            data_dir, modality, transform, context="VAE training", augmentation=aug
+        )
 
     # Get batch augmentation settings
     batch_aug_cfg = cfg.training.get('batch_augment', {})
@@ -168,54 +261,19 @@ def create_vae_validation_dataloader(
     batch_size = batch_size or cfg.training.batch_size
 
     # Validate modalities exist in val directory (no seg required for VAE)
-    try:
-        if modality == 'dual':
-            validate_mode_requirements(
-                val_dir, 'dual', validate_modality_exists, require_seg=False
-            )
-        else:
-            validate_modality_exists(val_dir, modality)
-    except ValueError as e:
-        logger.warning(f"Validation data for {modality} mode not available in {val_dir}: {e}")
+    if not _validate_vae_modality(val_dir, modality, "Validation"):
         return None
 
     transform = build_standard_transform(image_size)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
-        image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: dict[str, NiFTIDataset] = {}
-        for key in image_keys:
-            datasets_dict[key] = NiFTIDataset(
-                data_dir=val_dir, mr_sequence=key, transform=transform
-            )
-        # Load seg for regional metrics if available
-        has_seg = False
-        try:
-            validate_modality_exists(val_dir, 'seg')
-            datasets_dict['seg'] = NiFTIDataset(
-                data_dir=val_dir, mr_sequence='seg', transform=transform
-            )
-            has_seg = True
-        except ValueError as e:
-            logger.debug(f"Seg not available for dual VAE validation (regional metrics disabled): {e}")
-        merged = merge_sequences(datasets_dict)
-        val_dataset = extract_slices_dual(merged, has_seg=has_seg)
-    else:
-        # Single modality: 1 channel, optionally load seg for regional metrics
-        nifti_dataset = NiFTIDataset(
-            data_dir=val_dir, mr_sequence=modality, transform=transform
+        val_dataset, _ = _create_dual_modality_dataset(
+            val_dir, transform, context="VAE validation"
         )
-        # Try to load seg for regional metrics
-        try:
-            validate_modality_exists(val_dir, 'seg')
-            seg_dataset = NiFTIDataset(
-                data_dir=val_dir, mr_sequence='seg', transform=transform
-            )
-            val_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
-        except ValueError as e:
-            logger.debug(f"Seg not available for single VAE validation (regional metrics disabled): {e}")
-            val_dataset = extract_slices_single(nifti_dataset)
+    else:
+        val_dataset = _create_single_modality_dataset(
+            val_dir, modality, transform, context="VAE validation"
+        )
 
     # Validation loader: shuffle for diverse sampling, drop_last for consistent batch sizes
     dataloader = create_dataloader(
@@ -255,54 +313,19 @@ def create_vae_test_dataloader(
     batch_size = batch_size or cfg.training.batch_size
 
     # Validate modalities exist in test directory (no seg required for VAE)
-    try:
-        if modality == 'dual':
-            validate_mode_requirements(
-                test_dir, 'dual', validate_modality_exists, require_seg=False
-            )
-        else:
-            validate_modality_exists(test_dir, modality)
-    except ValueError as e:
-        logger.warning(f"Test data for {modality} mode not available in {test_dir}: {e}")
+    if not _validate_vae_modality(test_dir, modality, "Test"):
         return None
 
     transform = build_standard_transform(image_size)
 
     if modality == 'dual':
-        # Dual mode: t1_pre + t1_gd as 2 channels, optionally load seg for metrics
-        image_keys = ['t1_pre', 't1_gd']
-        datasets_dict: dict[str, NiFTIDataset] = {}
-        for key in image_keys:
-            datasets_dict[key] = NiFTIDataset(
-                data_dir=test_dir, mr_sequence=key, transform=transform
-            )
-        # Load seg for regional metrics if available
-        has_seg = False
-        try:
-            validate_modality_exists(test_dir, 'seg')
-            datasets_dict['seg'] = NiFTIDataset(
-                data_dir=test_dir, mr_sequence='seg', transform=transform
-            )
-            has_seg = True
-        except ValueError as e:
-            logger.debug(f"Seg not available for dual VAE test (regional metrics disabled): {e}")
-        merged = merge_sequences(datasets_dict)
-        test_dataset = extract_slices_dual(merged, has_seg=has_seg)
-    else:
-        # Single modality: 1 channel, optionally load seg for regional metrics
-        nifti_dataset = NiFTIDataset(
-            data_dir=test_dir, mr_sequence=modality, transform=transform
+        test_dataset, _ = _create_dual_modality_dataset(
+            test_dir, transform, context="VAE test"
         )
-        # Try to load seg for regional metrics
-        try:
-            validate_modality_exists(test_dir, 'seg')
-            seg_dataset = NiFTIDataset(
-                data_dir=test_dir, mr_sequence='seg', transform=transform
-            )
-            test_dataset = extract_slices_single_with_seg(nifti_dataset, seg_dataset)
-        except ValueError as e:
-            logger.debug(f"Seg not available for single VAE test (regional metrics disabled): {e}")
-            test_dataset = extract_slices_single(nifti_dataset)
+    else:
+        test_dataset = _create_single_modality_dataset(
+            test_dir, modality, transform, context="VAE test"
+        )
 
     # Test loader: shuffle for diverse visualization samples
     dataloader = create_dataloader(
@@ -345,15 +368,7 @@ def create_vae_volume_validation_dataloader(
     image_size = cfg.model.image_size
 
     # Validate modalities exist (no seg required for VAE)
-    try:
-        if modality == 'dual':
-            validate_mode_requirements(
-                data_dir, 'dual', validate_modality_exists, require_seg=False
-            )
-        else:
-            validate_modality_exists(data_dir, modality)
-    except ValueError as e:
-        logger.warning(f"Volume data for {modality} mode not available in {data_dir}: {e}")
+    if not _validate_vae_modality(data_dir, modality, "Volume"):
         return None
 
     transform = build_standard_transform(image_size)
@@ -362,28 +377,12 @@ def create_vae_volume_validation_dataloader(
         # Dual mode: stack t1_pre + t1_gd as 2 channels
         t1_pre_dataset = NiFTIDataset(data_dir, 't1_pre', transform)
         t1_gd_dataset = NiFTIDataset(data_dir, 't1_gd', transform)
-
-        # Try to load seg for regional metrics
-        seg_dataset = None
-        try:
-            validate_modality_exists(data_dir, 'seg')
-            seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
-        except ValueError as e:
-            logger.debug(f"Seg not available for dual volume validation (regional metrics disabled): {e}")
-
+        seg_dataset = _try_load_seg_dataset(data_dir, transform, "dual volume validation")
         volume_dataset = DualVolumeDataset(t1_pre_dataset, t1_gd_dataset, seg_dataset)
     else:
         # Single modality
         image_dataset = NiFTIDataset(data_dir, modality, transform)
-
-        # Try to load seg for regional metrics
-        seg_dataset = None
-        try:
-            validate_modality_exists(data_dir, 'seg')
-            seg_dataset = NiFTIDataset(data_dir, 'seg', transform)
-        except ValueError as e:
-            logger.debug(f"Seg not available for single volume validation (regional metrics disabled): {e}")
-
+        seg_dataset = _try_load_seg_dataset(data_dir, transform, "single volume validation")
         volume_dataset = VolumeDataset(image_dataset, seg_dataset)
 
     # Volume-level loader: batch_size=1, no shuffle (process each volume once)

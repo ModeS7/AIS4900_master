@@ -151,7 +151,11 @@ def measure_model_flops(
             logger.warning("FLOPs measurement failed: empty dataloader")
     except (ImportError, AssertionError) as e:
         if trainer.is_main_process:
-            logger.exception(f"FLOPs measurement failed unexpectedly: {e}")
+            logger.warning(f"FLOPs measurement skipped ({type(e).__name__}: {e})")
+    except Exception as e:
+        # Prevent training crash from unexpected FLOPs errors
+        if trainer.is_main_process:
+            logger.warning(f"FLOPs measurement failed unexpectedly: {type(e).__name__}: {e}")
 
 
 def update_metadata_final(

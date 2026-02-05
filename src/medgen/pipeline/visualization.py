@@ -82,7 +82,10 @@ def visualize_samples_3d(
         # Unconditional mode can proceed with random noise
         batch_size = 4
         noise = torch.randn(
-            batch_size, 1, trainer.volume_depth, trainer.volume_height, trainer.volume_width,
+            batch_size, 1,
+            trainer.cfg.volume.get('depth', 160),
+            trainer.cfg.volume.get('height', 256),
+            trainer.cfg.volume.get('width', 256),
             device=trainer.device
         )
         model_input = noise
@@ -346,6 +349,7 @@ def generate_trajectory_3d(
 @torch.no_grad()
 def generate_with_size_bins_3d(
     trainer: 'DiffusionTrainer',
+    model: nn.Module,
     noise: Tensor,
     size_bins: Tensor,
     num_steps: int = 25,
@@ -354,7 +358,8 @@ def generate_with_size_bins_3d(
     """Generate 3D samples with size bin conditioning.
 
     Args:
-        trainer: The DiffusionTrainer instance.
+        trainer: The DiffusionTrainer instance (for scheduler access).
+        model: The model to use for generation (may differ from trainer.model for EMA).
         noise: Starting noise tensor.
         size_bins: Size bin embedding tensor.
         num_steps: Number of denoising steps.
@@ -379,12 +384,12 @@ def generate_with_size_bins_3d(
 
         if use_cfg:
             # CFG: compute both conditional and unconditional predictions
-            v_cond = trainer.model(x, t_tensor, size_bins=size_bins)
-            v_uncond = trainer.model(x, t_tensor, size_bins=uncond_size_bins)
+            v_cond = model(x, t_tensor, size_bins=size_bins)
+            v_uncond = model(x, t_tensor, size_bins=uncond_size_bins)
             v = v_uncond + cfg_scale * (v_cond - v_uncond)
         else:
             # No CFG: just conditional prediction
-            v = trainer.model(x, t_tensor, size_bins=size_bins)
+            v = model(x, t_tensor, size_bins=size_bins)
 
         # Euler step
         x = x + dt * v
@@ -395,6 +400,7 @@ def generate_with_size_bins_3d(
 @torch.no_grad()
 def generate_trajectory_with_size_bins_3d(
     trainer: 'DiffusionTrainer',
+    model: nn.Module,
     noise: Tensor,
     size_bins: Tensor,
     num_steps: int = 25,
@@ -403,7 +409,8 @@ def generate_trajectory_with_size_bins_3d(
     """Generate 3D samples with size bins while capturing trajectory.
 
     Args:
-        trainer: The DiffusionTrainer instance.
+        trainer: The DiffusionTrainer instance (for scheduler access).
+        model: The model to use for generation (may differ from trainer.model for EMA).
         noise: Starting noise tensor.
         size_bins: Size bin embedding tensor.
         num_steps: Total denoising steps.
@@ -422,7 +429,7 @@ def generate_trajectory_with_size_bins_3d(
         t_scaled = t * num_train_timesteps
         t_tensor = torch.full((x.shape[0],), t_scaled, device=x.device)
 
-        v = trainer.model(x, t_tensor, size_bins=size_bins)
+        v = model(x, t_tensor, size_bins=size_bins)
         x = x + dt * v
 
         if (i + 1) % capture_every == 0:

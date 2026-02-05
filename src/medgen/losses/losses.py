@@ -127,7 +127,22 @@ class PerceptualLoss(nn.Module):
 
         Returns:
             Average perceptual loss across all keys.
+
+        Raises:
+            KeyError: If input and target dicts have mismatched keys.
         """
+        if not input:
+            # Empty dict: return zero loss on appropriate device
+            device = next(iter(target.values())).device if target else torch.device('cpu')
+            return torch.tensor(0.0, device=device)
+
+        # Validate keys match
+        if set(input.keys()) != set(target.keys()):
+            raise KeyError(
+                f"PerceptualLoss.forward_dict: input and target keys mismatch. "
+                f"Input: {sorted(input.keys())}, Target: {sorted(target.keys())}"
+            )
+
         losses = []
         for key, pred in input.items():
             losses.append(self(pred, target[key]))
@@ -254,7 +269,22 @@ class LPIPSLoss(nn.Module):
 
         Returns:
             Average LPIPS loss across all keys.
+
+        Raises:
+            KeyError: If input and target dicts have mismatched keys.
         """
+        if not input:
+            # Empty dict: return zero loss on appropriate device
+            device = next(iter(target.values())).device if target else torch.device('cpu')
+            return torch.tensor(0.0, device=device)
+
+        # Validate keys match
+        if set(input.keys()) != set(target.keys()):
+            raise KeyError(
+                f"LPIPSLoss.forward_dict: input and target keys mismatch. "
+                f"Input: {sorted(input.keys())}, Target: {sorted(target.keys())}"
+            )
+
         losses = []
         for key, pred in input.items():
             losses.append(self.forward(pred, target[key]))
@@ -359,10 +389,12 @@ class SegmentationLoss(nn.Module):
             + self.boundary_weight * boundary_loss
         )
 
+        # Return detached tensors to avoid CUDA sync during training loop
+        # Callers should call .item() only when actually logging metrics
         breakdown = {
-            'bce': bce.item(),
-            'dice': dice_loss.item(),
-            'boundary': boundary_loss.item(),
+            'bce': bce.detach(),
+            'dice': dice_loss.detach(),
+            'boundary': boundary_loss.detach(),
         }
 
         return total, breakdown

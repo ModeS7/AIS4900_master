@@ -57,21 +57,17 @@ class MetricAccumulator:
         self._msssim_count = 0
         self._lpips_sum = 0.0
         self._lpips_count = 0
-        self._msssim_3d_sum = 0.0
-        self._msssim_3d_count = 0
 
     def update(
         self,
         pred: torch.Tensor,
         target: torch.Tensor,
-        mask: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """Update accumulators with a batch.
 
         Args:
             pred: Predicted tensor [B, C, (D), H, W].
             target: Ground truth tensor [B, C, (D), H, W].
-            mask: Optional mask for masked metrics.
 
         Returns:
             Dict of computed metrics for this batch.
@@ -126,8 +122,6 @@ class MetricAccumulator:
             result['msssim'] = self._msssim_sum / self._msssim_count
         if self._lpips_count > 0:
             result['lpips'] = self._lpips_sum / self._lpips_count
-        if self._msssim_3d_count > 0:
-            result['msssim_3d'] = self._msssim_3d_sum / self._msssim_3d_count
 
         return result
 

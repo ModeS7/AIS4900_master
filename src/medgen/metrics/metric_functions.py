@@ -120,6 +120,12 @@ def compute_cmmd(
     Returns:
         CMMD value (lower is better).
     """
+    n, m = real_features.shape[0], generated_features.shape[0]
+    if n < 2 or m < 2:
+        # MMD requires at least 2 samples for meaningful computation
+        # (unbiased estimator divides by n*(n-1) which is 0 when n=1)
+        return 0.0
+
     real_features = real_features.float()
     generated_features = generated_features.float()
 

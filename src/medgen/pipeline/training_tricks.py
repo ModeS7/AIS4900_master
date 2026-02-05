@@ -149,12 +149,12 @@ def apply_noise_augmentation(
             perturbation = torch.randn_like(v) * std
             # Add perturbation and renormalize to maintain unit variance
             perturbed_v = v + perturbation
-            perturbed[k] = perturbed_v / perturbed_v.std() * v.std()
+            perturbed[k] = perturbed_v / (perturbed_v.std() + 1e-8) * v.std()
         return perturbed
     else:
         perturbation = torch.randn_like(noise) * std
         perturbed = noise + perturbation
-        return perturbed / perturbed.std() * noise.std()
+        return perturbed / (perturbed.std() + 1e-8) * noise.std()
 
 
 def apply_conditioning_dropout(
@@ -421,6 +421,50 @@ def _call_model_with_conditioning(
         return trainer.strategy.predict_noise_or_velocity(trainer.model, model_input, timesteps)
 
 
+def _reconstruct_clean(
+    aug_noisy: Tensor | dict[str, Tensor],
+    prediction: Tensor,
+    timesteps: Tensor,
+    strategy_name: str,
+    num_timesteps: int,
+) -> Tensor | dict[str, Tensor]:
+    """Reconstruct clean images from augmented noisy and prediction.
+
+    Handles both single tensor and dual-mode dict inputs.
+
+    Args:
+        aug_noisy: Augmented noisy images (tensor or dict of tensors).
+        prediction: Model prediction (velocity for RFlow, noise for DDPM).
+        timesteps: Timestep tensor.
+        strategy_name: 'rflow' or 'ddpm'.
+        num_timesteps: Number of training timesteps for normalization.
+
+    Returns:
+        Reconstructed clean images (same type as aug_noisy).
+    """
+    if strategy_name == 'rflow':
+        t_norm = timesteps.float() / float(num_timesteps)
+        t_exp = t_norm.view(-1, 1, 1, 1)
+
+        if isinstance(aug_noisy, dict):
+            keys = list(aug_noisy.keys())
+            return {
+                k: torch.clamp(aug_noisy[k] + t_exp * prediction[:, i:i+1], 0, 1)
+                for i, k in enumerate(keys)
+            }
+        else:
+            return torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
+    else:  # ddpm
+        if isinstance(aug_noisy, dict):
+            keys = list(aug_noisy.keys())
+            return {
+                k: torch.clamp(aug_noisy[k] - prediction[:, i:i+1], 0, 1)
+                for i, k in enumerate(keys)
+            }
+        else:
+            return torch.clamp(aug_noisy - prediction, 0, 1)
+
+
 def _compute_perceptual_with_inverse(
     trainer: 'DiffusionTrainer',
     prediction: Tensor,
@@ -467,19 +511,11 @@ def _compute_perceptual_with_inverse(
         aug_noisy = trainer.score_aug.apply_omega(stacked_noisy, omega)
         aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
 
-        # Reconstruct clean from prediction
-        if trainer.strategy_name == 'rflow':
-            t_norm = timesteps.float() / float(trainer.num_timesteps)
-            t_exp = t_norm.view(-1, 1, 1, 1)
-            aug_clean = {
-                k: torch.clamp(aug_noisy_dict[k] + t_exp * prediction[:, i:i+1], 0, 1)
-                for i, k in enumerate(keys)
-            }
-        else:
-            aug_clean = {
-                k: torch.clamp(aug_noisy_dict[k] - prediction[:, i:i+1], 0, 1)
-                for i, k in enumerate(keys)
-            }
+        # Reconstruct clean from prediction using shared helper
+        aug_clean = _reconstruct_clean(
+            aug_noisy_dict, prediction, timesteps,
+            trainer.strategy_name, trainer.num_timesteps
+        )
 
         # Inverse transform to original space
         inv_clean = {k: trainer.score_aug.inverse_apply_omega(v, omega) for k, v in aug_clean.items()}
@@ -494,12 +530,12 @@ def _compute_perceptual_with_inverse(
     else:
         # Single channel mode
         aug_noisy = trainer.score_aug.apply_omega(noisy_images, omega)
-        if trainer.strategy_name == 'rflow':
-            t_norm = timesteps.float() / float(trainer.num_timesteps)
-            t_exp = t_norm.view(-1, 1, 1, 1)
-            aug_clean = torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
-        else:
-            aug_clean = torch.clamp(aug_noisy - prediction, 0, 1)
+
+        # Reconstruct clean from prediction using shared helper
+        aug_clean = _reconstruct_clean(
+            aug_noisy, prediction, timesteps,
+            trainer.strategy_name, trainer.num_timesteps
+        )
 
         inv_clean = trainer.score_aug.inverse_apply_omega(aug_clean, omega)
         if inv_clean is None:

@@ -102,7 +102,10 @@ class CompiledForwardManager:
 
             if strategy_name == 'rflow':
                 t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
+                # Auto-detect spatial dims from input shape for 2D/3D support
+                spatial_dims = noisy_images.ndim - 2  # 2 for [B,C,H,W], 3 for [B,C,D,H,W]
+                expand_shape = (-1,) + (1,) * (spatial_dims + 1)
+                t_expanded = t_normalized.view(*expand_shape)
                 predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
             else:
                 predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
@@ -167,7 +170,10 @@ class CompiledForwardManager:
 
             if strategy_name == 'rflow':
                 t_normalized = timesteps.float() / float(num_train_timesteps)
-                t_expanded = t_normalized.view(-1, 1, 1, 1)
+                # Auto-detect spatial dims from input shape for 2D/3D support
+                spatial_dims = noisy_0.ndim - 2  # 2 for [B,C,H,W], 3 for [B,C,D,H,W]
+                expand_shape = (-1,) + (1,) * (spatial_dims + 1)
+                t_expanded = t_normalized.view(*expand_shape)
                 clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
                 clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
                 target_0 = images_0 - noise_0

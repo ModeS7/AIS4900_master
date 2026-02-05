@@ -4,7 +4,7 @@ Provides base class for gradient-checkpointed model wrappers
 for memory-efficient training of 3D compression models.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from torch import nn
@@ -35,7 +35,7 @@ class BaseCheckpointedModel(nn.Module):
         super().__init__()
         self.model = model
 
-    def checkpoint(self, fn: callable, *args) -> Any:
+    def checkpoint(self, fn: Callable[..., Any], *args) -> Any:
         """Apply gradient checkpointing to a function.
 
         Args:

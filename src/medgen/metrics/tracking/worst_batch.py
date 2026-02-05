@@ -71,8 +71,8 @@ class WorstBatchTracker:
         if loss > self.worst_loss:
             self.worst_loss = loss
             self.worst_data = {
-                'original': original.detach(),
-                'generated': generated.detach(),
+                'original': original.detach().cpu(),  # Move to CPU to avoid GPU memory leak
+                'generated': generated.detach().cpu(),  # Move to CPU to avoid GPU memory leak
                 'loss': loss,
                 'loss_breakdown': loss_breakdown or {},
                 'extra': extra or {},
@@ -90,10 +90,10 @@ class WorstBatchTracker:
         if self.worst_data is None:
             return None
 
-        # Move tensors to CPU
+        # Tensors already on CPU (moved in update())
         data = {
-            'original': self.worst_data['original'].cpu(),
-            'generated': self.worst_data['generated'].cpu(),
+            'original': self.worst_data['original'],
+            'generated': self.worst_data['generated'],
             'loss': self.worst_data['loss'],
             'loss_breakdown': self.worst_data['loss_breakdown'],
             'extra': self.worst_data['extra'],

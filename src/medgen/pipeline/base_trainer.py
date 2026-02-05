@@ -395,6 +395,17 @@ class BaseTrainer(ABC):
         # Log FLOPs
         self._log_flops(epoch)
 
+    def _should_stop_early(self) -> bool:
+        """Check if training should stop early.
+
+        Default: Always returns False (no early stopping).
+        Subclasses can override to implement early stopping logic.
+
+        Returns:
+            True if training should stop, False otherwise.
+        """
+        return False
+
     def _on_training_end(self, total_time: float) -> None:
         """Hook called after training loop ends.
 
@@ -526,7 +537,7 @@ class BaseTrainer(ABC):
             # Fallback to legacy method
             self._save_checkpoint(epoch, "latest")
             val_loss = val_metrics.get('gen', val_metrics.get('total', float('inf')))
-            if val_loss > 0 and val_loss < self.best_loss:
+            if val_loss < self.best_loss:
                 self.best_loss = val_loss
                 self._save_checkpoint(epoch, "best")
                 logger.info(f"New best model saved (loss: {val_loss:.4f})")
@@ -743,6 +754,11 @@ class BaseTrainer(ABC):
                     # Merge avg_losses into val_metrics for metric availability
                     merged_metrics = {**avg_losses, **val_metrics}
                     self._handle_checkpoints(epoch, merged_metrics)
+
+                    # Check for early stopping
+                    if self._should_stop_early():
+                        logger.info("Stopping training early")
+                        break
 
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")

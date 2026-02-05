@@ -122,7 +122,7 @@ class Attention(nn.Module):
             raise ValueError(f"dim {dim} not divisible by num_heads {num_heads}")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        # Note: scale not stored - F.scaled_dot_product_attention() applies scaling internally
         self.qk_norm = qk_norm
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -191,7 +191,7 @@ class CrossAttention(nn.Module):
             raise ValueError(f"dim {dim} not divisible by num_heads {num_heads}")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        # Note: scale not stored - F.scaled_dot_product_attention() applies scaling internally
         self.qk_norm = qk_norm
 
         self.q = nn.Linear(dim, dim, bias=qkv_bias)

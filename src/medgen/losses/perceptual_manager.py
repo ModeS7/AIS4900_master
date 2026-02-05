@@ -160,11 +160,11 @@ class PerceptualLossManager:
         # Sample slice indices
         indices = torch.randperm(depth)[:n_slices].to(self.device)
 
-        total_loss = 0.0
+        total_loss = torch.tensor(0.0, device=reconstruction.device, dtype=reconstruction.dtype)
         for idx in indices:
             recon_slice = reconstruction[:, :, idx, :, :]
             target_slice = target[:, :, idx, :, :]
-            total_loss += self._loss_fn(recon_slice, target_slice)
+            total_loss = total_loss + self._loss_fn(recon_slice, target_slice)
 
         return total_loss / n_slices
 

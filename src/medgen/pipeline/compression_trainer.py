@@ -1035,17 +1035,19 @@ class BaseCompressionTrainer(BaseTrainer):
         """
         return self.spatial_dims == 2
 
-    def _track_seg_breakdown(self, seg_breakdown: dict[str, float]) -> None:
+    def _track_seg_breakdown(self, seg_breakdown: dict[str, torch.Tensor]) -> None:
         """Track segmentation loss breakdown for epoch averaging.
 
         Override in subclass to accumulate breakdown for seg_mode.
 
         Args:
-            seg_breakdown: Dictionary with 'bce', 'dice', 'boundary' losses.
+            seg_breakdown: Dictionary with 'bce', 'dice', 'boundary' loss tensors.
         """
         if hasattr(self, '_epoch_seg_breakdown'):
             for key in seg_breakdown:
-                self._epoch_seg_breakdown[key] += seg_breakdown[key]
+                # Call .item() here to convert tensor to float for accumulation
+                val = seg_breakdown[key]
+                self._epoch_seg_breakdown[key] += val.item() if isinstance(val, torch.Tensor) else val
 
     # ─────────────────────────────────────────────────────────────────────────
     # Training epoch template

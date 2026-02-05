@@ -170,12 +170,16 @@ class SegRegionalMetricsTracker:
                 except ValueError:
                     # Degenerate region (e.g., flat 2D plane in 3D)
                     # Fall back to approximate diameter from bounding box
+                    logger.debug("Degenerate region detected, using bbox fallback for diameter")
                     bbox = region.bbox
                     if len(bbox) == 6:  # 3D: (min_z, min_y, min_x, max_z, max_y, max_x)
                         extent = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
-                    else:  # 2D: (min_y, min_x, max_y, max_x)
+                    elif len(bbox) == 4:  # 2D: (min_y, min_x, max_y, max_x)
                         extent = [bbox[2] - bbox[0], bbox[3] - bbox[1]]
-                    feret_px = max(extent)
+                    else:
+                        logger.warning(f"Unexpected bbox length {len(bbox)}, skipping region")
+                        continue
+                    feret_px = max(extent) if extent else 0
                 feret_mm = feret_px * self.mm_per_pixel
 
                 # Classify by size

@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 if TYPE_CHECKING:
     from medgen.metrics.unified import UnifiedMetrics
+    from medgen.pipeline.compression_trainer import BaseCompressionTrainer
 
 from medgen.core.dict_utils import get_with_fallbacks
 
@@ -1104,3 +1105,115 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
             'loss': loss,
             'loss_breakdown': loss_breakdown,
         }
+
+
+# =============================================================================
+# Factory Functions
+# =============================================================================
+
+def create_compression_test_evaluator(
+    trainer: 'BaseCompressionTrainer',
+) -> 'CompressionTestEvaluator | Compression3DTestEvaluator':
+    """Create test evaluator for compression trainer.
+
+    Factory that creates appropriate evaluator based on trainer.spatial_dims.
+    Creates a CompressionTestEvaluator (2D) or Compression3DTestEvaluator (3D)
+    with trainer-specific callbacks.
+
+    Args:
+        trainer: Compression trainer instance.
+
+    Returns:
+        CompressionTestEvaluator for 2D, Compression3DTestEvaluator for 3D.
+    """
+    # Check for seg_mode (set by subclasses)
+    seg_mode = getattr(trainer, 'seg_mode', False)
+    seg_loss_fn = getattr(trainer, 'seg_loss_fn', None)
+
+    # Get modality name for single-modality suffix
+    # Use empty string for seg_conditioned modes (no suffix needed)
+    mode_name = trainer.cfg.mode.get('name', 'bravo')
+    if mode_name.startswith('seg_conditioned'):
+        mode_name = ''
+
+    # Get image keys for per-channel metrics
+    n_channels = trainer.cfg.mode.get('in_channels', 1)
+    image_keys = None
+    if n_channels > 1:
+        image_keys = trainer.cfg.mode.get('image_keys', None)
+
+    # Regional tracker factory (use seg-specific tracker for seg_mode)
+    regional_factory = None
+    if trainer.log_regional_losses:
+        if seg_mode and hasattr(trainer, '_create_seg_regional_tracker'):
+            regional_factory = trainer._create_seg_regional_tracker
+        else:
+            regional_factory = trainer._create_regional_tracker
+
+    # 3D evaluator
+    if trainer.spatial_dims == 3:
+        metrics_config = MetricsConfig(
+            compute_l1=not seg_mode,
+            compute_psnr=not seg_mode,
+            compute_lpips=not seg_mode,
+            compute_msssim=trainer.log_msssim and not seg_mode,  # 2D slicewise
+            compute_msssim_3d=trainer.log_msssim and not seg_mode,  # Volumetric
+            compute_regional=trainer.log_regional_losses,
+            seg_mode=seg_mode,
+        )
+
+        # Worst batch figure callback (3D version)
+        worst_batch_fig_fn = trainer._create_worst_batch_figure
+
+        return Compression3DTestEvaluator(
+            model=trainer.model_raw,
+            device=trainer.device,
+            save_dir=trainer.save_dir,
+            forward_fn=trainer._test_forward,
+            weight_dtype=trainer.weight_dtype,
+            writer=trainer.writer,
+            metrics_config=metrics_config,
+            is_cluster=trainer.is_cluster,
+            regional_tracker_factory=regional_factory,
+            worst_batch_figure_fn=worst_batch_fig_fn,
+            image_keys=image_keys,
+            seg_loss_fn=seg_loss_fn if seg_mode else None,
+            modality_name=mode_name,
+        )
+
+    # 2D evaluator
+    metrics_config = MetricsConfig(
+        compute_l1=not seg_mode,
+        compute_psnr=not seg_mode,
+        compute_lpips=not seg_mode,
+        compute_msssim=trainer.log_msssim and not seg_mode,
+        compute_msssim_3d=False,  # Volume 3D MS-SSIM added via callback
+        compute_regional=trainer.log_regional_losses,
+        seg_mode=seg_mode,
+    )
+
+    # Volume 3D MS-SSIM callback (for 2D trainers reconstructing full volumes)
+    def volume_3d_msssim() -> float | None:
+        if seg_mode:
+            return None
+        return trainer._compute_volume_3d_msssim(epoch=0, data_split='test_new')
+
+    # Worst batch figure callback
+    worst_batch_fig_fn = trainer._create_worst_batch_figure
+
+    return CompressionTestEvaluator(
+        model=trainer.model_raw,
+        device=trainer.device,
+        save_dir=trainer.save_dir,
+        forward_fn=trainer._test_forward,
+        weight_dtype=trainer.weight_dtype,
+        writer=trainer.writer,
+        metrics_config=metrics_config,
+        is_cluster=trainer.is_cluster,
+        regional_tracker_factory=regional_factory,
+        volume_3d_msssim_fn=volume_3d_msssim,
+        worst_batch_figure_fn=worst_batch_fig_fn,
+        image_keys=image_keys,
+        seg_loss_fn=seg_loss_fn if seg_mode else None,
+        modality_name=mode_name,
+    )

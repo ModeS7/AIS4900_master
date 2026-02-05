@@ -1137,22 +1137,56 @@ class UnifiedMetrics:
             dice: Optional pre-computed Dice value.
             iou: Optional pre-computed IoU value.
         """
-        self._val_psnr_sum = psnr
-        self._val_psnr_count = 1
-        self._val_msssim_sum = msssim
-        self._val_msssim_count = 1
+        self._val_psnr_sum += psnr
+        self._val_psnr_count += 1
+        self._val_msssim_sum += msssim
+        self._val_msssim_count += 1
 
         if lpips is not None:
-            self._val_lpips_sum = lpips
-            self._val_lpips_count = 1
+            self._val_lpips_sum += lpips
+            self._val_lpips_count += 1
         if msssim_3d is not None:
-            self._val_msssim_3d_sum = msssim_3d
-            self._val_msssim_3d_count = 1
+            self._val_msssim_3d_sum += msssim_3d
+            self._val_msssim_3d_count += 1
         if dice is not None:
-            self._val_dice_sum = dice
-            self._val_dice_count = 1
+            self._val_dice_sum += dice
+            self._val_dice_count += 1
         if iou is not None:
-            self._val_iou_sum = iou
+            self._val_iou_sum += iou
+            self._val_iou_count += 1
+
+    def set_validation_metrics(self, metrics: dict[str, float]) -> None:
+        """Set validation metrics from a dictionary of pre-computed values.
+
+        Use this when you have pre-aggregated metrics (e.g., from external
+        validation loops) and want to set them directly for logging.
+
+        Unlike update_validation_batch() which accumulates, this sets
+        values directly with count=1.
+
+        Args:
+            metrics: Dictionary with optional keys:
+                'psnr', 'msssim', 'lpips', 'msssim_3d', 'dice', 'dice_score', 'iou'
+        """
+        if 'psnr' in metrics:
+            self._val_psnr_sum = metrics['psnr']
+            self._val_psnr_count = 1
+        if 'msssim' in metrics:
+            self._val_msssim_sum = metrics['msssim']
+            self._val_msssim_count = 1
+        if 'lpips' in metrics:
+            self._val_lpips_sum = metrics['lpips']
+            self._val_lpips_count = 1
+        if 'msssim_3d' in metrics:
+            self._val_msssim_3d_sum = metrics['msssim_3d']
+            self._val_msssim_3d_count = 1
+        # Support both 'dice' and 'dice_score' keys
+        dice_val = metrics.get('dice') or metrics.get('dice_score')
+        if dice_val is not None:
+            self._val_dice_sum = dice_val
+            self._val_dice_count = 1
+        if 'iou' in metrics:
+            self._val_iou_sum = metrics['iou']
             self._val_iou_count = 1
 
     def log_timestep_region_heatmap(self, epoch: int):
@@ -1915,9 +1949,21 @@ class UnifiedMetrics:
             return tensor
 
         B, C, D, H, W = tensor.shape
+
+        # Clamp num_slices to available depth to avoid duplicate indices
+        num_slices = min(num_slices, D)
+        if num_slices <= 1:
+            # Return middle slice if only 1 available
+            mid = D // 2
+            return tensor[:, :, mid:mid+1, :, :].squeeze(2)  # [B, C, H, W]
+
         # Calculate evenly spaced indices (avoid edges)
-        margin = D // (num_slices + 1)
-        indices = [margin + i * (D - 2 * margin) // (num_slices - 1) for i in range(num_slices)]
+        margin = max(1, D // (num_slices + 1))
+        if D - 2 * margin > 0 and num_slices > 1:
+            indices = [margin + i * (D - 2 * margin) // (num_slices - 1) for i in range(num_slices)]
+        else:
+            # Fall back to uniform spacing across entire depth
+            indices = [i * (D - 1) // (num_slices - 1) for i in range(num_slices)]
         indices = [min(max(0, idx), D - 1) for idx in indices]  # Clamp to valid range
 
         # Extract slices from first volume (3D typically has batch_size=1)

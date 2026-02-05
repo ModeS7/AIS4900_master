@@ -368,8 +368,10 @@ def compute_lpips(
             gen = torch.clamp(generated.float(), 0, 1).to(device)
             ref = torch.clamp(reference.float(), 0, 1).to(device)
 
-            # Get cached metric (pass device as string for lru_cache hashability)
-            metric = _get_lpips_metric(str(device), network_type, cache_dir)
+            # Get cached metric with lock protection for thread safety
+            # The lru_cache + torch.compile combination is not thread-safe
+            with _compile_lock:
+                metric = _get_lpips_metric(str(device), network_type, cache_dir)
 
             # Handle channel count (pretrained networks expect 3 channels)
             num_channels = gen.shape[1]

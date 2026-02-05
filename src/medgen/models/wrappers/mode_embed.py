@@ -473,11 +473,22 @@ class LateModeModelWrapper(nn.Module):
         self._register_late_injection_hooks()
 
     def _register_late_injection_hooks(self):
-        """Register forward hooks to inject mode at later levels."""
+        """Register forward hooks to inject mode at later levels.
+
+        Note: Forward hooks are incompatible with torch.compile.
+        When using compile, late injection is disabled.
+        """
+        self._hooks = []
+
+        # Check for torch.compile - hooks break graph tracing
+        if getattr(self, '_compiled', False):
+            logger.warning(
+                "Late mode injection disabled: forward hooks incompatible with torch.compile"
+            )
+            return
+
         # MONAI UNet structure: down_blocks, mid_block, up_blocks
         # Each down/up block corresponds to a resolution level
-
-        self._hooks = []
 
         # Get number of down blocks to determine levels
         if hasattr(self.model, 'down_blocks'):

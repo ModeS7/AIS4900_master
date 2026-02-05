@@ -1635,6 +1635,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
     @torch.no_grad()
     def _generate_with_size_bins_3d(
         self,
+        model: nn.Module,
         noise: torch.Tensor,
         size_bins: torch.Tensor,
         num_steps: int = 25,
@@ -1642,11 +1643,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
     ) -> torch.Tensor:
         """Generate 3D samples with size bin conditioning."""
         from .visualization import generate_with_size_bins_3d
-        return generate_with_size_bins_3d(self, noise, size_bins, num_steps, cfg_scale)
+        return generate_with_size_bins_3d(self, model, noise, size_bins, num_steps, cfg_scale)
 
     @torch.no_grad()
     def _generate_trajectory_with_size_bins_3d(
         self,
+        model: nn.Module,
         noise: torch.Tensor,
         size_bins: torch.Tensor,
         num_steps: int = 25,
@@ -1654,7 +1656,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
     ) -> list[torch.Tensor]:
         """Generate 3D samples with size bins while capturing trajectory."""
         from .visualization import generate_trajectory_with_size_bins_3d
-        return generate_trajectory_with_size_bins_3d(self, noise, size_bins, num_steps, capture_every)
+        return generate_trajectory_with_size_bins_3d(self, model, noise, size_bins, num_steps, capture_every)
 
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint using standardized format."""

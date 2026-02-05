@@ -1004,6 +1004,8 @@ class GenerationMetrics:
         diversity_tensor = None
         if samples_for_diversity:
             diversity_tensor = torch.cat(samples_for_diversity, dim=0)
+            # Explicitly clear list to free memory immediately
+            samples_for_diversity.clear()
             del samples_for_diversity
 
         del all_resnet_features, all_biomed_features

@@ -138,6 +138,120 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
         else:
             self._update_3d(prediction, target, mask)
 
+    def _compute_error_mean(self, error_i: Tensor) -> Tensor:
+        """Average error over channels if multi-channel.
+
+        Args:
+            error_i: Error tensor for a single sample.
+                2D: [C, H, W]
+                3D: [C, D, H, W]
+
+        Returns:
+            Averaged error tensor [H, W] for 2D or [D, H, W] for 3D.
+        """
+        if error_i.dim() >= 3 and error_i.shape[0] > 1:
+            return error_i.mean(dim=0)
+        return error_i.squeeze(0) if error_i.dim() >= 3 else error_i
+
+    def _compute_error_tensor(
+        self,
+        prediction: Tensor | dict[str, Tensor],
+        target: Tensor | dict[str, Tensor],
+    ) -> Tensor:
+        """Compute error tensor from prediction and target.
+
+        Handles dict input (dual mode) by concatenating channels.
+
+        Args:
+            prediction: Predicted tensor or dict of tensors.
+            target: Target tensor or dict of tensors.
+
+        Returns:
+            Error tensor with same shape as prediction.
+        """
+        if isinstance(prediction, dict):
+            pred = torch.cat(list(prediction.values()), dim=1)
+            tgt = torch.cat(list(target.values()), dim=1)
+        else:
+            pred, tgt = prediction, target
+
+        if self.loss_fn == 'l1':
+            return torch.abs(pred - tgt)
+        else:  # mse
+            return (pred - tgt) ** 2
+
+    def _accumulate_tumor(
+        self,
+        tumor_error: float,
+        tumor_pixels: int,
+        size_cat: str,
+    ) -> None:
+        """Accumulate error for a single tumor.
+
+        Args:
+            tumor_error: Total error for this tumor.
+            tumor_pixels: Number of pixels/voxels in this tumor.
+            size_cat: Size category from _classify_tumor_size().
+        """
+        self.tumor_error_sum += tumor_error
+        self.tumor_pixels_total += tumor_pixels
+        self.size_error_sum[size_cat] += tumor_error
+        self.size_pixels[size_cat] += tumor_pixels
+
+    def _finalize_sample(
+        self,
+        bg_error_value: float | None,
+        bg_pixels_count: int,
+    ) -> None:
+        """Finalize accumulation for a sample with valid tumors.
+
+        Args:
+            bg_error_value: Background error value (None if no background).
+            bg_pixels_count: Number of background pixels/voxels.
+        """
+        self.count += 1
+        if bg_error_value is not None:
+            self.bg_error_sum += bg_error_value
+            self.bg_pixels_total += bg_pixels_count
+
+    def _get_2d_feret(self, region) -> float:
+        """Get Feret diameter for a 2D region.
+
+        Args:
+            region: skimage regionprops region object.
+
+        Returns:
+            Feret diameter in pixels.
+        """
+        return region.feret_diameter_max
+
+    def _get_3d_feret(self, tumor_mask_3d: np.ndarray) -> float | None:
+        """Get Feret diameter for a 3D tumor by extracting max slice.
+
+        Args:
+            tumor_mask_3d: 3D binary mask for this tumor [D, H, W].
+
+        Returns:
+            Feret diameter in pixels, or None if no valid region found.
+        """
+        # Find slice with maximum cross-sectional area
+        slice_areas = tumor_mask_3d.sum(axis=(1, 2))  # [D]
+        max_slice_idx = np.argmax(slice_areas)
+
+        # Extract 2D slice for Feret diameter computation
+        tumor_slice_2d = tumor_mask_3d[max_slice_idx]
+
+        # Run 2D connected components on the max slice
+        labeled_2d, _ = scipy_label(tumor_slice_2d)
+        regions_2d = regionprops(labeled_2d)
+
+        if not regions_2d:
+            return None
+
+        # Use the largest region in this slice
+        largest_region = max(regions_2d, key=lambda r: r.area)
+        return largest_region.feret_diameter_max
+
     def _update_2d(
         self,
         prediction: Tensor | dict[str, Tensor],
@@ -145,34 +259,19 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
         mask: Tensor,
     ) -> None:
         """2D update implementation."""
-        # Handle dict input (dual mode)
-        if isinstance(prediction, dict):
-            pred = torch.cat(list(prediction.values()), dim=1)
-            tgt = torch.cat(list(target.values()), dim=1)
-        else:
-            pred, tgt = prediction, target
-
-        # Compute error based on loss function type
-        if self.loss_fn == 'l1':
-            error = torch.abs(pred - tgt)
-        else:  # mse
-            error = (pred - tgt) ** 2
-
+        error = self._compute_error_tensor(prediction, target)
         batch_size = mask.shape[0]
 
-        # Process each sample individually (needed for connected components)
         for i in range(batch_size):
             mask_np = mask[i, 0].cpu().numpy() > 0.5
             error_i = error[i]  # [C, H, W]
 
-            # Find connected components
             labeled, num_tumors = scipy_label(mask_np)
-
             if num_tumors == 0:
                 continue
 
-            # Get region properties including Feret diameter
             regions = regionprops(labeled)
+            error_mean = self._compute_error_mean(error_i)
 
             # Compute background error (defer adding until we confirm valid tumor)
             bg_mask_np = ~mask_np
@@ -180,52 +279,27 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
             bg_error_value = None
             if bg_pixels_count > 0:
                 bg_mask_tensor = torch.from_numpy(bg_mask_np).to(error_i.device).float()
-                # Average over channels then sum over spatial (pixel-weighted)
-                if error_i.dim() == 3 and error_i.shape[0] > 1:
-                    error_mean = error_i.mean(dim=0)
-                else:
-                    error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
                 bg_error_value = (error_mean * bg_mask_tensor).sum().item()
 
             sample_has_valid_tumor = False
 
-            # Process each tumor individually
             for region in regions:
                 if region.area < self._min_area:
                     continue
 
-                # Get Feret diameter (longest edge-to-edge distance)
-                feret_px = region.feret_diameter_max
-                feret_mm = feret_px * self.mm_per_pixel
+                feret_px = self._get_2d_feret(region)
+                size_cat = self._classify_tumor_size(feret_px * self.mm_per_pixel)
 
-                # Classify by size
-                size_cat = self._classify_tumor_size(feret_mm)
-
-                # Create mask for this tumor only
                 tumor_mask_np = (labeled == region.label)
                 tumor_mask_tensor = torch.from_numpy(tumor_mask_np).to(error_i.device).float()
-                tumor_pixels = tumor_mask_tensor.sum()
-
-                # Compute total error on this tumor's pixels
-                if error_i.dim() == 3 and error_i.shape[0] > 1:
-                    error_mean = error_i.mean(dim=0)
-                else:
-                    error_mean = error_i.squeeze(0) if error_i.dim() == 3 else error_i
                 tumor_error = (error_mean * tumor_mask_tensor).sum().item()
-                tumor_px = int(tumor_pixels.item())
+                tumor_px = int(tumor_mask_tensor.sum().item())
 
-                # Accumulate
-                self.tumor_error_sum += tumor_error
-                self.tumor_pixels_total += tumor_px
-                self.size_error_sum[size_cat] += tumor_error
-                self.size_pixels[size_cat] += tumor_px
+                self._accumulate_tumor(tumor_error, tumor_px, size_cat)
                 sample_has_valid_tumor = True
 
             if sample_has_valid_tumor:
-                self.count += 1
-                if bg_error_value is not None:
-                    self.bg_error_sum += bg_error_value
-                    self.bg_pixels_total += bg_pixels_count
+                self._finalize_sample(bg_error_value, bg_pixels_count)
 
     def _update_3d(
         self,
@@ -234,29 +308,14 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
         mask: Tensor,
     ) -> None:
         """3D update implementation."""
-        # Compute error based on loss function type
-        if self.loss_fn == 'l1':
-            error = torch.abs(prediction - target)
-        else:  # mse
-            error = (prediction - target) ** 2
-
+        error = self._compute_error_tensor(prediction, target)
         batch_size = mask.shape[0]
 
-        # Process each volume individually
         for i in range(batch_size):
-            # Extract 3D mask: [D, H, W]
             mask_3d = mask[i, 0].cpu().numpy() > 0.5
+            error_mean = self._compute_error_mean(error[i]).cpu().numpy()
 
-            # Average error over channels: [D, H, W]
-            error_i = error[i]
-            if error_i.dim() == 4 and error_i.shape[0] > 1:
-                error_mean = error_i.mean(dim=0).cpu().numpy()
-            else:
-                error_mean = error_i.squeeze(0).cpu().numpy() if error_i.dim() == 4 else error_i.cpu().numpy()
-
-            # 3D connected component analysis (26-connectivity)
             labeled_3d, num_tumors = scipy_label(mask_3d)
-
             if num_tumors == 0:
                 continue
 
@@ -265,57 +324,29 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
             bg_voxels_count = int(bg_mask_3d.sum())
             bg_error_value = None
             if bg_voxels_count > 0:
-                bg_error_value = (error_mean * bg_mask_3d).sum()
+                bg_error_value = float((error_mean * bg_mask_3d).sum())
 
             sample_has_valid_tumor = False
 
-            # Process each 3D tumor
             for tumor_id in range(1, num_tumors + 1):
                 tumor_mask_3d = (labeled_3d == tumor_id)
-                tumor_voxels = tumor_mask_3d.sum()
+                tumor_voxels = int(tumor_mask_3d.sum())
 
                 if tumor_voxels < self._min_area:
                     continue
 
-                # Find slice with maximum cross-sectional area
-                slice_areas = tumor_mask_3d.sum(axis=(1, 2))  # [D]
-                max_slice_idx = np.argmax(slice_areas)
-
-                # Extract 2D slice for Feret diameter computation
-                tumor_slice_2d = tumor_mask_3d[max_slice_idx]
-
-                # Run 2D connected components on the max slice
-                labeled_2d, _ = scipy_label(tumor_slice_2d)
-                regions_2d = regionprops(labeled_2d)
-
-                if not regions_2d:
+                feret_px = self._get_3d_feret(tumor_mask_3d)
+                if feret_px is None:
                     continue
 
-                # Use the largest region in this slice
-                largest_region = max(regions_2d, key=lambda r: r.area)
+                size_cat = self._classify_tumor_size(feret_px * self.mm_per_pixel)
+                tumor_error = float((error_mean * tumor_mask_3d).sum())
 
-                # Get Feret diameter
-                feret_px = largest_region.feret_diameter_max
-                feret_mm = feret_px * self.mm_per_pixel
-
-                # Classify by size
-                size_cat = self._classify_tumor_size(feret_mm)
-
-                # Compute total error on ALL voxels of this 3D tumor
-                tumor_error = (error_mean * tumor_mask_3d).sum()
-
-                # Accumulate (voxel-weighted)
-                self.tumor_error_sum += tumor_error
-                self.tumor_pixels_total += int(tumor_voxels)
-                self.size_error_sum[size_cat] += tumor_error
-                self.size_pixels[size_cat] += int(tumor_voxels)
+                self._accumulate_tumor(tumor_error, tumor_voxels, size_cat)
                 sample_has_valid_tumor = True
 
             if sample_has_valid_tumor:
-                self.count += 1
-                if bg_error_value is not None:
-                    self.bg_error_sum += bg_error_value
-                    self.bg_pixels_total += bg_voxels_count
+                self._finalize_sample(bg_error_value, bg_voxels_count)
 
 
 # Backwards compatibility aliases

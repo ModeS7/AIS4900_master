@@ -53,8 +53,11 @@ def validate_modality_exists(data_dir: str, modality: str) -> None:
         modality: MR sequence name to check (e.g., 'bravo', 't1_pre', 'seg').
 
     Raises:
-        ValueError: If data directory is empty or modality file not found.
+        ValueError: If data directory does not exist, is empty, or modality file not found.
     """
+    if not os.path.exists(data_dir):
+        raise ValueError(f"Data directory does not exist: {data_dir}")
+
     patients = sorted(os.listdir(data_dir))
     if not patients:
         raise ValueError(f"Data directory is empty: {data_dir}")

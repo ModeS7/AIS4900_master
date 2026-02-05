@@ -150,9 +150,15 @@ def compute_size_bins(
                 binned = True
                 break
 
-        # If not binned, goes to overflow bin (last bin)
+        # If not binned, goes to overflow bin (last bin) - only if overflow bin exists
         if not binned:
-            bin_counts[num_bins - 1] += 1
+            if num_bins > n_bounded_bins:
+                bin_counts[num_bins - 1] += 1  # Overflow bin exists
+            else:
+                logger.warning(
+                    f"Tumor diameter {diameter:.1f}mm outside bin range "
+                    f"[{bin_edges[0]:.1f}, {bin_edges[-1]:.1f}], skipping"
+                )
 
     return bin_counts
 

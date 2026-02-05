@@ -932,12 +932,16 @@ def _create_compression_3d_loader(
     use_distributed: bool,
     rank: int,
     world_size: int,
-    augment: bool,
+    augment: bool,  # Note: 3D loaders read from cfg.training.augment instead
     batch_size: int | None,
 ) -> tuple[DataLoader, Dataset]:
     """Create 3D compression dataloader.
 
     3D loaders already return dict format, so minimal wrapping needed.
+
+    Note: The `augment` parameter is not passed to 3D loaders - they read
+    augmentation settings directly from cfg.training.augment. This parameter
+    is kept for interface consistency with 2D loaders.
     """
     from medgen.data.loaders import volume_3d
     from medgen.data.loaders.volume_3d import VolumeConfig
@@ -950,16 +954,14 @@ def _create_compression_3d_loader(
     elif mode == 'multi_modality':
         # Multi-modality 3D VAE
         if split == 'train':
-            return volume_3d.create_vae_3d_multi_modality_dataloader(
-                cfg, vol_cfg, augment=augment
-            )
+            return volume_3d.create_vae_3d_multi_modality_dataloader(cfg)
         elif split == 'val':
-            result = volume_3d.create_vae_3d_multi_modality_validation_dataloader(cfg, vol_cfg)
+            result = volume_3d.create_vae_3d_multi_modality_validation_dataloader(cfg)
             if result is None:
                 raise ValueError("No 3D validation data found for multi_modality")
             return result
         else:  # test
-            result = volume_3d.create_vae_3d_multi_modality_test_dataloader(cfg, vol_cfg)
+            result = volume_3d.create_vae_3d_multi_modality_test_dataloader(cfg)
             if result is None:
                 raise ValueError("No 3D test data found for multi_modality")
             return result
@@ -967,16 +969,14 @@ def _create_compression_3d_loader(
     elif mode == 'dual':
         # Dual modality 3D VAE
         if split == 'train':
-            return volume_3d.create_vae_3d_dataloader(
-                cfg, vol_cfg, modality='dual', augment=augment
-            )
+            return volume_3d.create_vae_3d_dataloader(cfg, modality='dual')
         elif split == 'val':
-            result = volume_3d.create_vae_3d_validation_dataloader(cfg, vol_cfg, 'dual')
+            result = volume_3d.create_vae_3d_validation_dataloader(cfg, 'dual')
             if result is None:
                 raise ValueError("No 3D validation data found for dual VAE")
             return result
         else:  # test
-            result = volume_3d.create_vae_3d_test_dataloader(cfg, vol_cfg, 'dual')
+            result = volume_3d.create_vae_3d_test_dataloader(cfg, 'dual')
             if result is None:
                 raise ValueError("No 3D test data found for dual VAE")
             return result
@@ -984,16 +984,14 @@ def _create_compression_3d_loader(
     else:
         # Single modality: bravo, t1_pre, t1_gd, flair, seg
         if split == 'train':
-            return volume_3d.create_vae_3d_dataloader(
-                cfg, vol_cfg, modality=mode, augment=augment
-            )
+            return volume_3d.create_vae_3d_dataloader(cfg, modality=mode)
         elif split == 'val':
-            result = volume_3d.create_vae_3d_validation_dataloader(cfg, vol_cfg, mode)
+            result = volume_3d.create_vae_3d_validation_dataloader(cfg, mode)
             if result is None:
                 raise ValueError(f"No 3D validation data found for {mode} VAE")
             return result
         else:  # test
-            result = volume_3d.create_vae_3d_test_dataloader(cfg, vol_cfg, mode)
+            result = volume_3d.create_vae_3d_test_dataloader(cfg, mode)
             if result is None:
                 raise ValueError(f"No 3D test data found for {mode} VAE")
             return result

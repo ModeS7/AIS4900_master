@@ -223,6 +223,8 @@ class LatentSpace(DiffusionSpace):
         Returns:
             Spatial downscale factor.
         """
+        import re
+
         # Check for explicit config
         if hasattr(model, 'config') and isinstance(model.config, dict):
             config = model.config
@@ -234,10 +236,12 @@ class LatentSpace(DiffusionSpace):
                 return config['scale_factor']
             # Check for f{N} notation (e.g., 'f32' -> 32)
             if 'name' in config:
-                import re
-                match = re.search(r'f(\d+)', str(config['name']))
-                if match:
-                    return int(match.group(1))
+                name_str = str(config['name'])
+                # Guard against excessively long strings (ReDoS prevention)
+                if len(name_str) <= 200:
+                    match = re.search(r'f(\d+)', name_str)
+                    if match:
+                        return int(match.group(1))
 
         # Check for num_down_blocks (MONAI VAE pattern: 2^num_down_blocks)
         if hasattr(model, 'num_down_blocks'):
@@ -486,8 +490,14 @@ def load_vae_for_latent_space(
     elif 'state_dict' in checkpoint:
         vae.load_state_dict(checkpoint['state_dict'])
     else:
-        # Assume checkpoint is just the state dict
-        vae.load_state_dict(checkpoint)
+        # Assume checkpoint is raw state dict - validate before loading
+        try:
+            vae.load_state_dict(checkpoint)
+        except RuntimeError as e:
+            raise ValueError(
+                f"Could not load VAE checkpoint. Expected 'model_state_dict' or "
+                f"'state_dict' key, or compatible raw state_dict. Error: {e}"
+            ) from e
 
     return LatentSpace(
         vae, device,

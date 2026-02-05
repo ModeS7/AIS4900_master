@@ -207,8 +207,10 @@ class CheckpointManager:
             logger.warning(f"Metric '{self.metric_name}' not in metrics: {list(metrics.keys())}")
             return False
 
-        # Skip invalid metrics (e.g., 0.0 from empty validation)
-        if current <= 0:
+        # Skip truly invalid metrics (NaN or Inf)
+        import math
+        if math.isnan(current) or math.isinf(current):
+            logger.warning(f"Skipping invalid metric value: {current}")
             return False
 
         if self._is_better(current, self._best_metric):

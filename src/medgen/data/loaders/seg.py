@@ -288,23 +288,30 @@ def create_seg_dataloader(
     vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
-    # Get size bin config from mode config
-    size_bin_cfg = cfg.mode.get('size_bins', {})
-    bin_edges = list(size_bin_cfg.get('edges', DEFAULT_BIN_EDGES))
-    num_bins = int(size_bin_cfg.get('num_bins', len(bin_edges) - 1))
+    # Get size bin config from mode config (safely handle OmegaConf)
+    size_bins_cfg = cfg.mode.get('size_bins')
+    if size_bins_cfg is None:
+        size_bins_cfg = {}
+    elif hasattr(size_bins_cfg, 'to_container'):
+        # Convert OmegaConf to dict to avoid recursion issues
+        from omegaconf import OmegaConf
+        size_bins_cfg = OmegaConf.to_container(size_bins_cfg, resolve=True)
+
+    bin_edges = list(size_bins_cfg.get('edges', DEFAULT_BIN_EDGES))
+    num_bins = int(size_bins_cfg.get('num_bins', len(bin_edges) - 1))
 
     # Voxel spacing for physical measurements
     # Default: 1mm depth, pixel_spacing for H/W
     default_pixel_spacing = 240.0 / vcfg.height  # fov_mm / image_size
-    voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
+    voxel_spacing_cfg = size_bins_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
     voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
 
     # CFG dropout
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.0))
 
     # Input conditioning options (for seg_conditioned_input mode)
-    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
-    max_count = int(size_bin_cfg.get('max_count', 10))
+    return_bin_maps = bool(size_bins_cfg.get('return_bin_maps', False))
+    max_count = int(size_bins_cfg.get('max_count', 10))
 
     # Check if augmentation is enabled
     augment = getattr(cfg.training, 'augment', False)

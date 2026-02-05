@@ -43,6 +43,13 @@ def create_codebook_tracker(
     except ImportError:
         logger.warning("CodebookTracker not available, codebook metrics disabled")
         return None
+    except Exception as e:
+        # Catch unexpected errors to prevent training crash
+        logger.warning(
+            f"CodebookTracker initialization failed ({type(e).__name__}: {e}), "
+            f"codebook metrics disabled"
+        )
+        return None
 
 
 def format_codebook_metrics(tracker: Any) -> dict[str, float]:

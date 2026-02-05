@@ -13,6 +13,19 @@ from torch.optim.lr_scheduler import (
 )
 
 
+def _validate_warmup_epochs(warmup_epochs: int, total_epochs: int) -> None:
+    """Validate that warmup_epochs is less than total_epochs.
+
+    Raises:
+        ValueError: If warmup_epochs >= total_epochs.
+    """
+    if warmup_epochs >= total_epochs:
+        raise ValueError(
+            f"warmup_epochs ({warmup_epochs}) must be less than "
+            f"total_epochs ({total_epochs})"
+        )
+
+
 def create_warmup_cosine_scheduler(
     optimizer: Optimizer,
     warmup_epochs: int,
@@ -38,11 +51,7 @@ def create_warmup_cosine_scheduler(
     Raises:
         ValueError: If warmup_epochs >= total_epochs.
     """
-    if warmup_epochs >= total_epochs:
-        raise ValueError(
-            f"warmup_epochs ({warmup_epochs}) must be less than "
-            f"total_epochs ({total_epochs})"
-        )
+    _validate_warmup_epochs(warmup_epochs, total_epochs)
 
     warmup_scheduler = LinearLR(
         optimizer,
@@ -85,11 +94,7 @@ def create_warmup_constant_scheduler(
     Raises:
         ValueError: If warmup_epochs >= total_epochs.
     """
-    if warmup_epochs >= total_epochs:
-        raise ValueError(
-            f"warmup_epochs ({warmup_epochs}) must be less than "
-            f"total_epochs ({total_epochs})"
-        )
+    _validate_warmup_epochs(warmup_epochs, total_epochs)
 
     warmup_scheduler = LinearLR(
         optimizer,

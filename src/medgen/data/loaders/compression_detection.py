@@ -5,10 +5,13 @@ Provides functions to:
 - Detect spatial dimensions (2D or 3D) from checkpoint
 - Detect scale factor and latent channels
 - Load compression models with auto-detection
+
+Performance: Uses load-once pattern to avoid redundant checkpoint loading.
 """
 
 import logging
 import os
+import re
 from typing import Any
 
 import torch
@@ -33,21 +36,36 @@ def _validate_checkpoint_path(checkpoint_path: str) -> None:
         raise PermissionError(f"Cannot read checkpoint: {checkpoint_path}")
 
 
-def detect_compression_type(checkpoint_path: str) -> str:
-    """Detect compression model type from checkpoint.
+def _load_checkpoint_dict(checkpoint_path: str, device: str = 'cpu') -> dict:
+    """Load checkpoint once and return the dict.
+
+    Internal helper to avoid redundant file I/O.
 
     Args:
         checkpoint_path: Path to compression checkpoint.
+        device: Device to map tensors to.
+
+    Returns:
+        Loaded checkpoint dictionary.
+    """
+    _validate_checkpoint_path(checkpoint_path)
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+
+# =============================================================================
+# Internal detection functions (operate on already-loaded checkpoint dict)
+# =============================================================================
+
+
+def _detect_compression_type_from_dict(checkpoint: dict) -> str:
+    """Detect compression model type from already-loaded checkpoint.
+
+    Args:
+        checkpoint: Loaded checkpoint dictionary.
 
     Returns:
         Compression type: 'vae', 'dcae', or 'vqvae'.
-
-    Raises:
-        FileNotFoundError: If checkpoint file does not exist.
     """
-    _validate_checkpoint_path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-
     # Check for config in checkpoint
     if 'config' in checkpoint:
         config = checkpoint['config']
@@ -73,21 +91,15 @@ def detect_compression_type(checkpoint_path: str) -> str:
     return 'vae'
 
 
-def detect_spatial_dims(checkpoint_path: str) -> int:
-    """Detect spatial dimensions (2D or 3D) from checkpoint.
+def _detect_spatial_dims_from_dict(checkpoint: dict) -> int:
+    """Detect spatial dimensions (2D or 3D) from already-loaded checkpoint.
 
     Args:
-        checkpoint_path: Path to compression checkpoint.
+        checkpoint: Loaded checkpoint dictionary.
 
     Returns:
         Spatial dimensions: 2 or 3.
-
-    Raises:
-        FileNotFoundError: If checkpoint file does not exist.
     """
-    _validate_checkpoint_path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-
     # Check for spatial_dims in config
     if 'config' in checkpoint:
         config = checkpoint['config']
@@ -113,21 +125,16 @@ def detect_spatial_dims(checkpoint_path: str) -> int:
     return 2
 
 
-def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') -> int:
-    """Detect spatial scale factor from compression checkpoint.
+def _detect_scale_factor_from_dict(checkpoint: dict, compression_type: str) -> int:
+    """Detect spatial scale factor from already-loaded checkpoint.
 
     Args:
-        checkpoint_path: Path to compression checkpoint.
-        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+        checkpoint: Loaded checkpoint dictionary.
+        compression_type: Type of model ('vae', 'dcae', 'vqvae').
 
     Returns:
         Spatial scale factor (8 for VAE/VQ-VAE, 32/64 for DC-AE).
-
-    Raises:
-        FileNotFoundError: If checkpoint file does not exist.
     """
-    _validate_checkpoint_path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('config', {})
 
     # DC-AE: check for spatial_compression_ratio or f{N} naming
@@ -141,7 +148,6 @@ def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') ->
                 return config['dcae']['spatial_compression_ratio']
         # Check for f{N} naming pattern (e.g., 'dc-ae-f32c32')
         if 'name' in config:
-            import re
             match = re.search(r'f(\d+)', str(config['name']))
             if match:
                 return int(match.group(1))
@@ -157,21 +163,16 @@ def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') ->
     return 8
 
 
-def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto') -> int:
-    """Detect latent channels from compression checkpoint.
+def _detect_latent_channels_from_dict(checkpoint: dict, compression_type: str) -> int:
+    """Detect latent channels from already-loaded checkpoint.
 
     Args:
-        checkpoint_path: Path to compression checkpoint.
-        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+        checkpoint: Loaded checkpoint dictionary.
+        compression_type: Type of model ('vae', 'dcae', 'vqvae').
 
     Returns:
         Number of latent channels.
-
-    Raises:
-        FileNotFoundError: If checkpoint file does not exist.
     """
-    _validate_checkpoint_path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('config', {})
 
     # Check common attribute names
@@ -207,6 +208,81 @@ def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto')
     return 4
 
 
+# =============================================================================
+# Public API functions (backward-compatible, load checkpoint internally)
+# =============================================================================
+
+
+def detect_compression_type(checkpoint_path: str) -> str:
+    """Detect compression model type from checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+
+    Returns:
+        Compression type: 'vae', 'dcae', or 'vqvae'.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+    """
+    checkpoint = _load_checkpoint_dict(checkpoint_path)
+    return _detect_compression_type_from_dict(checkpoint)
+
+
+def detect_spatial_dims(checkpoint_path: str) -> int:
+    """Detect spatial dimensions (2D or 3D) from checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+
+    Returns:
+        Spatial dimensions: 2 or 3.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+    """
+    checkpoint = _load_checkpoint_dict(checkpoint_path)
+    return _detect_spatial_dims_from_dict(checkpoint)
+
+
+def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') -> int:
+    """Detect spatial scale factor from compression checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+
+    Returns:
+        Spatial scale factor (8 for VAE/VQ-VAE, 32/64 for DC-AE).
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+    """
+    checkpoint = _load_checkpoint_dict(checkpoint_path)
+    if compression_type == 'auto':
+        compression_type = _detect_compression_type_from_dict(checkpoint)
+    return _detect_scale_factor_from_dict(checkpoint, compression_type)
+
+
+def detect_latent_channels(checkpoint_path: str, compression_type: str = 'auto') -> int:
+    """Detect latent channels from compression checkpoint.
+
+    Args:
+        checkpoint_path: Path to compression checkpoint.
+        compression_type: Type of model ('auto', 'vae', 'dcae', 'vqvae').
+
+    Returns:
+        Number of latent channels.
+
+    Raises:
+        FileNotFoundError: If checkpoint file does not exist.
+    """
+    checkpoint = _load_checkpoint_dict(checkpoint_path)
+    if compression_type == 'auto':
+        compression_type = _detect_compression_type_from_dict(checkpoint)
+    return _detect_latent_channels_from_dict(checkpoint, compression_type)
+
+
 def load_compression_model(
     checkpoint_path: str,
     compression_type: str,
@@ -215,6 +291,9 @@ def load_compression_model(
     spatial_dims: Any = 'auto',
 ) -> tuple[torch.nn.Module, str, int, int, int]:
     """Load compression model from checkpoint.
+
+    Uses load-once pattern: checkpoint is loaded once and all detection
+    functions operate on the same dict.
 
     Args:
         checkpoint_path: Path to compression checkpoint.
@@ -230,25 +309,25 @@ def load_compression_model(
         FileNotFoundError: If checkpoint file does not exist.
         ValueError: If compression type is unknown.
     """
-    _validate_checkpoint_path(checkpoint_path)
+    # Load checkpoint once
+    checkpoint = _load_checkpoint_dict(checkpoint_path, device=str(device))
 
-    # Auto-detect type if needed
+    # Auto-detect type if needed (from already-loaded checkpoint)
     if compression_type == 'auto':
-        compression_type = detect_compression_type(checkpoint_path)
+        compression_type = _detect_compression_type_from_dict(checkpoint)
         logger.info(f"Auto-detected compression type: {compression_type}")
 
-    # Auto-detect spatial dimensions if needed
+    # Auto-detect spatial dimensions if needed (from already-loaded checkpoint)
     if spatial_dims == 'auto':
-        spatial_dims = detect_spatial_dims(checkpoint_path)
+        spatial_dims = _detect_spatial_dims_from_dict(checkpoint)
         logger.info(f"Auto-detected spatial dimensions: {spatial_dims}D")
     else:
         spatial_dims = int(spatial_dims)
 
-    # Detect scale factor and latent channels
-    scale_factor = detect_scale_factor(checkpoint_path, compression_type)
-    latent_channels = detect_latent_channels(checkpoint_path, compression_type)
+    # Detect scale factor and latent channels (from already-loaded checkpoint)
+    scale_factor = _detect_scale_factor_from_dict(checkpoint, compression_type)
+    latent_channels = _detect_latent_channels_from_dict(checkpoint, compression_type)
 
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model_config = checkpoint.get('config', {})
 
     if compression_type == 'vae':
@@ -377,7 +456,7 @@ def load_compression_model(
     else:
         raise ValueError(f"Unknown compression type: {compression_type}")
 
-    # Load weights
+    # Load weights (from already-loaded checkpoint)
     state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
 
     # Strip 'model.' prefix if present (trainer saves with this prefix)

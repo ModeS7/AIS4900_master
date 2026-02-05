@@ -403,6 +403,15 @@ def apply_augmentation(
         else:
             # Multi-channel case: rebuild with mask at correct position
             result = np.zeros_like(slice_hwc)
+            num_image_channels = num_channels - 1  # Exclude mask
+
+            # Validate: 2D aug_image must match expected image channel count
+            if aug_image.ndim == 2 and num_image_channels > 1:
+                raise ValueError(
+                    f"Got 2D aug_image but {num_image_channels} image channels expected. "
+                    f"Input had {num_channels} channels with mask at index {mask_idx}."
+                )
+
             j = 0
             for i in range(num_channels):
                 if i == mask_idx:

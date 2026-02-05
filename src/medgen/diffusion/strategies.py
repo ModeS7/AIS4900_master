@@ -147,6 +147,90 @@ class DiffusionStrategy(ABC):
         """
         return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
 
+    def _compute_cfg_prediction(
+        self,
+        model: DiffusionModel,
+        cfg_ctx: dict[str, Any],
+        current_cfg: float,
+        current_model_input: torch.Tensor,
+        noisy_images: torch.Tensor,
+        bin_maps: torch.Tensor | None,
+        size_bins: torch.Tensor | None,
+        timesteps_batch: torch.Tensor,
+        omega: torch.Tensor | None,
+        mode_id: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Unified CFG computation shared by DDPM and RFlow.
+
+        Handles all CFG modes: bin_maps, size_bins, and image conditioning.
+        Returns the prediction (noise for DDPM, velocity for RFlow) after
+        applying appropriate CFG branching and model calls.
+
+        Note: .clone() calls are required to prevent CUDA graph caching issues.
+
+        Args:
+            model: The diffusion model.
+            cfg_ctx: CFG context from _prepare_cfg_context().
+            current_cfg: Current CFG scale for this timestep.
+            current_model_input: Model input (noisy + conditioning).
+            noisy_images: Noisy images without conditioning.
+            bin_maps: Optional spatial bin maps [B, num_bins, ...].
+            size_bins: Optional size bin conditioning [B, num_bins].
+            timesteps_batch: Timestep tensor.
+            omega: Optional ScoreAug omega parameters.
+            mode_id: Optional mode ID for multi-modality.
+
+        Returns:
+            Model prediction tensor.
+        """
+        use_cfg_bin_maps = cfg_ctx['use_cfg_bin_maps']
+        use_cfg_size_bins = cfg_ctx['use_cfg_size_bins']
+        use_cfg_conditioning = cfg_ctx['use_cfg_conditioning']
+        uncond_size_bins = cfg_ctx['uncond_size_bins']
+        uncond_bin_maps = cfg_ctx['uncond_bin_maps']
+        uncond_conditioning = cfg_ctx['uncond_conditioning']
+
+        if use_cfg_bin_maps:
+            # CFG for bin_maps input conditioning (seg_conditioned_input mode)
+            input_cond = torch.cat([noisy_images, bin_maps], dim=1)
+            input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
+            pred_cond = self._call_model(
+                model, input_cond, timesteps_batch, omega, mode_id, None
+            ).clone()  # Clone to prevent CUDA graph issues
+            pred_uncond = self._call_model(
+                model, input_uncond, timesteps_batch, omega, mode_id, None
+            )
+            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+        elif bin_maps is not None:
+            # bin_maps provided but no CFG - just concatenate and call model
+            input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
+            return self._call_model(
+                model, input_with_bin_maps, timesteps_batch, omega, mode_id, None
+            )
+        elif use_cfg_size_bins:
+            # CFG for size_bins conditioning (FiLM mode)
+            pred_cond = self._call_model(
+                model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+            ).clone()  # Clone to prevent CUDA graph issues
+            pred_uncond = self._call_model(
+                model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
+            )
+            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+        elif use_cfg_conditioning:
+            # CFG for image conditioning (seg mask)
+            uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
+            pred_cond = self._call_model(
+                model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+            ).clone()  # Clone to prevent CUDA graph issues
+            pred_uncond = self._call_model(
+                model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
+            )
+            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+        else:
+            return self._call_model(
+                model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+            )
+
     def _prepare_dual_model_input(
         self,
         noisy_pre: torch.Tensor,
@@ -253,14 +337,14 @@ class DiffusionStrategy(ABC):
                 conditioning=self._slice_channel(model_input, 2, 3),
                 is_dual=True,
             )
-        elif num_channels == 8:
-            # seg_conditioned_input: [noise(1), bin_maps(7)]
-            # Treat noise as the image and bin_maps as conditioning for CFG
+        elif num_channels > 3:
+            # Multi-channel conditioning: [noise (1 ch), conditioning (remaining)]
+            # Handles seg_conditioned_input with variable num_bins
             return ParsedModelInput(
                 noisy_images=self._slice_channel(model_input, 0, 1),
                 noisy_pre=None,
                 noisy_gd=None,
-                conditioning=self._slice_channel(model_input, 1, 8),
+                conditioning=self._slice_channel(model_input, 1, num_channels),
                 is_dual=False,
             )
         else:
@@ -690,15 +774,7 @@ class DDPMStrategy(DiffusionStrategy):
         is_dual = parsed.is_dual
 
         # Prepare CFG context (flags and unconditional tensors)
-        cfg_ctx = self._prepare_cfg_context(
-            cfg_scale, size_bins, bin_maps, conditioning, is_dual
-        )
-        use_cfg_size_bins = cfg_ctx['use_cfg_size_bins']
-        use_cfg_bin_maps = cfg_ctx['use_cfg_bin_maps']
-        use_cfg_conditioning = cfg_ctx['use_cfg_conditioning']
-        uncond_size_bins = cfg_ctx['uncond_size_bins']
-        uncond_bin_maps = cfg_ctx['uncond_bin_maps']
-        uncond_conditioning = cfg_ctx['uncond_conditioning']
+        cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, conditioning, is_dual)
 
         # Sampling loop
         timesteps = list(self.scheduler.timesteps)
@@ -710,6 +786,8 @@ class DDPMStrategy(DiffusionStrategy):
 
         for step_idx, t in timesteps_iter:
             # Compute current CFG scale (dynamic or constant)
+            # Note: For single-step (num_steps=1), progress=0 so cfg_scale_end is ignored
+            # and only cfg_scale (start value) is used. This is intentional.
             if use_dynamic_cfg:
                 progress = step_idx / max(total_steps - 1, 1)
                 current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
@@ -737,46 +815,10 @@ class DDPMStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg_bin_maps:
-                    # CFG for bin_maps input conditioning (seg_conditioned_input mode)
-                    input_cond = torch.cat([noisy_images, bin_maps], dim=1)
-                    input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
-                    noise_pred_cond = self._call_model(
-                        model, input_cond, timesteps_batch, omega, mode_id, None
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    noise_pred_uncond = self._call_model(
-                        model, input_uncond, timesteps_batch, omega, mode_id, None
-                    )
-                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
-                elif bin_maps is not None:
-                    # bin_maps provided but no CFG - just concatenate and call model
-                    input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
-                    noise_pred = self._call_model(
-                        model, input_with_bin_maps, timesteps_batch, omega, mode_id, None
-                    )
-                elif use_cfg_size_bins:
-                    # CFG for size_bins conditioning (FiLM mode)
-                    noise_pred_cond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    noise_pred_uncond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
-                    )
-                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
-                elif use_cfg_conditioning:
-                    # CFG for image conditioning (seg mask)
-                    uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
-                    noise_pred_cond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    noise_pred_uncond = self._call_model(
-                        model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    noise_pred = self._apply_cfg_guidance(noise_pred_uncond, noise_pred_cond, current_cfg)
-                else:
-                    noise_pred = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
+                noise_pred = self._compute_cfg_prediction(
+                    model, cfg_ctx, current_cfg, current_model_input, noisy_images,
+                    bin_maps, size_bins, timesteps_batch, omega, mode_id
+                )
 
                 noisy_images, _ = self.scheduler.step(noise_pred, t, noisy_images)
 
@@ -1035,15 +1077,7 @@ class RFlowStrategy(DiffusionStrategy):
         is_dual = parsed.is_dual
 
         # Prepare CFG context (flags and unconditional tensors)
-        cfg_ctx = self._prepare_cfg_context(
-            cfg_scale, size_bins, bin_maps, conditioning, is_dual
-        )
-        use_cfg_size_bins = cfg_ctx['use_cfg_size_bins']
-        use_cfg_bin_maps = cfg_ctx['use_cfg_bin_maps']
-        use_cfg_conditioning = cfg_ctx['use_cfg_conditioning']
-        uncond_size_bins = cfg_ctx['uncond_size_bins']
-        uncond_bin_maps = cfg_ctx['uncond_bin_maps']
-        uncond_conditioning = cfg_ctx['uncond_conditioning']
+        cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, conditioning, is_dual)
 
         # Setup scheduler
         self.scheduler.set_timesteps(
@@ -1065,6 +1099,8 @@ class RFlowStrategy(DiffusionStrategy):
 
         for step_idx, (t, next_t) in enumerate(timestep_pairs):
             # Compute current CFG scale (dynamic or constant)
+            # Note: For single-step (num_steps=1), progress=0 so cfg_scale_end is ignored
+            # and only cfg_scale (start value) is used. This is intentional.
             if use_dynamic_cfg:
                 # Linear interpolation: cfg_scale at step 0, cfg_scale_end at last step
                 progress = step_idx / max(total_steps - 1, 1)
@@ -1095,47 +1131,10 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                if use_cfg_bin_maps:
-                    # CFG for bin_maps input conditioning (seg_conditioned_input mode)
-                    # bin_maps are spatial maps concatenated with noise
-                    input_cond = torch.cat([noisy_images, bin_maps], dim=1)
-                    input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
-                    velocity_pred_cond = self._call_model(
-                        model, input_cond, timesteps_batch, omega, mode_id, None
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    velocity_pred_uncond = self._call_model(
-                        model, input_uncond, timesteps_batch, omega, mode_id, None
-                    )
-                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
-                elif bin_maps is not None:
-                    # bin_maps provided but no CFG - just concatenate and call model
-                    input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
-                    velocity_pred = self._call_model(
-                        model, input_with_bin_maps, timesteps_batch, omega, mode_id, None
-                    )
-                elif use_cfg_size_bins:
-                    # CFG for size_bins conditioning (FiLM mode)
-                    velocity_pred_cond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    velocity_pred_uncond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
-                    )
-                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
-                elif use_cfg_conditioning:
-                    # CFG for image conditioning (seg mask)
-                    uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
-                    velocity_pred_cond = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    ).clone()  # Clone to prevent CUDA graph issues
-                    velocity_pred_uncond = self._call_model(
-                        model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
-                    velocity_pred = self._apply_cfg_guidance(velocity_pred_uncond, velocity_pred_cond, current_cfg)
-                else:
-                    velocity_pred = self._call_model(
-                        model, current_model_input, timesteps_batch, omega, mode_id, size_bins
-                    )
+                velocity_pred = self._compute_cfg_prediction(
+                    model, cfg_ctx, current_cfg, current_model_input, noisy_images,
+                    bin_maps, size_bins, timesteps_batch, omega, mode_id
+                )
 
                 noisy_images, _ = self.scheduler.step(velocity_pred, t, noisy_images, next_timestep)
 

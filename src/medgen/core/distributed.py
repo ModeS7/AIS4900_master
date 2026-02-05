@@ -69,14 +69,29 @@ def setup_distributed() -> tuple[int, int, int, torch.device]:
         local_rank = int(os.environ.get('LOCAL_RANK', 0))
         world_size = int(os.environ.get('WORLD_SIZE', 1))
 
+    # Validate local_rank is within available GPUs
+    device_count = torch.cuda.device_count()
+    if local_rank >= device_count:
+        raise RuntimeError(
+            f"local_rank={local_rank} >= available GPUs={device_count}. "
+            f"Check SLURM/DDP configuration."
+        )
+
     torch.cuda.set_device(local_rank)
     device = torch.device(f'cuda:{local_rank}')
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        rank=rank,
-        world_size=world_size,
-        timeout=datetime.timedelta(minutes=DDP_TIMEOUT_MINUTES),
-    )
+
+    try:
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            rank=rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(minutes=DDP_TIMEOUT_MINUTES),
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to initialize distributed process group: {e}. "
+            f"rank={rank}, world_size={world_size}, local_rank={local_rank}"
+        ) from e
 
     return rank, local_rank, world_size, device

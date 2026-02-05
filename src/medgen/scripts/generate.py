@@ -579,6 +579,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                     if brain_retries >= max_brain_retries:
                         logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
                         brain_retries = 0  # Reset for next sample
+                        break  # Exit retry loop, proceed with this sample
                     else:
                         continue  # Retry with new seg mask
 

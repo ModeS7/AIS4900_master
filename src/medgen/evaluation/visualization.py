@@ -173,7 +173,9 @@ class ValidationVisualizer:
             Segmentation masks [N, 1, H, W], or tuple of (masks, images) if return_images=True.
         """
         # Check cache first for deterministic visualization across epochs
-        cache_key = (num_samples, seg_channel_idx, return_images)
+        # Include dataset identity to prevent cross-dataset cache pollution
+        dataset_id = id(train_dataset)
+        cache_key = (dataset_id, num_samples, seg_channel_idx, return_images)
         if cache_key in self._cached_samples:
             return self._cached_samples[cache_key]
 

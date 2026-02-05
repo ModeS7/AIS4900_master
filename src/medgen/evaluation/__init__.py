@@ -36,6 +36,7 @@ from .evaluation import (
     MetricsConfig,
     load_checkpoint_if_needed,
     save_test_results,
+    create_compression_test_evaluator,
 )
 
 from .visualization import ValidationVisualizer
@@ -52,6 +53,7 @@ __all__ = [
     'MetricsConfig',
     'load_checkpoint_if_needed',
     'save_test_results',
+    'create_compression_test_evaluator',
     # Visualization
     'ValidationVisualizer',
 ]

@@ -47,6 +47,9 @@ class SegmentationTrainer(BaseTrainer):
         self.spatial_dims = spatial_dims
         super().__init__(cfg)
 
+        # Best Dice tracking (Dice: higher is better, range [0, 1])
+        self.best_dice: float = 0.0
+
         # Extract segmentation-specific config
         self.in_channels: int = cfg.model.get('in_channels', 1)
         self.out_channels: int = cfg.model.get('out_channels', 1)
@@ -64,6 +67,7 @@ class SegmentationTrainer(BaseTrainer):
         # Early stopping
         self.patience: int = cfg.training.get('patience', 20)
         self._epochs_without_improvement: int = 0
+        self._stop_early_flag: bool = False
 
         # Precision config - bf16 AMP for both 2D and 3D
         # Requires PyTorch 2.10+ (2.9 had 3D conv regression)
@@ -209,7 +213,7 @@ class SegmentationTrainer(BaseTrainer):
             logger.warning(f"Checkpoint not found: {checkpoint_path}")
             return
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
 
         if 'model_state_dict' in checkpoint:
             self.model_raw.load_state_dict(checkpoint['model_state_dict'])
@@ -217,6 +221,10 @@ class SegmentationTrainer(BaseTrainer):
             self.model_raw.load_state_dict(checkpoint['state_dict'])
         else:
             self.model_raw.load_state_dict(checkpoint)
+
+        # Restore best_dice if present in checkpoint
+        if 'best_dice' in checkpoint:
+            self.best_dice = checkpoint['best_dice']
 
         logger.info(f"Loaded checkpoint: {checkpoint_path}")
 
@@ -251,9 +259,9 @@ class SegmentationTrainer(BaseTrainer):
 
         return TrainingStepResult(
             total_loss=total_loss.item(),
-            reconstruction_loss=breakdown['bce'],
-            perceptual_loss=breakdown['dice'],
-            regularization_loss=breakdown['boundary'],
+            reconstruction_loss=breakdown['bce'].item(),
+            perceptual_loss=breakdown['dice'].item(),
+            regularization_loss=breakdown['boundary'].item(),
         )
 
     def train_epoch(
@@ -348,8 +356,8 @@ class SegmentationTrainer(BaseTrainer):
                     total_loss, breakdown = self.loss_fn(logits.float(), targets.float())
 
                 val_losses['loss'] += total_loss.item()
-                val_losses['bce'] += breakdown['bce']
-                val_losses['dice_loss'] += breakdown['dice']
+                val_losses['bce'] += breakdown['bce'].item()
+                val_losses['dice_loss'] += breakdown['dice'].item()
                 n_batches += 1
 
                 # Update regional tracker
@@ -490,6 +498,7 @@ class SegmentationTrainer(BaseTrainer):
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.lr_scheduler.state_dict() if self.lr_scheduler else None,
             'best_loss': self.best_loss,
+            'best_dice': self.best_dice,
             'config': OmegaConf.to_container(self.cfg),
         }
 
@@ -517,9 +526,10 @@ class SegmentationTrainer(BaseTrainer):
         """Hook called at end of each epoch."""
         super()._on_epoch_end(epoch, avg_losses, val_metrics)
 
-        # Early stopping check
+        # Early stopping check (compare against best_dice, not best_loss)
         val_dice = val_metrics.get('dice', 0)
-        if val_dice > 0 and val_dice > self.best_loss:
+        if val_dice > 0 and val_dice > self.best_dice:
+            self.best_dice = val_dice
             self._epochs_without_improvement = 0
         else:
             self._epochs_without_improvement += 1
@@ -528,7 +538,15 @@ class SegmentationTrainer(BaseTrainer):
             logger.info(
                 f"Early stopping triggered: no improvement for {self.patience} epochs"
             )
-            # Note: actual stopping would need to be handled in train()
+            self._stop_early_flag = True
+
+    def _should_stop_early(self) -> bool:
+        """Check if training should stop due to lack of improvement.
+
+        Returns:
+            True if no improvement for `patience` epochs.
+        """
+        return self._stop_early_flag
 
     def _log_epoch_summary(
         self,

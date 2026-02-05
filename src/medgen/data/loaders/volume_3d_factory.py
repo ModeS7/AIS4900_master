@@ -19,14 +19,9 @@ from dataclasses import dataclass
 from torch.utils.data import DataLoader, Dataset
 
 from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
-from .volume_3d_datasets import (
-    DualVolume3DDataset,
-    MultiModality3DDataset,
-    SingleModality3DDatasetWithSeg,
-    SingleModality3DDatasetWithSegDropout,
-    Volume3DDataset,
-    build_3d_augmentation,
-)
+
+# NOTE: Imports from volume_3d are done inside functions to avoid circular import
+# volume_3d.py imports VolumeConfig from this module, and we need classes from there.
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +145,8 @@ def _create_single_dual_dataset(
     Returns:
         Appropriate dataset instance.
     """
+    from .volume_3d import DualVolume3DDataset, Volume3DDataset
+
     h = height if height is not None else vcfg.height
     w = width if width is not None else vcfg.width
 
@@ -182,7 +179,7 @@ def _create_multi_modality_dataset(
     width: int | None = None,
     augment: bool = False,
     seg_mode: bool = False,
-) -> MultiModality3DDataset:
+):
     """Create MultiModality3DDataset with config.
 
     Args:
@@ -193,6 +190,8 @@ def _create_multi_modality_dataset(
         augment: Whether to apply 3D augmentation.
         seg_mode: Whether this is for segmentation masks (binary).
     """
+    from .volume_3d import MultiModality3DDataset, build_3d_augmentation
+
     h = height if height is not None else vcfg.height
     w = width if width is not None else vcfg.width
 
@@ -478,6 +477,8 @@ def create_vae_3d_single_modality_validation_loader(
 
     vcfg = VolumeConfig.from_cfg(cfg)
 
+    from .volume_3d import SingleModality3DDatasetWithSeg
+
     try:
         dataset = SingleModality3DDatasetWithSeg(
             data_dir=val_dir,
@@ -518,6 +519,8 @@ def create_segmentation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
+    from .volume_3d import Volume3DDataset, build_3d_augmentation
+
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
     aug = build_3d_augmentation(seg_mode=True) if augment else None
@@ -553,6 +556,8 @@ def create_segmentation_validation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
+    from .volume_3d import Volume3DDataset
+
     val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
     if val_dir is None:
         return None
@@ -592,6 +597,8 @@ def create_single_modality_dataloader_with_seg(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
+    from .volume_3d import SingleModality3DDatasetWithSegDropout, build_3d_augmentation
+
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
     # CFG dropout for 3D - get from config (default 15%)
@@ -636,6 +643,8 @@ def create_single_modality_validation_dataloader_with_seg(
     Returns:
         Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
     """
+    from .volume_3d import SingleModality3DDatasetWithSegDropout
+
     val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
     if val_dir is None:
         return None

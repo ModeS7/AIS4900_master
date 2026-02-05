@@ -151,11 +151,24 @@ def dict_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     keys = batch[0].keys()
 
     for key in keys:
-        values = [sample[key] for sample in batch if sample.get(key) is not None]
+        # Collect values where key exists (even if value is None)
+        values = [sample[key] for sample in batch if key in sample]
 
         if not values:
+            continue  # Key absent from all samples
+
+        # Check if all values are None
+        if all(v is None for v in values):
             collated[key] = None
             continue
+
+        # Filter out None values for stacking
+        non_none_values = [v for v in values if v is not None]
+        if not non_none_values:
+            collated[key] = None
+            continue
+
+        values = non_none_values
 
         # Stack tensors, keep non-tensors as list
         if isinstance(values[0], torch.Tensor):

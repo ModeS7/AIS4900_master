@@ -53,6 +53,27 @@ def _validate_dict_keys(batch: dict[str, Any], required_keys: list[str], context
             raise KeyError(f"{context}: missing required key '{key}'")
 
 
+def _move_to_device(v: Any, device: torch.device) -> Any:
+    """Move value to device, handling various types.
+
+    Args:
+        v: Value to move (may be None, Tensor, MetaTensor, dict, or scalar).
+        device: Target device.
+
+    Returns:
+        Value on target device, or unchanged for scalars/None.
+    """
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return {k: _move_to_device(val, device) for k, val in v.items()}
+    if hasattr(v, 'as_tensor'):
+        return v.as_tensor().to(device, non_blocking=True)
+    if isinstance(v, torch.Tensor):
+        return v.to(device, non_blocking=True)
+    return v  # Scalars, strings unchanged
+
+
 def _to_device(batch: torch.Tensor | dict[str, Any] | tuple, device: torch.device) -> torch.Tensor | dict[str, Any] | tuple:
     """Convert batch tensor, dict, or tuple to device, handling MONAI MetaTensors.
 
@@ -71,27 +92,12 @@ def _to_device(batch: torch.Tensor | dict[str, Any] | tuple, device: torch.devic
     """
     if isinstance(batch, dict):
         # Handle dict batch format (e.g., from 3D dataloaders)
-        result = {}
-        for k, v in batch.items():
-            if v is None:
-                result[k] = None
-            elif isinstance(v, torch.Tensor):
-                if hasattr(v, 'as_tensor'):
-                    result[k] = v.as_tensor().to(device, non_blocking=True)
-                else:
-                    result[k] = v.to(device, non_blocking=True)
-            else:
-                result[k] = v  # Keep non-tensor values as-is (e.g., strings, ints)
-        return result
+        # Also handles nested dicts
+        return {k: _move_to_device(v, device) for k, v in batch.items()}
     elif isinstance(batch, tuple):
         # Handle tuple batch format (e.g., 3D seg mode: (seg_tensor, size_bins))
-        return tuple(
-            None if v is None
-            else v.as_tensor().to(device, non_blocking=True) if hasattr(v, 'as_tensor')
-            else v.to(device, non_blocking=True) if isinstance(v, torch.Tensor)
-            else v
-            for v in batch
-        )
+        # Also handles dicts within tuples
+        return tuple(_move_to_device(v, device) for v in batch)
     elif isinstance(batch, torch.Tensor):
         if hasattr(batch, 'as_tensor'):
             return batch.as_tensor().to(device)
@@ -132,7 +138,17 @@ def _prepare_latent_batch(
 
     Returns:
         Prepared batch dictionary.
+
+    Raises:
+        KeyError: If batch is missing required 'latent' key.
     """
+    # Validate required key
+    if 'latent' not in batch:
+        raise KeyError(
+            "_prepare_latent_batch requires 'latent' key in batch. "
+            "Ensure latent dataloader is configured correctly."
+        )
+
     latent = batch['latent'].to(device, non_blocking=True)
     seg_mask = batch.get('seg_mask')
 
