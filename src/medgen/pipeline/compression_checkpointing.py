@@ -52,7 +52,7 @@ def setup_checkpoint_manager(trainer: BaseCompressionTrainer) -> None:
         optimizer_d=trainer.optimizer_d if not trainer.disable_gan else None,
         scheduler_d=trainer.lr_scheduler_d if not trainer.disable_gan and not trainer.use_constant_lr else None,
         metric_name=trainer._get_best_metric_name(),
-        keep_last_n=trainer.cfg.training.get('keep_last_n_checkpoints', 0),
+        keep_last_n=trainer._training_config.keep_last_n_checkpoints,
         device=trainer.device,
     )
 
@@ -80,7 +80,7 @@ def get_checkpoint_extra_state(trainer: BaseCompressionTrainer) -> dict[str, Any
     # Add discriminator config if GAN is enabled
     if not trainer.disable_gan and trainer.discriminator_raw is not None:
         extra_state['disc_config'] = {
-            'in_channels': trainer.cfg.mode.get('in_channels', 1),
+            'in_channels': trainer.cfg.mode.in_channels,
             'channels': trainer.disc_num_channels,
             'num_layers_d': trainer.disc_num_layers,
         }
@@ -121,7 +121,7 @@ def save_checkpoint(
     if not trainer.disable_gan and trainer.discriminator_raw is not None:
         extra_state['discriminator_state_dict'] = trainer.discriminator_raw.state_dict()
         extra_state['disc_config'] = {
-            'in_channels': trainer.cfg.mode.get('in_channels', 1),
+            'in_channels': trainer.cfg.mode.in_channels,
             'channels': trainer.disc_num_channels,
             'num_layers_d': trainer.disc_num_layers,
         }
@@ -384,15 +384,15 @@ def create_test_evaluator(trainer: BaseCompressionTrainer):
 
     # Get modality name for single-modality suffix
     # Use empty string for seg_conditioned modes (no suffix needed)
-    mode_name = trainer.cfg.mode.get('name', 'bravo')
+    mode_name = trainer.cfg.mode.name
     if mode_name.startswith('seg_conditioned'):
         mode_name = ''
 
     # Get image keys for per-channel metrics
-    n_channels = trainer.cfg.mode.get('in_channels', 1)
+    n_channels = trainer.cfg.mode.in_channels
     image_keys = None
     if n_channels > 1:
-        image_keys = trainer.cfg.mode.get('image_keys', None)
+        image_keys = getattr(trainer.cfg.mode, 'image_keys', None)  # Optional: only used for multi-channel
 
     # Regional tracker factory (use seg-specific tracker for seg_mode)
     regional_factory = None

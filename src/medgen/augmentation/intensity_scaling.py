@@ -12,6 +12,8 @@ modality-specific features rather than just inverting a simple transform.
 import torch
 from torch import Tensor
 
+from medgen.core.spatial_utils import broadcast_to_spatial
+
 MODE_INTENSITY_SCALE = {
     0: 0.85,   # bravo  - darker
     1: 1.15,   # flair  - brighter
@@ -61,11 +63,7 @@ def apply_mode_intensity_scale(
         device=x.device,
         dtype=x.dtype,
     )
-    # Reshape for broadcasting
-    if spatial_dims == 2:
-        scales = scales.view(-1, 1, 1, 1)  # [B, 1, 1, 1]
-    else:
-        scales = scales.view(-1, 1, 1, 1, 1)  # [B, 1, 1, 1, 1]
+    scales = broadcast_to_spatial(scales, spatial_dims)
 
     return x * scales, scales
 

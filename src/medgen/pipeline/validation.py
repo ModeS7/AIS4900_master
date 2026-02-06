@@ -459,7 +459,7 @@ def compute_per_modality_validation(
             if trainer.log_regional_losses:
                 regional_tracker = RegionalMetricsTracker(
                     image_size=trainer.image_size,
-                    fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
+                    fov_mm=trainer._paths_config.fov_mm,
                     loss_fn='mse',
                     device=trainer.device,
                 )

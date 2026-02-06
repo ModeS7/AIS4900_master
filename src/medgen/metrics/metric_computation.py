@@ -72,13 +72,8 @@ class MetricAccumulator:
         Returns:
             Dict of computed metrics for this batch.
         """
-        from .quality import (
-            compute_lpips,
-            compute_lpips_3d,
-            compute_msssim,
-            compute_msssim_2d_slicewise,
-            compute_psnr,
-        )
+        from .dispatch import compute_lpips_dispatch, compute_msssim_dispatch
+        from .quality import compute_psnr
 
         batch_metrics = {}
 
@@ -89,19 +84,13 @@ class MetricAccumulator:
             batch_metrics['psnr'] = psnr
 
         if self.compute_msssim_flag:
-            if self.spatial_dims == 3:
-                msssim = compute_msssim_2d_slicewise(pred, target)
-            else:
-                msssim = compute_msssim(pred, target, spatial_dims=2)
+            msssim = compute_msssim_dispatch(pred, target, self.spatial_dims)
             self._msssim_sum += msssim
             self._msssim_count += 1
             batch_metrics['msssim'] = msssim
 
         if self.compute_lpips_flag:
-            if self.spatial_dims == 3:
-                lpips = compute_lpips_3d(pred, target, device=self.device)
-            else:
-                lpips = compute_lpips(pred, target)
+            lpips = compute_lpips_dispatch(pred, target, self.spatial_dims, device=self.device)
             self._lpips_sum += lpips
             self._lpips_count += 1
             batch_metrics['lpips'] = lpips

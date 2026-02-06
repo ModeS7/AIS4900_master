@@ -43,6 +43,12 @@ from .validation import (
     run_validation,
 )
 from .model_utils import wrap_model_for_training
+from .spatial_utils import (
+    broadcast_to_spatial,
+    extract_center_slice,
+    get_pooling_fn,
+    get_spatial_sum_dims,
+)
 
 __all__ = [
     # Defaults
@@ -99,4 +105,9 @@ __all__ = [
     'run_validation',
     # Model utilities
     'wrap_model_for_training',
+    # Spatial utilities
+    'broadcast_to_spatial',
+    'extract_center_slice',
+    'get_pooling_fn',
+    'get_spatial_sum_dims',
 ]

@@ -68,6 +68,11 @@ from .tracking import (
     create_worst_batch_figure_3d,
     CodebookTracker,
 )
+from .dispatch import (
+    compute_lpips_dispatch,
+    compute_msssim_dispatch,
+    create_lpips_fn,
+)
 from .brain_mask import (
     create_brain_mask,
     is_seg_inside_brain,
@@ -126,6 +131,10 @@ __all__ = [
     'create_worst_batch_figure',
     'create_worst_batch_figure_3d',
     'CodebookTracker',
+    # Dispatch utilities
+    'compute_lpips_dispatch',
+    'compute_msssim_dispatch',
+    'create_lpips_fn',
     # Brain mask validation
     'create_brain_mask',
     'is_seg_inside_brain',

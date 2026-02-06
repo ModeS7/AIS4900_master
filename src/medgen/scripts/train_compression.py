@@ -58,11 +58,7 @@ from medgen.data import (
     create_vae_test_dataloader,
     create_vae_validation_dataloader,
 )
-from medgen.data.loaders.seg_compression import (
-    create_seg_compression_dataloader,
-    create_seg_compression_test_dataloader,
-    create_seg_compression_validation_dataloader,
-)
+from medgen.data.loaders.builder_2d import create_seg_compression_loader
 from medgen.pipeline import DCAETrainer, VAETrainer, VQVAETrainer
 
 from .common import (
@@ -335,16 +331,15 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
 
     if is_seg_mode or mode == 'seg_compression':
         # Segmentation mask compression
-        train_loader, train_dataset = create_seg_compression_dataloader(
-            cfg=cfg,
-            image_size=cfg.get('dcae', cfg.get('model', {})).get('image_size', 256),
-            batch_size=cfg.training.batch_size,
-            augment=augment,
+        seg_image_size = cfg.get('dcae', cfg.get('model', {})).get('image_size', 256)
+        seg_batch_size = cfg.training.batch_size
+        train_loader, train_dataset = create_seg_compression_loader(
+            cfg=cfg, split='train',
+            image_size=seg_image_size, batch_size=seg_batch_size, augment=augment,
         )
-        val_result = create_seg_compression_validation_dataloader(
-            cfg=cfg,
-            image_size=cfg.get('dcae', cfg.get('model', {})).get('image_size', 256),
-            batch_size=cfg.training.batch_size,
+        val_result = create_seg_compression_loader(
+            cfg=cfg, split='val',
+            image_size=seg_image_size, batch_size=seg_batch_size,
         )
         val_loader = val_result[0] if val_result else None
     elif is_multi_modality:
@@ -413,10 +408,9 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
 
     # Test evaluation
     if is_seg_mode or mode == 'seg_compression':
-        test_result = create_seg_compression_test_dataloader(
-            cfg=cfg,
-            image_size=cfg.get('dcae', cfg.get('model', {})).get('image_size', 256),
-            batch_size=cfg.training.batch_size,
+        test_result = create_seg_compression_loader(
+            cfg=cfg, split='test',
+            image_size=seg_image_size, batch_size=seg_batch_size,
         )
     elif is_multi_modality:
         test_result = create_multi_modality_test_dataloader(

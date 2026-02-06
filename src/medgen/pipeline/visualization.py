@@ -83,9 +83,9 @@ def visualize_samples_3d(
         batch_size = 4
         noise = torch.randn(
             batch_size, 1,
-            trainer.cfg.volume.get('depth', 160),
-            trainer.cfg.volume.get('height', 256),
-            trainer.cfg.volume.get('width', 256),
+            trainer.volume_depth,
+            trainer.volume_height,
+            trainer.volume_width,
             device=trainer.device
         )
         model_input = noise

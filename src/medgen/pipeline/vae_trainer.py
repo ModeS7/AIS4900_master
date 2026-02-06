@@ -25,6 +25,7 @@ from monai.networks.nets import AutoencoderKL
 from medgen.core.defaults import VAE_DEFAULTS
 
 from .checkpointing import BaseCheckpointedModel
+from .compression_arch_config import VAEArchConfig
 from .compression_trainer import BaseCompressionTrainer
 
 logger = logging.getLogger(__name__)
@@ -106,14 +107,15 @@ class VAETrainer(BaseCompressionTrainer):
         super().__init__(cfg, spatial_dims=spatial_dims)
 
         # ─────────────────────────────────────────────────────────────────────
-        # VAE-specific config (dimension-dependent)
+        # VAE-specific config (dimension-dependent, typed)
         # ─────────────────────────────────────────────────────────────────────
-        vae_cfg = cfg.vae_3d if spatial_dims == 3 else cfg.vae
-        self.kl_weight: float = vae_cfg.get('kl_weight', 1e-6)
-        self.latent_channels: int = vae_cfg.latent_channels
-        self.vae_channels: tuple[int, ...] = tuple(vae_cfg.channels)
-        self.attention_levels: tuple[bool, ...] = tuple(vae_cfg.attention_levels)
-        self.num_res_blocks: int = vae_cfg.get('num_res_blocks', 2)
+        ac = VAEArchConfig.from_hydra(cfg, spatial_dims)
+        self._arch_config = ac
+        self.kl_weight: float = ac.kl_weight
+        self.latent_channels: int = ac.latent_channels
+        self.vae_channels: tuple[int, ...] = ac.channels
+        self.attention_levels: tuple[bool, ...] = ac.attention_levels
+        self.num_res_blocks: int = ac.num_res_blocks
 
         # Initialize unified metrics system
         self._init_unified_metrics('vae')
@@ -148,8 +150,8 @@ class VAETrainer(BaseCompressionTrainer):
         """Create fallback save directory for VAE."""
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        mode_name = self.cfg.mode.get('name', 'dual')
+        exp_name = self._training_config.name
+        mode_name = self.cfg.mode.name
 
         if self.spatial_dims == 3:
             run_name = f"{exp_name}{self.volume_height}x{self.volume_depth}_{timestamp}"
@@ -165,7 +167,7 @@ class VAETrainer(BaseCompressionTrainer):
             pretrained_checkpoint: Optional path to checkpoint for loading
                 pretrained weights.
         """
-        n_channels = self.cfg.mode.get('in_channels', 1)
+        n_channels = self.cfg.mode.in_channels
 
         # 3D-specific: disable nonlocal attention for memory
         if self.spatial_dims == 3:
@@ -320,7 +322,7 @@ class VAETrainer(BaseCompressionTrainer):
 
     def _get_model_config(self) -> dict[str, Any]:
         """Get VAE model configuration for checkpoint."""
-        n_channels = self.cfg.mode.get('in_channels', 1)
+        n_channels = self.cfg.mode.in_channels
         config = {
             'in_channels': n_channels,
             'out_channels': n_channels,
@@ -374,9 +376,9 @@ class VAETrainer(BaseCompressionTrainer):
 
         # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:
-            mode_name = self.cfg.mode.get('name', 'bravo')
+            mode_name = self.cfg.mode.name
             is_multi_modality = mode_name == 'multi_modality'
-            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            is_dual = self.cfg.mode.in_channels == 2 and mode_name == 'dual'
             is_seg_conditioned = mode_name.startswith('seg_conditioned')
             # No suffix for multi_modality, dual, or seg_conditioned modes
             if is_multi_modality or is_dual or is_seg_conditioned:

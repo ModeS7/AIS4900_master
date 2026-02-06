@@ -42,8 +42,14 @@ from medgen.diffusion import (
     RFlowStrategy,
 )
 
+from .base_config import StrategyConfig
 from .base_trainer import BaseTrainer
-from .results import TrainingStepResult
+from .diffusion_config import (
+    AugmentedDiffusionConfig,
+    DiffusionTrainerConfig,
+    TrainingTricksConfig,
+)
+from .results import BatchType, TrainingStepResult
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +71,17 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self.space = space if space is not None else PixelSpace()
 
         # ─────────────────────────────────────────────────────────────────────
+        # Extract typed configs
+        # ─────────────────────────────────────────────────────────────────────
+        sc = StrategyConfig.from_hydra(cfg)
+        self._strategy_config = sc
+
+        # ─────────────────────────────────────────────────────────────────────
         # Core diffusion config (shared between 2D and 3D)
         # ─────────────────────────────────────────────────────────────────────
-        self.strategy_name: str = cfg.strategy.name
+        self.strategy_name: str = sc.name
         self.mode_name: str = cfg.mode.name
-        self.num_timesteps: int = cfg.strategy.num_train_timesteps
+        self.num_timesteps: int = sc.num_train_timesteps
 
         # Initialize strategy (shared - both 2D and 3D use same strategies)
         self.strategy = self._create_strategy(self.strategy_name)
@@ -84,10 +96,13 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self._current_epoch: int = 0
 
         # ─────────────────────────────────────────────────────────────────────
-        # Min-SNR weighting (DDPM-specific, shared logic)
+        # Training tricks (from TrainingTricksConfig)
         # ─────────────────────────────────────────────────────────────────────
-        self.use_min_snr: bool = cfg.training.get('use_min_snr', False)
-        self.min_snr_gamma: float = cfg.training.get('min_snr_gamma', 5.0)
+        tricks = TrainingTricksConfig.from_hydra(cfg)
+        self._training_tricks = tricks
+
+        self.use_min_snr: bool = tricks.min_snr_enabled
+        self.min_snr_gamma: float = tricks.min_snr_gamma
         if self.use_min_snr and self.strategy_name == 'rflow':
             import warnings
             warnings.warn(
@@ -100,12 +115,13 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             self.use_min_snr = False
 
         # ─────────────────────────────────────────────────────────────────────
-        # DC-AE 1.5: Augmented Diffusion Training (shared config)
+        # DC-AE 1.5: Augmented Diffusion Training (from AugmentedDiffusionConfig)
         # ─────────────────────────────────────────────────────────────────────
-        aug_diff_cfg = cfg.training.get('augmented_diffusion', {})
-        self.augmented_diffusion_enabled: bool = aug_diff_cfg.get('enabled', False)
-        self.aug_diff_min_channels: int = aug_diff_cfg.get('min_channels', 16)
-        self.aug_diff_channel_step: int = aug_diff_cfg.get('channel_step', 4)
+        aug_diff = AugmentedDiffusionConfig.from_hydra(cfg)
+        self._aug_diff_config = aug_diff
+        self.augmented_diffusion_enabled: bool = aug_diff.enabled
+        self.aug_diff_min_channels: int = aug_diff.min_channels
+        self.aug_diff_channel_step: int = aug_diff.channel_step
         self._aug_diff_channel_steps: list[int] | None = None
 
         # ─────────────────────────────────────────────────────────────────────
@@ -115,14 +131,10 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self.conditioning_dropout_prob: float = cond_dropout_cfg.get('prob', 0.15)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Logging config (shared)
+        # Logging config (from BaseTrainingConfig, set by BaseTrainer)
         # ─────────────────────────────────────────────────────────────────────
         log_cfg = cfg.training.get('logging', {})
-        self.log_grad_norm: bool = log_cfg.get('grad_norm', True)
         self.log_timestep_losses: bool = log_cfg.get('timestep_losses', True)
-        self.log_regional_losses: bool = log_cfg.get('regional_losses', True)
-        self.log_flops: bool = log_cfg.get('flops', True)
-        self.verbose: bool = cfg.training.get('verbose', True)
 
         # ─────────────────────────────────────────────────────────────────────
         # Model components (set during setup_model)
@@ -157,7 +169,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         pass
 
     @abstractmethod
-    def train_step(self, batch: Any) -> TrainingStepResult:
+    def train_step(self, batch: BatchType) -> TrainingStepResult:
         """Execute single training step.
 
         Args:
@@ -219,21 +231,15 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Returns:
             Tuple of (min_t, max_t) or None if curriculum disabled.
         """
-        curriculum_cfg = self.cfg.training.get('curriculum', {})
-        if not curriculum_cfg.get('enabled', False):
+        tt = self._training_tricks
+        if not tt.curriculum_enabled:
             return None
 
-        warmup_epochs = curriculum_cfg.get('warmup_epochs', 50)
-        progress = min(1.0, epoch / warmup_epochs)
+        progress = min(1.0, epoch / tt.curriculum_warmup_epochs)
 
         # Linear interpolation from start to end range
-        min_t_start = curriculum_cfg.get('min_t_start', 0.0)
-        min_t_end = curriculum_cfg.get('min_t_end', 0.0)
-        max_t_start = curriculum_cfg.get('max_t_start', 0.3)
-        max_t_end = curriculum_cfg.get('max_t_end', 1.0)
-
-        min_t = min_t_start + progress * (min_t_end - min_t_start)
-        max_t = max_t_start + progress * (max_t_end - max_t_start)
+        min_t = tt.curriculum_min_t_start + progress * (tt.curriculum_min_t_end - tt.curriculum_min_t_start)
+        max_t = tt.curriculum_max_t_start + progress * (tt.curriculum_max_t_end - tt.curriculum_max_t_start)
 
         return (min_t, max_t)
 
@@ -248,11 +254,11 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Returns:
             Jittered timesteps (clamped to valid range).
         """
-        jitter_cfg = self.cfg.training.get('timestep_jitter', {})
-        if not jitter_cfg.get('enabled', False):
+        tt = self._training_tricks
+        if not tt.jitter_enabled:
             return timesteps
 
-        std = jitter_cfg.get('std', 0.05)
+        std = tt.jitter_std
 
         # Detect if input is discrete (int) or continuous (float)
         is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
@@ -287,11 +293,11 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Returns:
             Perturbed noise (renormalized to maintain variance).
         """
-        noise_aug_cfg = self.cfg.training.get('noise_augmentation', {})
-        if not noise_aug_cfg.get('enabled', False):
+        tt = self._training_tricks
+        if not tt.noise_augmentation_enabled:
             return noise
 
-        std = noise_aug_cfg.get('std', 0.1)
+        std = tt.noise_augmentation_std
 
         if isinstance(noise, dict):
             # Handle dual mode (2D only)
@@ -320,12 +326,12 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Args:
             step: Current global training step.
         """
-        grad_noise_cfg = self.cfg.training.get('gradient_noise', {})
-        if not grad_noise_cfg.get('enabled', False):
+        tt = self._training_tricks
+        if not tt.gradient_noise_enabled:
             return
 
-        sigma = grad_noise_cfg.get('sigma', 0.01)
-        decay = grad_noise_cfg.get('decay', 0.55)
+        sigma = tt.gradient_noise_sigma
+        decay = tt.gradient_noise_decay
 
         # Decay noise over training
         noise_scale = sigma / ((1 + step) ** decay)
@@ -350,8 +356,8 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             self.ema = EMA(
                 model,
                 beta=self.ema_decay,
-                update_after_step=ema_cfg.get('update_after_step', 0),
-                update_every=ema_cfg.get('update_every', 1),
+                update_after_step=int(ema_cfg.get('update_after_step', 0)),
+                update_every=int(ema_cfg.get('update_every', 1)),
             )
             if self.is_main_process:
                 logger.info(f"EMA enabled with decay={self.ema_decay}")
@@ -368,13 +374,13 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
     def _setup_feature_perturbation(self) -> None:
         """Setup forward hooks for feature perturbation."""
         self._feature_hooks = []
-        feat_cfg = self.cfg.training.get('feature_perturbation', {})
+        tt = self._training_tricks
 
-        if not feat_cfg.get('enabled', False):
+        if not tt.feature_perturbation_enabled:
             return
 
-        std = feat_cfg.get('std', 0.1)
-        layers = feat_cfg.get('layers', ['mid'])
+        std = tt.feature_perturbation_std
+        layers = tt.feature_perturbation_layers
 
         def make_hook(noise_std):
             def hook(module, input, output):
@@ -526,11 +532,11 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         Returns:
             Consistency loss (0 if disabled or skipped this batch).
         """
-        self_cond_cfg = self.cfg.training.get('self_conditioning', {})
-        if not self_cond_cfg.get('enabled', False):
+        tt = self._training_tricks
+        if not tt.self_cond_enabled:
             return torch.tensor(0.0, device=model_input.device)
 
-        prob = self_cond_cfg.get('prob', 0.5)
+        prob = tt.self_cond_prob
 
         # With probability (1-prob), skip self-conditioning
         if random.random() >= prob:
@@ -581,38 +587,31 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         if self.conditioning_dropout_prob > 0:
             logger.info(f"Conditioning dropout enabled: prob={self.conditioning_dropout_prob}")
 
-        # Log gradient noise
-        grad_noise_cfg = self.cfg.training.get('gradient_noise', {})
-        if grad_noise_cfg.get('enabled', False):
+        # Log training tricks from typed config
+        tt = self._training_tricks
+
+        if tt.gradient_noise_enabled:
             logger.info(
-                f"Gradient noise enabled: sigma={grad_noise_cfg.get('sigma', 0.01)}, "
-                f"decay={grad_noise_cfg.get('decay', 0.55)}"
+                f"Gradient noise enabled: sigma={tt.gradient_noise_sigma}, "
+                f"decay={tt.gradient_noise_decay}"
             )
 
-        # Log curriculum
-        curriculum_cfg = self.cfg.training.get('curriculum', {})
-        if curriculum_cfg.get('enabled', False):
+        if tt.curriculum_enabled:
             logger.info(
                 f"Curriculum timestep scheduling enabled: "
-                f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
-                f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
-                f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
+                f"warmup_epochs={tt.curriculum_warmup_epochs}, "
+                f"range [{tt.curriculum_min_t_start}-{tt.curriculum_max_t_start}] -> "
+                f"[{tt.curriculum_min_t_end}-{tt.curriculum_max_t_end}]"
             )
 
-        # Log timestep jitter
-        jitter_cfg = self.cfg.training.get('timestep_jitter', {})
-        if jitter_cfg.get('enabled', False):
-            logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
+        if tt.jitter_enabled:
+            logger.info(f"Timestep jitter enabled: std={tt.jitter_std}")
 
-        # Log noise augmentation
-        noise_aug_cfg = self.cfg.training.get('noise_augmentation', {})
-        if noise_aug_cfg.get('enabled', False):
-            logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
+        if tt.noise_augmentation_enabled:
+            logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation_std}")
 
-        # Log self-conditioning
-        self_cond_cfg = self.cfg.training.get('self_conditioning', {})
-        if self_cond_cfg.get('enabled', False):
-            logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
+        if tt.self_cond_enabled:
+            logger.info(f"Self-conditioning enabled: prob={tt.self_cond_prob}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Dimension Helper Methods (for unified 2D/3D training)
@@ -744,57 +743,83 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         """Create dimension-appropriate ScoreAug transform.
 
         Args:
-            cfg: ScoreAug configuration dict.
+            cfg: ScoreAug configuration dict (deprecated, use typed config).
 
         Returns:
             ScoreAugTransform instance, or None if disabled.
         """
-        if cfg is None:
-            cfg = self.cfg.training.get('score_aug', {})
-        if not cfg.get('enabled', False):
-            return None
+        from .diffusion_config import ScoreAugConfig
+
+        if cfg is not None:
+            # Legacy dict path
+            if not cfg.get('enabled', False):
+                return None
+            sa = cfg
+        elif hasattr(self, '_diffusion_config'):
+            sa = self._diffusion_config.score_aug
+            if not sa.enabled:
+                return None
+        else:
+            sa = ScoreAugConfig.from_hydra(self.cfg)
+            if not sa.enabled:
+                return None
 
         from medgen.augmentation import ScoreAugTransform
 
+        # Support both dict and ScoreAugConfig
+        def _get(key, default=None):
+            if isinstance(sa, dict):
+                return sa.get(key, default)
+            return getattr(sa, key, default)
+
         return ScoreAugTransform(
             spatial_dims=self.spatial_dims,
-            rotation=cfg.get('rotation', True),
-            flip=cfg.get('flip', True),
-            translation=cfg.get('translation', False),
-            cutout=cfg.get('cutout', False),
-            compose=cfg.get('compose', False),
-            compose_prob=cfg.get('compose_prob', 0.5),
-            v2_mode=cfg.get('v2_mode', False),
-            nondestructive_prob=cfg.get('nondestructive_prob', 0.5),
-            destructive_prob=cfg.get('destructive_prob', 0.5),
-            cutout_vs_pattern=cfg.get('cutout_vs_pattern', 0.5),
-            patterns_checkerboard=cfg.get('patterns_checkerboard', True),
-            patterns_grid_dropout=cfg.get('patterns_grid_dropout', True),
-            patterns_coarse_dropout=cfg.get('patterns_coarse_dropout', True),
-            patterns_patch_dropout=cfg.get('patterns_patch_dropout', True),
+            rotation=_get('rotation', True),
+            flip=_get('flip', True),
+            translation=_get('translation', False),
+            cutout=_get('cutout', False),
+            compose=_get('compose', False),
+            compose_prob=_get('compose_prob', 0.5),
+            v2_mode=_get('v2_mode', False),
+            nondestructive_prob=_get('nondestructive_prob', 0.5),
+            destructive_prob=_get('destructive_prob', 0.5),
+            cutout_vs_pattern=_get('cutout_vs_pattern', 0.5),
+            patterns_checkerboard=_get('patterns_checkerboard', True),
+            patterns_grid_dropout=_get('patterns_grid_dropout', True),
+            patterns_coarse_dropout=_get('patterns_coarse_dropout', True),
+            patterns_patch_dropout=_get('patterns_patch_dropout', True),
         )
 
     def _create_sda(self, cfg: dict | None = None):
         """Create dimension-appropriate SDA transform.
 
         Args:
-            cfg: SDA configuration dict.
+            cfg: SDA configuration dict (deprecated, use typed config).
 
         Returns:
             SDATransform instance, or None if disabled.
         """
-        if cfg is None:
-            cfg = self.cfg.training.get('sda', {})
-        if not cfg.get('enabled', False):
-            return None
+        from .diffusion_config import SDAConfig
+
+        if cfg is not None:
+            # Legacy dict path
+            if not cfg.get('enabled', False):
+                return None
+            prob = cfg.get('probability', 0.5)
+        elif hasattr(self, '_diffusion_config'):
+            sda = self._diffusion_config.sda
+            if not sda.enabled:
+                return None
+            prob = sda.prob
+        else:
+            sda = SDAConfig.from_hydra(self.cfg)
+            if not sda.enabled:
+                return None
+            prob = sda.prob
 
         if self.spatial_dims == 2:
             from medgen.augmentation import SDATransform
-            return SDATransform(
-                probability=cfg.get('probability', 0.5),
-            )
+            return SDATransform(probability=prob)
         else:
             from medgen.augmentation import SDATransform3D
-            return SDATransform3D(
-                probability=cfg.get('probability', 0.5),
-            )
+            return SDATransform3D(probability=prob)

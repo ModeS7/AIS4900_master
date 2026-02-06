@@ -41,11 +41,11 @@ def compute_self_conditioning_loss(
     Returns:
         Consistency loss (0 if disabled or skipped this batch).
     """
-    self_cond_cfg = trainer.cfg.training.get('self_conditioning', {})
-    if not self_cond_cfg.get('enabled', False):
+    tt = trainer._training_tricks
+    if not tt.self_cond_enabled:
         return torch.tensor(0.0, device=model_input.device)
 
-    prob = self_cond_cfg.get('prob', 0.5)
+    prob = tt.self_cond_prob
 
     # With probability (1-prob), skip self-conditioning
     if random.random() >= prob:

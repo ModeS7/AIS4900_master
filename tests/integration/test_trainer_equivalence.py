@@ -27,11 +27,17 @@ Usage:
 
 import json
 import logging
+import platform
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
 import torch
+
+
+def _is_wsl2() -> bool:
+    """Detect if running under WSL2."""
+    return "microsoft" in platform.release().lower()
 
 # Import baseline utilities
 import sys
@@ -125,6 +131,7 @@ class TestTrainer3DEquivalence:
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
     )
+    @pytest.mark.skipif(_is_wsl2(), reason="3D GPU training hangs on WSL2 (CUDA determinism issue)")
     def test_3d_bravo_matches_baseline(self):
         """3D bravo mode produces same results as baseline."""
         baseline = load_baseline("3d_bravo")
@@ -146,6 +153,7 @@ class TestTrainer3DEquivalence:
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
     )
+    @pytest.mark.skipif(_is_wsl2(), reason="3D GPU training hangs on WSL2 (CUDA determinism issue)")
     def test_3d_seg_matches_baseline(self):
         """3D seg mode produces same results as baseline."""
         baseline = load_baseline("3d_seg")
@@ -191,6 +199,7 @@ class TestTrainerDeterminism:
         not torch.cuda.is_available(),
         reason="CUDA required for deterministic comparison"
     )
+    @pytest.mark.skipif(_is_wsl2(), reason="3D GPU training hangs on WSL2 (CUDA determinism issue)")
     def test_3d_is_deterministic(self):
         """Two runs with same seed produce identical results."""
         run1 = capture_baseline(spatial_dims=3, num_steps=3, seed=42, mode='bravo')

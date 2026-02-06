@@ -33,8 +33,108 @@ from monai.transforms import (
 )
 from torch.utils.data import DataLoader, Dataset
 
-from .common import DistributedArgs, create_dataloader, get_validated_split_dir
-from .volume_3d_factory import VolumeConfig
+from dataclasses import dataclass
+
+from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
+
+
+@dataclass
+class VolumeConfig:
+    """Configuration extracted from Hydra config for 3D volume loading.
+
+    Supports separate train/val resolutions for efficient training:
+    - Train at lower resolution (e.g., 128x128) for speed
+    - Validate at full resolution (e.g., 256x256) for accurate metrics
+    """
+    height: int
+    width: int
+    pad_depth_to: int
+    pad_mode: str
+    slice_step: int
+    batch_size: int
+    load_seg: bool
+    image_keys: list
+    # Optional training resolution (defaults to height/width)
+    _train_height: int | None = None
+    _train_width: int | None = None
+    # DataLoader config (stored as DataLoaderConfig)
+    _loader_config: DataLoaderConfig = None
+
+    def __post_init__(self):
+        """Validate configuration values."""
+        if self.height <= 0:
+            raise ValueError(f"height must be > 0, got {self.height}")
+        if self.width <= 0:
+            raise ValueError(f"width must be > 0, got {self.width}")
+        if self.pad_depth_to <= 0:
+            raise ValueError(f"pad_depth_to must be > 0, got {self.pad_depth_to}")
+        if self.slice_step < 1:
+            raise ValueError(f"slice_step must be >= 1, got {self.slice_step}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+        valid_pad_modes = ('replicate', 'constant', 'reflect')
+        if self.pad_mode not in valid_pad_modes:
+            raise ValueError(f"pad_mode must be one of {valid_pad_modes}, got '{self.pad_mode}'")
+
+    @classmethod
+    def from_cfg(cls, cfg) -> 'VolumeConfig':
+        """Extract volume configuration from Hydra config object."""
+        logging_cfg = cfg.training.get('logging', {})
+        loader_config = DataLoaderConfig.from_cfg(cfg)
+
+        # Get optional train resolution (null in config becomes None)
+        train_height = cfg.volume.get('train_height', None)
+        train_width = cfg.volume.get('train_width', None)
+
+        return cls(
+            height=cfg.volume.height,
+            width=cfg.volume.width,
+            pad_depth_to=cfg.volume.pad_depth_to,
+            pad_mode=cfg.volume.get('pad_mode', 'replicate'),
+            slice_step=cfg.volume.get('slice_step', 1),
+            batch_size=cfg.training.batch_size,
+            load_seg=logging_cfg.get('regional_losses', False),
+            image_keys=cfg.mode.image_keys,
+            _train_height=train_height,
+            _train_width=train_width,
+            _loader_config=loader_config,
+        )
+
+    @property
+    def train_height(self) -> int:
+        """Height for training (may be lower resolution)."""
+        return self._train_height if self._train_height is not None else self.height
+
+    @property
+    def train_width(self) -> int:
+        """Width for training (may be lower resolution)."""
+        return self._train_width if self._train_width is not None else self.width
+
+    @property
+    def uses_reduced_train_resolution(self) -> bool:
+        """Whether training uses lower resolution than validation."""
+        return self.train_height != self.height or self.train_width != self.width
+
+    @property
+    def loader_config(self) -> DataLoaderConfig:
+        """Get DataLoaderConfig for create_dataloader()."""
+        return self._loader_config
+
+    @property
+    def num_workers(self) -> int:
+        return self._loader_config.num_workers
+
+    @property
+    def prefetch_factor(self) -> int | None:
+        return self._loader_config.prefetch_factor
+
+    @property
+    def pin_memory(self) -> bool:
+        return self._loader_config.pin_memory
+
+    @property
+    def persistent_workers(self) -> bool:
+        return self._loader_config.persistent_workers
 
 logger = logging.getLogger(__name__)
 
@@ -1171,3 +1271,100 @@ def create_segmentation_conditioned_validation_dataloader(
     """
     from .seg import create_seg_validation_dataloader
     return create_seg_validation_dataloader(cfg)
+
+
+# ==============================================================================
+# 2D Volume-level validation (moved from vae.py)
+# ==============================================================================
+
+
+def _validate_vae_modality(
+    data_dir: str,
+    modality: str,
+    context: str = "VAE",
+    raise_on_error: bool = False,
+) -> bool:
+    """Validate VAE modality requirements exist in directory."""
+    from medgen.data.dataset import validate_modality_exists
+    from .common import validate_mode_requirements
+    try:
+        if modality == 'dual':
+            validate_mode_requirements(
+                data_dir, 'dual', validate_modality_exists, require_seg=False
+            )
+        else:
+            validate_modality_exists(data_dir, modality)
+        return True
+    except ValueError as e:
+        if raise_on_error:
+            raise
+        logger.warning(f"{context} data for {modality} mode not available in {data_dir}: {e}")
+        return False
+
+
+def _try_load_seg_dataset(
+    data_dir: str,
+    transform,
+    context: str = "VAE",
+):
+    """Try to load segmentation dataset for regional metrics."""
+    from medgen.data.dataset import NiFTIDataset, validate_modality_exists
+    try:
+        validate_modality_exists(data_dir, 'seg')
+        return NiFTIDataset(data_dir=data_dir, mr_sequence='seg', transform=transform)
+    except ValueError as e:
+        logger.debug(f"Seg not available for {context} (regional metrics disabled): {e}")
+        return None
+
+
+def create_vae_volume_validation_dataloader(
+    cfg,
+    modality: str,
+    data_split: str = 'val',
+) -> tuple[DataLoader, Dataset] | None:
+    """Create dataloader that returns full 3D volumes for volume-level metrics.
+
+    Unlike slice-based loaders, this returns [C, H, W, D] volumes without
+    slice extraction. Used for computing 3D MS-SSIM on 2D model reconstructions.
+
+    Args:
+        cfg: Hydra configuration with paths, model, and training settings.
+        modality: Modality ('bravo', 'seg', 't1_pre', 't1_gd', 'dual').
+        data_split: Which split to load ('val' or 'test_new').
+
+    Returns:
+        Tuple of (DataLoader, volume_dataset) or None if directory doesn't exist.
+    """
+    from medgen.data.dataset import NiFTIDataset, build_standard_transform
+    from medgen.data.loaders.datasets import DualVolumeDataset, VolumeDataset
+
+    data_dir = get_validated_split_dir(cfg.paths.data_dir, data_split, logger)
+    if data_dir is None:
+        return None
+
+    image_size = cfg.model.image_size
+
+    if not _validate_vae_modality(data_dir, modality, "Volume"):
+        return None
+
+    transform = build_standard_transform(image_size)
+
+    if modality == 'dual':
+        t1_pre_dataset = NiFTIDataset(data_dir, 't1_pre', transform)
+        t1_gd_dataset = NiFTIDataset(data_dir, 't1_gd', transform)
+        seg_dataset = _try_load_seg_dataset(data_dir, transform, "dual volume validation")
+        volume_dataset = DualVolumeDataset(t1_pre_dataset, t1_gd_dataset, seg_dataset)
+    else:
+        image_dataset = NiFTIDataset(data_dir, modality, transform)
+        seg_dataset = _try_load_seg_dataset(data_dir, transform, "single volume validation")
+        volume_dataset = VolumeDataset(image_dataset, seg_dataset)
+
+    dataloader = DataLoader(
+        volume_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True,
+    )
+
+    return dataloader, volume_dataset

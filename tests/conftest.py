@@ -1,5 +1,9 @@
 """Pytest configuration and shared fixtures."""
 
+import os
+# Disable torch.compile in tests to avoid LPIPS compilation hangs
+os.environ.setdefault('MEDGEN_NO_COMPILE', '1')
+
 import pytest
 import torch
 from unittest.mock import Mock

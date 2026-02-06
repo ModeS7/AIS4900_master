@@ -292,43 +292,34 @@ def log_training_tricks_config(trainer: DiffusionTrainer) -> None:
     if not trainer.is_main_process:
         return
 
-    # Gradient noise
-    grad_noise_cfg = trainer.cfg.training.get('gradient_noise', {})
-    if grad_noise_cfg.get('enabled', False):
+    # Use typed TrainingTricksConfig from base class
+    tt = trainer._training_tricks
+
+    if tt.gradient_noise_enabled:
         logger.info(
             f"Gradient noise injection enabled: "
-            f"sigma={grad_noise_cfg.get('sigma', 0.01)}, decay={grad_noise_cfg.get('decay', 0.55)}"
+            f"sigma={tt.gradient_noise_sigma}, decay={tt.gradient_noise_decay}"
         )
 
-    # Curriculum
-    curriculum_cfg = trainer.cfg.training.get('curriculum', {})
-    if curriculum_cfg.get('enabled', False):
+    if tt.curriculum_enabled:
         logger.info(
             f"Curriculum timestep scheduling enabled: "
-            f"warmup_epochs={curriculum_cfg.get('warmup_epochs', 50)}, "
-            f"range [{curriculum_cfg.get('min_t_start', 0.0)}-{curriculum_cfg.get('max_t_start', 0.3)}] -> "
-            f"[{curriculum_cfg.get('min_t_end', 0.0)}-{curriculum_cfg.get('max_t_end', 1.0)}]"
+            f"warmup_epochs={tt.curriculum_warmup_epochs}, "
+            f"range [{tt.curriculum_min_t_start}-{tt.curriculum_max_t_start}] -> "
+            f"[{tt.curriculum_min_t_end}-{tt.curriculum_max_t_end}]"
         )
 
-    # Timestep jitter
-    jitter_cfg = trainer.cfg.training.get('timestep_jitter', {})
-    if jitter_cfg.get('enabled', False):
-        logger.info(f"Timestep jitter enabled: std={jitter_cfg.get('std', 0.05)}")
+    if tt.jitter_enabled:
+        logger.info(f"Timestep jitter enabled: std={tt.jitter_std}")
 
-    # Self-conditioning
-    self_cond_cfg = trainer.cfg.training.get('self_conditioning', {})
-    if self_cond_cfg.get('enabled', False):
-        logger.info(f"Self-conditioning enabled: prob={self_cond_cfg.get('prob', 0.5)}")
+    if tt.self_cond_enabled:
+        logger.info(f"Self-conditioning enabled: prob={tt.self_cond_prob}")
 
-    # Feature perturbation
-    feat_cfg = trainer.cfg.training.get('feature_perturbation', {})
-    if feat_cfg.get('enabled', False):
+    if tt.feature_perturbation_enabled:
         logger.info(
-            f"Feature perturbation enabled: std={feat_cfg.get('std', 0.1)}, "
-            f"layers={feat_cfg.get('layers', ['mid'])}"
+            f"Feature perturbation enabled: std={tt.feature_perturbation_std}, "
+            f"layers={tt.feature_perturbation_layers}"
         )
 
-    # Noise augmentation
-    noise_aug_cfg = trainer.cfg.training.get('noise_augmentation', {})
-    if noise_aug_cfg.get('enabled', False):
-        logger.info(f"Noise augmentation enabled: std={noise_aug_cfg.get('std', 0.1)}")
+    if tt.noise_augmentation_enabled:
+        logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation_std}")

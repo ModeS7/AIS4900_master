@@ -12,6 +12,8 @@ import torch.nn.functional as F
 from monai.losses import PerceptualLoss as MonaiPerceptualLoss
 from torch import Tensor, nn
 
+from medgen.core.spatial_utils import get_pooling_fn, get_spatial_sum_dims
+
 # Import LPIPS library (Zhang et al. 2018)
 try:
     import lpips
@@ -346,14 +348,10 @@ class SegmentationLoss(nn.Module):
         self.spatial_dims = spatial_dims
 
         # Set pooling function and sum dimensions based on spatial_dims
-        if spatial_dims == 2:
-            self._max_pool = F.max_pool2d
-            self._spatial_sum_dims = (2, 3)  # [B, C, H, W] -> sum over H, W
-        elif spatial_dims == 3:
-            self._max_pool = F.max_pool3d
-            self._spatial_sum_dims = (2, 3, 4)  # [B, C, D, H, W] -> sum over D, H, W
-        else:
+        if spatial_dims not in (2, 3):
             raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
+        self._max_pool = get_pooling_fn(spatial_dims, pool_type='max')
+        self._spatial_sum_dims = get_spatial_sum_dims(spatial_dims)
 
     def forward(
         self,

@@ -123,6 +123,7 @@ class TrainingTricksConfig:
     # Self-conditioning
     self_cond_enabled: bool = False
     self_cond_prob: float = 0.5
+    self_cond_consistency_weight: float = 0.1
 
     # Feature perturbation
     feature_perturbation_enabled: bool = False
@@ -139,7 +140,6 @@ class TrainingTricksConfig:
         grad_noise_cfg = cfg.training.get('gradient_noise', {})
         curriculum_cfg = cfg.training.get('curriculum', {})
         jitter_cfg = cfg.training.get('timestep_jitter', {})
-        min_snr_cfg = cfg.training.get('min_snr', {})
         self_cond_cfg = cfg.training.get('self_conditioning', {})
         feat_cfg = cfg.training.get('feature_perturbation', {})
         noise_aug_cfg = cfg.training.get('noise_augmentation', {})
@@ -160,11 +160,12 @@ class TrainingTricksConfig:
             jitter_enabled=jitter_cfg.get('enabled', False),
             jitter_std=jitter_cfg.get('std', 0.05),
             # Min-SNR
-            min_snr_enabled=min_snr_cfg.get('enabled', False),
-            min_snr_gamma=min_snr_cfg.get('gamma', 5.0),
+            min_snr_enabled=cfg.training.get('use_min_snr', False),
+            min_snr_gamma=cfg.training.get('min_snr_gamma', 5.0),
             # Self-conditioning
             self_cond_enabled=self_cond_cfg.get('enabled', False),
             self_cond_prob=self_cond_cfg.get('prob', 0.5),
+            self_cond_consistency_weight=self_cond_cfg.get('consistency_weight', 0.1),
             # Feature perturbation
             feature_perturbation_enabled=feat_cfg.get('enabled', False),
             feature_perturbation_std=feat_cfg.get('std', 0.1),
@@ -216,8 +217,8 @@ class SizeBinConfig:
         return cls(
             enabled=True,
             edges=edges,
-            num_bins=size_bin_cfg.get('num_bins', len(edges)),
-            max_count=size_bin_cfg.get('max_count_per_bin', 10),
+            num_bins=size_bin_cfg.get('num_bins', len(edges) - 1),
+            max_count=size_bin_cfg.get('max_count', 10),
             embed_dim=size_bin_cfg.get('embedding_dim', 32),
             fov_mm=float(size_bin_cfg.get('fov_mm', 240.0)),
         )
@@ -418,13 +419,13 @@ class DiffusionTrainerConfig:
             # Training
             learning_rate=cfg.training.learning_rate,
             batch_size=cfg.training.batch_size,
-            n_epochs=cfg.training.max_epochs,
+            n_epochs=cfg.training.get('epochs', None) or cfg.training.get('max_epochs', None),
             warmup_epochs=cfg.training.get('warmup_epochs', 5),
             weight_decay=weight_decay,
             perceptual_weight=perceptual_weight,
             use_fp32_loss=cfg.training.get('use_fp32_loss', True),
             use_ema=cfg.training.get('use_ema', True),
-            ema_decay=cfg.training.ema.get('decay', 0.9999),
+            ema_decay=cfg.training.get('ema', {}).get('decay', 0.9999),
             # Scheduler
             scheduler_type=cfg.training.get('scheduler', 'cosine'),
             eta_min=cfg.training.get('eta_min', 1e-6),
@@ -537,3 +538,23 @@ def validate_score_aug_config(
                 "mode_intensity_scaling is not supported in 3D diffusion "
                 "(requires mode_id from multi-modality mode). Ignoring."
             )
+
+
+@dataclass
+class LatentConfig:
+    """Latent diffusion configuration."""
+    enabled: bool = False
+    scale_factor: int = 1
+    compression_checkpoint: str | None = None
+    slicewise_encoding: bool = False
+
+    @classmethod
+    def from_hydra(cls, cfg: DictConfig) -> 'LatentConfig':
+        """Extract latent config from Hydra DictConfig."""
+        latent_cfg = cfg.get('latent', {})
+        return cls(
+            enabled=latent_cfg.get('enabled', False),
+            scale_factor=latent_cfg.get('scale_factor', 1),
+            compression_checkpoint=latent_cfg.get('compression_checkpoint', None),
+            slicewise_encoding=latent_cfg.get('slicewise_encoding', False),
+        )

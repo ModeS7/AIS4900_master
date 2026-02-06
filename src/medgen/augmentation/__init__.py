@@ -47,29 +47,34 @@ from .augmentation import (
     copy_paste_augmentation,
 )
 
-# ScoreAug (2D)
-from .score_aug import (
-    ScoreAugTransform,
-    ScoreAugModelWrapper,
-    OmegaTimeEmbed,
-    encode_omega,
+# ScoreAug - transforms (2D/3D)
+from .score_aug import ScoreAugTransform, ScoreAugTransform3D
+
+# ScoreAug - pattern masks
+from .score_aug_patterns import (
     generate_pattern_mask,
-    apply_mode_intensity_scale,
-    inverse_mode_intensity_scale,
+    generate_pattern_mask_3d,
     clear_pattern_cache,
-    OMEGA_ENCODING_DIM,
 )
 
-# ScoreAug (3D) - now unified in score_aug.py
-from .score_aug import (
-    ScoreAugTransform3D,
-    ScoreAugModelWrapper3D,
-    OmegaTimeEmbed3D,
+# ScoreAug - omega encoding & intensity scaling
+from .score_aug_omega import (
+    encode_omega,
     encode_omega_3d,
-    generate_pattern_mask_3d,
+    apply_mode_intensity_scale,
     apply_mode_intensity_scale_3d,
+    inverse_mode_intensity_scale,
     inverse_mode_intensity_scale_3d,
+    OMEGA_ENCODING_DIM,
     OMEGA_ENCODING_DIM_3D,
+)
+
+# ScoreAug - model wrappers
+from .score_aug_wrapper import (
+    OmegaTimeEmbed,
+    OmegaTimeEmbed3D,
+    ScoreAugModelWrapper,
+    ScoreAugModelWrapper3D,
 )
 
 # SDA - Shifted Data Augmentation (unified 2D/3D)

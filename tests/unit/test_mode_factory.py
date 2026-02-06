@@ -301,7 +301,7 @@ class TestPerModalityValLoaders:
         loaders = ModeFactory.create_per_modality_val_loaders(cfg, mode_config)
         assert loaders == {}
 
-    @patch('medgen.data.loaders.multi_diffusion.create_single_modality_diffusion_val_loader')
+    @patch('medgen.data.loaders.builder_2d.create_single_modality_diffusion_val_loader')
     def test_creates_loaders_for_multi_mode(self, mock_create):
         """MULTI mode should create per-modality loaders."""
         mock_loader = MagicMock()

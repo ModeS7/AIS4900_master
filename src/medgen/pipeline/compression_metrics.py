@@ -298,16 +298,16 @@ def compute_volume_3d_msssim(
         return None
 
     # Import here to avoid circular imports
-    from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
+    from medgen.data.loaders.volume_3d import create_vae_volume_validation_dataloader
 
     # Determine modality - use override if provided, else from config
     if modality_override is not None:
         modality = modality_override
     else:
-        mode_name = trainer.cfg.mode.get('name', 'bravo')
-        n_channels = trainer.cfg.mode.get('in_channels', 1)
+        mode_name = trainer.cfg.mode.name
+        n_channels = trainer.cfg.mode.in_channels
         # Use subdir for file loading (e.g., 'seg' instead of 'seg_conditioned')
-        subdir = trainer.cfg.mode.get('subdir', mode_name)
+        subdir = getattr(trainer.cfg.mode, 'subdir', mode_name)
         modality = 'dual' if n_channels > 1 else subdir
 
     # Create volume dataloader

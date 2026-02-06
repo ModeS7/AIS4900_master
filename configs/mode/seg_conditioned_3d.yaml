@@ -30,7 +30,7 @@ description: "3D segmentation volume generation conditioned on tumor size distri
 size_bins:
   edges: [0, 3, 6, 10, 15, 20, 30]  # mm boundaries
   num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
-  max_count_per_bin: 10  # Cap embedding vocabulary at 0-10
+  max_count: 10  # Cap embedding vocabulary at 0-10
   embedding_dim: 32  # Embedding dimension per bin
   # Voxel spacing for physical measurements [depth_mm, height_mm, width_mm]
   # Default: 1mm depth (typical brain MRI), pixel spacing for H/W

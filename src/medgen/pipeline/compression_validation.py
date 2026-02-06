@@ -45,13 +45,13 @@ def create_regional_tracker(
         from medgen.metrics import RegionalMetricsTracker3D
         return RegionalMetricsTracker3D(
             volume_size=(trainer.volume_height, trainer.volume_width, trainer.volume_depth),
-            fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
+            fov_mm=trainer._paths_config.fov_mm,
             loss_fn='l1',
             device=trainer.device,
         )
     return RegionalMetricsTracker(
         image_size=trainer.cfg.model.image_size,
-        fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
+        fov_mm=trainer._paths_config.fov_mm,
         loss_fn='l1',
         device=trainer.device,
     )
@@ -222,11 +222,11 @@ def capture_worst_batch(
         }
 
     # 2D: Handle dual mode with dict conversion
-    n_channels = trainer.cfg.mode.get('in_channels', 1)
+    n_channels = trainer.cfg.mode.in_channels
 
     # Convert to dict format for dual mode
     if n_channels == 2:
-        image_keys = trainer.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+        image_keys = trainer.cfg.mode.image_keys
         orig_dict = {
             image_keys[0]: images[:, 0:1].cpu(),
             image_keys[1]: images[:, 1:2].cpu(),
@@ -283,8 +283,8 @@ def log_validation_metrics_core(
         return
 
     # Get mode name for modality suffix
-    mode_name = trainer.cfg.mode.get('name', 'bravo')
-    n_channels = trainer.cfg.mode.get('in_channels', 1)
+    mode_name = trainer.cfg.mode.name
+    n_channels = trainer.cfg.mode.in_channels
     is_multi_modality = mode_name == 'multi_modality'
     is_dual = n_channels == 2 and mode_name == 'dual'
     is_seg_conditioned = mode_name.startswith('seg_conditioned')
@@ -355,9 +355,9 @@ def log_validation_metrics(
 
     # Log regional metrics with modality suffix for single-modality modes
     if regional_tracker is not None:
-        mode_name = trainer.cfg.mode.get('name', 'bravo')
+        mode_name = trainer.cfg.mode.name
         is_multi_modality = mode_name == 'multi_modality'
-        is_dual = trainer.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+        is_dual = trainer.cfg.mode.in_channels == 2 and mode_name == 'dual'
         is_seg_conditioned = mode_name.startswith('seg_conditioned')
         # No suffix for multi_modality, dual, or seg_conditioned modes
         if is_multi_modality or is_dual or is_seg_conditioned:
@@ -498,11 +498,11 @@ def compute_per_channel_validation(
         compute_psnr,
     )
 
-    n_channels = trainer.cfg.mode.get('in_channels', 1)
+    n_channels = trainer.cfg.mode.in_channels
     if n_channels != 2 or trainer.val_loader is None:
         return
 
-    image_keys = trainer.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+    image_keys = trainer.cfg.mode.image_keys
     model_to_use = trainer._get_model_for_eval()
     model_to_use.eval()
 
@@ -599,16 +599,16 @@ def compute_volume_3d_msssim(
         return None
 
     # Import here to avoid circular imports
-    from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
+    from medgen.data.loaders.volume_3d import create_vae_volume_validation_dataloader
 
     # Determine modality - use override if provided, else from config
     if modality_override is not None:
         modality = modality_override
     else:
-        mode_name = trainer.cfg.mode.get('name', 'bravo')
-        n_channels = trainer.cfg.mode.get('in_channels', 1)
+        mode_name = trainer.cfg.mode.name
+        n_channels = trainer.cfg.mode.in_channels
         # Use subdir for file loading (e.g., 'seg' instead of 'seg_conditioned')
-        subdir = trainer.cfg.mode.get('subdir', mode_name)
+        subdir = getattr(trainer.cfg.mode, 'subdir', mode_name)
         modality = 'dual' if n_channels > 1 else subdir
 
     # Create volume dataloader

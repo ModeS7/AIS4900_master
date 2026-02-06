@@ -17,11 +17,11 @@ from tqdm import tqdm
 
 from medgen.metrics import (
     RegionalMetricsTracker,
-    compute_lpips,
     compute_msssim,
     compute_psnr,
     create_reconstruction_figure,
 )
+from medgen.metrics.dispatch import compute_lpips_dispatch, compute_msssim_dispatch
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -108,7 +108,7 @@ def evaluate_test_set(
     if trainer.log_regional_losses:
         regional_tracker = RegionalMetricsTracker(
             image_size=trainer.image_size,
-            fov_mm=trainer.cfg.paths.get('fov_mm', 240.0),
+            fov_mm=trainer._paths_config.fov_mm,
             loss_fn='mse',
             device=trainer.device,
         )
@@ -186,20 +186,20 @@ def evaluate_test_set(
 
             if isinstance(metrics_pred, dict):
                 keys = list(metrics_pred.keys())
-                msssim_val = (compute_msssim(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
-                              compute_msssim(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
+                msssim_val = (compute_msssim_dispatch(metrics_pred[keys[0]], metrics_gt[keys[0]], trainer.spatial_dims) +
+                              compute_msssim_dispatch(metrics_pred[keys[1]], metrics_gt[keys[1]], trainer.spatial_dims)) / 2
                 psnr_val = (compute_psnr(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
                             compute_psnr(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
                 if trainer.log_lpips:
-                    lpips_val = (compute_lpips(metrics_pred[keys[0]], metrics_gt[keys[0]], trainer.device) +
-                                 compute_lpips(metrics_pred[keys[1]], metrics_gt[keys[1]], trainer.device)) / 2
+                    lpips_val = (compute_lpips_dispatch(metrics_pred[keys[0]], metrics_gt[keys[0]], trainer.spatial_dims, trainer.device) +
+                                 compute_lpips_dispatch(metrics_pred[keys[1]], metrics_gt[keys[1]], trainer.spatial_dims, trainer.device)) / 2
                 else:
                     lpips_val = 0.0
             else:
-                msssim_val = compute_msssim(metrics_pred, metrics_gt)
+                msssim_val = compute_msssim_dispatch(metrics_pred, metrics_gt, trainer.spatial_dims)
                 psnr_val = compute_psnr(metrics_pred, metrics_gt)
                 if trainer.log_lpips:
-                    lpips_val = compute_lpips(metrics_pred, metrics_gt, trainer.device)
+                    lpips_val = compute_lpips_dispatch(metrics_pred, metrics_gt, trainer.spatial_dims, trainer.device)
                 else:
                     lpips_val = 0.0
 
@@ -390,20 +390,20 @@ def compute_volume_3d_msssim(
         return None
 
     # For 3D diffusion models, use native 3D volume processing
-    spatial_dims = trainer.cfg.model.get('spatial_dims', 2)
+    spatial_dims = trainer.spatial_dims
     if spatial_dims == 3:
         return compute_volume_3d_msssim_native(trainer, epoch, data_split, modality_override)
 
     # Import here to avoid circular imports
-    from medgen.data.loaders.vae import create_vae_volume_validation_dataloader
+    from medgen.data.loaders.volume_3d import create_vae_volume_validation_dataloader
 
     # Determine modality - use override if provided, else from config
     if modality_override is not None:
         modality = modality_override
     else:
         # Use out_channels to determine volume channels (excludes conditioning)
-        mode_name = trainer.cfg.mode.get('name', 'bravo')
-        out_channels = trainer.cfg.mode.get('out_channels', 1)
+        mode_name = trainer.mode_name
+        out_channels = trainer._mode_config.out_channels
         modality = 'dual' if out_channels > 1 else mode_name
         # Map mode names to actual file modalities
         if modality in ('seg_conditioned', 'seg_conditioned_input'):
@@ -547,7 +547,7 @@ def compute_volume_3d_msssim_native(
         Average 3D MS-SSIM across all volumes, or None if unavailable.
     """
     # Skip for multi_modality mode
-    mode_name = trainer.cfg.mode.get('name', 'bravo')
+    mode_name = trainer.mode_name
     if mode_name == 'multi_modality':
         return None
 
@@ -559,7 +559,7 @@ def compute_volume_3d_msssim_native(
         if modality_override is not None:
             modality = modality_override
         else:
-            out_channels = trainer.cfg.mode.get('out_channels', 1)
+            out_channels = trainer._mode_config.out_channels
             modality = 'dual' if out_channels > 1 else mode_name
             if modality in ('seg_conditioned', 'seg_conditioned_input'):
                 modality = 'seg'

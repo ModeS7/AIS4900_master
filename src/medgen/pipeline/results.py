@@ -4,7 +4,15 @@ Provides a standardized return type for train_step() across all trainers,
 enabling generic training loop handling and consistent logging.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+from torch import Tensor
+
+# Type alias for batch inputs accepted by train_step() and prepare_batch().
+# Covers all formats: dict batches, tuple/list batches, and raw tensors.
+BatchType = dict[str, Tensor] | tuple[Tensor, ...] | Tensor
 
 
 @dataclass

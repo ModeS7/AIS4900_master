@@ -380,11 +380,8 @@ class UnifiedMetrics:
         """
         if not self.uses_image_quality:
             return 0.0
-        from .quality import compute_lpips, compute_lpips_3d
-        if self.spatial_dims == 3:
-            val = compute_lpips_3d(pred, gt, device=self.device)
-        else:
-            val = compute_lpips(pred, gt)
+        from .dispatch import compute_lpips_dispatch
+        val = compute_lpips_dispatch(pred, gt, self.spatial_dims, device=self.device)
         self._val_lpips_sum += val
         self._val_lpips_count += 1
         return val
@@ -404,11 +401,8 @@ class UnifiedMetrics:
         """
         if not self.uses_image_quality:
             return 0.0
-        from .quality import compute_msssim, compute_msssim_2d_slicewise
-        if self.spatial_dims == 3:
-            val = compute_msssim_2d_slicewise(pred, gt)
-        else:
-            val = compute_msssim(pred, gt, spatial_dims=2)
+        from .dispatch import compute_msssim_dispatch
+        val = compute_msssim_dispatch(pred, gt, self.spatial_dims)
         self._val_msssim_sum += val
         self._val_msssim_count += 1
         return val

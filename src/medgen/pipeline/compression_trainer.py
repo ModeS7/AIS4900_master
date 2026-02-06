@@ -13,6 +13,8 @@ All compression trainers share:
 - Worst batch tracking and visualization
 - Regional metrics (tumor vs background)
 """
+from __future__ import annotations
+
 import logging
 import os
 import time
@@ -21,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from medgen.evaluation import ValidationRunner
+    from .results import BatchType
 
 import matplotlib
 
@@ -46,11 +49,6 @@ from medgen.metrics import (
     RegionalMetricsTracker,
     SimpleLossAccumulator,
     UnifiedMetrics,
-    compute_lpips,
-    compute_lpips_3d,
-    compute_msssim,
-    compute_msssim_2d_slicewise,
-    compute_psnr,
     create_worst_batch_figure,
 )
 
@@ -178,6 +176,11 @@ class BaseCompressionTrainer(BaseTrainer):
         # Initialize compression-specific trackers
         # ─────────────────────────────────────────────────────────────────────
         self._grad_norm_tracker_d = GradientNormTracker()
+        self._last_epoch_batch_count: int = 0
+
+        # Seg mode defaults (overridden by subclasses that support seg_mode)
+        self.seg_mode: bool = False
+        self.seg_loss_fn = None
 
         # ─────────────────────────────────────────────────────────────────────
         # Model placeholders (set in setup_model)
@@ -359,10 +362,8 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             2D tensor [B, C, H, W].
         """
-        if self.spatial_dims == 2:
-            return tensor
-        center_idx = tensor.shape[2] // 2
-        return tensor[:, :, center_idx, :, :]
+        from medgen.core.spatial_utils import extract_center_slice
+        return extract_center_slice(tensor, self.spatial_dims)
 
     def _create_lpips_fn(self):
         """Create LPIPS function appropriate for spatial dimensions.
@@ -370,9 +371,8 @@ class BaseCompressionTrainer(BaseTrainer):
         Returns:
             compute_lpips for 2D, compute_lpips_3d for 3D.
         """
-        if self.spatial_dims == 2:
-            return compute_lpips
-        return compute_lpips_3d
+        from medgen.metrics.dispatch import create_lpips_fn
+        return create_lpips_fn(self.spatial_dims)
 
     def _create_worst_batch_figure_fn(self):
         """Create worst batch figure function appropriate for spatial dimensions.
@@ -398,7 +398,7 @@ class BaseCompressionTrainer(BaseTrainer):
         Args:
             trainer_type: One of 'vae', 'vqvae', 'dcae'.
         """
-        spatial_dims = getattr(self, 'spatial_dims', 2)
+        spatial_dims = self.spatial_dims
         mode_name = getattr(self, 'mode_name', 'multi_modality')
 
         # Determine modality for TensorBoard suffix
@@ -409,7 +409,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
         # Get image size and fov_mm for regional tracker
         image_size = getattr(self.cfg.model, 'image_size', 256)
-        fov_mm = self.cfg.paths.get('fov_mm', 240.0)
+        fov_mm = self._paths_config.fov_mm
 
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
@@ -437,8 +437,7 @@ class BaseCompressionTrainer(BaseTrainer):
         if not hasattr(self, '_unified_metrics') or self._unified_metrics is None:
             return
 
-        seg_mode = getattr(self, 'seg_mode', False)
-        if seg_mode:
+        if self.seg_mode:
             # Use dedicated seg training logging
             self._unified_metrics.log_seg_training(avg_losses, epoch)
         else:
@@ -565,7 +564,7 @@ class BaseCompressionTrainer(BaseTrainer):
 
         # Default: RadImageNet perceptual loss
         logger.info("Using RadImageNet ResNet50 perceptual loss")
-        cache_dir = getattr(self.cfg.paths, 'cache_dir', None)
+        cache_dir = self._paths_config.cache_dir
         return PerceptualLoss(
             spatial_dims=spatial_dims,
             network_type="radimagenet_resnet50",
@@ -747,7 +746,7 @@ class BaseCompressionTrainer(BaseTrainer):
     # Train step template (shared across VAE, VQ-VAE, DC-AE)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def train_step(self, batch: Any) -> TrainingStepResult:
+    def train_step(self, batch: BatchType) -> TrainingStepResult:
         """Template train step for compression trainers."""
         from .compression_training import compression_train_step
         return compression_train_step(self, batch)
@@ -916,11 +915,11 @@ class BaseCompressionTrainer(BaseTrainer):
         self._log_flops(epoch)
 
         # Per-modality validation (multi_modality mode, skip for seg_mode)
-        if self.per_modality_val_loaders and not getattr(self, 'seg_mode', False):
+        if self.per_modality_val_loaders and not self.seg_mode:
             self._compute_per_modality_validation(epoch)
 
         # Per-channel validation (dual mode, skip for seg_mode)
-        if not getattr(self, 'seg_mode', False):
+        if not self.seg_mode:
             self._compute_per_channel_validation(epoch)
 
     # ─────────────────────────────────────────────────────────────────────────

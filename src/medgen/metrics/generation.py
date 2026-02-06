@@ -32,7 +32,6 @@ Reference:
 - FID: https://arxiv.org/abs/1706.08500 (Fréchet distance on Inception features)
 """
 import logging
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,19 +40,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import autocast
 from torch.utils.data import DataLoader, Dataset
 
 from medgen.core.dict_utils import get_with_fallbacks
-from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES, compute_size_bins
 
 from .feature_extractors import BiomedCLIPFeatures, ResNet50Features
-from .quality import (
-    compute_lpips_diversity,
-    compute_lpips_diversity_3d,
-    compute_msssim_diversity,
-    compute_msssim_diversity_3d,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +86,79 @@ class GenerationMetricsConfig:
     # Size bin adherence config (for seg_conditioned mode)
     size_bin_edges: list[float] | None = None  # Bin edges in mm (default from loader)
     size_bin_fov_mm: float = 240.0  # Field of view in mm
+
+    @classmethod
+    def from_hydra(cls, cfg, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
+        """Extract generation metrics config from Hydra DictConfig.
+
+        Handles 3D sample capping, feature_batch_size derivation,
+        cache_dir resolution, and size bin config for seg_conditioned mode.
+
+        Args:
+            cfg: Hydra configuration object.
+            spatial_dims: Spatial dimensions (2 or 3).
+
+        Returns:
+            GenerationMetricsConfig (enabled=False if not configured).
+        """
+        gen_cfg = cfg.training.get('generation_metrics', {})
+        if not gen_cfg.get('enabled', False):
+            return cls(enabled=False)
+
+        # Feature batch size: default to training batch_size (for torch.compile)
+        batch_size = cfg.training.get('batch_size', 16)
+        feature_batch_size = gen_cfg.get('feature_batch_size', None)
+        if feature_batch_size is None:
+            if spatial_dims == 3:
+                feature_batch_size = max(32, batch_size * 16)
+            else:
+                feature_batch_size = batch_size
+
+        # Cache dir: use paths.cache_dir if available
+        cache_dir = gen_cfg.get('cache_dir', None)
+        if cache_dir is None:
+            base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
+            cache_dir = f"{base_cache}/generation_features"
+
+        # 3D volumes: cap sample counts to avoid OOM
+        if spatial_dims == 3:
+            samples_per_epoch = min(gen_cfg.get('samples_per_epoch', 1), 2)
+            samples_extended = min(gen_cfg.get('samples_extended', 4), 4)
+            samples_test = min(gen_cfg.get('samples_test', 10), 10)
+        else:
+            samples_per_epoch = gen_cfg.get('samples_per_epoch', 100)
+            samples_extended = gen_cfg.get('samples_extended', 500)
+            samples_test = gen_cfg.get('samples_test', 1000)
+
+        # Original depth for 3D (exclude padded slices from metrics)
+        original_depth = None
+        if spatial_dims == 3:
+            original_depth = cfg.volume.get('original_depth', None)
+
+        # Size bin config for seg_conditioned mode
+        mode_name = cfg.mode.name
+        size_bin_edges = None
+        size_bin_fov_mm = 240.0
+        if mode_name == 'seg_conditioned':
+            size_bin_cfg = cfg.mode.get('size_bins', {})
+            size_bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
+            size_bin_fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
+
+        return cls(
+            enabled=True,
+            samples_per_epoch=samples_per_epoch,
+            samples_extended=samples_extended,
+            samples_test=samples_test,
+            steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
+            steps_extended=gen_cfg.get('steps_extended', 25),
+            steps_test=gen_cfg.get('steps_test', 50),
+            cache_dir=cache_dir,
+            feature_batch_size=feature_batch_size,
+            cfg_scale=gen_cfg.get('cfg_scale', 2.0),
+            original_depth=original_depth,
+            size_bin_edges=size_bin_edges,
+            size_bin_fov_mm=size_bin_fov_mm,
+        )
 
 
 # =============================================================================
@@ -370,6 +434,8 @@ class ReferenceFeatureCache:
         Returns:
             Feature tensor [N, D].
         """
+        from .generation_3d import extract_features_3d
+
         all_features = []
         sample_count = 0
 
@@ -497,6 +563,24 @@ class ReferenceFeatureCache:
 # Main Generation Metrics Class
 # =============================================================================
 
+# Import helper functions for delegation
+from .generation_computation import (
+    compute_diversity_metrics,
+    compute_epoch_metrics,
+    compute_extended_metrics,
+    compute_metrics_against_reference,
+    compute_metrics_from_samples,
+    compute_size_bin_adherence,
+    compute_test_metrics,
+    extract_features_batched,
+)
+from .generation_sampling import (
+    generate_and_extract_features_3d_streaming,
+    generate_samples,
+    set_fixed_conditioning,
+)
+
+
 class GenerationMetrics:
     """Tracks generation quality during diffusion training.
 
@@ -560,1192 +644,54 @@ class GenerationMetrics:
         if self.is_seg_mode:
             logger.info(f"GenerationMetrics: {mode_name} mode - will threshold output at 0.5")
 
-    def set_fixed_conditioning(
-        self,
-        train_dataset: Dataset,
-        num_masks: int = 500,
-        seg_channel_idx: int = 1,
-    ) -> None:
-        """Load fixed conditioning masks from training dataset.
+    # --- Thin wrappers delegating to helper modules ---
 
-        Uses the same masks every epoch for reproducible comparisons.
+    def set_fixed_conditioning(self, train_dataset: Dataset, num_masks: int = 500, seg_channel_idx: int = 1) -> None:
+        return set_fixed_conditioning(self, train_dataset, num_masks, seg_channel_idx)
 
-        Args:
-            train_dataset: Training dataset to sample from.
-            num_masks: Number of masks to sample.
-            seg_channel_idx: Channel index for segmentation mask.
-        """
-        logger.info(f"Sampling {num_masks} fixed conditioning masks...")
-
-        masks = []
-        gt_images = []
-        size_bins_list = []  # For seg_conditioned mode
-        bin_maps_list = []  # For seg_conditioned_input mode
-        attempts = 0
-        max_attempts = len(train_dataset)
-        samples_without_seg = 0  # Track samples missing seg data
-
-        # Use fixed seed for reproducibility
-        rng = torch.Generator()
-        rng.manual_seed(42)
-
-        while len(masks) < num_masks and attempts < max_attempts:
-            idx = int(torch.randint(0, len(train_dataset), (1,), generator=rng).item())
-            data = train_dataset[idx]
-
-            # Handle dict, tuple, or tensor format
-            is_seg_conditioned = False  # Track if this sample uses size_bins conditioning
-            is_seg_conditioned_input = False  # Track if this sample uses input channel conditioning
-            current_size_bins = None
-            current_bin_maps = None
-            if isinstance(data, dict):
-                # Dict format - check multiple key variants
-                # Latent dataset: {'latent': ..., 'seg_mask': ..., 'latent_seg': ...}
-                # Pixel dataset: {'image': ..., 'seg': ...}
-
-                # Check if this is a latent dataset (has 'latent' key)
-                is_latent_data = 'latent' in data
-
-                if is_latent_data:
-                    # Latent dataset: seg_mask is pixel-space, latent is compressed
-                    # Can't concatenate - use seg_mask directly for conditioning
-                    seg_data = data.get('seg_mask')
-                    if seg_data is None:
-                        samples_without_seg += 1
-                        attempts += 1
-                        continue
-                    if isinstance(seg_data, np.ndarray):
-                        seg_data = torch.from_numpy(seg_data).float()
-                    tensor = seg_data  # Use seg_mask directly
-                    local_seg_idx = 0  # Seg is at channel 0
-                else:
-                    # Pixel dataset: image and seg at same resolution
-                    image = get_with_fallbacks(data, 'image', 'images')
-                    seg_data = get_with_fallbacks(data, 'seg', 'mask', 'labels')
-
-                    if image is None or seg_data is None:
-                        samples_without_seg += 1
-                        attempts += 1
-                        continue
-                    # Convert to tensors
-                    if isinstance(image, np.ndarray):
-                        image = torch.from_numpy(image).float()
-                    if isinstance(seg_data, np.ndarray):
-                        seg_data = torch.from_numpy(seg_data).float()
-                    tensor = torch.cat([image, seg_data], dim=0)
-                    local_seg_idx = image.shape[0]  # seg follows image channels
-            elif isinstance(data, tuple):
-                # Handle 2-element (images, seg) or 3-element (seg, size_bins, bin_maps) tuples
-                if len(data) == 2:
-                    first, second = data
-                    bin_maps = None
-                elif len(data) == 3:
-                    first, second, bin_maps = data
-                else:
-                    raise ValueError(f"Unexpected tuple length: {len(data)}")
-
-                # Convert first element to tensor
-                if isinstance(first, torch.Tensor):
-                    first = first.float()
-                elif isinstance(first, np.ndarray):
-                    first = torch.from_numpy(first).float()
-                else:
-                    first = torch.tensor(first).float()
-                # Convert second element to tensor
-                if isinstance(second, torch.Tensor):
-                    second = second.float()
-                elif isinstance(second, np.ndarray):
-                    second = torch.from_numpy(second).float()
-                else:
-                    second = torch.tensor(second).float()
-
-                # seg_conditioned_input mode: (seg, size_bins, bin_maps)
-                if bin_maps is not None and second.dim() == 1:
-                    is_seg_conditioned_input = True
-                    tensor = first
-                    current_size_bins = second.long()
-                    current_bin_maps = bin_maps.float() if isinstance(bin_maps, torch.Tensor) else torch.from_numpy(bin_maps).float()
-                    local_seg_idx = 0
-                # Check if this is seg_conditioned mode: (seg, size_bins)
-                # size_bins is 1D, seg is 3D [C, H, W] or 4D [C, D, H, W]
-                elif second.dim() == 1 and first.dim() >= 3:
-                    is_seg_conditioned = True
-                    # seg_conditioned mode: first element is the seg mask
-                    tensor = first
-                    current_size_bins = second.long()  # Store size_bins
-                    # Override seg_channel_idx for this mode
-                    local_seg_idx = 0
-                else:
-                    # Standard mode: (images, seg) - concatenate
-                    tensor = torch.cat([first, second], dim=0)
-                    local_seg_idx = seg_channel_idx
-            else:
-                if isinstance(data, torch.Tensor):
-                    tensor = data.float()
-                elif isinstance(data, np.ndarray):
-                    tensor = torch.from_numpy(data).float()
-                else:
-                    tensor = torch.tensor(data).float()
-                local_seg_idx = seg_channel_idx
-
-            # Extract seg mask - use ... to handle both 2D and 3D
-            seg = tensor[local_seg_idx:local_seg_idx + 1, ...]
-
-            if seg.sum() > 0:  # Has positive mask
-                masks.append(seg)
-                if local_seg_idx > 0:
-                    gt_images.append(tensor[0:local_seg_idx, ...])
-                # Save size_bins for seg_conditioned mode
-                if isinstance(data, tuple) and is_seg_conditioned:
-                    size_bins_list.append(current_size_bins)
-                # Save bin_maps for seg_conditioned_input mode
-                if isinstance(data, tuple) and is_seg_conditioned_input and current_bin_maps is not None:
-                    bin_maps_list.append(current_bin_maps)
-            attempts += 1
-
-        if len(masks) < num_masks:
-            logger.warning(f"Only found {len(masks)} positive masks (requested {num_masks})")
-
-        if len(masks) == 0:
-            error_msg = (
-                f"No positive masks found in dataset! "
-                f"Checked {attempts} samples, {samples_without_seg} had no seg data. "
-            )
-            if samples_without_seg > 0:
-                error_msg += (
-                    "This usually means the latent cache was built without regional_losses=true. "
-                    "Delete the cache directory and re-run with training.logging.regional_losses=true "
-                    "to rebuild it with segmentation masks."
-                )
-            raise RuntimeError(error_msg)
-
-        self.fixed_conditioning_masks = torch.stack(masks).to(self.device)
-        if gt_images:
-            self.fixed_gt_images = torch.stack(gt_images).to(self.device)
-        if size_bins_list:
-            self.fixed_size_bins = torch.stack(size_bins_list).to(self.device)
-            logger.info(f"Loaded {len(size_bins_list)} fixed size_bins for seg_conditioned mode")
-        if bin_maps_list:
-            self.fixed_bin_maps = torch.stack(bin_maps_list).to(self.device)
-            logger.info(f"Loaded {len(bin_maps_list)} fixed bin_maps for seg_conditioned_input mode")
-
-        logger.info(f"Loaded {len(masks)} fixed conditioning masks")
-
-    def cache_reference_features(
-        self,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        experiment_id: str,
-    ) -> None:
-        """Cache reference features from train and val datasets.
-
-        Args:
-            train_loader: Training data loader.
-            val_loader: Validation data loader.
-            experiment_id: Unique experiment identifier.
-        """
+    def cache_reference_features(self, train_loader: DataLoader, val_loader: DataLoader, experiment_id: str) -> None:
         self.cache.extract_and_cache(train_loader, val_loader, experiment_id)
 
     @torch.no_grad()
-    def _generate_samples(
-        self,
-        model: nn.Module,
-        strategy: Any,
-        mode: Any,
-        num_samples: int,
-        num_steps: int,
-        batch_size: int = 16,
-    ) -> torch.Tensor:
-        """Generate samples using fixed conditioning in batches.
+    def _generate_samples(self, model, strategy, mode, num_samples, num_steps, batch_size=16):
+        return generate_samples(self, model, strategy, mode, num_samples, num_steps, batch_size)
 
-        Args:
-            model: Diffusion model.
-            strategy: Diffusion strategy (DDPM/RFlow).
-            mode: Training mode (bravo/dual/seg).
-            num_samples: Number of samples to generate.
-            num_steps: Number of denoising steps.
-            batch_size: Batch size for generation (to avoid OOM).
+    def _generate_and_extract_features_3d_streaming(self, model, strategy, mode, num_samples, num_steps, keep_samples_for_diversity=False):
+        return generate_and_extract_features_3d_streaming(self, model, strategy, mode, num_samples, num_steps, keep_samples_for_diversity)
 
-        Returns:
-            Generated samples [N, C, H, W].
-        """
-        if self.fixed_conditioning_masks is None:
-            raise RuntimeError("Must call set_fixed_conditioning() first")
+    def _extract_features_batched(self, samples, extractor, batch_size=None):
+        return extract_features_batched(self, samples, extractor, batch_size)
 
-        # Detect 3D from tensor dimensions: 3D is [N, C, D, H, W] with ndim=5
-        is_3d = self.fixed_conditioning_masks.ndim == 5
+    def _compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix=""):
+        return compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix)
 
-        # 3D generation uses batch_size=1 to avoid OOM at high resolutions
-        # (256x256x160 with CFG requires ~50GB per batch of 2 due to dual forward passes)
-        if is_3d:
-            batch_size = 1
+    def _compute_diversity_metrics(self, samples, prefix=""):
+        return compute_diversity_metrics(self, samples, prefix)
 
-        # Cap batch_size at available masks to avoid errors with small mask counts
-        num_available = self.fixed_conditioning_masks.shape[0]
-        batch_size = min(batch_size, num_available)
+    def _compute_size_bin_adherence(self, generated_masks, conditioning_bins, prefix=""):
+        return compute_size_bin_adherence(self, generated_masks, conditioning_bins, prefix)
 
-        # Round up to full batches for torch.compile consistency
-        # e.g., 100 samples with batch_size=16 → 112 samples (7 full batches)
-        num_batches = math.ceil(num_samples / batch_size)
-        num_to_use = num_batches * batch_size
+    def compute_epoch_metrics(self, model, strategy, mode):
+        return compute_epoch_metrics(self, model, strategy, mode)
 
-        # Cap at available masks
-        if num_to_use > num_available:
-            # Round down to full batches if we don't have enough masks
-            num_batches = num_available // batch_size
-            num_to_use = num_batches * batch_size
-            if num_to_use == 0:
-                # If even 1 batch doesn't fit, use all available masks
-                num_to_use = num_available
-                logger.warning(f"Using all {num_available} masks (fewer than batch_size={batch_size})")
+    def compute_extended_metrics(self, model, strategy, mode):
+        return compute_extended_metrics(self, model, strategy, mode)
 
-        # Get model config for output channels
-        model_config = mode.get_model_config()
-        out_channels = model_config['out_channels']
-        in_channels = model_config['in_channels']
+    def compute_metrics_from_samples(self, samples, extended=False):
+        return compute_metrics_from_samples(self, samples, extended)
 
-        model.eval()
-        all_samples = []
-
-        # Generate in batches to avoid OOM with CUDA graphs
-        for start_idx in range(0, num_to_use, batch_size):
-            end_idx = min(start_idx + batch_size, num_to_use)
-            masks = self.fixed_conditioning_masks[start_idx:end_idx]
-
-            # Generate noise
-            noise = torch.randn_like(masks)
-
-            if out_channels == 2:  # Dual mode
-                noise_pre = torch.randn_like(masks)
-                noise_gd = torch.randn_like(masks)
-                model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
-                batch_bin_maps = None
-            elif self.mode_name == 'seg_conditioned_input' and self.fixed_bin_maps is not None:
-                # seg_conditioned_input mode: pass noise as model_input, bin_maps separately for CFG
-                batch_bin_maps = self.fixed_bin_maps[start_idx:end_idx]
-                model_input = noise  # Just noise, bin_maps passed separately
-            elif in_channels == 1:  # Unconditional modes (seg, seg_conditioned)
-                # No channel concatenation - conditioning via embedding (if any)
-                model_input = noise
-                batch_bin_maps = None
-            else:  # Conditional single channel modes (bravo)
-                model_input = torch.cat([noise, masks], dim=1)
-                batch_bin_maps = None
-
-            # Get size_bins for this batch if in seg_conditioned mode
-            batch_size_bins = None
-            if self.fixed_size_bins is not None:
-                batch_size_bins = self.fixed_size_bins[start_idx:end_idx]
-
-            # Generate samples
-            # Get latent channels for proper parsing of conditional input
-            latent_ch = self.space.latent_channels if self.space is not None else 1
-            with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
-                samples = strategy.generate(
-                    model, model_input, num_steps=num_steps, device=self.device,
-                    size_bins=batch_size_bins,
-                    bin_maps=batch_bin_maps,
-                    cfg_scale=self.config.cfg_scale,
-                    latent_channels=latent_ch,
-                )
-
-            # Move to CPU immediately to free GPU memory
-            all_samples.append(torch.clamp(samples.float(), 0, 1).cpu())
-
-            # Clear intermediate tensors
-            del samples, model_input, noise, masks
-            if out_channels == 2:
-                del noise_pre, noise_gd
-
-        # Concatenate all samples
-        result = torch.cat(all_samples, dim=0)
-
-        # Free list memory
-        del all_samples
-        torch.cuda.empty_cache()
-
-        # Decode from latent space to pixel space for feature extraction
-        result = result.to(self.device)
-        if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
-            result = self.space.decode(result)
-
-        # Threshold seg mode output at 0.5 to get binary masks
-        if self.is_seg_mode:
-            result = (result > 0.5).float()
-
-        return result
-
-    def _generate_and_extract_features_3d_streaming(
-        self,
-        model: nn.Module,
-        strategy: Any,
-        mode: Any,
-        num_samples: int,
-        num_steps: int,
-        keep_samples_for_diversity: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        """Generate 3D samples and extract features in a streaming fashion.
-
-        Generates one sample at a time and extracts features immediately to
-        avoid memory accumulation. This prevents OOM from keeping all generated
-        volumes in memory simultaneously.
-
-        Args:
-            model: Diffusion model.
-            strategy: Diffusion strategy (DDPM/RFlow).
-            mode: Training mode.
-            num_samples: Number of samples to generate.
-            num_steps: Number of denoising steps.
-            keep_samples_for_diversity: If True, keep samples for diversity metrics.
-                Only keeps first 2 samples to limit memory usage.
-
-        Returns:
-            Tuple of (resnet_features, biomed_features, samples_for_diversity).
-            samples_for_diversity is None if keep_samples_for_diversity is False.
-        """
-        if self.fixed_conditioning_masks is None:
-            raise RuntimeError("Must call set_fixed_conditioning() first")
-
-        # Get model config
-        model_config = mode.get_model_config()
-        out_channels = model_config['out_channels']
-        in_channels = model_config['in_channels']
-
-        # Cap at available masks
-        num_available = self.fixed_conditioning_masks.shape[0]
-        num_to_generate = min(num_samples, num_available)
-
-        model.eval()
-        all_resnet_features = []
-        all_biomed_features = []
-        samples_for_diversity = [] if keep_samples_for_diversity else None
-
-        # Limit diversity samples to 2 for 3D to avoid OOM
-        max_diversity_samples = 2
-
-        # Check if using latent diffusion
-        is_latent = self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1
-
-        for idx in range(num_to_generate):
-            # Get conditioning for this sample (pixel-space from dataset)
-            masks_pixel = self.fixed_conditioning_masks[idx:idx+1]
-
-            # For latent diffusion, encode masks to latent space
-            if is_latent:
-                with torch.no_grad():
-                    masks = self.space.encode(masks_pixel)
-            else:
-                masks = masks_pixel
-
-            # Generate noise matching the (possibly encoded) masks shape
-            noise = torch.randn_like(masks)
-
-            # Build model input based on mode
-            if out_channels == 2:  # Dual mode
-                noise_pre = torch.randn_like(masks)
-                noise_gd = torch.randn_like(masks)
-                model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
-                batch_bin_maps = None
-            elif self.mode_name == 'seg_conditioned_input' and self.fixed_bin_maps is not None:
-                batch_bin_maps = self.fixed_bin_maps[idx:idx+1]
-                model_input = noise
-            elif in_channels == 1:
-                model_input = noise
-                batch_bin_maps = None
-            else:
-                model_input = torch.cat([noise, masks], dim=1)
-                batch_bin_maps = None
-
-            # Get size_bins if available
-            batch_size_bins = None
-            if self.fixed_size_bins is not None:
-                batch_size_bins = self.fixed_size_bins[idx:idx+1]
-
-            # Generate sample
-            # Get latent channels for proper parsing of conditional input
-            latent_ch = self.space.latent_channels if self.space is not None else 1
-            with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
-                sample = strategy.generate(
-                    model, model_input, num_steps=num_steps, device=self.device,
-                    size_bins=batch_size_bins,
-                    bin_maps=batch_bin_maps,
-                    cfg_scale=self.config.cfg_scale,
-                    latent_channels=latent_ch,
-                )
-
-            # Process sample: clamp, decode if latent, threshold if seg
-            sample = torch.clamp(sample.float(), 0, 1)
-            if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
-                sample = self.space.decode(sample)
-            if self.is_seg_mode:
-                sample = (sample > 0.5).float()
-
-            # Keep sample for diversity if requested and within limit
-            if samples_for_diversity is not None and len(samples_for_diversity) < max_diversity_samples:
-                samples_for_diversity.append(sample.cpu())
-
-            # Extract features immediately
-            resnet_feat = self._extract_features_batched(sample, self.resnet)
-            biomed_feat = self._extract_features_batched(sample, self.biomed)
-            all_resnet_features.append(resnet_feat.cpu())
-            all_biomed_features.append(biomed_feat.cpu())
-
-            # Clear GPU memory before next iteration
-            del sample, model_input, noise, masks, resnet_feat, biomed_feat
-            if out_channels == 2:
-                del noise_pre, noise_gd
-            torch.cuda.empty_cache()
-
-        # Concatenate all features
-        gen_resnet = torch.cat(all_resnet_features, dim=0)
-        gen_biomed = torch.cat(all_biomed_features, dim=0)
-
-        # Concatenate diversity samples if kept
-        diversity_tensor = None
-        if samples_for_diversity:
-            diversity_tensor = torch.cat(samples_for_diversity, dim=0)
-            # Explicitly clear list to free memory immediately
-            samples_for_diversity.clear()
-            del samples_for_diversity
-
-        del all_resnet_features, all_biomed_features
-        torch.cuda.empty_cache()
-
-        return gen_resnet, gen_biomed, diversity_tensor
-
-    def _extract_features_batched(
-        self,
-        samples: torch.Tensor,
-        extractor: nn.Module,
-        batch_size: int | None = None,
-    ) -> torch.Tensor:
-        """Extract features from samples in batches.
-
-        Args:
-            samples: Input samples [N, C, H, W] or [N, C, D, H, W] for 3D.
-            extractor: Feature extractor (ResNet50 or BiomedCLIP).
-            batch_size: Batch size for extraction (default: config.feature_batch_size).
-
-        Returns:
-            Feature tensor [N, D] for 2D or [N*D_orig, D] for 3D (slice-wise, padding removed).
-        """
-        if batch_size is None:
-            batch_size = self.config.feature_batch_size
-
-        # Handle 3D volumes via slice-wise extraction (2.5D approach)
-        is_3d = samples.ndim == 5
-        if is_3d:
-            # Remove padded slices if original_depth is specified
-            if self.config.original_depth is not None:
-                original_depth = self.config.original_depth
-                current_depth = samples.shape[2]  # [N, C, D, H, W]
-                if current_depth > original_depth:
-                    # Remove last (current_depth - original_depth) slices
-                    samples = samples[:, :, :original_depth, :, :]
-                    logger.debug(f"Removed {current_depth - original_depth} padded slices for metrics")
-
-            return extract_features_3d(samples, extractor, chunk_size=batch_size)
-
-        # 2D: extract in sub-batches
-        all_features = []
-        for start_idx in range(0, samples.shape[0], batch_size):
-            end_idx = min(start_idx + batch_size, samples.shape[0])
-            batch = samples[start_idx:end_idx]
-            features = extractor.extract_features(batch)
-            all_features.append(features.cpu())
-            del features, batch
-
-        result = torch.cat(all_features, dim=0)
-        del all_features
-        return result
-
-    def _compute_metrics_against_reference(
-        self,
-        gen_resnet: torch.Tensor,
-        gen_biomed: torch.Tensor,
-        ref_resnet: torch.Tensor,
-        ref_biomed: torch.Tensor,
-        prefix: str = "",
-    ) -> dict[str, float]:
-        """Compute KID and CMMD against reference features.
-
-        Args:
-            gen_resnet: Generated ResNet50 features.
-            gen_biomed: Generated BiomedCLIP features.
-            ref_resnet: Reference ResNet50 features.
-            ref_biomed: Reference BiomedCLIP features.
-            prefix: Prefix for metric names (e.g., "extended_").
-
-        Returns:
-            Dictionary of metric values.
-        """
-        results = {}
-
-        # KID
-        kid_mean, kid_std = compute_kid(
-            ref_resnet.to(self.device),
-            gen_resnet.to(self.device),
-        )
-        results[f'{prefix}KID_mean'] = kid_mean
-        results[f'{prefix}KID_std'] = kid_std
-
-        # CMMD
-        cmmd = compute_cmmd(
-            ref_biomed.to(self.device),
-            gen_biomed.to(self.device),
-        )
-        results[f'{prefix}CMMD'] = cmmd
-
-        return results
-
-    def _compute_diversity_metrics(
-        self,
-        samples: torch.Tensor,
-        prefix: str = "",
-    ) -> dict[str, float]:
-        """Compute diversity metrics for generated samples.
-
-        Measures how different the generated samples are from each other
-        using LPIPS and MS-SSIM diversity. Higher values indicate more
-        diversity (less mode collapse).
-
-        Args:
-            samples: Generated samples [N, C, H, W] or [B, C, D, H, W].
-            prefix: Prefix for metric names (e.g., "extended_").
-
-        Returns:
-            Dictionary with diversity metrics.
-        """
-        results = {}
-        is_3d = samples.ndim == 5
-        n_samples = samples.shape[0]
-
-        if n_samples < 2:
-            logger.debug(f"Need at least 2 samples for diversity (got {n_samples})")
-            return results
-
-        try:
-            if is_3d:
-                # 3D: compare same slice across volumes
-                lpips_div = compute_lpips_diversity_3d(
-                    samples, device=self.device
-                )
-                msssim_div = compute_msssim_diversity_3d(samples)
-            else:
-                # 2D: compare all generated images
-                lpips_div = compute_lpips_diversity(
-                    samples, device=self.device
-                )
-                msssim_div = compute_msssim_diversity(samples)
-
-            # Use special prefix format for separate TensorBoard section
-            # "Diversity/" prefix tells log_generation to use Generation_Diversity/ section
-            results[f'Diversity/{prefix}LPIPS'] = lpips_div
-            results[f'Diversity/{prefix}MSSSIM'] = msssim_div
-
-        except (RuntimeError, ValueError, torch.cuda.OutOfMemoryError) as e:
-            logger.warning(f"Diversity computation failed: {e}")
-
-        return results
-
-    def _compute_size_bin_adherence(
-        self,
-        generated_masks: torch.Tensor,
-        conditioning_bins: torch.Tensor,
-        prefix: str = "",
-    ) -> dict[str, float]:
-        """Compute size bin adherence metrics for seg_conditioned mode.
-
-        Measures how well generated masks match their conditioning size bins.
-
-        Args:
-            generated_masks: Generated binary masks [N, 1, H, W].
-            conditioning_bins: Target size bin counts [N, num_bins].
-            prefix: Prefix for metric names (e.g., "extended_").
-
-        Returns:
-            Dictionary with metrics:
-            - SizeBin/{prefix}exact_match: % of bins that exactly match
-            - SizeBin/{prefix}MAE: Mean absolute error per bin
-            - SizeBin/{prefix}correlation: Spearman correlation
-        """
-        from scipy.stats import spearmanr
-
-        results = {}
-
-        # Get bin config
-        bin_edges = self.config.size_bin_edges or DEFAULT_BIN_EDGES
-        fov_mm = self.config.size_bin_fov_mm
-        image_size = generated_masks.shape[-1]  # H or W
-        pixel_spacing_mm = fov_mm / image_size
-        # Get num_bins from the conditioning tensor shape
-        num_bins = conditioning_bins.shape[-1]
-
-        # Compute actual size bins from generated masks
-        actual_bins_list = []
-        for i in range(generated_masks.shape[0]):
-            mask_np = generated_masks[i].squeeze().cpu().numpy()
-            actual_bins = compute_size_bins(
-                mask_np, bin_edges, pixel_spacing_mm, num_bins=num_bins
-            )
-            actual_bins_list.append(actual_bins)
-
-        actual_bins = torch.tensor(np.stack(actual_bins_list), dtype=torch.long)
-        target_bins = conditioning_bins.cpu()
-
-        # 1. Exact match rate (per bin average)
-        exact_matches = (actual_bins == target_bins).float().mean().item()
-        results[f'SizeBin/{prefix}exact_match'] = exact_matches
-
-        # 2. Mean Absolute Error (per sample, then averaged)
-        mae = (actual_bins.float() - target_bins.float()).abs().mean().item()
-        results[f'SizeBin/{prefix}MAE'] = mae
-
-        # 3. Spearman correlation (flatten and compute)
-        actual_flat = actual_bins.flatten().numpy()
-        target_flat = target_bins.flatten().numpy()
-
-        # Handle edge case: constant arrays
-        if np.std(actual_flat) > 0 and np.std(target_flat) > 0:
-            corr, _ = spearmanr(actual_flat, target_flat)
-            results[f'SizeBin/{prefix}correlation'] = corr
-        else:
-            results[f'SizeBin/{prefix}correlation'] = 0.0
-
-        return results
-
-    def compute_epoch_metrics(
-        self,
-        model: nn.Module,
-        strategy: Any,
-        mode: Any,
-    ) -> dict[str, float]:
-        """Compute quick generation metrics (every epoch).
-
-        Uses fewer samples and steps for fast feedback.
-
-        Args:
-            model: Diffusion model.
-            strategy: Diffusion strategy.
-            mode: Training mode.
-
-        Returns:
-            Dictionary with KID/CMMD vs train and val.
-        """
-        # Preserve RNG state (per pitfall #42)
-        rng_state = torch.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state(self.device)
-
-        try:
-            # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-            is_3d = self.fixed_conditioning_masks.ndim == 5
-
-            if is_3d:
-                # 3D: Generate and extract features one at a time (streaming)
-                gen_resnet, gen_biomed, diversity_samples = self._generate_and_extract_features_3d_streaming(
-                    model, strategy, mode,
-                    self.config.samples_per_epoch,
-                    self.config.steps_per_epoch,
-                    keep_samples_for_diversity=True,
-                )
-
-                # Compute diversity metrics from kept samples (limited to 2 for 3D)
-                diversity_metrics = {}
-                if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-                    diversity_metrics = self._compute_diversity_metrics(diversity_samples, prefix="")
-                    del diversity_samples
-
-                # Size bin metrics not supported in streaming mode for 3D
-                size_bin_metrics = {}
-            else:
-                # 2D: Use batched approach (more efficient for small samples)
-                samples = self._generate_samples(
-                    model, strategy, mode,
-                    self.config.samples_per_epoch,
-                    self.config.steps_per_epoch,
-                )
-
-                # Extract features in batches
-                gen_resnet = self._extract_features_batched(samples, self.resnet)
-                gen_biomed = self._extract_features_batched(samples, self.biomed)
-
-                # Compute diversity metrics (2D - every epoch)
-                diversity_metrics = self._compute_diversity_metrics(samples, prefix="")
-
-                # Compute size bin adherence for seg_conditioned mode
-                size_bin_metrics = {}
-                if self.mode_name == 'seg_conditioned' and self.fixed_size_bins is not None:
-                    size_bin_metrics = self._compute_size_bin_adherence(
-                        samples, self.fixed_size_bins[:samples.shape[0]], prefix=""
-                    )
-
-                # Free samples
-                del samples
-                torch.cuda.empty_cache()
-
-            results = {}
-
-            # Add diversity metrics
-            results.update(diversity_metrics)
-
-            # Add size bin metrics
-            results.update(size_bin_metrics)
-
-            # Metrics vs train
-            train_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.train_resnet, self.cache.train_biomed,
-                prefix="",
-            )
-            for key, value in train_metrics.items():
-                results[f'{key}_train'] = value
-
-            # Metrics vs val
-            val_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.val_resnet, self.cache.val_biomed,
-                prefix="",
-            )
-            for key, value in val_metrics.items():
-                results[f'{key}_val'] = value
-
-            return results
-
-        finally:
-            # Restore RNG state
-            torch.set_rng_state(rng_state)
-            torch.cuda.set_rng_state(cuda_rng_state, self.device)
-
-    def compute_extended_metrics(
-        self,
-        model: nn.Module,
-        strategy: Any,
-        mode: Any,
-    ) -> dict[str, float]:
-        """Compute extended generation metrics (every N epochs).
-
-        Uses more samples and steps for detailed analysis.
-
-        Args:
-            model: Diffusion model.
-            strategy: Diffusion strategy.
-            mode: Training mode.
-
-        Returns:
-            Dictionary with extended_ prefixed KID/CMMD metrics.
-        """
-        # Preserve RNG state
-        rng_state = torch.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state(self.device)
-
-        try:
-            # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-            is_3d = self.fixed_conditioning_masks.ndim == 5
-
-            if is_3d:
-                # 3D: Generate and extract features one at a time (streaming)
-                gen_resnet, gen_biomed, diversity_samples = self._generate_and_extract_features_3d_streaming(
-                    model, strategy, mode,
-                    self.config.samples_extended,
-                    self.config.steps_extended,
-                    keep_samples_for_diversity=True,
-                )
-
-                # Compute diversity metrics from kept samples (limited to 2 for 3D)
-                diversity_metrics = {}
-                if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-                    diversity_metrics = self._compute_diversity_metrics(diversity_samples, prefix="extended_")
-                    del diversity_samples
-
-                # Size bin metrics not supported in streaming mode for 3D
-                size_bin_metrics = {}
-            else:
-                # 2D: Use batched approach (more efficient for small samples)
-                samples = self._generate_samples(
-                    model, strategy, mode,
-                    self.config.samples_extended,
-                    self.config.steps_extended,
-                )
-
-                # Extract features in batches
-                gen_resnet = self._extract_features_batched(samples, self.resnet)
-                gen_biomed = self._extract_features_batched(samples, self.biomed)
-
-                # Compute diversity metrics (2D - extended)
-                diversity_metrics = self._compute_diversity_metrics(samples, prefix="extended_")
-
-                # Compute size bin adherence for seg_conditioned mode
-                size_bin_metrics = {}
-                if self.mode_name == 'seg_conditioned' and self.fixed_size_bins is not None:
-                    size_bin_metrics = self._compute_size_bin_adherence(
-                        samples, self.fixed_size_bins[:samples.shape[0]], prefix="extended_"
-                    )
-
-                # Free samples
-                del samples
-                torch.cuda.empty_cache()
-
-            results = {}
-
-            # Add diversity metrics
-            results.update(diversity_metrics)
-
-            # Add size bin metrics
-            results.update(size_bin_metrics)
-
-            # Metrics vs train
-            train_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.train_resnet, self.cache.train_biomed,
-                prefix="extended_",
-            )
-            for key, value in train_metrics.items():
-                results[f'{key}_train'] = value
-
-            # Metrics vs val
-            val_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.val_resnet, self.cache.val_biomed,
-                prefix="extended_",
-            )
-            for key, value in val_metrics.items():
-                results[f'{key}_val'] = value
-
-            return results
-
-        finally:
-            # Restore RNG state
-            torch.set_rng_state(rng_state)
-            torch.cuda.set_rng_state(cuda_rng_state, self.device)
-
-    def compute_metrics_from_samples(
-        self,
-        samples: torch.Tensor,
-        extended: bool = False,
-    ) -> dict[str, float]:
-        """Compute metrics from pre-generated samples.
-
-        This method is useful when samples are generated externally (e.g., 3D volumes).
-        Handles both 2D [N, C, H, W] and 3D [N, C, D, H, W] samples.
-
-        Args:
-            samples: Generated samples tensor.
-            extended: If True, use "extended_" prefix for metric names.
-
-        Returns:
-            Dictionary with KID/CMMD vs train and val.
-        """
-        if self.cache.train_resnet is None:
-            logger.warning("Reference features not cached, cannot compute metrics")
-            return {}
-
-        prefix = "extended_" if extended else ""
-        is_3d = samples.ndim == 5
-        n_samples = samples.shape[0]
-
-        # Extract features
-        if is_3d:
-            gen_resnet = extract_features_3d(samples, self.resnet, chunk_size=self.config.feature_batch_size)
-            gen_biomed = extract_features_3d(samples, self.biomed, chunk_size=self.config.feature_batch_size)
-        else:
-            gen_resnet = self._extract_features_batched(samples, self.resnet)
-            gen_biomed = self._extract_features_batched(samples, self.biomed)
-
-        # Compute diversity metrics (3D: only when 2+ volumes, typically 4+ for extended/test)
-        # For 3D, diversity is computed per-slice across volumes, so we need multiple volumes
-        diversity_metrics = {}
-        if n_samples >= 2:
-            diversity_metrics = self._compute_diversity_metrics(samples, prefix=prefix)
-
-        # Free samples
-        del samples
-        torch.cuda.empty_cache()
-
-        results = {}
-
-        # Add diversity metrics
-        results.update(diversity_metrics)
-
-        # Metrics vs train
-        train_metrics = self._compute_metrics_against_reference(
-            gen_resnet, gen_biomed,
-            self.cache.train_resnet, self.cache.train_biomed,
-            prefix=prefix,
-        )
-        for key, value in train_metrics.items():
-            results[f'{key}_train'] = value
-
-        # Metrics vs val
-        if self.cache.val_resnet is not None:
-            val_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.val_resnet, self.cache.val_biomed,
-                prefix=prefix,
-            )
-            for key, value in val_metrics.items():
-                results[f'{key}_val'] = value
-
-        return results
-
-    def compute_test_metrics(
-        self,
-        model: nn.Module,
-        strategy: Any,
-        mode: Any,
-        test_loader: DataLoader | None = None,
-    ) -> dict[str, float]:
-        """Compute full test generation metrics with FID.
-
-        Uses the most samples and steps for final evaluation.
-        Optionally compares against test set if loader provided.
-
-        Args:
-            model: Diffusion model.
-            strategy: Diffusion strategy.
-            mode: Training mode.
-            test_loader: Optional test data loader for FID vs test.
-
-        Returns:
-            Dictionary with FID, KID, CMMD test metrics.
-        """
-        # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-        is_3d = self.fixed_conditioning_masks.ndim == 5
-
-        if is_3d:
-            # 3D: Generate and extract features one at a time (streaming)
-            gen_resnet, gen_biomed, diversity_samples = self._generate_and_extract_features_3d_streaming(
-                model, strategy, mode,
-                self.config.samples_test,
-                self.config.steps_test,
-                keep_samples_for_diversity=True,
-            )
-
-            # Compute diversity metrics from kept samples (limited to 2 for 3D)
-            diversity_metrics = {}
-            if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-                diversity_metrics = self._compute_diversity_metrics(diversity_samples, prefix="")
-                del diversity_samples
-        else:
-            # 2D: Use batched approach (more efficient for small samples)
-            samples = self._generate_samples(
-                model, strategy, mode,
-                self.config.samples_test,
-                self.config.steps_test,
-            )
-
-            # Extract features in batches
-            gen_resnet = self._extract_features_batched(samples, self.resnet)
-            gen_biomed = self._extract_features_batched(samples, self.biomed)
-
-            # Compute diversity metrics (2D - test)
-            diversity_metrics = self._compute_diversity_metrics(samples, prefix="")
-
-            # Free samples
-            del samples
-            torch.cuda.empty_cache()
-
-        results = {}
-
-        # Add diversity metrics
-        results.update(diversity_metrics)
-
-        # If test loader provided, compute metrics vs test
-        if test_loader is not None:
-            # Extract test features
-            test_resnet = self.cache._extract_features_from_loader(
-                test_loader, self.resnet, "test_resnet",
-                max_samples=self.config.samples_test,
-            )
-            test_biomed = self.cache._extract_features_from_loader(
-                test_loader, self.biomed, "test_biomed",
-                max_samples=self.config.samples_test,
-            )
-
-            # FID (only for test)
-            fid = compute_fid(test_resnet, gen_resnet)
-            results['FID'] = fid
-
-            # KID and CMMD vs test
-            test_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                test_resnet, test_biomed,
-                prefix="",
-            )
-            results.update(test_metrics)
-        else:
-            # Use val as reference if no test loader
-            val_metrics = self._compute_metrics_against_reference(
-                gen_resnet, gen_biomed,
-                self.cache.val_resnet, self.cache.val_biomed,
-                prefix="",
-            )
-            results.update(val_metrics)
-
-            # FID vs val
-            fid = compute_fid(
-                self.cache.val_resnet,
-                gen_resnet,
-            )
-            results['FID'] = fid
-
-        return results
+    def compute_test_metrics(self, model, strategy, mode, test_loader=None):
+        return compute_test_metrics(self, model, strategy, mode, test_loader)
 
 
 # =============================================================================
-# 3D Slice-Wise Feature Extraction (2.5D Approach)
+# Re-exports from helper modules for backward compatibility
 # =============================================================================
 
-def volumes_to_slices(volumes: torch.Tensor) -> torch.Tensor:
-    """Reshape 3D volumes to 2D slices for feature extraction.
-
-    Converts [B, C, D, H, W] → [B*D, C, H, W] by treating each depth slice
-    as an independent 2D sample. This enables using 2D feature extractors
-    (ResNet50, BiomedCLIP) on 3D volumes.
-
-    Args:
-        volumes: 5D tensor [B, C, D, H, W] with B batches of 3D volumes.
-
-    Returns:
-        4D tensor [B*D, C, H, W] with all slices batched together.
-
-    Example:
-        >>> volumes = torch.randn(2, 1, 160, 256, 256)  # 2 volumes
-        >>> slices = volumes_to_slices(volumes)
-        >>> slices.shape  # (320, 1, 256, 256) - 320 slices
-    """
-    if volumes.dim() != 5:
-        raise ValueError(f"Expected 5D tensor [B,C,D,H,W], got {volumes.dim()}D")
-
-    B, C, D, H, W = volumes.shape
-    # Permute to [B, D, C, H, W] then reshape to [B*D, C, H, W]
-    return volumes.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-
-
-def extract_features_3d(
-    volumes: torch.Tensor,
-    extractor: ResNet50Features | BiomedCLIPFeatures,
-    chunk_size: int = 64,
-) -> torch.Tensor:
-    """Extract features from 3D volumes slice-wise (2.5D approach).
-
-    Reshapes 5D volumes to 4D slices and extracts features in chunks
-    to avoid GPU OOM. The resulting features represent the distribution
-    of 2D slices within the 3D volumes.
-
-    Args:
-        volumes: 5D tensor [B, C, D, H, W] in [0, 1] range.
-        extractor: 2D feature extractor (ResNet50Features or BiomedCLIPFeatures).
-        chunk_size: Number of slices per forward pass (memory vs speed tradeoff).
-
-    Returns:
-        Feature tensor [B*D, feat_dim] with features for each slice.
-
-    Example:
-        >>> volumes = torch.randn(1, 1, 160, 256, 256).cuda()
-        >>> resnet = ResNet50Features(device)
-        >>> features = extract_features_3d(volumes, resnet)
-        >>> features.shape  # (160, 2048) - one feature per slice
-    """
-    # Reshape to slices
-    slices = volumes_to_slices(volumes)  # [B*D, C, H, W]
-    total_slices = slices.shape[0]
-
-    all_features = []
-    for start in range(0, total_slices, chunk_size):
-        end = min(start + chunk_size, total_slices)
-        chunk = slices[start:end]
-        features = extractor.extract_features(chunk)
-        all_features.append(features.cpu())
-        del features, chunk
-
-    return torch.cat(all_features, dim=0)
-
-
-def compute_kid_3d(
-    real_volumes: torch.Tensor,
-    generated_volumes: torch.Tensor,
-    extractor: ResNet50Features,
-    subset_size: int = 100,
-    num_subsets: int = 50,
-    chunk_size: int = 64,
-) -> tuple[float, float]:
-    """Compute KID for 3D volumes using 2.5D slice-wise approach.
-
-    Extracts ResNet50 features from all slices of real and generated
-    volumes, then computes KID on the slice feature distributions.
-
-    Args:
-        real_volumes: Real 3D volumes [B, C, D, H, W] in [0, 1] range.
-        generated_volumes: Generated 3D volumes [B, C, D, H, W] in [0, 1] range.
-        extractor: ResNet50 feature extractor.
-        subset_size: Size of random subsets for KID estimation.
-        num_subsets: Number of random subsets to average over.
-        chunk_size: Slices per forward pass for feature extraction.
-
-    Returns:
-        Tuple of (kid_mean, kid_std).
-    """
-    # Extract features slice-wise
-    real_features = extract_features_3d(real_volumes, extractor, chunk_size)
-    gen_features = extract_features_3d(generated_volumes, extractor, chunk_size)
-
-    # Compute KID on slice features
-    return compute_kid(real_features, gen_features, subset_size, num_subsets)
-
-
-def compute_cmmd_3d(
-    real_volumes: torch.Tensor,
-    generated_volumes: torch.Tensor,
-    extractor: BiomedCLIPFeatures,
-    kernel_bandwidth: float | None = None,
-    chunk_size: int = 64,
-) -> float:
-    """Compute CMMD for 3D volumes using 2.5D slice-wise approach.
-
-    Extracts BiomedCLIP features from all slices of real and generated
-    volumes, then computes CMMD on the slice feature distributions.
-
-    Args:
-        real_volumes: Real 3D volumes [B, C, D, H, W] in [0, 1] range.
-        generated_volumes: Generated 3D volumes [B, C, D, H, W] in [0, 1] range.
-        extractor: BiomedCLIP feature extractor.
-        kernel_bandwidth: RBF kernel bandwidth (None = median heuristic).
-        chunk_size: Slices per forward pass for feature extraction.
-
-    Returns:
-        CMMD value (lower is better).
-    """
-    # Extract features slice-wise
-    real_features = extract_features_3d(real_volumes, extractor, chunk_size)
-    gen_features = extract_features_3d(generated_volumes, extractor, chunk_size)
-
-    # Compute CMMD on slice features
-    return compute_cmmd(real_features, gen_features, kernel_bandwidth)
-
-
-def compute_fid_3d(
-    real_volumes: torch.Tensor,
-    generated_volumes: torch.Tensor,
-    extractor: ResNet50Features,
-    chunk_size: int = 64,
-) -> float:
-    """Compute FID for 3D volumes using 2.5D slice-wise approach.
-
-    Extracts ResNet50 features from all slices of real and generated
-    volumes, then computes FID on the slice feature distributions.
-
-    Args:
-        real_volumes: Real 3D volumes [B, C, D, H, W] in [0, 1] range.
-        generated_volumes: Generated 3D volumes [B, C, D, H, W] in [0, 1] range.
-        extractor: ResNet50 feature extractor.
-        chunk_size: Slices per forward pass for feature extraction.
-
-    Returns:
-        FID value (lower is better).
-    """
-    # Extract features slice-wise
-    real_features = extract_features_3d(real_volumes, extractor, chunk_size)
-    gen_features = extract_features_3d(generated_volumes, extractor, chunk_size)
-
-    # Compute FID on slice features
-    return compute_fid(real_features, gen_features)
+from .generation_3d import (  # noqa: E402, F401
+    compute_cmmd_3d,
+    compute_fid_3d,
+    compute_kid_3d,
+    extract_features_3d,
+    volumes_to_slices,
+)

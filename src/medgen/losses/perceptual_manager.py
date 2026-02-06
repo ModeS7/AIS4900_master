@@ -178,7 +178,5 @@ class PerceptualLossManager:
         Returns:
             compute_lpips for 2D, compute_lpips_3d for 3D.
         """
-        from medgen.metrics import compute_lpips, compute_lpips_3d
-        if spatial_dims == 2:
-            return compute_lpips
-        return compute_lpips_3d
+        from medgen.metrics.dispatch import create_lpips_fn
+        return create_lpips_fn(spatial_dims)

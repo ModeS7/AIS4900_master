@@ -63,31 +63,34 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
         Dict with model configuration.
     """
     model_cfg = trainer.mode.get_model_config()
+    from .base_config import ModelConfig
+    mc = ModelConfig.from_hydra(trainer.cfg)
+
     config = {
         'model_type': trainer.model_type,
         'in_channels': model_cfg['in_channels'],
         'out_channels': model_cfg['out_channels'],
         'strategy': trainer.strategy_name,
         'mode': trainer.mode_name,
-        'spatial_dims': trainer.cfg.model.get('spatial_dims', 2),
+        'spatial_dims': mc.spatial_dims,
     }
 
     # Architecture params differ between UNet and transformer
     if trainer.is_transformer:
         config.update({
-            'image_size': trainer.cfg.model.image_size,
-            'patch_size': trainer.cfg.model.patch_size,
-            'variant': trainer.cfg.model.variant,
-            'mlp_ratio': trainer.cfg.model.get('mlp_ratio', 4.0),
-            'conditioning': trainer.cfg.model.get('conditioning', 'concat'),
-            'qk_norm': trainer.cfg.model.get('qk_norm', True),
+            'image_size': mc.image_size,
+            'patch_size': mc.patch_size,
+            'variant': mc.variant,
+            'mlp_ratio': mc.mlp_ratio,
+            'conditioning': mc.conditioning,
+            'qk_norm': getattr(trainer.cfg.model, 'qk_norm', True),
         })
     else:
         config.update({
-            'channels': list(trainer.cfg.model.channels),
-            'attention_levels': list(trainer.cfg.model.attention_levels),
-            'num_res_blocks': trainer.cfg.model.num_res_blocks,
-            'num_head_channels': trainer.cfg.model.num_head_channels,
+            'channels': list(mc.channels),
+            'attention_levels': list(mc.attention_levels),
+            'num_res_blocks': mc.num_res_blocks,
+            'num_head_channels': mc.num_head_channels,
         })
 
     return config
@@ -139,7 +142,7 @@ def measure_model_flops(
             trainer.model_raw,
             model_input[:1] if isinstance(model_input, torch.Tensor) else model_input,
             steps_per_epoch=len(train_loader),
-            batch_size=trainer.cfg.training.batch_size,
+            batch_size=trainer.batch_size,
             timesteps=timesteps[:1] if isinstance(timesteps, torch.Tensor) else timesteps,
             is_main_process=trainer.is_main_process,
         )

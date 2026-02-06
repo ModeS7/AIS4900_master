@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
+from medgen.pipeline.base_config import ModelConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,18 +32,19 @@ def create_diffusion_model(
     Returns:
         Initialized model on specified device.
     """
-    model_type = cfg.model.get('type', 'unet')
+    mc = ModelConfig.from_hydra(cfg)
 
-    if model_type == 'unet':
-        return _create_unet(cfg, device, in_channels, out_channels)
-    elif model_type == 'sit':
-        return _create_sit(cfg, device, in_channels, out_channels)
+    if mc.type == 'unet':
+        return _create_unet(cfg, mc, device, in_channels, out_channels)
+    elif mc.type == 'sit':
+        return _create_sit(cfg, mc, device, in_channels, out_channels)
     else:
-        raise ValueError(f"Unknown model type: {model_type}. Choose 'unet' or 'sit'")
+        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet' or 'sit'")
 
 
 def _create_unet(
     cfg: DictConfig,
+    mc: ModelConfig,
     device: torch.device,
     in_channels: int,
     out_channels: int,
@@ -49,29 +52,27 @@ def _create_unet(
     """Create MONAI DiffusionModelUNet."""
     from monai.networks.nets import DiffusionModelUNet
 
-    spatial_dims = cfg.model.get('spatial_dims', 2)
-
     # Validate spatial_dims
-    if spatial_dims not in (2, 3):
+    if mc.spatial_dims not in (2, 3):
         raise ValueError(
-            f"spatial_dims must be 2 or 3, got {spatial_dims}. "
+            f"spatial_dims must be 2 or 3, got {mc.spatial_dims}. "
             f"Use 2 for 2D images, 3 for 3D volumes."
         )
 
     model = DiffusionModelUNet(
-        spatial_dims=spatial_dims,
+        spatial_dims=mc.spatial_dims,
         in_channels=in_channels,
         out_channels=out_channels,
-        num_channels=cfg.model.channels,
-        attention_levels=cfg.model.attention_levels,
-        num_res_blocks=cfg.model.num_res_blocks,
-        num_head_channels=cfg.model.num_head_channels,
+        num_channels=mc.channels,
+        attention_levels=mc.attention_levels,
+        num_res_blocks=mc.num_res_blocks,
+        num_head_channels=mc.num_head_channels,
     )
 
     logger.info(
-        f"Created UNet: spatial_dims={spatial_dims}, "
+        f"Created UNet: spatial_dims={mc.spatial_dims}, "
         f"in_channels={in_channels}, out_channels={out_channels}, "
-        f"channels={cfg.model.channels}"
+        f"channels={mc.channels}"
     )
 
     return model.to(device)
@@ -79,6 +80,7 @@ def _create_unet(
 
 def _create_sit(
     cfg: DictConfig,
+    mc: ModelConfig,
     device: torch.device,
     in_channels: int,
     out_channels: int,
@@ -86,40 +88,31 @@ def _create_sit(
     """Create SiT (Scalable Interpolant Transformer)."""
     from .sit import SIT_VARIANTS, create_sit
 
-    spatial_dims = cfg.model.get('spatial_dims', 2)
-
     # Validate spatial_dims
-    if spatial_dims not in (2, 3):
+    if mc.spatial_dims not in (2, 3):
         raise ValueError(
-            f"spatial_dims must be 2 or 3, got {spatial_dims}. "
+            f"spatial_dims must be 2 or 3, got {mc.spatial_dims}. "
             f"Use 2 for 2D images, 3 for 3D volumes."
         )
 
-    variant = cfg.model.get('variant', 'B')
-    patch_size = cfg.model.get('patch_size', 2)
-    conditioning = cfg.model.get('conditioning', 'concat')
-    mlp_ratio = cfg.model.get('mlp_ratio', 4.0)
-    drop_rate = cfg.model.get('drop_rate', 0.0)
-    drop_path_rate = cfg.model.get('drop_path_rate', 0.0)
-
     # Validate SiT-specific fields
     valid_variants = ('S', 'B', 'L', 'XL')
-    if variant not in valid_variants:
+    if mc.variant not in valid_variants:
         raise ValueError(
-            f"SiT variant must be one of {valid_variants}, got '{variant}'"
+            f"SiT variant must be one of {valid_variants}, got '{mc.variant}'"
         )
 
     valid_patch_sizes = (1, 2, 4, 8, 16)
-    if patch_size not in valid_patch_sizes:
+    if mc.patch_size not in valid_patch_sizes:
         raise ValueError(
-            f"SiT patch_size must be one of {valid_patch_sizes}, got {patch_size}"
+            f"SiT patch_size must be one of {valid_patch_sizes}, got {mc.patch_size}"
         )
 
     # For concat conditioning, in_channels already includes cond_channels from mode config
     # For cross_attn, we need to separate them
-    if conditioning == "cross_attn":
+    if mc.conditioning == "cross_attn":
         # Separate input and conditioning channels
-        cond_channels = cfg.mode.get('cond_channels', 1)
+        cond_channels = getattr(cfg.mode, 'cond_channels', 1)
         model_in_channels = out_channels  # noisy target channels (same as output)
     else:
         # Concatenation mode: in_channels = target_channels + cond_channels
@@ -143,47 +136,47 @@ def _create_sit(
 
     # Get input size - prefer volume config for 3D, fallback to model config
     # This avoids redundant specification of dimensions
-    if spatial_dims == 3 and 'volume' in cfg:
+    if mc.spatial_dims == 3 and 'volume' in cfg:
         # For 3D: derive from volume config (height/width should match)
-        base_size = cfg.volume.get('height', cfg.model.get('image_size', 256))
+        base_size = cfg.volume.get('height', mc.image_size)
         base_depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', base_size))
     else:
         # For 2D or when volume config not available: use model config
-        base_size = cfg.model.get('image_size', 256)
-        base_depth = cfg.model.get('depth_size', base_size)
+        base_size = mc.image_size
+        base_depth = getattr(cfg.model, 'depth_size', base_size)
 
     input_size = base_size // spatial_scale
 
     # 3D specific settings
     depth_size = None
-    if spatial_dims == 3:
+    if mc.spatial_dims == 3:
         depth_size = base_depth // depth_scale
 
     model = create_sit(
-        variant=variant,
-        spatial_dims=spatial_dims,
+        variant=mc.variant,
+        spatial_dims=mc.spatial_dims,
         input_size=input_size,
-        patch_size=patch_size,
+        patch_size=mc.patch_size,
         in_channels=model_in_channels,
         out_channels=out_channels,  # Always output target channels only
-        conditioning=conditioning,
+        conditioning=mc.conditioning,
         cond_channels=cond_channels,
         learn_sigma=False,  # Not needed for flow matching
         depth_size=depth_size,
-        mlp_ratio=mlp_ratio,
-        drop_rate=drop_rate,
-        drop_path_rate=drop_path_rate,
+        mlp_ratio=mc.mlp_ratio,
+        drop_rate=mc.drop_rate,
+        drop_path_rate=mc.drop_path_rate,
     )
 
-    variant_info = SIT_VARIANTS[variant]
+    variant_info = SIT_VARIANTS[mc.variant]
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
 
-    drop_path_str = f", drop_path={drop_path_rate}" if drop_path_rate > 0 else ""
+    drop_path_str = f", drop_path={mc.drop_path_rate}" if mc.drop_path_rate > 0 else ""
     logger.info(
-        f"Created SiT-{variant}: spatial_dims={spatial_dims}, input_size={input_size}, "
-        f"patch_size={patch_size}, hidden_size={variant_info['hidden_size']}, "
+        f"Created SiT-{mc.variant}: spatial_dims={mc.spatial_dims}, input_size={input_size}, "
+        f"patch_size={mc.patch_size}, hidden_size={variant_info['hidden_size']}, "
         f"depth={variant_info['depth']}, heads={variant_info['num_heads']}, "
-        f"conditioning={conditioning}, params={num_params:.1f}M{drop_path_str}"
+        f"conditioning={mc.conditioning}, params={num_params:.1f}M{drop_path_str}"
     )
 
     return model.to(device)
@@ -191,7 +184,8 @@ def _create_sit(
 
 def get_model_type(cfg: DictConfig) -> str:
     """Get model type from config."""
-    return cfg.model.get('type', 'unet')
+    mc = ModelConfig.from_hydra(cfg)
+    return mc.type
 
 
 def is_transformer_model(cfg: DictConfig) -> bool:

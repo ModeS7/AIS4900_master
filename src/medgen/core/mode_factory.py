@@ -274,7 +274,7 @@ class ModeFactory:
         if mode_config.category != ModeCategory.MULTI:
             return {}
 
-        from medgen.data.loaders.multi_diffusion import create_single_modality_diffusion_val_loader
+        from medgen.data.loaders.builder_2d import create_single_modality_diffusion_val_loader
         loaders = {}
         for modality in mode_config.image_keys:
             loader = create_single_modality_diffusion_val_loader(cfg, modality)

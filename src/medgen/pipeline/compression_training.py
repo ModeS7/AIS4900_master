@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import itertools
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from torch.amp import autocast
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from .compression_trainer import BaseCompressionTrainer
-    from .results import TrainingStepResult
+    from .results import BatchType, TrainingStepResult
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 def prepare_batch(
     trainer: BaseCompressionTrainer,
-    batch: Any,
+    batch: BatchType,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Prepare batch for compression training (2D or 3D).
 
@@ -74,7 +74,7 @@ def prepare_batch(
 
     # Handle dict batches
     if isinstance(batch, dict):
-        image_keys = trainer.cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
+        image_keys = trainer.cfg.mode.image_keys
         tensors = [_tensor_to_device(batch[k], trainer.device) for k in image_keys if k in batch]
         images = torch.cat(tensors, dim=1)
         mask = _tensor_to_device(batch['seg'], trainer.device) if 'seg' in batch else None
@@ -84,7 +84,7 @@ def prepare_batch(
     tensor = _tensor_to_device(batch, trainer.device)
 
     # Check if seg is stacked as last channel
-    n_image_channels = trainer.cfg.mode.get('in_channels', 2)
+    n_image_channels = trainer.cfg.mode.in_channels
     if tensor.shape[1] > n_image_channels:
         images = tensor[:, :n_image_channels, :, :]
         mask = tensor[:, n_image_channels:n_image_channels + 1, :, :]
@@ -132,7 +132,7 @@ def train_discriminator_step(
     d_loss.backward()
 
     # Gradient clipping and tracking
-    grad_clip = trainer.cfg.training.get('gradient_clip_norm', 1.0)
+    grad_clip = trainer._training_config.gradient_clip_norm
     grad_norm_d = 0.0
     if grad_clip > 0:
         grad_norm_d = torch.nn.utils.clip_grad_norm_(
@@ -198,7 +198,7 @@ def compute_perceptual_loss(
         return torch.tensor(0.0, device=trainer.device)
 
     # 3D with 2.5D perceptual loss
-    if trainer.spatial_dims == 3 and getattr(trainer, 'use_2_5d_perceptual', False):
+    if trainer.spatial_dims == 3 and trainer.use_2_5d_perceptual:
         return compute_2_5d_perceptual_loss(trainer, reconstruction, target)
 
     return trainer.perceptual_loss_fn(reconstruction, target)
@@ -223,7 +223,7 @@ def compute_2_5d_perceptual_loss(
         return torch.tensor(0.0, device=trainer.device)
 
     depth = reconstruction.shape[2]
-    slice_fraction = getattr(trainer, 'perceptual_slice_fraction', 0.25)
+    slice_fraction = trainer.perceptual_slice_fraction
     n_slices = max(1, int(depth * slice_fraction))
 
     # Sample slice indices
@@ -267,7 +267,7 @@ def compute_kl_loss(mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
 
 def compression_train_step(
     trainer: BaseCompressionTrainer,
-    batch: Any,
+    batch: BatchType,
 ) -> TrainingStepResult:
     """Template train step for compression trainers.
 
@@ -288,7 +288,7 @@ def compression_train_step(
     from .results import TrainingStepResult
 
     images, mask = trainer._prepare_batch(batch)
-    grad_clip = trainer.cfg.training.get('gradient_clip_norm', 1.0)
+    grad_clip = trainer._training_config.gradient_clip_norm
 
     d_loss = torch.tensor(0.0, device=trainer.device)
     adv_loss = torch.tensor(0.0, device=trainer.device)
@@ -308,8 +308,8 @@ def compression_train_step(
         reconstruction, reg_loss = trainer._forward_for_training(images)
 
         # Compute reconstruction loss (L1 or seg-specific)
-        seg_mode = getattr(trainer, 'seg_mode', False)
-        seg_loss_fn = getattr(trainer, 'seg_loss_fn', None)
+        seg_mode = trainer.seg_mode
+        seg_loss_fn = trainer.seg_loss_fn
 
         if seg_mode and seg_loss_fn is not None:
             seg_loss, seg_breakdown = seg_loss_fn(reconstruction, images)

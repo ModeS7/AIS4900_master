@@ -64,8 +64,10 @@ from medgen.models import (
     is_transformer_model,
 )
 
+from .base_config import ModeConfig, StrategyConfig
+from .diffusion_config import DiffusionTrainerConfig
 from .diffusion_trainer_base import DiffusionTrainerBase
-from .results import TrainingStepResult
+from .results import BatchType, TrainingStepResult
 from .utils import (
     EpochTimeEstimator,
     create_epoch_iterator,
@@ -128,43 +130,45 @@ class DiffusionTrainer(DiffusionTrainerBase):
         super().__init__(cfg, space)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Dimension-specific size config
+        # Extract typed config (single-source defaults)
         # ─────────────────────────────────────────────────────────────────────
-        if spatial_dims == 2:
-            self.image_size: int = cfg.model.image_size
-        else:
-            # 3D volume dimensions (with defaults for robustness)
-            self.volume_height: int = cfg.volume.get('height', 256)
-            self.volume_width: int = cfg.volume.get('width', 256)
-            self.volume_depth: int = cfg.volume.get('depth', 160)
-            # For compatibility with 2D code that uses image_size
-            self.image_size: int = cfg.volume.get('height', 256)
+        dc = DiffusionTrainerConfig.from_hydra(cfg, spatial_dims=spatial_dims)
+        self._diffusion_config = dc
+        mc = ModeConfig.from_hydra(cfg)
+        self._mode_config = mc
+        sc = StrategyConfig.from_hydra(cfg)
 
-        self.eta_min: float = cfg.training.get('eta_min', 1e-6)
+        # ─────────────────────────────────────────────────────────────────────
+        # Dimension-specific size config (from typed config)
+        # ─────────────────────────────────────────────────────────────────────
+        self.image_size: int = dc.image_size
+        if spatial_dims == 3:
+            self.volume_height: int = dc.volume_height
+            self.volume_width: int = dc.volume_width
+            self.volume_depth: int = dc.volume_depth
+
+        self.eta_min: float = dc.eta_min
 
         # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
-        is_seg_mode = self.mode_name in ('seg', 'seg_conditioned')
-        self.perceptual_weight: float = 0.0 if is_seg_mode else cfg.training.get('perceptual_weight', 0.0)
+        self.perceptual_weight: float = dc.perceptual_weight
 
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
-        self.use_fp32_loss: bool = cfg.training.get('use_fp32_loss', True)
+        self.use_fp32_loss: bool = dc.use_fp32_loss
         if self.is_main_process:
             logger.debug(f"use_fp32_loss = {self.use_fp32_loss}")
 
-        # Optimizer settings
-        optimizer_cfg = cfg.training.get('optimizer', {})
-        self.weight_decay: float = optimizer_cfg.get('weight_decay', 0.0)
+        # Optimizer settings (from typed config)
+        self.weight_decay: float = dc.weight_decay
 
-        # Initialize mode (2D-specific) and scheduler
-        # Note: strategy is already created in base class
+        # Initialize mode and scheduler
         self.mode = self._create_mode(self.mode_name)
         # Setup scheduler with dimension-appropriate parameters
         scheduler_kwargs = {
             'num_timesteps': self.num_timesteps,
             'image_size': self.image_size,
-            'use_discrete_timesteps': cfg.strategy.get('use_discrete_timesteps', True),
-            'sample_method': cfg.strategy.get('sample_method', 'logit-normal'),
-            'use_timestep_transform': cfg.strategy.get('use_timestep_transform', True),
+            'use_discrete_timesteps': sc.use_discrete_timesteps,
+            'sample_method': sc.sample_method,
+            'use_timestep_transform': sc.use_timestep_transform,
         }
         if spatial_dims == 3:
             scheduler_kwargs['depth_size'] = self.volume_depth
@@ -172,27 +176,24 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.scheduler = self.strategy.setup_scheduler(**scheduler_kwargs)
 
         # ─────────────────────────────────────────────────────────────────────
-        # 3D-specific memory optimizations (mandatory for 3D)
+        # 3D-specific memory optimizations (from typed config)
         # ─────────────────────────────────────────────────────────────────────
+        self.use_amp: bool = dc.use_amp
+        self.use_gradient_checkpointing: bool = dc.use_gradient_checkpointing
         if spatial_dims == 3:
-            self.use_amp: bool = True  # Always use AMP for 3D
-            self.use_gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', True)
             self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
         else:
-            self.use_amp: bool = cfg.training.get('use_amp', False)
-            self.use_gradient_checkpointing: bool = cfg.training.get('gradient_checkpointing', False)
             self.scaler = None
 
-        # Logging config
-        logging_cfg = cfg.training.get('logging', {})
-        self.log_msssim: bool = logging_cfg.get('msssim', True)
-        self.log_psnr: bool = logging_cfg.get('psnr', True)
-        # Disable LPIPS for seg modes (binary masks don't work with VGG features)
-        self.log_lpips: bool = False if is_seg_mode else logging_cfg.get('lpips', False)
-        self.log_timestep_region_losses: bool = logging_cfg.get('timestep_region_losses', True)
-        self.log_worst_batch: bool = logging_cfg.get('worst_batch', True)
-        self.log_intermediate_steps: bool = logging_cfg.get('intermediate_steps', True)
-        self.num_intermediate_steps: int = logging_cfg.get('num_intermediate_steps', 5)
+        # Logging config (from typed LoggingConfig)
+        lc = dc.logging
+        self.log_msssim: bool = lc.msssim
+        self.log_psnr: bool = lc.psnr
+        self.log_lpips: bool = lc.lpips
+        self.log_timestep_region_losses: bool = lc.timestep_region_losses
+        self.log_worst_batch: bool = lc.worst_batch
+        self.log_intermediate_steps: bool = lc.intermediate_steps
+        self.num_intermediate_steps: int = lc.num_intermediate_steps
 
         # Initialize unified metrics system for consistent logging
         # Note: UnifiedMetrics is initialized in train() when writer is fully set up
@@ -233,67 +234,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         # Generation quality metrics (KID, CMMD) for overfitting detection
         self._gen_metrics: GenerationMetrics | None = None
-        gen_cfg = cfg.training.get('generation_metrics', {})
-        if gen_cfg.get('enabled', False):
-            from medgen.metrics.generation import GenerationMetricsConfig
-            # Use training batch_size by default for torch.compile consistency
-            feature_batch_size = gen_cfg.get('feature_batch_size', None)
-            if feature_batch_size is None:
-                if spatial_dims == 3:
-                    # 3D: use larger batch for slice-wise extraction
-                    feature_batch_size = max(32, cfg.training.get('batch_size', 16) * 16)
-                else:
-                    feature_batch_size = cfg.training.get('batch_size', 16)
-            # Use absolute cache_dir from paths config, fallback to relative
-            gen_cache_dir = gen_cfg.get('cache_dir', None)
-            if gen_cache_dir is None:
-                base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
-                gen_cache_dir = f"{base_cache}/generation_features"
-
-            # 3D volumes are much larger - cap sample counts to avoid OOM
-            if spatial_dims == 3:
-                samples_per_epoch = min(gen_cfg.get('samples_per_epoch', 1), 2)
-                samples_extended = min(gen_cfg.get('samples_extended', 4), 4)
-                samples_test = min(gen_cfg.get('samples_test', 10), 10)
-            else:
-                samples_per_epoch = gen_cfg.get('samples_per_epoch', 100)
-                samples_extended = gen_cfg.get('samples_extended', 500)
-                samples_test = gen_cfg.get('samples_test', 1000)
-
-            # Get original_depth for 3D (used to exclude padded slices from metrics)
-            original_depth = None
-            if spatial_dims == 3:
-                original_depth = cfg.volume.get('original_depth', None)
-
-            # Get size bin config for seg_conditioned mode
-            size_bin_edges = None
-            size_bin_fov_mm = 240.0
-            if self.mode_name == 'seg_conditioned':
-                size_bin_cfg = cfg.mode.get('size_bins', {})
-                size_bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
-                size_bin_fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
-
-            self._gen_metrics_config = GenerationMetricsConfig(
-                enabled=True,
-                samples_per_epoch=samples_per_epoch,
-                samples_extended=samples_extended,
-                samples_test=samples_test,
-                steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
-                steps_extended=gen_cfg.get('steps_extended', 25),
-                steps_test=gen_cfg.get('steps_test', 50),
-                cache_dir=gen_cache_dir,
-                feature_batch_size=feature_batch_size,
-                original_depth=original_depth,
-                size_bin_edges=size_bin_edges,
-                size_bin_fov_mm=size_bin_fov_mm,
-            )
+        from medgen.metrics.generation import GenerationMetricsConfig
+        gen_metrics_cfg = GenerationMetricsConfig.from_hydra(cfg, spatial_dims)
+        if gen_metrics_cfg.enabled:
+            self._gen_metrics_config = gen_metrics_cfg
             if self.is_main_process:
                 sample_type = "volumes" if spatial_dims == 3 else "samples"
                 logger.info(
-                    f"Generation metrics enabled: {self._gen_metrics_config.samples_per_epoch} {sample_type}/epoch "
-                    f"({self._gen_metrics_config.steps_per_epoch} steps), "
-                    f"{self._gen_metrics_config.samples_extended} {sample_type}/extended "
-                    f"({self._gen_metrics_config.steps_extended} steps)"
+                    f"Generation metrics enabled: {gen_metrics_cfg.samples_per_epoch} {sample_type}/epoch "
+                    f"({gen_metrics_cfg.steps_per_epoch} steps), "
+                    f"{gen_metrics_cfg.samples_extended} {sample_type}/extended "
+                    f"({gen_metrics_cfg.steps_extended} steps)"
                 )
         else:
             self._gen_metrics_config = None
@@ -413,24 +364,24 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if mode not in modes:
             raise ValueError(f"Unknown mode: {mode}. Choose from {list(modes.keys())}")
 
+        mc = self._mode_config
+
         if mode == ModeType.DUAL or mode == 'dual':
-            image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
+            image_keys = mc.image_keys if mc.image_keys else None
             return ConditionalDualMode(image_keys)
 
         if mode == 'multi':
-            image_keys = list(self.cfg.mode.image_keys) if 'image_keys' in self.cfg.mode else None
+            image_keys = mc.image_keys if mc.image_keys else None
             return MultiModalityMode(image_keys)
 
         if mode == 'seg_conditioned':
-            size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
-            return SegmentationConditionedMode(size_bin_config)
+            return SegmentationConditionedMode(mc.size_bins)
 
         if mode == 'seg_conditioned_input':
-            size_bin_config = dict(self.cfg.mode.get('size_bins', {})) if 'size_bins' in self.cfg.mode else None
-            return SegmentationConditionedInputMode(size_bin_config)
+            return SegmentationConditionedInputMode(mc.size_bins)
 
         if mode == 'bravo_seg_cond':
-            latent_channels = self.cfg.mode.get('latent_channels', 4)
+            latent_channels = mc.latent_channels if mc.latent_channels is not None else 4
             return LatentSegConditionedMode(latent_channels)
 
         return modes[mode]()
@@ -455,11 +406,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def _setup_ema(self) -> None:
         """Setup EMA wrapper if enabled."""
         if self.use_ema:
+            ema_cfg = self.cfg.training.get('ema', {})
             self.ema = EMA(
                 self.model_raw,
                 beta=self.ema_decay,
-                update_after_step=self.cfg.training.ema.get('update_after_step', 100),
-                update_every=self.cfg.training.ema.get('update_every', 10),
+                update_after_step=int(ema_cfg.get('update_after_step', 100)),
+                update_every=int(ema_cfg.get('update_every', 10)),
             )
             if self.is_main_process:
                 logger.info(f"EMA enabled with decay={self.ema_decay}")
@@ -564,7 +516,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .profiling import get_model_config
         return get_model_config(self)
 
-    def train_step(self, batch: Any) -> TrainingStepResult:
+    def train_step(self, batch: BatchType) -> TrainingStepResult:
         """Execute single training step.
 
         Args:
@@ -755,13 +707,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     total_loss = mse_loss + self.perceptual_weight * p_loss
 
                     # Self-conditioning consistency loss
-                    self_cond_cfg = self.cfg.training.get('self_conditioning', {})
-                    if self_cond_cfg.get('enabled', False):
-                        consistency_weight = self_cond_cfg.get('consistency_weight', 0.1)
+                    tt = self._training_tricks
+                    if tt.self_cond_enabled:
                         consistency_loss = self._compute_self_conditioning_loss(
                             model_input, timesteps, prediction, mode_id
                         )
-                        total_loss = total_loss + consistency_weight * consistency_loss
+                        total_loss = total_loss + tt.self_cond_consistency_weight * consistency_loss
 
             # SDA (Shifted Data Augmentation) path
             # Unlike ScoreAug, SDA transforms CLEAN data before noise addition
@@ -779,7 +730,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             self.scaler.scale(total_loss).backward()
             self.scaler.unscale_(self.optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.cfg.training.get('gradient_clip_norm', 1.0)
+                self.model_raw.parameters(), max_norm=self.gradient_clip_norm
             )
             self._add_gradient_noise(self._global_step)
             self.scaler.step(self.optimizer)
@@ -788,7 +739,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # 2D path: standard backward
             total_loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.cfg.training.get('gradient_clip_norm', 1.0)
+                self.model_raw.parameters(), max_norm=self.gradient_clip_norm
             )
             self._add_gradient_noise(self._global_step)
             self.optimizer.step()
@@ -1043,7 +994,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             num_timestep_bins=10,
             image_size=self.image_size,
             volume_size=volume_size,
-            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            fov_mm=self._paths_config.fov_mm,
             # Logging config flags
             log_grad_norm=self.log_grad_norm,
             log_timestep_losses=self.log_timestep_losses,
@@ -1091,7 +1042,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             ref_val_loader = pixel_val_loader if pixel_val_loader is not None else val_loader
             if ref_val_loader is not None:
                 import hashlib
-                data_dir = str(self.cfg.paths.data_dir)
+                data_dir = str(self._paths_config.data_dir)
                 cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
                 cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
                 cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"

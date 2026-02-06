@@ -131,8 +131,12 @@ class Test3DValidation:
 
         trainer = Mock()
         trainer.log_msssim = True
+        trainer.spatial_dims = 3
+        trainer.mode_name = 'multi_modality'
+        trainer._mode_config = Mock()
+        trainer._mode_config.out_channels = 1
         trainer.cfg = OmegaConf.create({
-            'model': {'spatial_dims': 2},
+            'model': {'spatial_dims': 3},
             'mode': {'name': 'multi_modality', 'out_channels': 1},
         })
 
@@ -145,6 +149,10 @@ class Test3DValidation:
 
         trainer = Mock()
         trainer.log_msssim = True
+        trainer.spatial_dims = 3
+        trainer.mode_name = 'bravo'
+        trainer._mode_config = Mock()
+        trainer._mode_config.out_channels = 1
         trainer.cfg = OmegaConf.create({
             'model': {'spatial_dims': 3},
             'mode': {'name': 'bravo', 'out_channels': 1},

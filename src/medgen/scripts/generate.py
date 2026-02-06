@@ -37,7 +37,7 @@ from medgen.core import (
 )
 from medgen.data import make_binary
 from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
-from medgen.data.loaders.seg_conditioned import create_size_bin_maps
+from medgen.data.loaders.datasets import create_size_bin_maps
 from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
 from medgen.metrics.brain_mask import is_seg_inside_brain
 

@@ -105,9 +105,7 @@ class TestLossesModule:
         from medgen.pipeline.losses import compute_self_conditioning_loss
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'self_conditioning': {'enabled': False}}
-        })
+        trainer._training_tricks.self_cond_enabled = False
 
         result = compute_self_conditioning_loss(
             trainer,
@@ -168,9 +166,7 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import apply_timestep_jitter
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'timestep_jitter': {'enabled': False}}
-        })
+        trainer._training_tricks.jitter_enabled = False
 
         timesteps = torch.tensor([100, 500, 900], dtype=torch.long)
         result = apply_timestep_jitter(trainer, timesteps)
@@ -181,9 +177,8 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import apply_timestep_jitter
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'timestep_jitter': {'enabled': True, 'std': 0.05}}
-        })
+        trainer._training_tricks.jitter_enabled = True
+        trainer._training_tricks.jitter_std = 0.05
         trainer.num_timesteps = 1000
 
         timesteps = torch.tensor([100, 500, 900], dtype=torch.long)
@@ -195,9 +190,8 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import apply_timestep_jitter
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'timestep_jitter': {'enabled': True, 'std': 0.05}}
-        })
+        trainer._training_tricks.jitter_enabled = True
+        trainer._training_tricks.jitter_std = 0.05
         trainer.num_timesteps = 1000
 
         timesteps = torch.tensor([100.5, 500.2, 900.7], dtype=torch.float32)
@@ -209,9 +203,7 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import get_curriculum_range
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'curriculum': {'enabled': False}}
-        })
+        trainer._training_tricks.curriculum_enabled = False
 
         result = get_curriculum_range(trainer, epoch=5)
         assert result is None
@@ -221,18 +213,12 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import get_curriculum_range
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {
-                'curriculum': {
-                    'enabled': True,
-                    'warmup_epochs': 100,
-                    'min_t_start': 0.0,
-                    'min_t_end': 0.0,
-                    'max_t_start': 0.3,
-                    'max_t_end': 1.0,
-                }
-            }
-        })
+        trainer._training_tricks.curriculum_enabled = True
+        trainer._training_tricks.curriculum_warmup_epochs = 100
+        trainer._training_tricks.curriculum_min_t_start = 0.0
+        trainer._training_tricks.curriculum_min_t_end = 0.0
+        trainer._training_tricks.curriculum_max_t_start = 0.3
+        trainer._training_tricks.curriculum_max_t_end = 1.0
 
         # At epoch 0: should be near start
         result = get_curriculum_range(trainer, epoch=0)
@@ -254,9 +240,7 @@ class TestTrainingTricksModule:
         from medgen.pipeline.training_tricks import apply_noise_augmentation
 
         trainer = Mock()
-        trainer.cfg = OmegaConf.create({
-            'training': {'noise_augmentation': {'enabled': False}}
-        })
+        trainer._training_tricks.noise_augmentation_enabled = False
 
         noise = torch.randn(2, 1, 64, 64)
         result = apply_noise_augmentation(trainer, noise)

@@ -65,6 +65,7 @@ class TestGenerationMetricPerformance:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
+    @pytest.mark.timeout(300)  # FID uses O(n³) matrix sqrtm; ~22s/iter × 4+ iters
     def test_fid(self, benchmark, benchmark_features):
         """Benchmark FID computation."""
         from medgen.metrics.generation import compute_fid

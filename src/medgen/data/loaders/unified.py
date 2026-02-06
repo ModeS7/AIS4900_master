@@ -370,120 +370,58 @@ def _get_raw_2d_loader(
     augment_type: str,
     batch_size: int | None,
 ) -> tuple[DataLoader, Dataset]:
-    """Get raw 2D loader (may return tuple/tensor format)."""
-    from medgen.data.loaders import dual, multi_diffusion, seg_conditioned, single
+    """Get raw 2D loader (may return tuple/tensor format).
 
-    if mode == 'seg':
-        if split == 'train':
-            return single.create_dataloader(
-                cfg, 'seg', use_distributed, rank, world_size, augment, augment_type
-            )
-        elif split == 'val':
-            result = single.create_validation_dataloader(cfg, 'seg', batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:  # test
-            result = single.create_test_dataloader(cfg, 'seg', batch_size)
-            if result is None:
-                raise ValueError("No test data found")
-            return result
+    Dispatches to build_2d_loader via spec factories instead of verbose
+    per-mode if/elif chains.
+    """
+    from medgen.data.loaders.builder_2d import (
+        build_2d_loader,
+        dual_spec,
+        multi_diffusion_spec,
+        seg_conditioned_spec,
+        single_spec,
+    )
 
-    elif mode == 'bravo':
-        if split == 'train':
-            return single.create_dataloader(
-                cfg, 'bravo', use_distributed, rank, world_size, augment, augment_type
-            )
-        elif split == 'val':
-            result = single.create_validation_dataloader(cfg, 'bravo', batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:  # test
-            result = single.create_test_dataloader(cfg, 'bravo', batch_size)
-            if result is None:
-                raise ValueError("No test data found")
-            return result
+    spec = None
+    is_train = split == 'train'
 
-    elif mode == 'bravo_seg_cond':
-        # bravo_seg_cond: same pixel loader as bravo, latent handling is separate
-        if split == 'train':
-            return single.create_dataloader(
-                cfg, 'bravo', use_distributed, rank, world_size, augment, augment_type
-            )
-        elif split == 'val':
-            result = single.create_validation_dataloader(cfg, 'bravo', batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:  # test
-            result = single.create_test_dataloader(cfg, 'bravo', batch_size)
-            if result is None:
-                raise ValueError("No test data found")
-            return result
+    if mode in ('seg', 'bravo', 'bravo_seg_cond'):
+        # bravo_seg_cond: same pixel loader as bravo
+        image_type = 'bravo' if mode in ('bravo', 'bravo_seg_cond') else 'seg'
+        spec = single_spec(image_type, augment_type)
 
     elif mode == 'dual':
         image_keys = cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
         conditioning = cfg.mode.get('conditioning', 'seg')
-
-        if split == 'train':
-            return dual.create_dual_image_dataloader(
-                cfg, image_keys, conditioning, use_distributed, rank, world_size, augment, augment_type
-            )
-        elif split == 'val':
-            result = dual.create_dual_image_validation_dataloader(cfg, image_keys, conditioning, batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:  # test
-            result = dual.create_dual_image_test_dataloader(cfg, image_keys, conditioning, batch_size)
-            if result is None:
-                raise ValueError("No test data found")
-            return result
+        spec = dual_spec(image_keys, conditioning, augment_type)
 
     elif mode == 'multi':
-        if split == 'train':
-            return multi_diffusion.create_multi_diffusion_dataloader(
-                cfg, cfg.mode.image_keys, use_distributed, rank, world_size, augment
-            )
-        else:
-            # Multi-modality validation/test not yet supported
+        if not is_train:
             raise ValueError(f"Multi-modality {split} loader not yet supported")
+        spec = multi_diffusion_spec(cfg.mode.image_keys)
 
     elif mode == 'seg_conditioned':
         size_bin_config = dict(cfg.mode.get('size_bins', {}))
-
-        if split == 'train':
-            return seg_conditioned.create_seg_conditioned_dataloader(
-                cfg, size_bin_config, use_distributed, rank, world_size, augment
-            )
-        elif split == 'val':
-            result = seg_conditioned.create_seg_conditioned_validation_dataloader(cfg, size_bin_config, batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:
-            raise ValueError("seg_conditioned test loader not yet supported")
+        spec = seg_conditioned_spec(cfg, size_bin_config, is_train=is_train)
 
     elif mode == 'seg_conditioned_input':
-        # Input conditioning mode: returns bin_maps for concatenation with noise
         size_bin_config = dict(cfg.mode.get('size_bins', {}))
-        size_bin_config['return_bin_maps'] = True  # Enable bin_maps output
-        size_bin_config['cfg_dropout_prob'] = cfg.mode.get('cfg_dropout_prob', 0.15)  # 15% default
+        size_bin_config['return_bin_maps'] = True
+        size_bin_config['cfg_dropout_prob'] = cfg.mode.get('cfg_dropout_prob', 0.15)
+        spec = seg_conditioned_spec(cfg, size_bin_config, is_train=is_train)
 
-        if split == 'train':
-            return seg_conditioned.create_seg_conditioned_dataloader(
-                cfg, size_bin_config, use_distributed, rank, world_size, augment
-            )
-        elif split == 'val':
-            result = seg_conditioned.create_seg_conditioned_validation_dataloader(cfg, size_bin_config, batch_size, world_size)
-            if result is None:
-                raise ValueError("No validation data found")
-            return result
-        else:
-            raise ValueError("seg_conditioned_input test loader not yet supported")
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
-    raise ValueError(f"Unknown mode: {mode}")
+    result = build_2d_loader(
+        spec, cfg, split,
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment, batch_size=batch_size,
+    )
+    if result is None:
+        raise ValueError(f"No {split} data found")
+    return result
 
 
 def _create_3d_loader(
@@ -835,94 +773,44 @@ def _get_raw_compression_2d_loader(
     augment: bool,
     batch_size: int | None,
 ) -> tuple[DataLoader, Dataset]:
-    """Get raw 2D compression loader (returns tuple/tensor format)."""
-    from medgen.data.loaders import multi_modality, seg_compression, vae
+    """Get raw 2D compression loader (returns tuple/tensor format).
+
+    Dispatches to build_2d_loader via spec factories.
+    """
+    from medgen.data.loaders.builder_2d import (
+        build_2d_loader,
+        multi_modality_spec,
+        multi_modality_val_spec,
+        seg_compression_spec,
+        vae_dual_spec,
+        vae_single_spec,
+    )
+
+    image_size = cfg.model.get('image_size', 256)
+    effective_batch_size = batch_size if batch_size else cfg.training.batch_size
 
     if mode == 'seg_compression':
-        # DC-AE seg mask compression
-        image_size = cfg.model.get('image_size', 256)
-        effective_batch_size = batch_size if batch_size else cfg.training.batch_size
-
-        if split == 'train':
-            return seg_compression.create_seg_compression_dataloader(
-                cfg, use_distributed, rank, world_size, augment
-            )
-        elif split == 'val':
-            result = seg_compression.create_seg_compression_validation_dataloader(
-                cfg, image_size, effective_batch_size
-            )
-            if result is None:
-                raise ValueError("No validation data found for seg_compression")
-            return result
-        else:  # test
-            result = seg_compression.create_seg_compression_test_dataloader(
-                cfg, image_size, effective_batch_size
-            )
-            if result is None:
-                raise ValueError("No test data found for seg_compression")
-            return result
-
+        spec = seg_compression_spec()
     elif mode == 'multi_modality':
-        # Multi-modality pooled VAE
         image_keys = cfg.model.get('image_keys', ['bravo', 'flair', 't1_pre', 't1_gd'])
-        image_size = cfg.model.get('image_size', 256)
-        effective_batch_size = batch_size if batch_size else cfg.training.batch_size
-
         if split == 'train':
-            return multi_modality.create_multi_modality_dataloader(
-                cfg, image_keys, image_size, effective_batch_size,
-                use_distributed, rank, world_size, augment
-            )
-        elif split == 'val':
-            result = multi_modality.create_multi_modality_validation_dataloader(
-                cfg, image_keys, image_size, effective_batch_size
-            )
-            if result is None:
-                raise ValueError("No validation data found for multi_modality")
-            return result
-        else:  # test
-            result = multi_modality.create_multi_modality_test_dataloader(
-                cfg, image_keys, image_size, effective_batch_size
-            )
-            if result is None:
-                raise ValueError("No test data found for multi_modality")
-            return result
-
+            spec = multi_modality_spec(image_keys)
+        else:
+            spec = multi_modality_val_spec(image_keys)
     elif mode == 'dual':
-        # Dual modality VAE (t1_pre + t1_gd, 2 channels)
-        if split == 'train':
-            return vae.create_vae_dataloader(
-                cfg, modality='dual', use_distributed=use_distributed,
-                rank=rank, world_size=world_size, augment=augment
-            )
-        elif split == 'val':
-            result = vae.create_vae_validation_dataloader(cfg, 'dual', batch_size)
-            if result is None:
-                raise ValueError("No validation data found for dual VAE")
-            return result
-        else:  # test
-            result = vae.create_vae_test_dataloader(cfg, 'dual', batch_size)
-            if result is None:
-                raise ValueError("No test data found for dual VAE")
-            return result
-
+        spec = vae_dual_spec()
     else:
         # Single modality: bravo, t1_pre, t1_gd, flair, seg
-        if split == 'train':
-            return vae.create_vae_dataloader(
-                cfg, modality=mode, use_distributed=use_distributed,
-                rank=rank, world_size=world_size, augment=augment
-            )
-        elif split == 'val':
-            result = vae.create_vae_validation_dataloader(cfg, mode, batch_size)
-            if result is None:
-                raise ValueError(f"No validation data found for {mode} VAE")
-            return result
-        else:  # test
-            result = vae.create_vae_test_dataloader(cfg, mode, batch_size)
-            if result is None:
-                raise ValueError(f"No test data found for {mode} VAE")
-            return result
+        spec = vae_single_spec(mode)
+
+    result = build_2d_loader(
+        spec, cfg, split,
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment, batch_size=effective_batch_size, image_size=image_size,
+    )
+    if result is None:
+        raise ValueError(f"No {split} data found for {mode}")
+    return result
 
 
 def _create_compression_3d_loader(

@@ -30,6 +30,7 @@ from medgen.metrics import create_worst_batch_figure
 
 # Import 3D components for module-level export
 from ..models.autoencoder_dc_3d import CheckpointedAutoencoderDC3D
+from .compression_arch_config import DCAEArchConfig
 from .compression_trainer import BaseCompressionTrainer
 
 logger = logging.getLogger(__name__)
@@ -86,20 +87,21 @@ class DCAETrainer(BaseCompressionTrainer):
         super().__init__(cfg, spatial_dims=spatial_dims)
 
         # ─────────────────────────────────────────────────────────────────────
-        # DC-AE-specific config (dimension-dependent)
+        # DC-AE-specific config (dimension-dependent, typed)
         # ─────────────────────────────────────────────────────────────────────
-        dcae_cfg = cfg.dcae_3d if spatial_dims == 3 else cfg.dcae
-        self.l1_weight: float = dcae_cfg.get('l1_weight', 1.0)
-        self.latent_channels: int = dcae_cfg.latent_channels
-        self.scaling_factor: float = dcae_cfg.get('scaling_factor', 1.0)
+        ac = DCAEArchConfig.from_hydra(cfg, spatial_dims)
+        self._arch_config = ac
+        self.l1_weight: float = ac.l1_weight
+        self.latent_channels: int = ac.latent_channels
+        self.scaling_factor: float = ac.scaling_factor
 
         if spatial_dims == 2:
             # 2D-specific config
-            self.compression_ratio: int = dcae_cfg.compression_ratio
-            self.pretrained: str | None = dcae_cfg.get('pretrained', None)
+            self.compression_ratio: int = ac.compression_ratio
+            self.pretrained: str | None = ac.pretrained
 
             # Training phase (1=no GAN, 3=with GAN)
-            self.training_phase: int = cfg.training.get('phase', 1)
+            self.training_phase: int = ac.training_phase
             if self.training_phase == 1 or self.adv_weight == 0.0:
                 self.disable_gan = True
 
@@ -116,38 +118,37 @@ class DCAETrainer(BaseCompressionTrainer):
                     )
 
             # Segmentation mode (for mask compression)
-            self.seg_mode: bool = dcae_cfg.get('seg_mode', False)
+            self.seg_mode: bool = ac.seg_mode
             self.seg_loss_fn = None
             if self.seg_mode:
                 from medgen.losses import SegmentationLoss
-                seg_weights = dcae_cfg.get('seg_loss_weights', {})
+                sw = ac.seg_loss_weights
                 self.seg_loss_fn = SegmentationLoss(
-                    bce_weight=seg_weights.get('bce', 1.0),
-                    dice_weight=seg_weights.get('dice', 1.0),
-                    boundary_weight=seg_weights.get('boundary', 0.5),
+                    bce_weight=sw.get('bce', 1.0),
+                    dice_weight=sw.get('dice', 1.0),
+                    boundary_weight=sw.get('boundary', 0.5),
                 )
                 self.perceptual_weight = 0.0
                 if self.is_main_process:
                     logger.info("Seg mode enabled: BCE + Dice + Boundary loss")
 
             # DC-AE 1.5: Structured Latent Space
-            structured_cfg = dcae_cfg.get('structured_latent', {})
-            self.structured_latent_enabled: bool = structured_cfg.get('enabled', False)
-            self.structured_latent_min: int = structured_cfg.get('min_channels', 16)
-            self.structured_latent_step: int = structured_cfg.get('channel_step', 4)
+            self.structured_latent_enabled: bool = ac.structured_latent_enabled
+            self.structured_latent_min: int = ac.structured_latent_min
+            self.structured_latent_step: int = ac.structured_latent_step
 
             if self.structured_latent_enabled and self.is_main_process:
                 steps = self._get_channel_steps()
                 logger.info(f"DC-AE 1.5 Structured Latent Space enabled: channel_steps={steps}")
         else:
             # 3D-specific config
-            self.encoder_block_out_channels = tuple(dcae_cfg.encoder_block_out_channels)
-            self.decoder_block_out_channels = tuple(dcae_cfg.decoder_block_out_channels)
-            self.encoder_layers_per_block = tuple(dcae_cfg.encoder_layers_per_block)
-            self.decoder_layers_per_block = tuple(dcae_cfg.decoder_layers_per_block)
-            self.depth_factors = tuple(dcae_cfg.depth_factors)
-            self.encoder_out_shortcut = dcae_cfg.get('encoder_out_shortcut', True)
-            self.decoder_in_shortcut = dcae_cfg.get('decoder_in_shortcut', True)
+            self.encoder_block_out_channels = ac.encoder_block_out_channels
+            self.decoder_block_out_channels = ac.decoder_block_out_channels
+            self.encoder_layers_per_block = ac.encoder_layers_per_block
+            self.decoder_layers_per_block = ac.decoder_layers_per_block
+            self.depth_factors = ac.depth_factors
+            self.encoder_out_shortcut = ac.encoder_out_shortcut
+            self.decoder_in_shortcut = ac.decoder_in_shortcut
             # 3D doesn't have these features
             self.seg_mode = False
             self.seg_loss_fn = None
@@ -215,8 +216,8 @@ class DCAETrainer(BaseCompressionTrainer):
         """Create fallback save directory for DC-AE."""
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        mode_name = self.cfg.mode.get('name', 'multi_modality')
+        exp_name = self._training_config.name
+        mode_name = self.cfg.mode.name
 
         if self.spatial_dims == 3:
             # Read from config since this may be called before base class sets attributes
@@ -236,7 +237,7 @@ class DCAETrainer(BaseCompressionTrainer):
             pretrained_checkpoint: Optional path to checkpoint for loading
                 pretrained weights.
         """
-        n_channels = self.cfg.mode.get('in_channels', 1 if self.spatial_dims == 2 else 4)
+        n_channels = self.cfg.mode.in_channels
 
         if self.spatial_dims == 3:
             raw_model = self._setup_model_3d(n_channels, pretrained_checkpoint)
@@ -495,7 +496,7 @@ class DCAETrainer(BaseCompressionTrainer):
     def _get_model_config(self) -> dict[str, Any]:
         """Get DC-AE model configuration for checkpoint."""
         if self.spatial_dims == 3:
-            n_channels = self.cfg.mode.get('in_channels', 4)
+            n_channels = self.cfg.mode.in_channels
             return {
                 'in_channels': n_channels,
                 'latent_channels': self.latent_channels,
@@ -663,7 +664,7 @@ class DCAETrainer(BaseCompressionTrainer):
         size = self.volume_height if self.spatial_dims == 3 else self.image_size
         return SegRegionalMetricsTracker(
             image_size=size,
-            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            fov_mm=self._paths_config.fov_mm,
             device=self.device,
         )
 
@@ -706,9 +707,9 @@ class DCAETrainer(BaseCompressionTrainer):
             )
 
         if regional_tracker is not None:
-            mode_name = self.cfg.mode.get('name', 'bravo')
+            mode_name = self.cfg.mode.name
             is_multi_modality = mode_name == 'multi_modality'
-            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            is_dual = self.cfg.mode.in_channels == 2 and mode_name == 'dual'
             is_seg_conditioned = mode_name.startswith('seg_conditioned')
             # No suffix for multi_modality, dual, seg_mode, or seg_conditioned modes
             if is_multi_modality or is_dual or self.seg_mode or is_seg_conditioned:

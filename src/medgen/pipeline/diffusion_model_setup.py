@@ -24,13 +24,12 @@ logger = logging.getLogger(__name__)
 def create_fallback_save_dir(trainer: DiffusionTrainer) -> str:
     """Create fallback save directory for diffusion trainer."""
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    exp_name = trainer.cfg.training.get('name', '')
-    # Use cfg directly since instance attributes may not be set yet
+    exp_name = trainer._training_config.name
     strategy_name = trainer.cfg.strategy.name
     mode_name = trainer.cfg.mode.name
-    image_size = trainer.cfg.model.image_size
+    image_size = getattr(trainer.cfg.model, 'image_size', 256)
     run_name = f"{exp_name}{strategy_name}_{image_size}_{timestamp}"
-    return os.path.join(trainer.cfg.paths.model_dir, 'diffusion_2d', mode_name, run_name)
+    return os.path.join(trainer._paths_config.model_dir, 'diffusion_2d', mode_name, run_name)
 
 
 def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
@@ -94,32 +93,34 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
                 "Either use model=default (UNet) or disable omega_conditioning/mode_embedding."
             )
     else:
-        channels = tuple(trainer.cfg.model.get('channels', [128, 256, 256, 512]))
-        attention_levels = tuple(trainer.cfg.model.get('attention_levels', [False, False, True, True]))
-        num_res_blocks = trainer.cfg.model.get('num_res_blocks', 2)
-        num_head_channels = trainer.cfg.model.get('num_head_channels', 0)
+        from .base_config import ModelConfig
+        mc = ModelConfig.from_hydra(trainer.cfg)
+        channels = tuple(mc.channels)
+        attention_levels = tuple(mc.attention_levels)
+        num_res_blocks = mc.num_res_blocks
+        num_head_channels = mc.num_head_channels
 
         raw_model = DiffusionModelUNet(
-            spatial_dims=trainer.cfg.model.get('spatial_dims', 2),
+            spatial_dims=mc.spatial_dims,
             in_channels=in_channels,
             out_channels=out_channels,
             channels=channels,
             attention_levels=attention_levels,
             num_res_blocks=num_res_blocks,
             num_head_channels=num_head_channels,
-            norm_num_groups=trainer.cfg.model.get('norm_num_groups', 32),
+            norm_num_groups=getattr(trainer.cfg.model, 'norm_num_groups', 32),
         ).to(trainer.device)
 
     # Determine if DDPOptimizer should be disabled for large models
-    disable_ddp_opt = trainer.cfg.training.get('disable_ddp_optimizer', False)
+    disable_ddp_opt = getattr(trainer.cfg.training, 'disable_ddp_optimizer', False)
     if trainer.mode_name == ModeType.DUAL and trainer.image_size >= 256:
         disable_ddp_opt = True
 
-    use_compile = trainer.cfg.training.get('use_compile', True)
+    use_compile = getattr(trainer.cfg.training, 'use_compile', True)
 
     # Handle embedding wrappers (UNet only)
     if not trainer.is_transformer:
-        channels = tuple(trainer.cfg.model.channels)
+        channels = tuple(mc.channels)
         time_embed_dim = 4 * channels[0]
     else:
         time_embed_dim = None
@@ -180,8 +181,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
         # Get time_embed_dim from model
         if time_embed_dim is None:
-            channels = tuple(trainer.cfg.model.channels)
-            time_embed_dim = 4 * channels[0]
+            time_embed_dim = 4 * mc.channels[0]
 
         # Wrap with size bin embedding
         size_bin_wrapper = SizeBinModelWrapper(
@@ -227,8 +227,8 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         )
 
         # Enable gradient checkpointing if requested
-        controlnet_cfg = trainer.cfg.get('controlnet', {})
-        if controlnet_cfg.get('gradient_checkpointing', False):
+        controlnet_cfg = trainer._diffusion_config.controlnet
+        if controlnet_cfg.gradient_checkpointing:
             if hasattr(trainer.controlnet, 'enable_gradient_checkpointing'):
                 trainer.controlnet.enable_gradient_checkpointing()
                 if trainer.is_main_process:
@@ -251,7 +251,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
     # Setup perceptual loss (skip for seg modes where perceptual_weight=0)
     # This saves ~200MB GPU memory from loading ResNet50
-    cache_dir = getattr(trainer.cfg.paths, 'cache_dir', None)
+    cache_dir = trainer._paths_config.cache_dir
     if trainer.perceptual_weight > 0:
         trainer.perceptual_loss_fn = PerceptualLoss(
             spatial_dims=2,
@@ -269,8 +269,8 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
     # Compile fused forward pass setup
     # Compiled forward doesn't support mode_id parameter, so disable when using
     # mode embedding or omega conditioning (wrappers need extra kwargs)
-    compile_fused = trainer.cfg.training.get('compile_fused_forward', True)
-    if trainer.use_multi_gpu or trainer.space.scale_factor > 1 or trainer.use_min_snr or trainer.regional_weight_computer is not None or trainer.score_aug is not None or trainer.sda is not None or trainer.use_mode_embedding or trainer.use_omega_conditioning or trainer.augmented_diffusion_enabled or trainer.use_controlnet or trainer.use_size_bin_embedding or trainer.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
+    compile_fused = getattr(trainer.cfg.training, 'compile_fused_forward', True)
+    if trainer.use_multi_gpu or trainer.spatial_dims == 3 or trainer.space.scale_factor > 1 or trainer.use_min_snr or trainer.regional_weight_computer is not None or trainer.score_aug is not None or trainer.sda is not None or trainer.use_mode_embedding or trainer.use_omega_conditioning or trainer.augmented_diffusion_enabled or trainer.use_controlnet or trainer.use_size_bin_embedding or trainer.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
         compile_fused = False
 
     trainer._setup_compiled_forward(compile_fused)
@@ -303,7 +303,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         logger.info(f"Using weight decay: {trainer.weight_decay}")
 
     # Learning rate scheduler (cosine, constant, or plateau)
-    trainer.scheduler_type = trainer.cfg.training.get('scheduler', 'cosine')
+    trainer.scheduler_type = trainer._diffusion_config.scheduler_type
     if trainer.scheduler_type == 'constant':
         trainer.lr_scheduler = create_warmup_constant_scheduler(
             trainer.optimizer,
@@ -313,7 +313,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         if trainer.is_main_process:
             logger.info("Using constant LR scheduler (warmup then constant)")
     elif trainer.scheduler_type == 'plateau':
-        plateau_cfg = trainer.cfg.training.get('plateau', {})
+        plateau_cfg = trainer.cfg.training.get('plateau', {})  # Not yet in typed config
         trainer.lr_scheduler = create_plateau_scheduler(
             trainer.optimizer,
             mode='min',

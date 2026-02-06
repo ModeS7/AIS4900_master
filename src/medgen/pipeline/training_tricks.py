@@ -38,12 +38,12 @@ def add_gradient_noise(
         trainer: The DiffusionTrainer instance.
         step: Current global training step.
     """
-    grad_noise_cfg = trainer.cfg.training.get('gradient_noise', {})
-    if not grad_noise_cfg.get('enabled', False):
+    tt = trainer._training_tricks
+    if not tt.gradient_noise_enabled:
         return
 
-    sigma = grad_noise_cfg.get('sigma', 0.01)
-    decay = grad_noise_cfg.get('decay', 0.55)
+    sigma = tt.gradient_noise_sigma
+    decay = tt.gradient_noise_decay
 
     # Decay noise over training
     noise_std = sigma / (1 + step) ** decay
@@ -69,21 +69,15 @@ def get_curriculum_range(
     Returns:
         Tuple of (min_t, max_t) or None if curriculum disabled.
     """
-    curriculum_cfg = trainer.cfg.training.get('curriculum', {})
-    if not curriculum_cfg.get('enabled', False):
+    tt = trainer._training_tricks
+    if not tt.curriculum_enabled:
         return None
 
-    warmup_epochs = curriculum_cfg.get('warmup_epochs', 50)
-    progress = min(1.0, epoch / warmup_epochs)
+    progress = min(1.0, epoch / tt.curriculum_warmup_epochs)
 
     # Linear interpolation from start to end range
-    min_t_start = curriculum_cfg.get('min_t_start', 0.0)
-    min_t_end = curriculum_cfg.get('min_t_end', 0.0)
-    max_t_start = curriculum_cfg.get('max_t_start', 0.3)
-    max_t_end = curriculum_cfg.get('max_t_end', 1.0)
-
-    min_t = min_t_start + progress * (min_t_end - min_t_start)
-    max_t = max_t_start + progress * (max_t_end - max_t_start)
+    min_t = tt.curriculum_min_t_start + progress * (tt.curriculum_min_t_end - tt.curriculum_min_t_start)
+    max_t = tt.curriculum_max_t_start + progress * (tt.curriculum_max_t_end - tt.curriculum_max_t_start)
 
     return (min_t, max_t)
 
@@ -103,11 +97,11 @@ def apply_timestep_jitter(
     Returns:
         Jittered timesteps (clamped to valid range).
     """
-    jitter_cfg = trainer.cfg.training.get('timestep_jitter', {})
-    if not jitter_cfg.get('enabled', False):
+    tt = trainer._training_tricks
+    if not tt.jitter_enabled:
         return timesteps
 
-    std = jitter_cfg.get('std', 0.05)
+    std = tt.jitter_std
     # Detect if input is discrete (int) or continuous (float)
     is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
     # Convert to float, normalize to [0, 1], add jitter, clamp, scale back
@@ -137,11 +131,11 @@ def apply_noise_augmentation(
     Returns:
         Perturbed noise (renormalized to maintain variance).
     """
-    noise_aug_cfg = trainer.cfg.training.get('noise_augmentation', {})
-    if not noise_aug_cfg.get('enabled', False):
+    tt = trainer._training_tricks
+    if not tt.noise_augmentation_enabled:
         return noise
 
-    std = noise_aug_cfg.get('std', 0.1)
+    std = tt.noise_augmentation_std
 
     if isinstance(noise, dict):
         perturbed = {}
@@ -200,13 +194,13 @@ def setup_feature_perturbation(trainer: 'DiffusionTrainer') -> None:
         trainer: The DiffusionTrainer instance.
     """
     trainer._feature_hooks = []
-    feat_cfg = trainer.cfg.training.get('feature_perturbation', {})
+    tt = trainer._training_tricks
 
-    if not feat_cfg.get('enabled', False):
+    if not tt.feature_perturbation_enabled:
         return
 
-    std = feat_cfg.get('std', 0.1)
-    layers = feat_cfg.get('layers', ['mid'])
+    std = tt.feature_perturbation_std
+    layers = tt.feature_perturbation_layers
 
     def make_hook(noise_std):
         def hook(module, input, output):
@@ -427,6 +421,7 @@ def _reconstruct_clean(
     timesteps: Tensor,
     strategy_name: str,
     num_timesteps: int,
+    spatial_dims: int = 2,
 ) -> Tensor | dict[str, Tensor]:
     """Reconstruct clean images from augmented noisy and prediction.
 
@@ -438,13 +433,15 @@ def _reconstruct_clean(
         timesteps: Timestep tensor.
         strategy_name: 'rflow' or 'ddpm'.
         num_timesteps: Number of training timesteps for normalization.
+        spatial_dims: Number of spatial dimensions (2 or 3).
 
     Returns:
         Reconstructed clean images (same type as aug_noisy).
     """
     if strategy_name == 'rflow':
         t_norm = timesteps.float() / float(num_timesteps)
-        t_exp = t_norm.view(-1, 1, 1, 1)
+        from medgen.core.spatial_utils import broadcast_to_spatial
+        t_exp = broadcast_to_spatial(t_norm, spatial_dims)
 
         if isinstance(aug_noisy, dict):
             keys = list(aug_noisy.keys())
@@ -514,7 +511,8 @@ def _compute_perceptual_with_inverse(
         # Reconstruct clean from prediction using shared helper
         aug_clean = _reconstruct_clean(
             aug_noisy_dict, prediction, timesteps,
-            trainer.strategy_name, trainer.num_timesteps
+            trainer.strategy_name, trainer.num_timesteps,
+            spatial_dims=trainer.spatial_dims,
         )
 
         # Inverse transform to original space
@@ -534,7 +532,8 @@ def _compute_perceptual_with_inverse(
         # Reconstruct clean from prediction using shared helper
         aug_clean = _reconstruct_clean(
             aug_noisy, prediction, timesteps,
-            trainer.strategy_name, trainer.num_timesteps
+            trainer.strategy_name, trainer.num_timesteps,
+            spatial_dims=trainer.spatial_dims,
         )
 
         inv_clean = trainer.score_aug.inverse_apply_omega(aug_clean, omega)

@@ -29,8 +29,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from medgen.core import setup_distributed
 from medgen.metrics import FLOPsTracker, GradientNormTracker
-from medgen.pipeline.results import TrainingStepResult
+from medgen.pipeline.results import BatchType, TrainingStepResult
 
+from .base_config import BaseTrainingConfig, PathsConfig, ProfilingConfig
 from .checkpoint_manager import CheckpointManager
 from .utils import EpochTimeEstimator
 
@@ -75,49 +76,46 @@ class BaseTrainer(ABC):
         self.cfg = cfg
 
         # ─────────────────────────────────────────────────────────────────────
-        # Extract common training config
+        # Extract typed configs (single-source defaults)
         # ─────────────────────────────────────────────────────────────────────
-        self.n_epochs: int = cfg.training.epochs
-        self.batch_size: int = cfg.training.batch_size
-        self.learning_rate: float = cfg.training.get('learning_rate', 1e-4)
-        self.warmup_epochs: int = cfg.training.warmup_epochs
-        # Calculate figure_interval from num_figures (or use legacy figure_interval if set)
-        if cfg.training.get('figure_interval') is not None:
-            self.figure_interval: int = max(1, cfg.training.figure_interval)
-        else:
-            num_figures = cfg.training.get('num_figures', 20)
-            self.figure_interval: int = max(1, self.n_epochs // max(1, num_figures))
-        self.use_multi_gpu: bool = cfg.training.get('use_multi_gpu', False)
-        self.gradient_clip_norm: float = cfg.training.get('gradient_clip_norm', 1.0)
-        self.limit_train_batches: int | None = cfg.training.get('limit_train_batches', None)
+        tc = BaseTrainingConfig.from_hydra(cfg)
+        pc = PathsConfig.from_hydra(cfg)
+        self._training_config = tc
+        self._paths_config = pc
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Common training config (from typed BaseTrainingConfig)
+        # ─────────────────────────────────────────────────────────────────────
+        self.n_epochs: int = tc.n_epochs
+        self.batch_size: int = tc.batch_size
+        self.learning_rate: float = tc.learning_rate
+        self.warmup_epochs: int = tc.warmup_epochs
+        self.figure_interval: int = tc.get_figure_interval()
+        self.use_multi_gpu: bool = tc.use_multi_gpu
+        self.gradient_clip_norm: float = tc.gradient_clip_norm
+        self.limit_train_batches: int | None = tc.limit_train_batches
 
         # Determine if running on cluster
-        self.is_cluster: bool = (cfg.paths.name == "cluster")
+        self.is_cluster: bool = pc.is_cluster
 
-        # Verbose mode (controls tqdm progress bars)
-        # false: Disable tqdm progress bars (clean SLURM logs)
-        # true: Enable tqdm progress bars
-        # Default: True on local, False on cluster (auto-detect from paths.name)
-        default_verbose = not self.is_cluster
-        self.verbose: bool = cfg.training.get('verbose', default_verbose)
+        # Verbose mode (auto-detect from paths.name if not set)
+        self.verbose: bool = tc.get_verbose(self.is_cluster)
 
         # ─────────────────────────────────────────────────────────────────────
-        # Extract logging config
+        # Logging config (from typed BaseTrainingConfig)
         # ─────────────────────────────────────────────────────────────────────
-        logging_cfg = cfg.training.get('logging', {})
-        self.log_grad_norm: bool = logging_cfg.get('grad_norm', True)
-        self.log_psnr: bool = logging_cfg.get('psnr', True)
-        self.log_lpips: bool = logging_cfg.get('lpips', True)
-        self.log_msssim: bool = logging_cfg.get('msssim', True)
-        self.log_regional_losses: bool = logging_cfg.get('regional_losses', True)
-        self.log_flops: bool = logging_cfg.get('flops', True)
+        self.log_grad_norm: bool = tc.log_grad_norm
+        self.log_psnr: bool = tc.log_psnr
+        self.log_lpips: bool = tc.log_lpips
+        self.log_msssim: bool = tc.log_msssim
+        self.log_regional_losses: bool = tc.log_regional_losses
+        self.log_flops: bool = tc.log_flops
 
         # ─────────────────────────────────────────────────────────────────────
-        # Extract profiling config
+        # Profiling config (from typed ProfilingConfig)
         # ─────────────────────────────────────────────────────────────────────
-        profiling_cfg = cfg.training.get('profiling', {})
-        self._profiling_enabled: bool = profiling_cfg.get('enabled', False)
-        self._profiling_config: dict[str, Any] = profiling_cfg
+        self._profiling_enabled: bool = tc.profiling.enabled
+        self._profiling_config = tc.profiling
         self._profiler: torch.profiler.profile | None = None
 
         # ─────────────────────────────────────────────────────────────────────
@@ -205,10 +203,10 @@ class BaseTrainer(ABC):
             Path to the save directory.
         """
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        image_size = self.cfg.model.get('image_size', 256)
+        exp_name = self._training_config.name
+        image_size = getattr(self.cfg.model, 'image_size', 256)
         run_name = f"{exp_name}{image_size}_{timestamp}"
-        return os.path.join(self.cfg.paths.model_dir, 'runs', run_name)
+        return os.path.join(self._paths_config.model_dir, 'runs', run_name)
 
     def _init_tensorboard(self) -> SummaryWriter | None:
         """Initialize TensorBoard writer.
@@ -288,13 +286,13 @@ class BaseTrainer(ABC):
         if not self._profiling_enabled or not self.is_main_process:
             return None
 
-        cfg = self._profiling_config
+        pc = self._profiling_config
         trace_dir = os.path.join(self.save_dir, 'profiling')
         os.makedirs(trace_dir, exist_ok=True)
 
         logger.info(
-            f"PyTorch profiler enabled: wait={cfg.get('wait', 5)}, "
-            f"warmup={cfg.get('warmup', 2)}, active={cfg.get('active', 10)}"
+            f"PyTorch profiler enabled: wait={pc.wait}, "
+            f"warmup={pc.warmup}, active={pc.active}"
         )
         logger.info(f"Traces will be saved to: {trace_dir}")
 
@@ -304,16 +302,16 @@ class BaseTrainer(ABC):
                 torch.profiler.ProfilerActivity.CUDA,
             ],
             schedule=torch.profiler.schedule(
-                wait=cfg.get('wait', 5),
-                warmup=cfg.get('warmup', 2),
-                active=cfg.get('active', 10),
-                repeat=cfg.get('repeat', 1),
+                wait=pc.wait,
+                warmup=pc.warmup,
+                active=pc.active,
+                repeat=pc.repeat,
             ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
-            record_shapes=cfg.get('record_shapes', True),
-            profile_memory=cfg.get('profile_memory', True),
-            with_stack=cfg.get('with_stack', False),
-            with_flops=cfg.get('with_flops', True),
+            record_shapes=pc.record_shapes,
+            profile_memory=pc.profile_memory,
+            with_stack=pc.with_stack,
+            with_flops=pc.with_flops,
         )
 
     def _profiler_step(self) -> None:
@@ -483,7 +481,7 @@ class BaseTrainer(ABC):
             ema=getattr(self, 'ema', None),
             config=self._get_model_config() if hasattr(self, '_get_model_config') else None,
             metric_name=self._get_best_metric_name(),
-            keep_last_n=self.cfg.training.get('keep_last_n_checkpoints', 0),
+            keep_last_n=self._training_config.keep_last_n_checkpoints,
             device=self.device,
         )
 
@@ -557,7 +555,7 @@ class BaseTrainer(ABC):
         ...
 
     @abstractmethod
-    def train_step(self, batch: Any) -> TrainingStepResult:
+    def train_step(self, batch: BatchType) -> TrainingStepResult:
         """Execute single training step.
 
         Args:

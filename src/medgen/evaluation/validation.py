@@ -19,12 +19,10 @@ from medgen.metrics import (
     WorstBatchTracker,
     compute_dice,
     compute_iou,
-    compute_lpips,
-    compute_lpips_3d,
     compute_msssim,
-    compute_msssim_2d_slicewise,
     compute_psnr,
 )
+from medgen.metrics.dispatch import compute_lpips_dispatch, compute_msssim_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -275,30 +273,23 @@ class ValidationRunner:
                             },
                         )
 
-                        # Quality metrics - use appropriate functions based on spatial_dims
+                        # Quality metrics - use dispatch functions for 2D/3D
                         if self.config.log_msssim:
                             if is_3d:
                                 # 3D: compute both volumetric and slice-by-slice MS-SSIM
                                 total_msssim_3d += compute_msssim(
                                     reconstruction.float(), images.float(), spatial_dims=3
                                 )
-                                total_msssim += compute_msssim_2d_slicewise(
-                                    reconstruction.float(), images.float()
-                                )
-                            else:
-                                # 2D: standard MS-SSIM
-                                total_msssim += compute_msssim(reconstruction, images)
+                            total_msssim += compute_msssim_dispatch(
+                                reconstruction.float(), images.float(), self.config.spatial_dims
+                            )
                         if self.config.log_psnr:
                             total_psnr += compute_psnr(reconstruction, images)
                         if self.config.log_lpips:
-                            if is_3d:
-                                total_lpips += compute_lpips_3d(
-                                    reconstruction.float(), images.float(), device=self.device
-                                )
-                            else:
-                                total_lpips += compute_lpips(
-                                    reconstruction, images, device=self.device
-                                )
+                            total_lpips += compute_lpips_dispatch(
+                                reconstruction.float(), images.float(),
+                                self.config.spatial_dims, device=self.device
+                            )
 
                 # Regional tracking (only for non-seg mode where mask is tumor regions)
                 if regional_tracker is not None and mask is not None and not is_seg_mode:

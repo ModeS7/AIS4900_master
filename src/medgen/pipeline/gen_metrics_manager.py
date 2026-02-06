@@ -298,75 +298,27 @@ def create_gen_metrics_manager_from_config(
     Returns:
         Configured GenerationMetricsManager.
     """
-    gen_cfg = cfg.training.get('generation_metrics', {})
-    mode_name = cfg.mode.name
-
-    if not gen_cfg.get('enabled', False):
-        return GenerationMetricsManager(
-            enabled=False,
-            spatial_dims=spatial_dims,
-            mode_name=mode_name,
-            image_size=cfg.model.image_size,
-            device=device,
-            save_dir=save_dir,
-            is_main_process=is_main_process,
-        )
-
-    # Use training batch_size by default for torch.compile consistency
-    feature_batch_size = gen_cfg.get('feature_batch_size', None)
-    if feature_batch_size is None:
-        if spatial_dims == 3:
-            feature_batch_size = max(32, cfg.training.get('batch_size', 16) * 16)
-        else:
-            feature_batch_size = cfg.training.get('batch_size', 16)
-
-    # Use absolute cache_dir from paths config
-    gen_cache_dir = gen_cfg.get('cache_dir', None)
-    if gen_cache_dir is None:
-        base_cache = getattr(cfg.paths, 'cache_dir', '.cache')
-        gen_cache_dir = f"{base_cache}/generation_features"
-
-    # 3D volumes are much larger - cap sample counts
-    if spatial_dims == 3:
-        samples_per_epoch = min(gen_cfg.get('samples_per_epoch', 1), 2)
-        samples_extended = min(gen_cfg.get('samples_extended', 4), 4)
-        samples_test = min(gen_cfg.get('samples_test', 10), 10)
-    else:
-        samples_per_epoch = gen_cfg.get('samples_per_epoch', 100)
-        samples_extended = gen_cfg.get('samples_extended', 500)
-        samples_test = gen_cfg.get('samples_test', 1000)
-
-    # Get original_depth for 3D (used to exclude padded slices)
-    original_depth = None
-    if spatial_dims == 3:
-        original_depth = cfg.volume.get('original_depth', None)
-
-    # Get size bin config for seg_conditioned mode
-    size_bin_edges = None
-    size_bin_fov_mm = 240.0
-    if mode_name == 'seg_conditioned':
-        size_bin_cfg = cfg.mode.get('size_bins', {})
-        size_bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
-        size_bin_fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
+    from medgen.metrics.generation import GenerationMetricsConfig
+    gen_cfg_typed = GenerationMetricsConfig.from_hydra(cfg, spatial_dims)
 
     return GenerationMetricsManager(
-        enabled=True,
+        enabled=gen_cfg_typed.enabled,
         spatial_dims=spatial_dims,
-        mode_name=mode_name,
+        mode_name=cfg.mode.name,
         image_size=cfg.model.image_size,
         device=device,
         save_dir=save_dir,
         space=space,
-        samples_per_epoch=samples_per_epoch,
-        samples_extended=samples_extended,
-        samples_test=samples_test,
-        steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
-        steps_extended=gen_cfg.get('steps_extended', 25),
-        steps_test=gen_cfg.get('steps_test', 50),
-        cache_dir=gen_cache_dir,
-        feature_batch_size=feature_batch_size,
-        original_depth=original_depth,
-        size_bin_edges=size_bin_edges,
-        size_bin_fov_mm=size_bin_fov_mm,
+        samples_per_epoch=gen_cfg_typed.samples_per_epoch,
+        samples_extended=gen_cfg_typed.samples_extended,
+        samples_test=gen_cfg_typed.samples_test,
+        steps_per_epoch=gen_cfg_typed.steps_per_epoch,
+        steps_extended=gen_cfg_typed.steps_extended,
+        steps_test=gen_cfg_typed.steps_test,
+        cache_dir=gen_cfg_typed.cache_dir,
+        feature_batch_size=gen_cfg_typed.feature_batch_size,
+        original_depth=gen_cfg_typed.original_depth,
+        size_bin_edges=gen_cfg_typed.size_bin_edges,
+        size_bin_fov_mm=gen_cfg_typed.size_bin_fov_mm,
         is_main_process=is_main_process,
     )

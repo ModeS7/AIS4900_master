@@ -439,7 +439,7 @@ class TestSizeBinAdherence:
     def test_compute_size_bin_adherence_perfect_match(self):
         """Perfect match between generated and conditioning returns 1.0 exact match."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from medgen.data.loaders.seg_conditioned import compute_size_bins, DEFAULT_BIN_EDGES
+            from medgen.data.loaders.datasets import compute_size_bins, DEFAULT_BIN_EDGES
             import numpy as np
 
             config = GenerationMetricsConfig(
@@ -478,7 +478,7 @@ class TestSizeBinAdherence:
     def test_compute_size_bin_adherence_mismatch(self):
         """Mismatch between generated and conditioning detected."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+            from medgen.data.loaders.datasets import DEFAULT_BIN_EDGES
 
             config = GenerationMetricsConfig(
                 size_bin_edges=list(DEFAULT_BIN_EDGES),
@@ -504,7 +504,7 @@ class TestSizeBinAdherence:
     def test_compute_size_bin_adherence_extended_prefix(self):
         """Extended prefix applied to metric names."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+            from medgen.data.loaders.datasets import DEFAULT_BIN_EDGES
 
             config = GenerationMetricsConfig(
                 size_bin_edges=list(DEFAULT_BIN_EDGES),
@@ -526,7 +526,7 @@ class TestSizeBinAdherence:
     def test_size_bin_adherence_uses_default_bins_when_none(self):
         """Uses DEFAULT_BIN_EDGES when config.size_bin_edges is None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+            from medgen.data.loaders.datasets import DEFAULT_BIN_EDGES
 
             # Config with None size_bin_edges
             config = GenerationMetricsConfig(size_bin_edges=None)
@@ -546,7 +546,7 @@ class TestSizeBinAdherence:
     def test_correlation_handles_constant_arrays(self):
         """Correlation returns 0.0 for constant arrays (no variance)."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from medgen.data.loaders.seg_conditioned import DEFAULT_BIN_EDGES
+            from medgen.data.loaders.datasets import DEFAULT_BIN_EDGES
 
             config = GenerationMetricsConfig(
                 size_bin_edges=list(DEFAULT_BIN_EDGES),
@@ -598,18 +598,16 @@ class TestSizeBinAdherence:
             captured_num_bins = []
             original_compute_size_bins = None
 
-            from medgen.data.loaders import seg_conditioned as sc_module
+            from medgen.data.loaders import datasets as sc_module
             original_compute_size_bins = sc_module.compute_size_bins
 
             def tracking_compute_size_bins(mask, edges, spacing, num_bins=None):
                 captured_num_bins.append(num_bins)
                 return original_compute_size_bins(mask, edges, spacing, num_bins=num_bins)
 
-            # Patch and run
+            # Patch and run (local import in generation_computation.py picks up patched source)
             with patch.object(sc_module, 'compute_size_bins', tracking_compute_size_bins):
-                # Also need to patch the import in generation.py
-                with patch('medgen.metrics.generation.compute_size_bins', tracking_compute_size_bins):
-                    results = metrics._compute_size_bin_adherence(masks, conditioning_7bins, prefix="")
+                results = metrics._compute_size_bin_adherence(masks, conditioning_7bins, prefix="")
 
             # Verify num_bins=7 was passed (from conditioning shape), not 6
             assert len(captured_num_bins) > 0, "compute_size_bins was not called"

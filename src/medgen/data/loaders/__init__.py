@@ -1,14 +1,7 @@
 """Dataloader factory functions for diffusion and VAE training.
 
-Primary API (RECOMMENDED):
-    from medgen.data.loaders import DataLoaderFactory, LoaderConfig, ModelType, SpatialDims
-
-    config = LoaderConfig.from_hydra(cfg, ModelType.DIFFUSION, "bravo", "train")
-    loader, dataset = DataLoaderFactory.create(config)
-
-Legacy API (still works, for backward compatibility):
+Primary API:
     from medgen.data.loaders import create_dataloader, create_vae_dataloader
-    # These continue to work without deprecation warnings
 
 Dataset Classes (from datasets.py):
     - SegConditionedDataset: 2D seg with size bin conditioning
@@ -24,14 +17,6 @@ Utility Functions (from datasets.py):
 """
 
 # =============================================================================
-# NEW Primary API (RECOMMENDED)
-# =============================================================================
-
-# Typed configuration and factory
-from .configs import LoaderConfig, ModelType, SpatialDims
-from .factory import DataLoaderFactory
-
-# =============================================================================
 # Primary Exports (unified loader interface)
 # =============================================================================
 
@@ -45,7 +30,7 @@ from .base import (
     validate_batch_format,
 )
 
-# Unified loader factory (legacy interface, still works)
+# Unified loader factory
 from .unified import (
     create_dataloader,
     create_diffusion_dataloader,
@@ -65,7 +50,23 @@ from .common import (
     MODALITY_KEYS,
 )
 
-# Consolidated Dataset classes and utility functions (NEW)
+# 2D dataloader builder (consolidated API)
+from .builder_2d import (
+    LoaderSpec,
+    build_2d_loader,
+    # Convenience functions (consolidated from thin wrapper files)
+    create_single_loader,
+    create_dual_loader,
+    create_vae_loader,
+    create_multi_modality_loader,
+    create_single_modality_validation_loader,
+    create_multi_diffusion_loader,
+    create_seg_compression_loader,
+    create_seg_conditioned_loader,
+    create_single_modality_diffusion_val_loader,
+)
+
+# Consolidated Dataset classes and utility functions
 from .datasets import (
     # Dataset classes
     SegConditionedDataset,
@@ -106,6 +107,7 @@ from .volume_3d import (
     create_vae_3d_multi_modality_validation_dataloader,
     create_vae_3d_multi_modality_test_dataloader,
     create_vae_3d_single_modality_validation_loader,
+    create_vae_volume_validation_dataloader,
     Base3DVolumeDataset,
     Volume3DDataset,
     DualVolume3DDataset,
@@ -122,68 +124,171 @@ from .seg import (
 )
 
 # =============================================================================
-# Legacy Imports (for backward compatibility - will show deprecation warnings)
+# Backward-compat aliases (old names -> new convenience functions)
 # =============================================================================
 
-# Single-image dataloaders
-from .single import (
-    create_test_dataloader,
-    create_validation_dataloader,
-)
+# These are used by medgen/data/__init__.py and various callers.
+# They wrap the new convenience functions to match old signatures.
 
-# Dual-image dataloaders
-from .dual import (
-    create_dual_image_dataloader,
-    create_dual_image_test_dataloader,
-    create_dual_image_validation_dataloader,
-)
+def create_validation_dataloader(cfg, image_type, batch_size=None, world_size=1):
+    """Backward-compat: single-image validation loader."""
+    return create_single_loader(
+        cfg, image_type, split='val', batch_size=batch_size, world_size=world_size,
+    )
 
-# VAE dataloaders
-from .vae import (
-    create_vae_dataloader,
-    create_vae_test_dataloader,
-    create_vae_validation_dataloader,
-)
+def create_test_dataloader(cfg, image_type, batch_size=None):
+    """Backward-compat: single-image test loader."""
+    return create_single_loader(cfg, image_type, split='test', batch_size=batch_size)
 
-# Multi-modality VAE dataloaders
-from .multi_modality import (
-    create_multi_modality_dataloader,
-    create_multi_modality_test_dataloader,
-    create_multi_modality_validation_dataloader,
-    create_single_modality_validation_loader,
-)
+def create_dual_image_dataloader(
+    cfg, image_keys, conditioning, use_distributed=False, rank=0, world_size=1,
+    augment=True, augment_type='diffusion', cfg_dropout_prob=0.15,
+):
+    """Backward-compat: dual-image training loader."""
+    return create_dual_loader(
+        cfg, image_keys, conditioning, split='train',
+        augment_type=augment_type, cfg_dropout_prob=cfg_dropout_prob,
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment,
+    )
 
-# Multi-modality diffusion dataloaders
-from .multi_diffusion import (
-    create_multi_diffusion_dataloader,
-    create_multi_diffusion_test_dataloader,
-    create_multi_diffusion_validation_dataloader,
-    create_single_modality_diffusion_val_loader,
-)
+def create_dual_image_validation_dataloader(
+    cfg, image_keys, conditioning='seg', batch_size=None, world_size=1,
+):
+    """Backward-compat: dual-image validation loader."""
+    return create_dual_loader(
+        cfg, image_keys, conditioning, split='val',
+        batch_size=batch_size, world_size=world_size,
+    )
 
-# Segmentation compression dataloaders
-from .seg_compression import (
-    create_seg_compression_dataloader,
-    create_seg_compression_validation_dataloader,
-    create_seg_compression_test_dataloader,
-)
+def create_dual_image_test_dataloader(
+    cfg, image_keys, conditioning='seg', batch_size=None,
+):
+    """Backward-compat: dual-image test loader."""
+    return create_dual_loader(
+        cfg, image_keys, conditioning, split='test', batch_size=batch_size,
+    )
 
-# Segmentation conditioned dataloaders
-from .seg_conditioned import (
-    create_seg_conditioned_dataloader,
-    create_seg_conditioned_validation_dataloader,
-    create_seg_conditioned_test_dataloader,
-)
+def create_vae_dataloader(
+    cfg, modality, use_distributed=False, rank=0, world_size=1, augment=True,
+):
+    """Backward-compat: VAE training loader."""
+    return create_vae_loader(
+        cfg, modality, split='train',
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment,
+    )
+
+def create_vae_validation_dataloader(cfg, modality, batch_size=None):
+    """Backward-compat: VAE validation loader."""
+    return create_vae_loader(cfg, modality, split='val', batch_size=batch_size)
+
+def create_vae_test_dataloader(cfg, modality, batch_size=None):
+    """Backward-compat: VAE test loader."""
+    return create_vae_loader(cfg, modality, split='test', batch_size=batch_size)
+
+def create_multi_modality_dataloader(
+    cfg, image_keys, image_size, batch_size,
+    use_distributed=False, rank=0, world_size=1, augment=True,
+):
+    """Backward-compat: multi-modality VAE training loader."""
+    return create_multi_modality_loader(
+        cfg, image_keys, split='train',
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment, batch_size=batch_size, image_size=image_size,
+    )
+
+def create_multi_modality_validation_dataloader(
+    cfg, image_keys, image_size, batch_size,
+):
+    """Backward-compat: multi-modality VAE validation loader."""
+    return create_multi_modality_loader(
+        cfg, image_keys, split='val',
+        batch_size=batch_size, image_size=image_size,
+    )
+
+def create_multi_modality_test_dataloader(
+    cfg, image_keys, image_size, batch_size,
+):
+    """Backward-compat: multi-modality VAE test loader."""
+    return create_multi_modality_loader(
+        cfg, image_keys, split='test',
+        batch_size=batch_size, image_size=image_size,
+    )
+
+def create_multi_diffusion_dataloader(
+    cfg, image_keys, use_distributed=False, rank=0, world_size=1, augment=True,
+):
+    """Backward-compat: multi-modality diffusion training loader."""
+    return create_multi_diffusion_loader(
+        cfg, image_keys, split='train',
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment,
+    )
+
+def create_multi_diffusion_validation_dataloader(cfg, image_keys, world_size=1):
+    """Backward-compat: multi-modality diffusion validation loader."""
+    return create_multi_diffusion_loader(
+        cfg, image_keys, split='val', world_size=world_size,
+    )
+
+def create_multi_diffusion_test_dataloader(cfg, image_keys, world_size=1):
+    """Backward-compat: multi-modality diffusion test loader."""
+    return create_multi_diffusion_loader(
+        cfg, image_keys, split='test', world_size=world_size,
+    )
+
+def create_seg_compression_dataloader(
+    cfg, image_size, batch_size, use_distributed=False, rank=0, world_size=1, augment=True,
+):
+    """Backward-compat: seg compression training loader."""
+    return create_seg_compression_loader(
+        cfg, split='train',
+        image_size=image_size, batch_size=batch_size,
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment,
+    )
+
+def create_seg_compression_validation_dataloader(cfg, image_size, batch_size):
+    """Backward-compat: seg compression validation loader."""
+    return create_seg_compression_loader(
+        cfg, split='val', image_size=image_size, batch_size=batch_size,
+    )
+
+def create_seg_compression_test_dataloader(cfg, image_size, batch_size):
+    """Backward-compat: seg compression test loader."""
+    return create_seg_compression_loader(
+        cfg, split='test', image_size=image_size, batch_size=batch_size,
+    )
+
+def create_seg_conditioned_dataloader(
+    cfg, size_bin_config=None, use_distributed=False, rank=0, world_size=1, augment=True,
+):
+    """Backward-compat: seg conditioned training loader."""
+    return create_seg_conditioned_loader(
+        cfg, split='train', size_bin_config=size_bin_config,
+        use_distributed=use_distributed, rank=rank, world_size=world_size,
+        augment=augment,
+    )
+
+def create_seg_conditioned_validation_dataloader(
+    cfg, size_bin_config=None, batch_size=None, world_size=1,
+):
+    """Backward-compat: seg conditioned validation loader."""
+    return create_seg_conditioned_loader(
+        cfg, split='val', size_bin_config=size_bin_config,
+        batch_size=batch_size, world_size=world_size,
+    )
+
+def create_seg_conditioned_test_dataloader(cfg, batch_size=None):
+    """Backward-compat: seg conditioned test loader."""
+    return create_seg_conditioned_loader(
+        cfg, split='test', batch_size=batch_size,
+    )
 
 
 __all__ = [
-    # === NEW Primary API (RECOMMENDED) ===
-    'DataLoaderFactory',
-    'LoaderConfig',
-    'ModelType',
-    'SpatialDims',
-
-    # === Primary API (use these) ===
+    # === Primary API ===
     # Base classes
     'BaseDiffusionDataset',
     'BaseDiffusionDataset2D',
@@ -191,7 +296,7 @@ __all__ = [
     'DictDatasetWrapper',
     'dict_collate_fn',
     'validate_batch_format',
-    # Unified factory (legacy interface, still works)
+    # Unified factory
     'create_dataloader',
     'create_diffusion_dataloader',
     'get_dataloader_info',
@@ -199,6 +304,19 @@ __all__ = [
     'DataLoaderConfig',
     'setup_distributed_sampler',
     'MODALITY_KEYS',
+    # 2D builder
+    'LoaderSpec',
+    'build_2d_loader',
+    # Convenience loaders (new names)
+    'create_single_loader',
+    'create_dual_loader',
+    'create_vae_loader',
+    'create_multi_modality_loader',
+    'create_single_modality_validation_loader',
+    'create_multi_diffusion_loader',
+    'create_seg_compression_loader',
+    'create_seg_conditioned_loader',
+    'create_single_modality_diffusion_val_loader',
     # Dataset classes (from datasets.py)
     'SegConditionedDataset',
     'MultiDiffusionDataset',
@@ -230,24 +348,29 @@ __all__ = [
     # 3D loaders
     'create_vae_3d_dataloader',
     'create_seg_dataloader',
+    # Volume validation
+    'create_vae_volume_validation_dataloader',
 
-    # === Legacy API (still work, consider migrating) ===
-    # Single-image
+    # === Backward-compat aliases ===
     'create_validation_dataloader',
     'create_test_dataloader',
-    # Dual-image
     'create_dual_image_dataloader',
     'create_dual_image_validation_dataloader',
     'create_dual_image_test_dataloader',
-    # VAE
     'create_vae_dataloader',
     'create_vae_validation_dataloader',
     'create_vae_test_dataloader',
-    # Multi-modality
     'create_multi_modality_dataloader',
+    'create_multi_modality_validation_dataloader',
+    'create_multi_modality_test_dataloader',
     'create_multi_diffusion_dataloader',
-    # Seg compression
+    'create_multi_diffusion_validation_dataloader',
+    'create_multi_diffusion_test_dataloader',
     'create_seg_compression_dataloader',
-    # Seg conditioned
+    'create_seg_compression_validation_dataloader',
+    'create_seg_compression_test_dataloader',
     'create_seg_conditioned_dataloader',
+    'create_seg_conditioned_validation_dataloader',
+    'create_seg_conditioned_test_dataloader',
+    'create_single_modality_diffusion_val_loader',
 ]

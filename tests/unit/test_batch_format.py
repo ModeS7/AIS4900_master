@@ -226,7 +226,7 @@ class TestDatasetDictFormat:
     def test_multi_diffusion_dataset_returns_dict(self):
         """MultiDiffusionDataset should return dict."""
         import numpy as np
-        from medgen.data.loaders.multi_diffusion import MultiDiffusionDataset
+        from medgen.data.loaders.datasets import MultiDiffusionDataset
 
         # Create minimal samples
         samples = [

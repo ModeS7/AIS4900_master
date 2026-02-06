@@ -13,6 +13,7 @@ Caching:
 - Use clear_metric_caches() to clear all caches when needed
 """
 import logging
+import os
 import threading
 import traceback
 from functools import lru_cache
@@ -53,6 +54,9 @@ PSNR_MSE_EPSILON = 1e-10
 # =============================================================================
 
 LPIPS_3D_CHUNK_SIZE = 32
+
+# Allow disabling torch.compile via environment variable (e.g., for tests)
+_COMPILE_DEFAULT = os.environ.get('MEDGEN_NO_COMPILE', '') != '1'
 
 
 class _WarningFlags:
@@ -337,6 +341,7 @@ def compute_lpips(
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
     cache_dir: str | None = None,
+    use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
     """Compute LPIPS (perceptual distance) between generated and reference images.
 
@@ -371,7 +376,7 @@ def compute_lpips(
             # Get cached metric with lock protection for thread safety
             # The lru_cache + torch.compile combination is not thread-safe
             with _compile_lock:
-                metric = _get_lpips_metric(str(device), network_type, cache_dir)
+                metric = _get_lpips_metric(str(device), network_type, cache_dir, use_compile=use_compile)
 
             # Handle channel count (pretrained networks expect 3 channels)
             num_channels = gen.shape[1]
@@ -435,6 +440,7 @@ def compute_lpips_3d(
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
     chunk_size: int = 32,
+    use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
     """Compute LPIPS slice-by-slice for 3D volumes (batched for efficiency).
 
@@ -476,7 +482,7 @@ def compute_lpips_3d(
 
         # compute_lpips returns a scalar (mean over batch)
         # We need the sum, so multiply by chunk size
-        chunk_lpips = compute_lpips(gen_chunk, ref_chunk, device=device, network_type=network_type)
+        chunk_lpips = compute_lpips(gen_chunk, ref_chunk, device=device, network_type=network_type, use_compile=use_compile)
         total_lpips += chunk_lpips * (end - start)
 
     return total_lpips / total_slices

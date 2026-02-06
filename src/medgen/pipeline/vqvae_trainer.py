@@ -29,6 +29,7 @@ from medgen.core.defaults import VQVAE_DEFAULTS
 from medgen.metrics import CodebookTracker
 
 from .checkpointing import BaseCheckpointedModel
+from .compression_arch_config import VQVAEArchConfig
 from .compression_trainer import BaseCompressionTrainer
 
 logger = logging.getLogger(__name__)
@@ -111,32 +112,22 @@ class VQVAETrainer(BaseCompressionTrainer):
         super().__init__(cfg, spatial_dims=spatial_dims)
 
         # ─────────────────────────────────────────────────────────────────────
-        # VQ-VAE-specific config (dimension-dependent)
+        # VQ-VAE-specific config (dimension-dependent, typed)
         # ─────────────────────────────────────────────────────────────────────
-        vqvae_cfg = cfg.vqvae_3d if spatial_dims == 3 else cfg.vqvae
-        self.num_embeddings: int = vqvae_cfg.get('num_embeddings', 512)
-        self.embedding_dim: int = vqvae_cfg.get('embedding_dim', 64 if spatial_dims == 2 else 3)
-        self.commitment_cost: float = vqvae_cfg.get('commitment_cost', 0.25)
-        self.decay: float = vqvae_cfg.get('decay', 0.99)
-        self.epsilon: float = vqvae_cfg.get('epsilon', 1e-5)
+        ac = VQVAEArchConfig.from_hydra(cfg, spatial_dims)
+        self._arch_config = ac
+        self.num_embeddings: int = ac.num_embeddings
+        self.embedding_dim: int = ac.embedding_dim
+        self.commitment_cost: float = ac.commitment_cost
+        self.decay: float = ac.decay
+        self.epsilon: float = ac.epsilon
 
         # Architecture config
-        default_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
-        self.channels: tuple[int, ...] = tuple(vqvae_cfg.get('channels', default_channels))
-        default_res_layers = 3 if spatial_dims == 2 else 2
-        self.num_res_layers: int = vqvae_cfg.get('num_res_layers', default_res_layers)
-        default_res_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
-        self.num_res_channels: tuple[int, ...] = tuple(
-            vqvae_cfg.get('num_res_channels', default_res_channels)
-        )
-        default_downsample = [[2, 4, 1, 1]] * (3 if spatial_dims == 2 else 2)
-        self.downsample_parameters: tuple[tuple[int, ...], ...] = tuple(
-            tuple(p) for p in vqvae_cfg.get('downsample_parameters', default_downsample)
-        )
-        default_upsample = [[2, 4, 1, 1, 0]] * (3 if spatial_dims == 2 else 2)
-        self.upsample_parameters: tuple[tuple[int, ...], ...] = tuple(
-            tuple(p) for p in vqvae_cfg.get('upsample_parameters', default_upsample)
-        )
+        self.channels: tuple[int, ...] = ac.channels
+        self.num_res_layers: int = ac.num_res_layers
+        self.num_res_channels: tuple[int, ...] = ac.num_res_channels
+        self.downsample_parameters: tuple[tuple[int, ...], ...] = ac.downsample_parameters
+        self.upsample_parameters: tuple[tuple[int, ...], ...] = ac.upsample_parameters
 
         # Codebook tracking (initialized after model setup)
         self._codebook_tracker: CodebookTracker | None = None
@@ -144,16 +135,16 @@ class VQVAETrainer(BaseCompressionTrainer):
         # ─────────────────────────────────────────────────────────────────────
         # Segmentation mode (seg_mode) - 3D only
         # ─────────────────────────────────────────────────────────────────────
-        self.seg_mode: bool = vqvae_cfg.get('seg_mode', False) if spatial_dims == 3 else False
+        self.seg_mode: bool = ac.seg_mode
         self.seg_loss_fn = None
 
         if self.seg_mode:
             from medgen.losses import SegmentationLoss
-            seg_weights = vqvae_cfg.get('seg_loss_weights', {})
+            sw = ac.seg_loss_weights
             self.seg_loss_fn = SegmentationLoss(
-                bce_weight=seg_weights.get('bce', 1.0),
-                dice_weight=seg_weights.get('dice', 1.0),
-                boundary_weight=seg_weights.get('boundary', 0.5),
+                bce_weight=sw.get('bce', 1.0),
+                dice_weight=sw.get('dice', 1.0),
+                boundary_weight=sw.get('boundary', 0.5),
                 spatial_dims=3,  # 3D volumes
             )
             # Disable perceptual loss for binary masks
@@ -196,8 +187,8 @@ class VQVAETrainer(BaseCompressionTrainer):
         """Create fallback save directory for VQ-VAE."""
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = self.cfg.training.get('name', '')
-        mode_name = self.cfg.mode.get('name', 'dual')
+        exp_name = self._training_config.name
+        mode_name = self.cfg.mode.name
 
         if self.spatial_dims == 3:
             run_name = f"vqvae_{exp_name}{self.volume_height}x{self.volume_depth}_{timestamp}"
@@ -213,7 +204,7 @@ class VQVAETrainer(BaseCompressionTrainer):
             pretrained_checkpoint: Optional path to checkpoint for loading
                 pretrained weights.
         """
-        n_channels = self.cfg.mode.get('in_channels', 1)
+        n_channels = self.cfg.mode.in_channels
 
         # Create VQVAE
         base_model = VQVAE(
@@ -424,13 +415,13 @@ class VQVAETrainer(BaseCompressionTrainer):
         size = self.volume_height if self.spatial_dims == 3 else self.image_size
         return SegRegionalMetricsTracker(
             image_size=size,
-            fov_mm=self.cfg.paths.get('fov_mm', 240.0),
+            fov_mm=self._paths_config.fov_mm,
             device=self.device,
         )
 
     def _get_model_config(self) -> dict[str, Any]:
         """Get VQ-VAE model configuration for checkpoint."""
-        n_channels = self.cfg.mode.get('in_channels', 1)
+        n_channels = self.cfg.mode.in_channels
         config = {
             'in_channels': n_channels,
             'out_channels': n_channels,
@@ -484,9 +475,9 @@ class VQVAETrainer(BaseCompressionTrainer):
 
         # Log regional metrics with modality suffix for single-modality modes
         if regional_tracker is not None:
-            mode_name = self.cfg.mode.get('name', 'bravo')
+            mode_name = self.cfg.mode.name
             is_multi_modality = mode_name == 'multi_modality'
-            is_dual = self.cfg.mode.get('in_channels', 1) == 2 and mode_name == 'dual'
+            is_dual = self.cfg.mode.in_channels == 2 and mode_name == 'dual'
             is_seg_conditioned = mode_name.startswith('seg_conditioned')
             # No suffix for multi_modality, dual, or seg_conditioned modes
             if is_multi_modality or is_dual or is_seg_conditioned:

@@ -37,6 +37,67 @@ from .volume_3d import (
 
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# Size Bin Config Extraction
+# =============================================================================
+
+class SegSizeBinConfig:
+    """Extracted size bin configuration for segmentation dataloaders.
+
+    Eliminates repeated cfg.mode.get('size_bins', ...) extraction across
+    train/val/test loader functions.
+    """
+    __slots__ = ('bin_edges', 'num_bins', 'voxel_spacing', 'return_bin_maps', 'max_count')
+
+    def __init__(
+        self,
+        bin_edges: list[float],
+        num_bins: int,
+        voxel_spacing: tuple[float, ...],
+        return_bin_maps: bool,
+        max_count: int,
+    ) -> None:
+        self.bin_edges = bin_edges
+        self.num_bins = num_bins
+        self.voxel_spacing = voxel_spacing
+        self.return_bin_maps = return_bin_maps
+        self.max_count = max_count
+
+    @classmethod
+    def from_cfg(cls, cfg, vcfg: VolumeConfig) -> 'SegSizeBinConfig':
+        """Extract size bin config from Hydra DictConfig.
+
+        Args:
+            cfg: Hydra config with mode.size_bins section.
+            vcfg: Volume configuration (for pixel spacing defaults).
+        """
+        size_bins_cfg = cfg.mode.get('size_bins', None)
+        if size_bins_cfg is None:
+            size_bins_cfg = {}
+        elif hasattr(size_bins_cfg, 'to_container'):
+            from omegaconf import OmegaConf
+            size_bins_cfg = OmegaConf.to_container(size_bins_cfg, resolve=True)
+
+        bin_edges = list(size_bins_cfg.get('edges', DEFAULT_BIN_EDGES))
+        num_bins = int(size_bins_cfg.get('num_bins', len(bin_edges) - 1))
+        default_pixel_spacing = 240.0 / vcfg.height
+        voxel_spacing_cfg = size_bins_cfg.get(
+            'voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing]
+        )
+        voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
+        return_bin_maps = bool(size_bins_cfg.get('return_bin_maps', False))
+        max_count = int(size_bins_cfg.get('max_count', 10))
+
+        return cls(
+            bin_edges=bin_edges,
+            num_bins=num_bins,
+            voxel_spacing=voxel_spacing,
+            return_bin_maps=return_bin_maps,
+            max_count=max_count,
+        )
+
+
 # Re-export for backward compatibility
 __all__ = [
     'SegDataset',
@@ -288,30 +349,11 @@ def create_seg_dataloader(
     vcfg = VolumeConfig.from_cfg(cfg)
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
-    # Get size bin config from mode config (safely handle OmegaConf)
-    size_bins_cfg = cfg.mode.get('size_bins')
-    if size_bins_cfg is None:
-        size_bins_cfg = {}
-    elif hasattr(size_bins_cfg, 'to_container'):
-        # Convert OmegaConf to dict to avoid recursion issues
-        from omegaconf import OmegaConf
-        size_bins_cfg = OmegaConf.to_container(size_bins_cfg, resolve=True)
-
-    bin_edges = list(size_bins_cfg.get('edges', DEFAULT_BIN_EDGES))
-    num_bins = int(size_bins_cfg.get('num_bins', len(bin_edges) - 1))
-
-    # Voxel spacing for physical measurements
-    # Default: 1mm depth, pixel_spacing for H/W
-    default_pixel_spacing = 240.0 / vcfg.height  # fov_mm / image_size
-    voxel_spacing_cfg = size_bins_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
-    voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
+    # Extract size bin config (typed)
+    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
 
     # CFG dropout
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.0))
-
-    # Input conditioning options (for seg_conditioned_input mode)
-    return_bin_maps = bool(size_bins_cfg.get('return_bin_maps', False))
-    max_count = int(size_bins_cfg.get('max_count', 10))
 
     # Check if augmentation is enabled
     augment = getattr(cfg.training, 'augment', False)
@@ -319,9 +361,9 @@ def create_seg_dataloader(
 
     train_dataset = SegDataset(
         data_dir=data_dir,
-        bin_edges=bin_edges,
-        num_bins=num_bins,
-        voxel_spacing=voxel_spacing,
+        bin_edges=sbc.bin_edges,
+        num_bins=sbc.num_bins,
+        voxel_spacing=sbc.voxel_spacing,
         height=vcfg.train_height,
         width=vcfg.train_width,
         pad_depth_to=vcfg.pad_depth_to,
@@ -330,13 +372,13 @@ def create_seg_dataloader(
         positive_only=True,
         cfg_dropout_prob=cfg_dropout_prob,
         augmentation=aug,
-        return_bin_maps=return_bin_maps,
-        max_count=max_count,
+        return_bin_maps=sbc.return_bin_maps,
+        max_count=sbc.max_count,
     )
 
     logger.info(
         f"Created 3D seg dataset: {len(train_dataset)} volumes, "
-        f"{num_bins} bins, voxel_spacing={voxel_spacing}"
+        f"{sbc.num_bins} bins, voxel_spacing={sbc.voxel_spacing}"
     )
 
     loader = _create_loader(
@@ -363,25 +405,13 @@ def create_seg_validation_dataloader(
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
-
-    # Get size bin config
-    size_bin_cfg = cfg.mode.get('size_bins', {})
-    bin_edges = list(size_bin_cfg.get('edges', DEFAULT_BIN_EDGES))
-    num_bins = int(size_bin_cfg.get('num_bins', len(bin_edges) - 1))
-
-    default_pixel_spacing = 240.0 / vcfg.height
-    voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
-    voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
-
-    # Input conditioning options
-    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
-    max_count = int(size_bin_cfg.get('max_count', 10))
+    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
 
     val_dataset = SegDataset(
         data_dir=val_dir,
-        bin_edges=bin_edges,
-        num_bins=num_bins,
-        voxel_spacing=voxel_spacing,
+        bin_edges=sbc.bin_edges,
+        num_bins=sbc.num_bins,
+        voxel_spacing=sbc.voxel_spacing,
         height=vcfg.height,
         width=vcfg.width,
         pad_depth_to=vcfg.pad_depth_to,
@@ -390,8 +420,8 @@ def create_seg_validation_dataloader(
         positive_only=False,  # Evaluate on all volumes
         cfg_dropout_prob=0.0,  # No dropout during validation
         augmentation=None,
-        return_bin_maps=return_bin_maps,
-        max_count=max_count,
+        return_bin_maps=sbc.return_bin_maps,
+        max_count=sbc.max_count,
     )
 
     loader = _create_loader(val_dataset, vcfg, shuffle=False)
@@ -414,25 +444,13 @@ def create_seg_test_dataloader(
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
-
-    # Get size bin config
-    size_bin_cfg = cfg.mode.get('size_bins', {})
-    bin_edges = list(size_bin_cfg.get('edges', DEFAULT_BIN_EDGES))
-    num_bins = int(size_bin_cfg.get('num_bins', len(bin_edges) - 1))
-
-    default_pixel_spacing = 240.0 / vcfg.height
-    voxel_spacing_cfg = size_bin_cfg.get('voxel_spacing', [1.0, default_pixel_spacing, default_pixel_spacing])
-    voxel_spacing = tuple(float(v) for v in voxel_spacing_cfg)
-
-    # Input conditioning options
-    return_bin_maps = bool(size_bin_cfg.get('return_bin_maps', False))
-    max_count = int(size_bin_cfg.get('max_count', 10))
+    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
 
     test_dataset = SegDataset(
         data_dir=test_dir,
-        bin_edges=bin_edges,
-        num_bins=num_bins,
-        voxel_spacing=voxel_spacing,
+        bin_edges=sbc.bin_edges,
+        num_bins=sbc.num_bins,
+        voxel_spacing=sbc.voxel_spacing,
         height=vcfg.height,
         width=vcfg.width,
         pad_depth_to=vcfg.pad_depth_to,
@@ -441,8 +459,8 @@ def create_seg_test_dataloader(
         positive_only=False,
         cfg_dropout_prob=0.0,
         augmentation=None,
-        return_bin_maps=return_bin_maps,
-        max_count=max_count,
+        return_bin_maps=sbc.return_bin_maps,
+        max_count=sbc.max_count,
     )
 
     loader = _create_loader(test_dataset, vcfg, shuffle=False)

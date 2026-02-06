@@ -27,7 +27,7 @@ description: "Segmentation mask generation conditioned on tumor size distributio
 size_bins:
   edges: [0, 3, 6, 10, 15, 20, 30]  # mm boundaries (7 bins, last is explicit 30+)
   num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
-  max_count_per_bin: 10  # Cap embedding vocabulary at 0-10
+  max_count: 10  # Cap embedding vocabulary at 0-10
   embedding_dim: 32  # Embedding dimension per bin
   fov_mm: 240.0  # Field of view for pixel-to-mm conversion
   image_size: 256  # Image size in pixels

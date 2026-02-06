@@ -30,6 +30,7 @@ class TestSlurmParsing:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -60,6 +61,7 @@ class TestSlurmParsing:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -88,6 +90,7 @@ class TestSlurmParsing:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -115,6 +118,7 @@ class TestSlurmParsing:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -160,6 +164,7 @@ class TestPortAllocation:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -187,6 +192,7 @@ class TestRankAssignment:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -215,6 +221,7 @@ class TestRankAssignment:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -242,6 +249,7 @@ class TestRankAssignment:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -275,6 +283,7 @@ class TestFallbackMode:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -308,6 +317,7 @@ class TestFallbackMode:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -339,6 +349,7 @@ class TestMasterAddr:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -362,6 +373,7 @@ class TestMasterAddr:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
@@ -386,6 +398,7 @@ class TestMasterAddr:
             mock_dist.is_initialized.return_value = False
             mock_cuda.is_available.return_value = True
             mock_cuda.set_device = MagicMock()
+            mock_cuda.device_count.return_value = 8
 
             from medgen.core.distributed import setup_distributed
 
