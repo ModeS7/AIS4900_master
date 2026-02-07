@@ -372,9 +372,9 @@ class Test3DSpecificMetrics:
         )
 
         # Simulate 3D validation: update_msssim_3d accumulates values
-        # Create small 3D tensors: (B, C, D, H, W)
-        pred = torch.rand(1, 1, 16, 32, 32)
-        gt = torch.rand(1, 1, 16, 32, 32)
+        # Create 3D tensors: (B, C, D, H, W) - depth must be >= 23 for 2-scale MS-SSIM
+        pred = torch.rand(1, 1, 24, 32, 32)
+        gt = torch.rand(1, 1, 24, 32, 32)
         metrics.update_msssim_3d(pred, gt)
 
         # log_validation logs all accumulated metrics

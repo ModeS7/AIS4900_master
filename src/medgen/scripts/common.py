@@ -46,7 +46,6 @@ def override_vae_channels(cfg: DictConfig, mode: str) -> int:
 def run_test_evaluation(
     trainer: Any,
     test_result: tuple | None,
-    log: logging.Logger,
     eval_method: str = "evaluate_test_set"
 ) -> None:
     """Run test evaluation on best and latest checkpoints.
@@ -54,12 +53,11 @@ def run_test_evaluation(
     Args:
         trainer: Trainer instance with evaluate method.
         test_result: Tuple of (test_loader, test_dataset) or None if no test data.
-        log: Logger instance for output messages.
         eval_method: Name of evaluation method on trainer ('evaluate_test_set' or 'evaluate_test').
 
     Example:
         >>> test_result = create_vae_test_dataloader(cfg=cfg, modality=mode)
-        >>> run_test_evaluation(trainer, test_result, log)
+        >>> run_test_evaluation(trainer, test_result)
     """
     if test_result is not None:
         test_loader, test_dataset = test_result
@@ -86,7 +84,6 @@ def create_per_modality_val_loaders(
     create_loader_fn,
     image_size: int,
     batch_size: int,
-    log: logging.Logger,
 ) -> dict[str, Any]:
     """Create per-modality validation loaders for multi-modality training.
 
@@ -96,7 +93,6 @@ def create_per_modality_val_loaders(
         create_loader_fn: Function to create a single-modality validation loader.
         image_size: Target image size.
         batch_size: Batch size for validation.
-        log: Logger instance for output messages.
 
     Returns:
         Dictionary mapping modality names to validation loaders.
@@ -104,7 +100,7 @@ def create_per_modality_val_loaders(
     Example:
         >>> loaders = create_per_modality_val_loaders(
         ...     cfg, image_keys, create_single_modality_validation_loader,
-        ...     cfg.model.image_size, cfg.training.batch_size, log
+        ...     cfg.model.image_size, cfg.training.batch_size,
         ... )
     """
     per_modality_val_loaders = {}
@@ -127,7 +123,6 @@ def create_per_modality_val_loaders_3d(
     cfg: DictConfig,
     image_keys: list,
     create_loader_fn,
-    log: logging.Logger,
 ) -> dict[str, Any]:
     """Create per-modality validation loaders for 3D multi-modality training.
 
@@ -138,7 +133,6 @@ def create_per_modality_val_loaders_3d(
         cfg: Hydra configuration object.
         image_keys: List of modality names (e.g., ['bravo', 'flair', 't1_pre', 't1_gd']).
         create_loader_fn: Function with signature (cfg, modality) -> DataLoader.
-        log: Logger instance for output messages.
 
     Returns:
         Dictionary mapping modality names to validation loaders.
@@ -186,7 +180,6 @@ def log_training_header(
     mode: str,
     in_channels: int,
     cfg: DictConfig,
-    log: logging.Logger,
     extra_info: dict[str, str] | None = None
 ) -> None:
     """Log a consistent training header.
@@ -196,11 +189,10 @@ def log_training_header(
         mode: Mode name.
         in_channels: Number of input channels.
         cfg: Configuration object.
-        log: Logger instance.
         extra_info: Additional key-value pairs to logger.
 
     Example:
-        >>> log_training_header('VAE', mode, in_channels, cfg, log,
+        >>> log_training_header('VAE', mode, in_channels, cfg,
         ...     extra_info={'Latent channels': str(cfg.vae.latent_channels)})
     """
     logger.info("")

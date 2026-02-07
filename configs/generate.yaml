@@ -61,6 +61,19 @@ cfg_scale_bravo_end: null # Ending CFG for bravo (null = constant)
 max_white_percentage: 0.04   # Max tumor percentage per slice (4%)
 max_retries: 10              # Max retries for invalid seg masks
 
+# Validation settings (seg_conditioned)
+validate_size_bins: true         # Validate generated tumors match requested size bins
+validate_brain_mask: true        # Validate tumors are inside brain mask (3D)
+brain_threshold: 0.05            # Brain mask intensity threshold
+brain_tolerance: 0.0             # Tolerance for tumor-outside-brain overlap
+brain_dilate_pixels: 0           # Dilate brain mask by N pixels before validation
+max_brain_retries: 5             # Max retries for brain mask validation
+
+# Size bin parameters (used when size_bins is null for random sampling)
+bin_edges: [0, 3, 6, 10, 15, 20, 30]  # Feret diameter bin edges (mm)
+num_bins: 7                             # Number of size bins
+max_count: 10                           # Max tumor count per bin (for normalization)
+
 # Output settings
 output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")
 verbose: true             # Enable progress bars (false for cluster)

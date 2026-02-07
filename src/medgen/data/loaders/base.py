@@ -22,11 +22,14 @@ and ensures consistent behavior between 2D and 3D training.
 """
 
 from abc import ABC, abstractmethod
+import logging
 from typing import Any
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+logger = logging.getLogger(__name__)
 
 
 class BaseDiffusionDataset(Dataset, ABC):
@@ -153,6 +156,12 @@ def dict_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
     for key in keys:
         # Collect values where key exists (even if value is None)
         values = [sample[key] for sample in batch if key in sample]
+
+        if len(values) != len(batch):
+            logger.warning(
+                f"dict_collate_fn: key '{key}' present in {len(values)}/{len(batch)} "
+                f"samples. Batch dimension will be {len(values)} instead of {len(batch)}."
+            )
 
         if not values:
             continue  # Key absent from all samples

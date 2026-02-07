@@ -14,11 +14,15 @@ Strategies:
 """
 
 
+import logging
+
 import torch
 from torch import nn
 
 from .base_embed import create_film_mlp, create_zero_init_mlp
 from .device_utils import move_module_to_model_device
+
+logger = logging.getLogger(__name__)
 
 # Mode ID mapping
 MODE_ID_MAP = {
@@ -509,10 +513,10 @@ class LateModeModelWrapper(nn.Module):
                 )
                 self._hooks.append(hook)
 
-            # Inject at up blocks (mirrored levels)
+            # Inject at up blocks (mirrored: up_blocks[i] mirrors down_blocks[num-1-i])
             if hasattr(self.model, 'up_blocks'):
-                for level in range(num_levels - 1, self.start_level - 1, -1):
-                    up_idx = num_levels - 1 - level
+                num_up_hooks = num_levels - self.start_level
+                for up_idx in range(num_up_hooks):
                     if up_idx < len(self.model.up_blocks):
                         hook = self.model.up_blocks[up_idx].register_forward_hook(
                             self._create_injection_hook()
@@ -539,13 +543,21 @@ class LateModeModelWrapper(nn.Module):
                 if hidden.dim() == 4 and hidden.shape[1] == self.embed_dim:
                     mode_emb_spatial = mode_emb.view(-1, self.embed_dim, 1, 1)
                     return (hidden + mode_emb_spatial,) + output[1:]
+                logger.debug(
+                    f"LateModeModelWrapper: skipping injection for tuple output "
+                    f"(hidden shape={hidden.shape}, expected C={self.embed_dim})"
+                )
                 return output
 
             # Handle tensor output (middle block)
             if output.dim() == 4:
-                mode_emb_spatial = mode_emb.view(-1, self.embed_dim, 1, 1)
                 if output.shape[1] == self.embed_dim:
+                    mode_emb_spatial = mode_emb.view(-1, self.embed_dim, 1, 1)
                     return output + mode_emb_spatial
+                logger.debug(
+                    f"LateModeModelWrapper: skipping injection for tensor output "
+                    f"(shape={output.shape}, expected C={self.embed_dim})"
+                )
             return output
         return hook
 

@@ -236,9 +236,9 @@ def validate_strategy_mode_compatibility(cfg: DictConfig) -> list[str]:
         )
 
     # Multi-modality mode requires mode embedding
-    if mode == 'multi_modality' and not cfg.training.get('use_mode_embedding', False):
+    if mode in ('multi', 'multi_modality') and not cfg.training.get('use_mode_embedding', False):
         errors.append(
-            "mode=multi_modality requires use_mode_embedding=true. "
+            "mode=multi requires use_mode_embedding=true. "
             "Add training.use_mode_embedding=true to your config."
         )
 
@@ -391,7 +391,7 @@ def validate_ema_config(cfg: DictConfig) -> list[str]:
 
     ema = training.get('ema', {})
 
-    decay = ema.get('decay', 0.999)
+    decay = ema.get('decay', 0.9999)
     if not (0.9 <= decay < 1.0):
         errors.append(f"training.ema.decay must be in [0.9, 1.0), got {decay}")
 

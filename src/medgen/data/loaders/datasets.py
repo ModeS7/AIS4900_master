@@ -91,7 +91,8 @@ def compute_feret_diameter(binary_mask: np.ndarray, pixel_spacing_mm: float) -> 
 
     # Subsample for large regions
     if len(coords) > 1000:
-        idx = np.random.choice(len(coords), 1000, replace=False)
+        rng = np.random.default_rng(seed=len(coords))
+        idx = rng.choice(len(coords), 1000, replace=False)
         coords = coords[idx]
 
     distances = pdist(coords)
@@ -202,7 +203,8 @@ def compute_feret_diameter_3d(
 
     # Subsample for large regions (3D can have many more voxels)
     if len(scaled_coords) > 2000:
-        idx = np.random.choice(len(scaled_coords), 2000, replace=False)
+        rng = np.random.default_rng(seed=len(scaled_coords))
+        idx = rng.choice(len(scaled_coords), 2000, replace=False)
         scaled_coords = scaled_coords[idx]
 
     distances = pdist(scaled_coords)
@@ -265,9 +267,15 @@ def compute_size_bins_3d(
                 binned = True
                 break
 
-        # If not binned, goes to overflow bin (last bin) - for tumors >= last edge
+        # If not binned, goes to overflow bin (last bin) - only if overflow bin exists
         if not binned:
-            bin_counts[num_bins - 1] += 1
+            if num_bins > n_bounded_bins:
+                bin_counts[num_bins - 1] += 1  # Overflow bin exists
+            else:
+                logger.warning(
+                    f"Tumor diameter {diameter:.1f}mm outside bin range "
+                    f"[{bin_edges[0]:.1f}, {bin_edges[-1]:.1f}], skipping"
+                )
 
     return bin_counts
 

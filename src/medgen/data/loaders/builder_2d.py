@@ -218,7 +218,9 @@ def build_2d_loader(
 def _resolve_data_dir(cfg: DictConfig, split: str) -> str | None:
     """Resolve data directory for a split."""
     if split == 'train':
-        return os.path.join(cfg.paths.data_dir, 'train')
+        return get_validated_split_dir(
+            cfg.paths.data_dir, 'train', logger, raise_on_missing=True
+        )
 
     split_name = 'val' if split == 'val' else 'test_new'
     return get_validated_split_dir(cfg.paths.data_dir, split_name, logger)

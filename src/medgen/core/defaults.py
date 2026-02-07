@@ -42,7 +42,7 @@ class CompressionDefaults:
     perceptual_slice_fraction: float = 0.25
 
     # EMA
-    ema_decay: float = 0.999
+    ema_decay: float = 0.9999
 
 
 @dataclass(frozen=True)

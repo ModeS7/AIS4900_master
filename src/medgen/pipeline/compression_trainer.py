@@ -145,7 +145,7 @@ class BaseCompressionTrainer(BaseTrainer):
         self.disc_num_channels: int = self._get_disc_num_channels(cfg)
 
         # EMA config
-        self.use_ema: bool = cfg.training.get('use_ema', True)
+        self.use_ema: bool = cfg.training.get('use_ema', False)
         self.ema_decay: float = cfg.training.ema.get('decay', 0.9999)
 
         # torch.compile option
@@ -461,25 +461,7 @@ class BaseCompressionTrainer(BaseTrainer):
             prefix: Optional prefix for per-modality logging.
         """
         if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
-            # Update metric accumulators
-            if 'psnr' in metrics:
-                self._unified_metrics._val_psnr_sum = metrics['psnr']
-                self._unified_metrics._val_psnr_count = 1
-            if 'msssim' in metrics:
-                self._unified_metrics._val_msssim_sum = metrics['msssim']
-                self._unified_metrics._val_msssim_count = 1
-            if 'lpips' in metrics:
-                self._unified_metrics._val_lpips_sum = metrics['lpips']
-                self._unified_metrics._val_lpips_count = 1
-            if 'msssim_3d' in metrics:
-                self._unified_metrics._val_msssim_3d_sum = metrics['msssim_3d']
-                self._unified_metrics._val_msssim_3d_count = 1
-            if 'dice_score' in metrics:
-                self._unified_metrics._val_dice_sum = metrics['dice_score']
-                self._unified_metrics._val_dice_count = 1
-            if 'iou' in metrics:
-                self._unified_metrics._val_iou_sum = metrics['iou']
-                self._unified_metrics._val_iou_count = 1
+            self._unified_metrics.set_validation_metrics(metrics)
 
             # Log validation losses
             if 'val_loss' in metrics:

@@ -158,7 +158,7 @@ class PerceptualLossManager:
         n_slices = max(1, int(depth * self.slice_fraction))
 
         # Sample slice indices
-        indices = torch.randperm(depth)[:n_slices].to(self.device)
+        indices = torch.randperm(depth)[:n_slices]
 
         total_loss = torch.tensor(0.0, device=reconstruction.device, dtype=reconstruction.dtype)
         for idx in indices:

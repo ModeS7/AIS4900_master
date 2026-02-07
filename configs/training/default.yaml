@@ -24,11 +24,13 @@ num_figures: 20            # Total figure/extended-metric events during training
 augment: false             # Data augmentation (disabled by default for diffusion)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
 
-# Batch-level augmentations (VAE only - mixup/cutmix)
+# Batch-level augmentations (VAE only - mixup/cutmix/mosaic/copy-paste)
 batch_augment:
   enabled: false           # Disabled by default, enabled in VAE configs
-  mixup_prob: 0.0          # Probability of mixup per batch
-  cutmix_prob: 0.0         # Probability of cutmix per batch
+  mixup_prob: 0.2          # Probability of mixup per batch
+  cutmix_prob: 0.2         # Probability of cutmix per batch
+  mosaic_prob: 0.2         # Probability of mosaic per batch
+  copy_paste_prob: 0.3     # Probability of copy-paste per batch
 
 # Score Augmentation - applies transforms to noisy data (after noise addition)
 # Reference: https://arxiv.org/abs/2508.07926
@@ -182,6 +184,12 @@ perceptual_weight: 0.0     # Weight for perceptual loss term (0 = disabled)
 use_multi_gpu: false
 disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)
 
+# Conditioning dropout for classifier-free guidance (CFG) training
+# Randomly drops conditioning to enable unconditional generation at inference
+# Only applies to conditional diffusion modes (bravo, dual, seg_conditioned)
+conditioning_dropout:
+  prob: 0.15               # Probability of dropping conditioning (0 = disabled)
+
 # Learning rate scheduler
 scheduler: cosine            # Options: "cosine" (default), "constant", "plateau"
                              # cosine: warmup + cosine annealing to eta_min
@@ -262,6 +270,16 @@ optimizer:
 use_compile: true            # Compile VAE/discriminator/perceptual loss
 compile_fused_forward: true  # Compile fused forward pass (diffusion only, ~10% speedup)
                              # Auto-disabled for latent space or Min-SNR
+
+# Cast to FP32 before loss computation (diffusion only)
+# Prevents subtle MSE accuracy issues with BF16/FP16 autocast
+use_fp32_loss: true
+
+# Gradient checkpointing (trades compute for memory)
+# Recomputes activations during backward pass instead of storing them
+# Default: false for 2D, overridden to true in 3D configs
+# INCOMPATIBLE with use_compile (validated at startup)
+gradient_checkpointing: false
 
 # Precision settings (VAE only)
 # Pure BF16 training stores model weights in BF16 for memory savings

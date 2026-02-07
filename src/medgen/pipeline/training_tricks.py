@@ -39,11 +39,11 @@ def add_gradient_noise(
         step: Current global training step.
     """
     tt = trainer._training_tricks
-    if not tt.gradient_noise_enabled:
+    if not tt.gradient_noise.enabled:
         return
 
-    sigma = tt.gradient_noise_sigma
-    decay = tt.gradient_noise_decay
+    sigma = tt.gradient_noise.sigma
+    decay = tt.gradient_noise.decay
 
     # Decay noise over training
     noise_std = sigma / (1 + step) ** decay
@@ -70,14 +70,14 @@ def get_curriculum_range(
         Tuple of (min_t, max_t) or None if curriculum disabled.
     """
     tt = trainer._training_tricks
-    if not tt.curriculum_enabled:
+    if not tt.curriculum.enabled:
         return None
 
-    progress = min(1.0, epoch / tt.curriculum_warmup_epochs)
+    progress = min(1.0, epoch / tt.curriculum.warmup_epochs)
 
     # Linear interpolation from start to end range
-    min_t = tt.curriculum_min_t_start + progress * (tt.curriculum_min_t_end - tt.curriculum_min_t_start)
-    max_t = tt.curriculum_max_t_start + progress * (tt.curriculum_max_t_end - tt.curriculum_max_t_start)
+    min_t = tt.curriculum.min_t_start + progress * (tt.curriculum.min_t_end - tt.curriculum.min_t_start)
+    max_t = tt.curriculum.max_t_start + progress * (tt.curriculum.max_t_end - tt.curriculum.max_t_start)
 
     return (min_t, max_t)
 
@@ -98,10 +98,10 @@ def apply_timestep_jitter(
         Jittered timesteps (clamped to valid range).
     """
     tt = trainer._training_tricks
-    if not tt.jitter_enabled:
+    if not tt.jitter.enabled:
         return timesteps
 
-    std = tt.jitter_std
+    std = tt.jitter.std
     # Detect if input is discrete (int) or continuous (float)
     is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
     # Convert to float, normalize to [0, 1], add jitter, clamp, scale back
@@ -111,7 +111,8 @@ def apply_timestep_jitter(
     t_scaled = t_jittered * trainer.num_timesteps
     # Preserve dtype: int for DDPM, float for RFlow
     if is_discrete:
-        return t_scaled.long()
+        # Clamp to valid discrete range [0, num_timesteps - 1]
+        return t_scaled.clamp(0, trainer.num_timesteps - 1).long()
     else:
         return t_scaled
 
@@ -132,10 +133,10 @@ def apply_noise_augmentation(
         Perturbed noise (renormalized to maintain variance).
     """
     tt = trainer._training_tricks
-    if not tt.noise_augmentation_enabled:
+    if not tt.noise_augmentation.enabled:
         return noise
 
-    std = tt.noise_augmentation_std
+    std = tt.noise_augmentation.std
 
     if isinstance(noise, dict):
         perturbed = {}
@@ -173,7 +174,7 @@ def apply_conditioning_dropout(
     if conditioning is None or trainer.controlnet_cfg_dropout_prob <= 0:
         return conditioning
 
-    if not trainer.training:
+    if not trainer.model.training:
         return conditioning
 
     # Per-sample dropout mask
@@ -196,11 +197,11 @@ def setup_feature_perturbation(trainer: 'DiffusionTrainer') -> None:
     trainer._feature_hooks = []
     tt = trainer._training_tricks
 
-    if not tt.feature_perturbation_enabled:
+    if not tt.feature_perturbation.enabled:
         return
 
-    std = tt.feature_perturbation_std
-    layers = tt.feature_perturbation_layers
+    std = tt.feature_perturbation.std
+    layers = tt.feature_perturbation.layers
 
     def make_hook(noise_std):
         def hook(module, input, output):
@@ -210,21 +211,26 @@ def setup_feature_perturbation(trainer: 'DiffusionTrainer') -> None:
             return output
         return hook
 
-    # Register hooks on specified layers
-    # UNet structure: down_blocks, mid_block, up_blocks
-    if hasattr(trainer.model_raw, 'mid_block') and 'mid' in layers:
-        handle = trainer.model_raw.mid_block.register_forward_hook(make_hook(std))
-        trainer._feature_hooks.append(handle)
-
-    if hasattr(trainer.model_raw, 'down_blocks') and 'encoder' in layers:
-        for block in trainer.model_raw.down_blocks:
-            handle = block.register_forward_hook(make_hook(std))
+    try:
+        # Register hooks on specified layers
+        # UNet structure: down_blocks, mid_block, up_blocks
+        if hasattr(trainer.model_raw, 'mid_block') and 'mid' in layers:
+            handle = trainer.model_raw.mid_block.register_forward_hook(make_hook(std))
             trainer._feature_hooks.append(handle)
 
-    if hasattr(trainer.model_raw, 'up_blocks') and 'decoder' in layers:
-        for block in trainer.model_raw.up_blocks:
-            handle = block.register_forward_hook(make_hook(std))
-            trainer._feature_hooks.append(handle)
+        if hasattr(trainer.model_raw, 'down_blocks') and 'encoder' in layers:
+            for block in trainer.model_raw.down_blocks:
+                handle = block.register_forward_hook(make_hook(std))
+                trainer._feature_hooks.append(handle)
+
+        if hasattr(trainer.model_raw, 'up_blocks') and 'decoder' in layers:
+            for block in trainer.model_raw.up_blocks:
+                handle = block.register_forward_hook(make_hook(std))
+                trainer._feature_hooks.append(handle)
+    except Exception:
+        # Clean up any hooks registered before the error
+        remove_feature_perturbation_hooks(trainer)
+        raise
 
 
 def remove_feature_perturbation_hooks(trainer: 'DiffusionTrainer') -> None:
@@ -523,7 +529,9 @@ def _compute_perceptual_with_inverse(
             return torch.tensor(0.0, device=device), aug_clean
         else:
             # Compute perceptual loss with wrapper that handles dicts
-            p_loss = trainer.perceptual_loss_fn(inv_clean.float(), clean_images.float())
+            inv_clean_f = {k: v.float() for k, v in inv_clean.items()}
+            clean_f = {k: v.float() for k, v in clean_images.items()}
+            p_loss = trainer.perceptual_loss_fn(inv_clean_f, clean_f)
             return p_loss, inv_clean
     else:
         # Single channel mode

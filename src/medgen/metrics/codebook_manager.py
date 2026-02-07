@@ -43,7 +43,7 @@ def create_codebook_tracker(
     except ImportError:
         logger.warning("CodebookTracker not available, codebook metrics disabled")
         return None
-    except Exception as e:
+    except (TypeError, ValueError, RuntimeError, AttributeError) as e:
         # Catch unexpected errors to prevent training crash
         logger.warning(
             f"CodebookTracker initialization failed ({type(e).__name__}: {e}), "

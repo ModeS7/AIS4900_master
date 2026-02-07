@@ -53,12 +53,12 @@ class VolumeConfig:
     slice_step: int
     batch_size: int
     load_seg: bool
-    image_keys: list
+    image_keys: list[str]
     # Optional training resolution (defaults to height/width)
     _train_height: int | None = None
     _train_width: int | None = None
     # DataLoader config (stored as DataLoaderConfig)
-    _loader_config: DataLoaderConfig = None
+    _loader_config: DataLoaderConfig | None = None
 
     def __post_init__(self):
         """Validate configuration values."""
@@ -217,9 +217,6 @@ class Base3DVolumeDataset(Dataset):
         self.load_seg = load_seg
         self.augmentation = augmentation
 
-        # Track padding statistics for logging
-        self._padding_stats = {'volumes_padded': 0, 'total_slices_padded': 0}
-
         self.transform = build_3d_transform(height, width)
 
     def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
@@ -241,9 +238,6 @@ class Base3DVolumeDataset(Dataset):
         current_depth = volume.shape[1]
         if current_depth < self.pad_depth_to:
             pad_total = self.pad_depth_to - current_depth
-            # Track padding statistics
-            self._padding_stats['volumes_padded'] += 1
-            self._padding_stats['total_slices_padded'] += pad_total
             logger.debug(
                 f"Padding volume from {current_depth} to {self.pad_depth_to} slices "
                 f"(+{pad_total} slices, mode={self.pad_mode})"
@@ -257,17 +251,15 @@ class Base3DVolumeDataset(Dataset):
         return volume
 
     def get_padding_summary(self) -> str:
-        """Get summary of depth padding applied to loaded volumes.
+        """Get summary of depth padding configuration.
 
-        Returns:
-            Human-readable summary string.
+        Note: Per-volume padding events are logged at DEBUG level during loading.
+        Aggregate stats are not tracked because DataLoader workers get
+        independent copies of the dataset object.
         """
-        n_padded = self._padding_stats['volumes_padded']
-        total_slices = self._padding_stats['total_slices_padded']
-        if n_padded == 0:
-            return "No volumes required depth padding"
-        avg_padding = total_slices / n_padded
-        return f"{n_padded} volumes padded (avg +{avg_padding:.1f} slices each)"
+        if self.pad_depth_to:
+            return f"Depth padding enabled: pad to {self.pad_depth_to} slices (mode={self.pad_mode})"
+        return "No depth padding configured"
 
     def _load_volume(self, nifti_path: str) -> torch.Tensor:
         """Load and preprocess a 3D volume from NIfTI file.

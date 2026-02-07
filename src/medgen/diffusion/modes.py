@@ -99,9 +99,7 @@ def _to_device(batch: torch.Tensor | dict[str, Any] | tuple, device: torch.devic
         # Also handles dicts within tuples
         return tuple(_move_to_device(v, device) for v in batch)
     elif isinstance(batch, torch.Tensor):
-        if hasattr(batch, 'as_tensor'):
-            return batch.as_tensor().to(device)
-        return batch.to(device)
+        return _move_to_device(batch, device)
     else:
         raise TypeError(f"_to_device: expected Tensor, Dict, or tuple, got {type(batch).__name__}")
 
@@ -266,11 +264,12 @@ class SegmentationMode(TrainingMode):
                 raise ValueError("Dict batch missing 'image' key")
             images = _validate_tensor(images, "SegmentationMode batch['image']")
 
-            # Only add channel dim if missing (4D tensor with D > 1)
-            # 2D unified loader already provides [B, C, H, W] with C=1
-            # 3D loader without channel provides [B, D, H, W] with D > 1
-            if images.dim() == 4 and images.shape[1] > 1:
-                images = images.unsqueeze(1)
+            # Validate: 2D=[B,C,H,W], 3D=[B,C,D,H,W] (loaders must provide channel dim)
+            if images.dim() not in (4, 5):
+                raise ValueError(
+                    f"SegmentationMode: expected 4D or 5D image tensor, "
+                    f"got {images.dim()}D with shape {list(images.shape)}"
+                )
 
             return {
                 'images': images,
@@ -363,17 +362,19 @@ class ConditionalSingleMode(TrainingMode):
             if images is None:
                 raise ValueError("Dict batch missing 'image' key")
 
-            # Only add channel dim if missing (4D tensor with D > 1)
-            # 2D unified loader already provides [B, C, H, W] with C=1
-            # 3D loader without channel provides [B, D, H, W] with D > 1
-            if images.dim() == 4 and images.shape[1] > 1:
-                # This is [B, D, H, W] format - add channel dim
-                images = images.unsqueeze(1)
-            # If images.dim() == 4 and images.shape[1] == 1, it's already [B, 1, H, W]
+            # Validate: 2D=[B,C,H,W], 3D=[B,C,D,H,W] (loaders must provide channel dim)
+            if images.dim() not in (4, 5):
+                raise ValueError(
+                    f"ConditionalSingleMode: expected 4D or 5D image tensor, "
+                    f"got {images.dim()}D with shape {list(images.shape)}"
+                )
 
             seg_masks = batch.get('seg')
-            if seg_masks is not None and seg_masks.dim() == 4 and seg_masks.shape[1] > 1:
-                seg_masks = seg_masks.unsqueeze(1)
+            if seg_masks is not None and seg_masks.dim() not in (4, 5):
+                raise ValueError(
+                    f"ConditionalSingleMode: expected 4D or 5D seg tensor, "
+                    f"got {seg_masks.dim()}D with shape {list(seg_masks.shape)}"
+                )
 
             return {
                 'images': images,
@@ -381,8 +382,8 @@ class ConditionalSingleMode(TrainingMode):
             }
 
         # Handle 2D tensor format [B, 2, H, W]
-        bravo_images = batch[:, 0:1, :, :]
-        seg_masks = batch[:, 1:2, :, :]
+        bravo_images = batch[:, 0:1]
+        seg_masks = batch[:, 1:2]
 
         return {
             'images': bravo_images,
@@ -456,10 +457,10 @@ class ConditionalDualMode(TrainingMode):
         """Prepare conditional dual batch.
 
         Args:
-            batch: Tensor [B, 3, H, W] or latent dict where:
-                - Channel 0: T1 pre-contrast
-                - Channel 1: T1 gadolinium (post-contrast)
-                - Channel 2: Segmentation mask
+            batch: One of:
+                - Tensor [B, 3, H, W]: 2D format (ch0: T1 pre, ch1: T1 gd, ch2: seg)
+                - Dict with image keys and optional 'seg': 3D/unified format
+                - Dict with 'latent': latent space format
             device: Target device.
 
         Returns:
@@ -469,11 +470,36 @@ class ConditionalDualMode(TrainingMode):
             return _prepare_latent_batch(batch, device, is_conditional=True)
 
         batch = _to_device(batch, device)
+
+        # Handle dict batch format (from unified or 3D loaders)
+        if isinstance(batch, dict):
+            images_dict: dict[str, torch.Tensor] = {}
+            for i, key in enumerate(self.image_keys):
+                img = batch.get(key)
+                if img is None:
+                    raise ValueError(f"Dict batch missing '{key}' key")
+                if img.dim() not in (4, 5):
+                    raise ValueError(
+                        f"ConditionalDualMode: expected 4D or 5D tensor for '{key}', "
+                        f"got {img.dim()}D with shape {list(img.shape)}"
+                    )
+                images_dict[key] = img
+
+            seg_mask = batch.get('seg')
+            if seg_mask is not None and seg_mask.dim() not in (4, 5):
+                raise ValueError(
+                    f"ConditionalDualMode: expected 4D or 5D seg tensor, "
+                    f"got {seg_mask.dim()}D with shape {list(seg_mask.shape)}"
+                )
+
+            return {'images': images_dict, 'labels': seg_mask}
+
+        # Handle 2D tensor format [B, 3, H, W] (dimension-agnostic slicing)
         images: dict[str, torch.Tensor] = {
-            self.image_keys[0]: batch[:, 0:1, :, :],
-            self.image_keys[1]: batch[:, 1:2, :, :],
+            self.image_keys[0]: batch[:, 0:1],
+            self.image_keys[1]: batch[:, 1:2],
         }
-        seg_mask = batch[:, 2:3, :, :]
+        seg_mask = batch[:, 2:3]
 
         return {
             'images': images,
@@ -662,15 +688,15 @@ class SegmentationConditionedMode(TrainingMode):
 
         Args:
             size_bin_config: Configuration for size bins. Defaults:
-                - edges: [0, 2, 4, 6, 9, 13, 18, 25, 35, 50]
-                - num_bins: 9
-                - max_count_per_bin: 10
+                - edges: [0, 3, 6, 10, 15, 20, 30]
+                - num_bins: 7
+                - max_count: 10
                 - embedding_dim: 32
         """
         self.size_bin_config = size_bin_config or {
             'edges': [0, 3, 6, 10, 15, 20, 30],
-            'num_bins': 6,
-            'max_count_per_bin': 10,
+            'num_bins': 7,
+            'max_count': 10,
             'embedding_dim': 32,
         }
 
@@ -702,6 +728,7 @@ class SegmentationConditionedMode(TrainingMode):
 
         # All batches are now dict format
         batch = _to_device(batch, device)
+        _validate_dict_keys(batch, ['image', 'size_bins'], 'SegmentationConditionedMode')
         return {
             'images': batch['image'],
             'labels': None,  # No label concatenation, conditioning via embedding
@@ -788,6 +815,7 @@ class SegmentationConditionedInputMode(TrainingMode):
         """
         # All batches are now dict format
         batch = _to_device(batch, device)
+        _validate_dict_keys(batch, ['image'], 'SegmentationConditionedInputMode')
         return {
             'images': batch['image'],
             'labels': None,

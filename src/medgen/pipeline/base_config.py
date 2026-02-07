@@ -72,6 +72,20 @@ class ModelConfig:
     drop_rate: float = 0.0
     drop_path_rate: float = 0.0
 
+    def __post_init__(self):
+        if self.spatial_dims not in (2, 3):
+            raise ValueError(f"spatial_dims must be 2 or 3, got {self.spatial_dims}")
+        if self.image_size <= 0:
+            raise ValueError(f"image_size must be > 0, got {self.image_size}")
+        valid_types = ('unet', 'sit')
+        if self.type not in valid_types:
+            raise ValueError(f"model type must be one of {valid_types}, got '{self.type}'")
+        if len(self.channels) != len(self.attention_levels):
+            raise ValueError(
+                f"channels and attention_levels must have same length, "
+                f"got {len(self.channels)} vs {len(self.attention_levels)}"
+            )
+
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'ModelConfig':
         """Extract model config from Hydra DictConfig."""
@@ -107,13 +121,8 @@ class ModeConfig:
     image_keys: list[str] = field(default_factory=lambda: ["bravo"])
     cfg_dropout_prob: float = 0.0
     cond_channels: int | None = None
-    # Mode embedding
-    use_mode_embedding: bool = False
-    mode_embedding_strategy: str = "full"
-    mode_embedding_dropout: float = 0.2
-    late_mode_start_level: int = 2
     # Size bin sub-config (seg_conditioned only)
-    size_bins: dict | None = None
+    size_bins: dict[str, Any] | None = None
     # Latent seg conditioning
     latent_channels: int | None = None
     # Filesystem subdirectory (e.g., 'seg' for 'seg_conditioned')
@@ -138,10 +147,6 @@ class ModeConfig:
             image_keys=list(mode_cfg.get('image_keys', ['bravo'])),
             cfg_dropout_prob=mode_cfg.get('cfg_dropout_prob', 0.0),
             cond_channels=mode_cfg.get('cond_channels', None),
-            use_mode_embedding=mode_cfg.get('use_mode_embedding', False),
-            mode_embedding_strategy=mode_cfg.get('mode_embedding_strategy', 'full'),
-            mode_embedding_dropout=mode_cfg.get('mode_embedding_dropout', 0.2),
-            late_mode_start_level=mode_cfg.get('late_mode_start_level', 2),
             size_bins=size_bins,
             latent_channels=mode_cfg.get('latent_channels', None),
             subdir=mode_cfg.get('subdir', None),
@@ -162,6 +167,13 @@ class StrategyConfig:
     sample_method: str = "logit-normal"
     use_timestep_transform: bool = True
     schedule: str = "cosine"
+
+    def __post_init__(self):
+        valid_names = ('ddpm', 'rflow')
+        if self.name not in valid_names:
+            raise ValueError(f"strategy name must be one of {valid_names}, got '{self.name}'")
+        if self.num_train_timesteps <= 0:
+            raise ValueError(f"num_train_timesteps must be > 0, got {self.num_train_timesteps}")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'StrategyConfig':
@@ -248,6 +260,18 @@ class BaseTrainingConfig:
     keep_last_n_checkpoints: int = 0
     # Experiment name (for fallback save dir)
     name: str = ""
+
+    def __post_init__(self):
+        if self.n_epochs <= 0:
+            raise ValueError(f"n_epochs must be > 0, got {self.n_epochs}")
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {self.batch_size}")
+        if self.learning_rate <= 0:
+            raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
+        if self.warmup_epochs < 0:
+            raise ValueError(f"warmup_epochs must be >= 0, got {self.warmup_epochs}")
+        if self.num_figures < 0:
+            raise ValueError(f"num_figures must be >= 0, got {self.num_figures}")
 
     def get_figure_interval(self, n_epochs: int | None = None) -> int:
         """Compute figure interval from config."""

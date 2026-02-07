@@ -634,7 +634,7 @@ def _train_3d(cfg: DictConfig) -> None:
     # Test evaluation (if test_new set exists and enabled)
     run_test = cfg.training.get('test_after_training', True)
     test_dir = os.path.join(cfg.paths.data_dir, 'test_new')
-    use_latent = cfg.latent.get('enabled', False)
+    use_latent = cfg.get('latent', {}).get('enabled', False)
 
     if run_test and os.path.exists(test_dir):
         logger.info("=== Test Evaluation ===")

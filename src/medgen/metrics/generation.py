@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from omegaconf import DictConfig
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -72,7 +74,7 @@ class GenerationMetricsConfig:
         size_bin_edges: Bin edges in mm for size bin adherence (seg_conditioned mode).
         size_bin_fov_mm: Field of view in mm for computing pixel spacing.
     """
-    enabled: bool = True
+    enabled: bool = False
     samples_per_epoch: int = 100
     samples_extended: int = 500
     samples_test: int = 1000
@@ -88,7 +90,7 @@ class GenerationMetricsConfig:
     size_bin_fov_mm: float = 240.0  # Field of view in mm
 
     @classmethod
-    def from_hydra(cls, cfg, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
+    def from_hydra(cls, cfg: DictConfig, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
         """Extract generation metrics config from Hydra DictConfig.
 
         Handles 3D sample capping, feature_batch_size derivation,
@@ -299,6 +301,11 @@ def compute_cmmd(
 
     # Unbiased MMD^2 estimate
     n, m = real_features.shape[0], generated_features.shape[0]
+
+    # Guard: unbiased MMD estimator requires at least 2 samples
+    if n < 2 or m < 2:
+        logger.warning(f"CMMD requires >= 2 samples (got real={n}, gen={m})")
+        return 0.0
 
     # Zero diagonal for unbiased estimate
     k_rr_no_diag = k_rr.clone()

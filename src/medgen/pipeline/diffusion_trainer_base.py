@@ -87,7 +87,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self.strategy = self._create_strategy(self.strategy_name)
 
         # EMA configuration (shared)
-        self.use_ema: bool = cfg.training.get('use_ema', True)
+        self.use_ema: bool = cfg.training.get('use_ema', False)
         self.ema_decay: float = cfg.training.get('ema', {}).get('decay', 0.9999)
         self.ema: EMA | None = None
 
@@ -101,8 +101,8 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         tricks = TrainingTricksConfig.from_hydra(cfg)
         self._training_tricks = tricks
 
-        self.use_min_snr: bool = tricks.min_snr_enabled
-        self.min_snr_gamma: float = tricks.min_snr_gamma
+        self.use_min_snr: bool = tricks.min_snr.enabled
+        self.min_snr_gamma: float = tricks.min_snr.gamma
         if self.use_min_snr and self.strategy_name == 'rflow':
             import warnings
             warnings.warn(
@@ -221,59 +221,12 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _get_curriculum_range(self, epoch: int) -> tuple[float, float] | None:
-        """Get timestep range for curriculum learning.
-
-        Linearly interpolates from start range to end range over warmup_epochs.
-
-        Args:
-            epoch: Current training epoch.
-
-        Returns:
-            Tuple of (min_t, max_t) or None if curriculum disabled.
-        """
-        tt = self._training_tricks
-        if not tt.curriculum_enabled:
-            return None
-
-        progress = min(1.0, epoch / tt.curriculum_warmup_epochs)
-
-        # Linear interpolation from start to end range
-        min_t = tt.curriculum_min_t_start + progress * (tt.curriculum_min_t_end - tt.curriculum_min_t_start)
-        max_t = tt.curriculum_max_t_start + progress * (tt.curriculum_max_t_end - tt.curriculum_max_t_start)
-
-        return (min_t, max_t)
+        """Get timestep range for curriculum learning. Override in subclass to enable."""
+        return None
 
     def _apply_timestep_jitter(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """Add Gaussian noise to timesteps for regularization.
-
-        Increases noise-level diversity without changing output distribution.
-
-        Args:
-            timesteps: Original timesteps tensor.
-
-        Returns:
-            Jittered timesteps (clamped to valid range).
-        """
-        tt = self._training_tricks
-        if not tt.jitter_enabled:
-            return timesteps
-
-        std = tt.jitter_std
-
-        # Detect if input is discrete (int) or continuous (float)
-        is_discrete = timesteps.dtype in (torch.int32, torch.int64, torch.long)
-
-        # Normalize to [0, 1], add jitter, clamp, scale back
-        t_normalized = timesteps.float() / self.num_timesteps
-        t_jittered = t_normalized + torch.randn_like(t_normalized) * std
-        t_jittered = t_jittered.clamp(0.0, 1.0)
-        t_scaled = t_jittered * self.num_timesteps
-
-        # Preserve dtype: int for DDPM, float for RFlow
-        if is_discrete:
-            return t_scaled.long()
-        else:
-            return t_scaled
+        """Apply timestep jitter. Override in subclass to enable."""
+        return timesteps
 
     # ─────────────────────────────────────────────────────────────────────────
     # Shared Methods: Noise Augmentation
@@ -283,133 +236,36 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         self,
         noise: torch.Tensor | dict[str, torch.Tensor],
     ) -> torch.Tensor | dict[str, torch.Tensor]:
-        """Add perturbation to noise vector for regularization.
-
-        Increases noise diversity without affecting what model learns to output.
-
-        Args:
-            noise: Original noise tensor or dict of tensors (for dual mode).
-
-        Returns:
-            Perturbed noise (renormalized to maintain variance).
-        """
-        tt = self._training_tricks
-        if not tt.noise_augmentation_enabled:
-            return noise
-
-        std = tt.noise_augmentation_std
-
-        if isinstance(noise, dict):
-            # Handle dual mode (2D only)
-            perturbed = {}
-            for k, v in noise.items():
-                perturbation = torch.randn_like(v) * std
-                perturbed_v = v + perturbation
-                perturbed[k] = perturbed_v / perturbed_v.std() * v.std()
-            return perturbed
-        else:
-            # Standard tensor (both 2D and 3D)
-            perturbation = torch.randn_like(noise) * std
-            perturbed = noise + perturbation
-            return perturbed / perturbed.std() * noise.std()
+        """Apply noise augmentation. Override in subclass to enable."""
+        return noise
 
     # ─────────────────────────────────────────────────────────────────────────
     # Shared Methods: Gradient Noise
     # ─────────────────────────────────────────────────────────────────────────
 
     def _add_gradient_noise(self, step: int) -> None:
-        """Add Gaussian noise to gradients for regularization.
-
-        Noise decays over training as: sigma / (1 + step)^decay
-        Reference: "Adding Gradient Noise Improves Learning" (Neelakantan et al., 2015)
-
-        Args:
-            step: Current global training step.
-        """
-        tt = self._training_tricks
-        if not tt.gradient_noise_enabled:
-            return
-
-        sigma = tt.gradient_noise_sigma
-        decay = tt.gradient_noise_decay
-
-        # Decay noise over training
-        noise_scale = sigma / ((1 + step) ** decay)
-
-        for param in self.model.parameters():
-            if param.grad is not None:
-                noise = torch.randn_like(param.grad) * noise_scale
-                param.grad.add_(noise)
+        """Add gradient noise. Override in subclass to enable."""
+        return
 
     # ─────────────────────────────────────────────────────────────────────────
     # Shared Methods: EMA Management
     # ─────────────────────────────────────────────────────────────────────────
 
     def _setup_ema(self, model: nn.Module) -> None:
-        """Setup EMA wrapper if enabled.
-
-        Args:
-            model: Model to wrap with EMA.
-        """
-        if self.use_ema:
-            ema_cfg = self.cfg.training.get('ema', {})
-            self.ema = EMA(
-                model,
-                beta=self.ema_decay,
-                update_after_step=int(ema_cfg.get('update_after_step', 0)),
-                update_every=int(ema_cfg.get('update_every', 1)),
-            )
-            if self.is_main_process:
-                logger.info(f"EMA enabled with decay={self.ema_decay}")
+        """Setup EMA wrapper. Override in subclass to enable."""
+        return
 
     def _update_ema(self) -> None:
-        """Update EMA model weights."""
-        if self.ema is not None:
-            self.ema.update()
+        """Update EMA model weights. Override in subclass to enable."""
+        return
 
     # ─────────────────────────────────────────────────────────────────────────
     # Shared Methods: Feature Perturbation
     # ─────────────────────────────────────────────────────────────────────────
 
     def _setup_feature_perturbation(self) -> None:
-        """Setup forward hooks for feature perturbation."""
+        """Setup feature perturbation hooks. Override in subclass to enable."""
         self._feature_hooks = []
-        tt = self._training_tricks
-
-        if not tt.feature_perturbation_enabled:
-            return
-
-        std = tt.feature_perturbation_std
-        layers = tt.feature_perturbation_layers
-
-        def make_hook(noise_std):
-            def hook(module, input, output):
-                if self.model.training:
-                    noise = torch.randn_like(output) * noise_std
-                    return output + noise
-                return output
-            return hook
-
-        # Register hooks on specified layers
-        # UNet structure: down_blocks, mid_block, up_blocks
-        if hasattr(self.model_raw, 'mid_block') and 'mid' in layers:
-            handle = self.model_raw.mid_block.register_forward_hook(make_hook(std))
-            self._feature_hooks.append(handle)
-
-        if hasattr(self.model_raw, 'down_blocks') and 'encoder' in layers:
-            for block in self.model_raw.down_blocks:
-                handle = block.register_forward_hook(make_hook(std))
-                self._feature_hooks.append(handle)
-
-        if hasattr(self.model_raw, 'up_blocks') and 'decoder' in layers:
-            for block in self.model_raw.up_blocks:
-                handle = block.register_forward_hook(make_hook(std))
-                self._feature_hooks.append(handle)
-
-        if self._feature_hooks and self.is_main_process:
-            logger.info(
-                f"Feature perturbation enabled: {len(self._feature_hooks)} hooks on {layers}"
-            )
 
     def _remove_feature_perturbation_hooks(self) -> None:
         """Remove feature perturbation hooks."""
@@ -533,10 +389,10 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             Consistency loss (0 if disabled or skipped this batch).
         """
         tt = self._training_tricks
-        if not tt.self_cond_enabled:
+        if not tt.self_cond.enabled:
             return torch.tensor(0.0, device=model_input.device)
 
-        prob = tt.self_cond_prob
+        prob = tt.self_cond.prob
 
         # With probability (1-prob), skip self-conditioning
         if random.random() >= prob:
@@ -590,28 +446,28 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # Log training tricks from typed config
         tt = self._training_tricks
 
-        if tt.gradient_noise_enabled:
+        if tt.gradient_noise.enabled:
             logger.info(
-                f"Gradient noise enabled: sigma={tt.gradient_noise_sigma}, "
-                f"decay={tt.gradient_noise_decay}"
+                f"Gradient noise enabled: sigma={tt.gradient_noise.sigma}, "
+                f"decay={tt.gradient_noise.decay}"
             )
 
-        if tt.curriculum_enabled:
+        if tt.curriculum.enabled:
             logger.info(
                 f"Curriculum timestep scheduling enabled: "
-                f"warmup_epochs={tt.curriculum_warmup_epochs}, "
-                f"range [{tt.curriculum_min_t_start}-{tt.curriculum_max_t_start}] -> "
-                f"[{tt.curriculum_min_t_end}-{tt.curriculum_max_t_end}]"
+                f"warmup_epochs={tt.curriculum.warmup_epochs}, "
+                f"range [{tt.curriculum.min_t_start}-{tt.curriculum.max_t_start}] -> "
+                f"[{tt.curriculum.min_t_end}-{tt.curriculum.max_t_end}]"
             )
 
-        if tt.jitter_enabled:
-            logger.info(f"Timestep jitter enabled: std={tt.jitter_std}")
+        if tt.jitter.enabled:
+            logger.info(f"Timestep jitter enabled: std={tt.jitter.std}")
 
-        if tt.noise_augmentation_enabled:
-            logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation_std}")
+        if tt.noise_augmentation.enabled:
+            logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation.std}")
 
-        if tt.self_cond_enabled:
-            logger.info(f"Self-conditioning enabled: prob={tt.self_cond_prob}")
+        if tt.self_cond.enabled:
+            logger.info(f"Self-conditioning enabled: prob={tt.self_cond.prob}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Dimension Helper Methods (for unified 2D/3D training)
@@ -739,87 +595,3 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
                 loss_fn=loss_fn,
             )
 
-    def _create_score_aug(self, cfg: dict | None = None):
-        """Create dimension-appropriate ScoreAug transform.
-
-        Args:
-            cfg: ScoreAug configuration dict (deprecated, use typed config).
-
-        Returns:
-            ScoreAugTransform instance, or None if disabled.
-        """
-        from .diffusion_config import ScoreAugConfig
-
-        if cfg is not None:
-            # Legacy dict path
-            if not cfg.get('enabled', False):
-                return None
-            sa = cfg
-        elif hasattr(self, '_diffusion_config'):
-            sa = self._diffusion_config.score_aug
-            if not sa.enabled:
-                return None
-        else:
-            sa = ScoreAugConfig.from_hydra(self.cfg)
-            if not sa.enabled:
-                return None
-
-        from medgen.augmentation import ScoreAugTransform
-
-        # Support both dict and ScoreAugConfig
-        def _get(key, default=None):
-            if isinstance(sa, dict):
-                return sa.get(key, default)
-            return getattr(sa, key, default)
-
-        return ScoreAugTransform(
-            spatial_dims=self.spatial_dims,
-            rotation=_get('rotation', True),
-            flip=_get('flip', True),
-            translation=_get('translation', False),
-            cutout=_get('cutout', False),
-            compose=_get('compose', False),
-            compose_prob=_get('compose_prob', 0.5),
-            v2_mode=_get('v2_mode', False),
-            nondestructive_prob=_get('nondestructive_prob', 0.5),
-            destructive_prob=_get('destructive_prob', 0.5),
-            cutout_vs_pattern=_get('cutout_vs_pattern', 0.5),
-            patterns_checkerboard=_get('patterns_checkerboard', True),
-            patterns_grid_dropout=_get('patterns_grid_dropout', True),
-            patterns_coarse_dropout=_get('patterns_coarse_dropout', True),
-            patterns_patch_dropout=_get('patterns_patch_dropout', True),
-        )
-
-    def _create_sda(self, cfg: dict | None = None):
-        """Create dimension-appropriate SDA transform.
-
-        Args:
-            cfg: SDA configuration dict (deprecated, use typed config).
-
-        Returns:
-            SDATransform instance, or None if disabled.
-        """
-        from .diffusion_config import SDAConfig
-
-        if cfg is not None:
-            # Legacy dict path
-            if not cfg.get('enabled', False):
-                return None
-            prob = cfg.get('probability', 0.5)
-        elif hasattr(self, '_diffusion_config'):
-            sda = self._diffusion_config.sda
-            if not sda.enabled:
-                return None
-            prob = sda.prob
-        else:
-            sda = SDAConfig.from_hydra(self.cfg)
-            if not sda.enabled:
-                return None
-            prob = sda.prob
-
-        if self.spatial_dims == 2:
-            from medgen.augmentation import SDATransform
-            return SDATransform(probability=prob)
-        else:
-            from medgen.augmentation import SDATransform3D
-            return SDATransform3D(probability=prob)

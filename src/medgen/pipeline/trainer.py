@@ -708,11 +708,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     # Self-conditioning consistency loss
                     tt = self._training_tricks
-                    if tt.self_cond_enabled:
+                    if tt.self_cond.enabled:
                         consistency_loss = self._compute_self_conditioning_loss(
                             model_input, timesteps, prediction, mode_id
                         )
-                        total_loss = total_loss + tt.self_cond_consistency_weight * consistency_loss
+                        total_loss = total_loss + tt.self_cond.consistency_weight * consistency_loss
 
             # SDA (Shifted Data Augmentation) path
             # Unlike ScoreAug, SDA transforms CLEAN data before noise addition
@@ -761,7 +761,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             mse_loss=mse_loss.item(),
         )
 
-    def train_epoch(self, data_loader: DataLoader, epoch: int) -> tuple[float, float, float]:
+    def train_epoch(self, data_loader: DataLoader, epoch: int) -> dict[str, float]:
         """Train the model for one epoch.
 
         Args:
@@ -769,7 +769,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             epoch: Current epoch number.
 
         Returns:
-            Tuple of (avg_loss, avg_mse_loss, avg_perceptual_loss).
+            Dict with keys 'loss', 'mse', 'perceptual' containing averaged epoch losses.
         """
         self._current_epoch = epoch
         self.model.train()
@@ -826,7 +826,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             self._unified_metrics.log_training(epoch)
             self._unified_metrics.reset_training()
 
-        return avg_loss, avg_mse, avg_perceptual
+        return {'loss': avg_loss, 'mse': avg_mse, 'perceptual': avg_perceptual}
 
     def compute_validation_losses(self, epoch: int) -> tuple[dict[str, float], dict[str, Any] | None]:
         """Compute losses and metrics on validation set."""
@@ -1063,7 +1063,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 if self.use_multi_gpu and hasattr(train_loader.sampler, 'set_epoch'):
                     train_loader.sampler.set_epoch(epoch)
 
-                avg_loss, avg_mse, avg_perceptual = self.train_epoch(train_loader, epoch)
+                epoch_losses = self.train_epoch(train_loader, epoch)
+                avg_loss, avg_mse, avg_perceptual = epoch_losses['loss'], epoch_losses['mse'], epoch_losses['perceptual']
 
                 if self.use_multi_gpu:
                     # Synchronize all ranks before collective operation to prevent deadlock

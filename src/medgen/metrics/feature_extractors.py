@@ -84,7 +84,10 @@ class ResNet50Features(nn.Module):
                     )
                     logger.info("Loaded RadImageNet weights from torch.hub")
                 except (FileNotFoundError, RuntimeError, ImportError) as e:
-                    logger.warning(f"RadImageNet not available ({e}), falling back to ImageNet")
+                    logger.error(
+                        f"RadImageNet not available ({e}), falling back to ImageNet. "
+                        f"Metrics will NOT be comparable with RadImageNet-based runs."
+                    )
                     model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
         else:
             # ImageNet pretrained
@@ -167,7 +170,7 @@ class ResNet50Features(nn.Module):
             images = (images - mean) / std
 
         # Extract features with AMP
-        with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+        with autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
             features = self._model(images)
 
         # Global average pooling if needed (shouldn't be with fc=Identity)
@@ -298,7 +301,7 @@ class BiomedCLIPFeatures(nn.Module):
         images = (images - mean) / std
 
         # Extract image features with AMP
-        with autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+        with autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
             features = self._model.encode_image(images)
 
         return features.float()  # Return fp32 for metric computation

@@ -9,8 +9,6 @@ This module provides:
 - ControlNetConfig: ControlNet configuration dataclass
 - GenerationMetricsConfig: Generation metrics configuration (re-export)
 - DiffusionTrainerConfig: Complete diffusion trainer configuration dataclass
-- should_compile_fused: Helper to determine if compiled forward is safe
-
 These classes consolidate the configuration extraction logic from DiffusionTrainer,
 making it reusable and testable.
 """
@@ -45,10 +43,30 @@ class ScoreAugConfig:
     brightness: bool = False
     brightness_range: float = 1.2
 
+    def __post_init__(self):
+        for name in ('compose_prob', 'nondestructive_prob', 'destructive_prob', 'cutout_vs_pattern'):
+            val = getattr(self, name)
+            if not 0.0 <= val <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {val}")
+        if self.brightness_range <= 0:
+            raise ValueError(f"brightness_range must be > 0, got {self.brightness_range}")
+        if self.enabled:
+            if (self.rotation or self.flip) and not self.use_omega_conditioning:
+                raise ValueError(
+                    "ScoreAug rotation/flip require omega conditioning. "
+                    "Set training.score_aug.use_omega_conditioning=true"
+                )
+            if self.use_mode_intensity_scaling and not self.use_omega_conditioning:
+                raise ValueError(
+                    "Mode intensity scaling requires omega conditioning. "
+                    "Set training.score_aug.use_omega_conditioning=true"
+                )
+
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'ScoreAugConfig':
         """Extract ScoreAug config from Hydra DictConfig."""
         score_aug_cfg = cfg.training.get('score_aug', {})
+        patterns_cfg = score_aug_cfg.get('patterns', {})
         return cls(
             enabled=score_aug_cfg.get('enabled', False),
             rotation=score_aug_cfg.get('rotation', True),
@@ -61,10 +79,14 @@ class ScoreAugConfig:
             nondestructive_prob=score_aug_cfg.get('nondestructive_prob', 0.5),
             destructive_prob=score_aug_cfg.get('destructive_prob', 0.5),
             cutout_vs_pattern=score_aug_cfg.get('cutout_vs_pattern', 0.5),
-            patterns_checkerboard=score_aug_cfg.get('patterns_checkerboard', True),
-            patterns_grid_dropout=score_aug_cfg.get('patterns_grid_dropout', True),
-            patterns_coarse_dropout=score_aug_cfg.get('patterns_coarse_dropout', True),
-            patterns_patch_dropout=score_aug_cfg.get('patterns_patch_dropout', True),
+            patterns_checkerboard=patterns_cfg.get(
+                'checkerboard', score_aug_cfg.get('patterns_checkerboard', True)),
+            patterns_grid_dropout=patterns_cfg.get(
+                'grid_dropout', score_aug_cfg.get('patterns_grid_dropout', True)),
+            patterns_coarse_dropout=patterns_cfg.get(
+                'coarse_dropout', score_aug_cfg.get('patterns_coarse_dropout', True)),
+            patterns_patch_dropout=patterns_cfg.get(
+                'patch_dropout', score_aug_cfg.get('patterns_patch_dropout', True)),
             use_omega_conditioning=score_aug_cfg.get('use_omega_conditioning', False),
             use_mode_intensity_scaling=score_aug_cfg.get('mode_intensity_scaling', False),
             brightness=score_aug_cfg.get('brightness', False),
@@ -97,42 +119,125 @@ class SDAConfig:
 
 
 @dataclass
+class GradientNoiseConfig:
+    """Gradient noise injection configuration."""
+    enabled: bool = False
+    sigma: float = 0.01
+    decay: float = 0.55
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.sigma <= 0:
+            raise ValueError(f"sigma must be > 0, got {self.sigma}")
+        if self.decay <= 0:
+            raise ValueError(f"decay must be > 0, got {self.decay}")
+
+
+@dataclass
+class CurriculumConfig:
+    """Curriculum timestep scheduling configuration."""
+    enabled: bool = False
+    warmup_epochs: int = 50
+    min_t_start: float = 0.0
+    max_t_start: float = 0.3
+    min_t_end: float = 0.0
+    max_t_end: float = 1.0
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.warmup_epochs <= 0:
+            raise ValueError(f"warmup_epochs must be > 0, got {self.warmup_epochs}")
+        if self.min_t_start > self.max_t_start:
+            raise ValueError(f"min_t_start ({self.min_t_start}) > max_t_start ({self.max_t_start})")
+        if self.min_t_end > self.max_t_end:
+            raise ValueError(f"min_t_end ({self.min_t_end}) > max_t_end ({self.max_t_end})")
+        for name, val in [('min_t_start', self.min_t_start), ('max_t_start', self.max_t_start),
+                          ('min_t_end', self.min_t_end), ('max_t_end', self.max_t_end)]:
+            if not 0.0 <= val <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {val}")
+
+
+@dataclass
+class JitterConfig:
+    """Timestep jitter configuration."""
+    enabled: bool = False
+    std: float = 0.05
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.std <= 0:
+            raise ValueError(f"std must be > 0, got {self.std}")
+
+
+@dataclass
+class MinSNRConfig:
+    """Min-SNR loss weighting configuration."""
+    enabled: bool = False
+    gamma: float = 5.0
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.gamma <= 0:
+            raise ValueError(f"gamma must be > 0, got {self.gamma}")
+
+
+@dataclass
+class SelfCondConfig:
+    """Self-conditioning via consistency configuration."""
+    enabled: bool = False
+    prob: float = 0.5
+    consistency_weight: float = 0.1
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if not 0.0 <= self.prob <= 1.0:
+            raise ValueError(f"prob must be in [0, 1], got {self.prob}")
+        if self.consistency_weight < 0:
+            raise ValueError(f"consistency_weight must be >= 0, got {self.consistency_weight}")
+
+
+@dataclass
+class FeaturePerturbationConfig:
+    """Feature perturbation configuration."""
+    enabled: bool = False
+    std: float = 0.1
+    layers: list[str] = field(default_factory=lambda: ['mid'])
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.std <= 0:
+            raise ValueError(f"std must be > 0, got {self.std}")
+
+
+@dataclass
+class NoiseAugConfig:
+    """Input noise augmentation configuration."""
+    enabled: bool = False
+    std: float = 0.1
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.std <= 0:
+            raise ValueError(f"std must be > 0, got {self.std}")
+
+
+@dataclass
 class TrainingTricksConfig:
-    """Training tricks configuration."""
-    # Gradient noise
-    gradient_noise_enabled: bool = False
-    gradient_noise_sigma: float = 0.01
-    gradient_noise_decay: float = 0.55
-
-    # Curriculum
-    curriculum_enabled: bool = False
-    curriculum_warmup_epochs: int = 50
-    curriculum_min_t_start: float = 0.0
-    curriculum_max_t_start: float = 0.3
-    curriculum_min_t_end: float = 0.0
-    curriculum_max_t_end: float = 1.0
-
-    # Timestep jitter
-    jitter_enabled: bool = False
-    jitter_std: float = 0.05
-
-    # Min-SNR
-    min_snr_enabled: bool = False
-    min_snr_gamma: float = 5.0
-
-    # Self-conditioning
-    self_cond_enabled: bool = False
-    self_cond_prob: float = 0.5
-    self_cond_consistency_weight: float = 0.1
-
-    # Feature perturbation
-    feature_perturbation_enabled: bool = False
-    feature_perturbation_std: float = 0.1
-    feature_perturbation_layers: list[str] = field(default_factory=lambda: ['mid'])
-
-    # Noise augmentation
-    noise_augmentation_enabled: bool = False
-    noise_augmentation_std: float = 0.1
+    """Training tricks configuration with nested sub-configs."""
+    gradient_noise: GradientNoiseConfig = field(default_factory=GradientNoiseConfig)
+    curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)
+    jitter: JitterConfig = field(default_factory=JitterConfig)
+    min_snr: MinSNRConfig = field(default_factory=MinSNRConfig)
+    self_cond: SelfCondConfig = field(default_factory=SelfCondConfig)
+    feature_perturbation: FeaturePerturbationConfig = field(default_factory=FeaturePerturbationConfig)
+    noise_augmentation: NoiseAugConfig = field(default_factory=NoiseAugConfig)
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'TrainingTricksConfig':
@@ -145,34 +250,41 @@ class TrainingTricksConfig:
         noise_aug_cfg = cfg.training.get('noise_augmentation', {})
 
         return cls(
-            # Gradient noise
-            gradient_noise_enabled=grad_noise_cfg.get('enabled', False),
-            gradient_noise_sigma=grad_noise_cfg.get('sigma', 0.01),
-            gradient_noise_decay=grad_noise_cfg.get('decay', 0.55),
-            # Curriculum
-            curriculum_enabled=curriculum_cfg.get('enabled', False),
-            curriculum_warmup_epochs=curriculum_cfg.get('warmup_epochs', 50),
-            curriculum_min_t_start=curriculum_cfg.get('min_t_start', 0.0),
-            curriculum_max_t_start=curriculum_cfg.get('max_t_start', 0.3),
-            curriculum_min_t_end=curriculum_cfg.get('min_t_end', 0.0),
-            curriculum_max_t_end=curriculum_cfg.get('max_t_end', 1.0),
-            # Timestep jitter
-            jitter_enabled=jitter_cfg.get('enabled', False),
-            jitter_std=jitter_cfg.get('std', 0.05),
-            # Min-SNR
-            min_snr_enabled=cfg.training.get('use_min_snr', False),
-            min_snr_gamma=cfg.training.get('min_snr_gamma', 5.0),
-            # Self-conditioning
-            self_cond_enabled=self_cond_cfg.get('enabled', False),
-            self_cond_prob=self_cond_cfg.get('prob', 0.5),
-            self_cond_consistency_weight=self_cond_cfg.get('consistency_weight', 0.1),
-            # Feature perturbation
-            feature_perturbation_enabled=feat_cfg.get('enabled', False),
-            feature_perturbation_std=feat_cfg.get('std', 0.1),
-            feature_perturbation_layers=list(feat_cfg.get('layers', ['mid'])),
-            # Noise augmentation
-            noise_augmentation_enabled=noise_aug_cfg.get('enabled', False),
-            noise_augmentation_std=noise_aug_cfg.get('std', 0.1),
+            gradient_noise=GradientNoiseConfig(
+                enabled=grad_noise_cfg.get('enabled', False),
+                sigma=grad_noise_cfg.get('sigma', 0.01),
+                decay=grad_noise_cfg.get('decay', 0.55),
+            ),
+            curriculum=CurriculumConfig(
+                enabled=curriculum_cfg.get('enabled', False),
+                warmup_epochs=curriculum_cfg.get('warmup_epochs', 50),
+                min_t_start=curriculum_cfg.get('min_t_start', 0.0),
+                max_t_start=curriculum_cfg.get('max_t_start', 0.3),
+                min_t_end=curriculum_cfg.get('min_t_end', 0.0),
+                max_t_end=curriculum_cfg.get('max_t_end', 1.0),
+            ),
+            jitter=JitterConfig(
+                enabled=jitter_cfg.get('enabled', False),
+                std=jitter_cfg.get('std', 0.05),
+            ),
+            min_snr=MinSNRConfig(
+                enabled=cfg.training.get('use_min_snr', False),
+                gamma=cfg.training.get('min_snr_gamma', 5.0),
+            ),
+            self_cond=SelfCondConfig(
+                enabled=self_cond_cfg.get('enabled', False),
+                prob=self_cond_cfg.get('prob', 0.5),
+                consistency_weight=self_cond_cfg.get('consistency_weight', 0.1),
+            ),
+            feature_perturbation=FeaturePerturbationConfig(
+                enabled=feat_cfg.get('enabled', False),
+                std=feat_cfg.get('std', 0.1),
+                layers=list(feat_cfg.get('layers', ['mid'])),
+            ),
+            noise_augmentation=NoiseAugConfig(
+                enabled=noise_aug_cfg.get('enabled', False),
+                std=noise_aug_cfg.get('std', 0.1),
+            ),
         )
 
 
@@ -205,10 +317,30 @@ class SizeBinConfig:
     embed_dim: int = 32
     fov_mm: float = 240.0
 
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if self.num_bins <= 0:
+            raise ValueError(f"num_bins must be > 0, got {self.num_bins}")
+        if self.max_count <= 0:
+            raise ValueError(f"max_count must be > 0, got {self.max_count}")
+        if self.embed_dim <= 0:
+            raise ValueError(f"embed_dim must be > 0, got {self.embed_dim}")
+        if self.fov_mm <= 0:
+            raise ValueError(f"fov_mm must be > 0, got {self.fov_mm}")
+        if list(self.edges) != sorted(self.edges):
+            raise ValueError(f"edges must be sorted ascending, got {self.edges}")
+        n_bounded = len(self.edges) - 1
+        if self.num_bins not in (n_bounded, n_bounded + 1):
+            raise ValueError(
+                f"num_bins must be len(edges)-1 ({n_bounded}) or len(edges)-1+1 "
+                f"({n_bounded + 1}, with overflow bin), got {self.num_bins}"
+            )
+
     @classmethod
     def from_hydra(cls, cfg: DictConfig, mode_name: str) -> 'SizeBinConfig':
         """Extract size bin config from Hydra DictConfig."""
-        enabled = (mode_name == 'seg_conditioned')
+        enabled = mode_name.startswith('seg_conditioned')
         if not enabled:
             return cls(enabled=False)
 
@@ -357,6 +489,14 @@ class DiffusionTrainerConfig:
     use_amp: bool = False
     use_gradient_checkpointing: bool = False
 
+    def __post_init__(self):
+        # Only validate fields unique to this config.
+        # Fields like n_epochs, batch_size, learning_rate, warmup_epochs are
+        # validated by BaseTrainingConfig; spatial_dims, image_size by ModelConfig;
+        # num_timesteps by StrategyConfig.
+        if not 0.0 < self.ema_decay < 1.0:
+            raise ValueError(f"ema_decay must be in (0, 1), got {self.ema_decay}")
+
     # Sub-configs
     score_aug: ScoreAugConfig = field(default_factory=ScoreAugConfig)
     sda: SDAConfig = field(default_factory=SDAConfig)
@@ -409,6 +549,10 @@ class DiffusionTrainerConfig:
             use_amp = cfg.training.get('use_amp', False)
             use_gradient_checkpointing = cfg.training.get('gradient_checkpointing', False)
 
+        n_epochs = cfg.training.get('epochs', None) or cfg.training.get('max_epochs', None)
+        if n_epochs is None:
+            raise ValueError("Config must have training.epochs or training.max_epochs")
+
         return cls(
             # Core
             spatial_dims=spatial_dims,
@@ -419,12 +563,12 @@ class DiffusionTrainerConfig:
             # Training
             learning_rate=cfg.training.learning_rate,
             batch_size=cfg.training.batch_size,
-            n_epochs=cfg.training.get('epochs', None) or cfg.training.get('max_epochs', None),
+            n_epochs=n_epochs,
             warmup_epochs=cfg.training.get('warmup_epochs', 5),
             weight_decay=weight_decay,
             perceptual_weight=perceptual_weight,
             use_fp32_loss=cfg.training.get('use_fp32_loss', True),
-            use_ema=cfg.training.get('use_ema', True),
+            use_ema=cfg.training.get('use_ema', False),
             ema_decay=cfg.training.get('ema', {}).get('decay', 0.9999),
             # Scheduler
             scheduler_type=cfg.training.get('scheduler', 'cosine'),
@@ -448,88 +592,24 @@ class DiffusionTrainerConfig:
         )
 
 
-def should_compile_fused(
-    config: DiffusionTrainerConfig,
-    use_multi_gpu: bool,
-    latent_scale: int,
-) -> bool:
-    """Determine if compiled forward is safe to use.
-
-    Compiled forward is disabled when using features that require
-    extra model kwargs or variable control flow.
-
-    Args:
-        config: Diffusion trainer configuration.
-        use_multi_gpu: Whether using DDP multi-GPU.
-        latent_scale: Latent space scale factor.
-
-    Returns:
-        True if compiled forward can be used.
-    """
-    if use_multi_gpu:
-        return False
-    if latent_scale > 1:
-        return False
-    if config.training_tricks.min_snr_enabled:
-        return False
-    if config.score_aug.enabled:
-        return False
-    if config.sda.enabled:
-        return False
-    if config.mode_embedding.enabled:
-        return False
-    if config.score_aug.use_omega_conditioning:
-        return False
-    if config.augmented_diffusion.enabled:
-        return False
-    if config.controlnet.enabled:
-        return False
-    if config.size_bin.enabled:
-        return False
-    if config.regional_weighting.enabled:
-        return False
-    # Compiled forward only supports SEG, BRAVO, and DUAL modes
-    return config.mode_name in ('seg', 'bravo', 'dual')
-
-
 def validate_score_aug_config(
     config: ScoreAugConfig,
     spatial_dims: int = 2,
     is_main_process: bool = True,
 ) -> None:
-    """Validate ScoreAug configuration constraints.
+    """Validate ScoreAug configuration constraints that depend on spatial_dims.
 
-    Raises ValueError if configuration is invalid:
-    - Rotation/flip transforms require omega conditioning
-    - Mode intensity scaling requires omega conditioning
+    Note: Basic invariant checks (omega conditioning requirements, probability
+    ranges) are now in ScoreAugConfig.__post_init__. This function only handles
+    spatial_dims-dependent warnings.
 
     Args:
         config: ScoreAug configuration to validate.
         spatial_dims: Spatial dimensions (2 or 3).
         is_main_process: Whether this is the main process (for logging).
-
-    Raises:
-        ValueError: If configuration constraints are violated.
     """
     if not config.enabled:
         return
-
-    # Check spatial transforms require omega conditioning
-    has_spatial_transforms = config.rotation or config.flip
-    if has_spatial_transforms and not config.use_omega_conditioning:
-        raise ValueError(
-            "ScoreAug rotation/flip require omega conditioning (per ScoreAug paper). "
-            "Gaussian noise is rotation-invariant, allowing the model to detect "
-            "rotation from noise patterns and 'cheat' by inverting before denoising. "
-            "Fix: Set training.score_aug.use_omega_conditioning=true"
-        )
-
-    # Mode intensity scaling requires omega conditioning
-    if config.use_mode_intensity_scaling and not config.use_omega_conditioning:
-        raise ValueError(
-            "Mode intensity scaling requires omega conditioning. "
-            "Fix: Set training.score_aug.use_omega_conditioning=true"
-        )
 
     # Mode intensity scaling not supported in 3D
     if config.use_mode_intensity_scaling and spatial_dims == 3:
@@ -547,6 +627,14 @@ class LatentConfig:
     scale_factor: int = 1
     compression_checkpoint: str | None = None
     slicewise_encoding: bool = False
+
+    def __post_init__(self):
+        if self.enabled and self.compression_checkpoint is None:
+            raise ValueError(
+                "latent.compression_checkpoint must be set when latent.enabled=true"
+            )
+        if self.scale_factor <= 0:
+            raise ValueError(f"scale_factor must be > 0, got {self.scale_factor}")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'LatentConfig':

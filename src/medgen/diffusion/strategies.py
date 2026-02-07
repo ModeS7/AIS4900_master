@@ -6,11 +6,14 @@ and re-exports concrete implementations (DDPM, RFlow) from submodules.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 from .protocols import DiffusionModel
 
@@ -20,6 +23,8 @@ if TYPE_CHECKING:
 ImageTensor = torch.Tensor
 ImageDict = dict[str, torch.Tensor]
 ImageOrDict = ImageTensor | ImageDict
+
+_warned_cfg_dual = False
 
 
 class ParsedModelInput:
@@ -119,6 +124,17 @@ class DiffusionStrategy(ABC):
             'uncond_bin_maps': None,
             'uncond_conditioning': None,
         }
+
+        # Warn if image conditioning CFG is disabled due to dual mode
+        if cfg_scale > 1.0 and conditioning is not None and is_dual:
+            global _warned_cfg_dual
+            if not _warned_cfg_dual:
+                logger.warning(
+                    "Image conditioning CFG disabled in dual mode; "
+                    "only size_bins/bin_maps CFG applies (cfg_scale=%.1f).",
+                    cfg_scale,
+                )
+                _warned_cfg_dual = True
 
         if ctx['use_cfg_size_bins']:
             ctx['uncond_size_bins'] = torch.zeros_like(size_bins)

@@ -75,10 +75,37 @@ class TestBatchDataFromRaw:
         assert batch.images.shape == (4, 4, 16, 16)
         assert batch.labels.shape == (4, 1, 16, 16)
 
+    def test_2tuple_with_2d_size_bins(self):
+        """(seg, size_bins) where size_bins is 2D [B, num_bins] after collation."""
+        seg = torch.randn(4, 1, 64, 64)
+        size_bins = torch.randint(0, 5, (4, 7))  # [B, num_bins] - 2D
+        batch = BatchData.from_raw((seg, size_bins))
+        assert batch.images.shape == (4, 1, 64, 64)
+        assert batch.size_bins is not None
+        assert batch.size_bins.shape == (4, 7)
+        assert batch.labels is None
+
+    def test_3tuple_with_2d_size_bins(self):
+        """(seg, size_bins, bin_maps) where size_bins is 2D [B, num_bins] after collation."""
+        seg = torch.randn(4, 1, 64, 64)
+        size_bins = torch.randint(0, 5, (4, 6))
+        bin_maps = torch.randn(4, 6, 64, 64)
+        batch = BatchData.from_raw((seg, size_bins, bin_maps))
+        assert batch.images.shape == (4, 1, 64, 64)
+        assert batch.size_bins is not None
+        assert batch.size_bins.shape == (4, 6)
+        assert batch.bin_maps.shape == (4, 6, 64, 64)
+        assert batch.labels is None
+
     def test_invalid_tuple_length(self):
         """Tuples with wrong length raise ValueError."""
         with pytest.raises(ValueError, match="Unexpected tuple length"):
             BatchData.from_raw((1, 2, 3, 4))
+
+    def test_dict_without_image_key_raises(self):
+        """Dict without any image key raises ValueError."""
+        with pytest.raises(ValueError, match="must contain 'image'"):
+            BatchData.from_raw({'seg': torch.randn(4, 1, 64, 64)})
 
     def test_invalid_type(self):
         """Unknown types raise ValueError."""

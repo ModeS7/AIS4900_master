@@ -17,6 +17,7 @@ Usage:
     >>> val_result = ModeFactory.create_val_dataloader(cfg, mode_config)
 """
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
@@ -24,6 +25,8 @@ from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 
 from medgen.core.constants import ModeType
+
+logger = logging.getLogger(__name__)
 
 
 class ModeCategory(Enum):
@@ -219,7 +222,8 @@ class ModeFactory:
                 split='val',
                 world_size=world_size,
             )
-        except (ValueError, FileNotFoundError):
+        except (ValueError, FileNotFoundError) as e:
+            logger.warning(f"No validation dataloader created: {e}")
             return None
 
     @classmethod
@@ -249,7 +253,8 @@ class ModeFactory:
                 spatial_dims=mode_config.spatial_dims,
                 split='test',
             )
-        except (ValueError, FileNotFoundError):
+        except (ValueError, FileNotFoundError) as e:
+            logger.warning(f"No test dataloader created: {e}")
             return None
 
     @classmethod
@@ -315,18 +320,24 @@ class ModeFactory:
 
     @classmethod
     def get_image_type_for_mode(cls, mode: ModeType) -> str:
-        """Get the image type string for single-modality modes.
+        """Get the image type string for a mode.
 
-        This maps modes to the image type used by legacy dataloaders.
+        Maps modes to representative image type strings. For multi-image
+        modes (DUAL, MULTI), returns the mode name since they don't have
+        a single image type.
 
         Args:
             mode: ModeType enum value.
 
         Returns:
-            Image type string ('seg', 'bravo', etc.).
+            Image type string ('seg', 'bravo', 'dual', 'multi').
         """
         if mode == ModeType.SEG or mode in (ModeType.SEG_CONDITIONED, ModeType.SEG_CONDITIONED_INPUT):
             return 'seg'
+        elif mode == ModeType.DUAL:
+            return 'dual'
+        elif mode == ModeType.MULTI:
+            return 'multi'
         else:
             # bravo, bravo_seg_cond, etc.
             return 'bravo'

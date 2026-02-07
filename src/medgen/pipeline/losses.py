@@ -42,10 +42,10 @@ def compute_self_conditioning_loss(
         Consistency loss (0 if disabled or skipped this batch).
     """
     tt = trainer._training_tricks
-    if not tt.self_cond_enabled:
+    if not tt.self_cond.enabled:
         return torch.tensor(0.0, device=model_input.device)
 
-    prob = tt.self_cond_prob
+    prob = tt.self_cond.prob
 
     # With probability (1-prob), skip self-conditioning
     if random.random() >= prob:
@@ -97,9 +97,9 @@ def compute_min_snr_weighted_mse(
             target_1 = images[keys[1]] - noise[keys[1]]
         else:
             target_0, target_1 = noise[keys[0]], noise[keys[1]]
-        pred_0, pred_1 = prediction[:, 0:1, :, :], prediction[:, 1:2, :, :]
-        mse_0 = ((pred_0.float() - target_0.float()) ** 2).mean(dim=(1, 2, 3))
-        mse_1 = ((pred_1.float() - target_1.float()) ** 2).mean(dim=(1, 2, 3))
+        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
+        mse_0 = ((pred_0.float() - target_0.float()) ** 2).flatten(1).mean(1)
+        mse_1 = ((pred_1.float() - target_1.float()) ** 2).flatten(1).mean(1)
         mse_per_sample = (mse_0 + mse_1) / 2
     else:
         target = images - noise if trainer.strategy_name == 'rflow' else noise
@@ -141,11 +141,11 @@ def compute_region_weighted_mse(
             target_1 = images[keys[1]] - noise[keys[1]]
         else:
             target_0, target_1 = noise[keys[0]], noise[keys[1]]
-        pred_0, pred_1 = prediction[:, 0:1, :, :], prediction[:, 1:2, :, :]
+        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
 
         # Per-pixel MSE with weights
-        mse_0 = (pred_0.float() - target_0.float()) ** 2  # [B, 1, H, W]
-        mse_1 = (pred_1.float() - target_1.float()) ** 2  # [B, 1, H, W]
+        mse_0 = (pred_0.float() - target_0.float()) ** 2  # [B, 1, ...]
+        mse_1 = (pred_1.float() - target_1.float()) ** 2  # [B, 1, ...]
 
         # Apply regional weights
         weighted_mse_0 = (mse_0 * weight_map).mean()

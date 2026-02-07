@@ -97,7 +97,7 @@ class TestMSSSIM:
 
     @pytest.mark.parametrize("shape,spatial_dims,desc", [
         ((2, 1, 64, 64), 2, "2D [B, C, H, W]"),
-        ((2, 1, 16, 64, 64), 3, "3D [B, C, D, H, W]"),
+        ((2, 1, 24, 64, 64), 3, "3D [B, C, D, H, W]"),
     ])
     def test_spatial_dims(self, shape, spatial_dims, desc):
         """Works with both 2D and 3D tensors."""

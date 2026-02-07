@@ -51,6 +51,21 @@ class TestDictCollate:
         assert result['mode_id'].shape == (2,)
 
 
+    def test_warns_on_missing_key(self, caplog):
+        """Should warn when a key is present in some but not all samples."""
+        import logging
+        batch = [
+            {'image': torch.randn(1, 64, 64), 'seg': torch.randn(1, 64, 64)},
+            {'image': torch.randn(1, 64, 64)},  # Missing 'seg'
+        ]
+        with caplog.at_level(logging.WARNING, logger="medgen.data.loaders.base"):
+            result = dict_collate_fn(batch)
+
+        assert result['image'].shape == (2, 1, 64, 64)
+        assert result['seg'].shape == (1, 1, 64, 64)  # Only 1 had seg
+        assert any("key 'seg' present in 1/2 samples" in msg for msg in caplog.messages)
+
+
 class TestDictDatasetWrapperPassthrough:
     """Test DictDatasetWrapper passes through dict format unchanged."""
 
@@ -164,6 +179,156 @@ class TestPrepareBatchSimplified:
         result = mode.prepare_batch(batch, device)
 
         assert result['bin_maps'] is None
+
+
+class TestPrepareBatchDimValidation:
+    """Test that prepare_batch validates tensor dimensionality."""
+
+    # --- SegmentationMode ---
+
+    def test_seg_mode_accepts_4d_dict(self):
+        """SegmentationMode should accept 4D [B,C,H,W] dict batch."""
+        from medgen.diffusion.modes import SegmentationMode
+
+        mode = SegmentationMode()
+        batch = {'image': torch.randn(2, 1, 64, 64)}
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images'].shape == (2, 1, 64, 64)
+        assert result['labels'] is None
+
+    def test_seg_mode_accepts_5d_dict(self):
+        """SegmentationMode should accept 5D [B,C,D,H,W] dict batch."""
+        from medgen.diffusion.modes import SegmentationMode
+
+        mode = SegmentationMode()
+        batch = {'image': torch.randn(2, 1, 16, 64, 64)}
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images'].shape == (2, 1, 16, 64, 64)
+
+    def test_seg_mode_rejects_3d_dict(self):
+        """SegmentationMode should reject 3D tensor in dict batch."""
+        from medgen.diffusion.modes import SegmentationMode
+
+        mode = SegmentationMode()
+        batch = {'image': torch.randn(2, 64, 64)}
+
+        with pytest.raises(ValueError, match="expected 4D or 5D"):
+            mode.prepare_batch(batch, torch.device('cpu'))
+
+    # --- ConditionalSingleMode ---
+
+    def test_cond_single_accepts_4d_dict(self):
+        """ConditionalSingleMode should accept 4D dict with seg."""
+        from medgen.diffusion.modes import ConditionalSingleMode
+
+        mode = ConditionalSingleMode()
+        batch = {
+            'image': torch.randn(2, 1, 64, 64),
+            'seg': torch.randn(2, 1, 64, 64),
+        }
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images'].shape == (2, 1, 64, 64)
+        assert result['labels'].shape == (2, 1, 64, 64)
+
+    def test_cond_single_accepts_5d_dict(self):
+        """ConditionalSingleMode should accept 5D dict with seg."""
+        from medgen.diffusion.modes import ConditionalSingleMode
+
+        mode = ConditionalSingleMode()
+        batch = {
+            'image': torch.randn(2, 1, 16, 64, 64),
+            'seg': torch.randn(2, 1, 16, 64, 64),
+        }
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images'].shape == (2, 1, 16, 64, 64)
+        assert result['labels'].shape == (2, 1, 16, 64, 64)
+
+    def test_cond_single_rejects_bad_image_dim(self):
+        """ConditionalSingleMode should reject 3D image tensor."""
+        from medgen.diffusion.modes import ConditionalSingleMode
+
+        mode = ConditionalSingleMode()
+        batch = {'image': torch.randn(2, 64, 64)}
+
+        with pytest.raises(ValueError, match="expected 4D or 5D image"):
+            mode.prepare_batch(batch, torch.device('cpu'))
+
+    def test_cond_single_rejects_bad_seg_dim(self):
+        """ConditionalSingleMode should reject 3D seg tensor."""
+        from medgen.diffusion.modes import ConditionalSingleMode
+
+        mode = ConditionalSingleMode()
+        batch = {
+            'image': torch.randn(2, 1, 64, 64),
+            'seg': torch.randn(2, 64, 64),
+        }
+
+        with pytest.raises(ValueError, match="expected 4D or 5D seg"):
+            mode.prepare_batch(batch, torch.device('cpu'))
+
+    # --- ConditionalDualMode ---
+
+    def test_cond_dual_accepts_4d_dict(self):
+        """ConditionalDualMode should accept 4D dict batch."""
+        from medgen.diffusion.modes import ConditionalDualMode
+
+        mode = ConditionalDualMode()
+        batch = {
+            't1_pre': torch.randn(2, 1, 64, 64),
+            't1_gd': torch.randn(2, 1, 64, 64),
+            'seg': torch.randn(2, 1, 64, 64),
+        }
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images']['t1_pre'].shape == (2, 1, 64, 64)
+        assert result['images']['t1_gd'].shape == (2, 1, 64, 64)
+        assert result['labels'].shape == (2, 1, 64, 64)
+
+    def test_cond_dual_accepts_5d_dict(self):
+        """ConditionalDualMode should accept 5D dict batch."""
+        from medgen.diffusion.modes import ConditionalDualMode
+
+        mode = ConditionalDualMode()
+        batch = {
+            't1_pre': torch.randn(2, 1, 16, 64, 64),
+            't1_gd': torch.randn(2, 1, 16, 64, 64),
+            'seg': torch.randn(2, 1, 16, 64, 64),
+        }
+        result = mode.prepare_batch(batch, torch.device('cpu'))
+
+        assert result['images']['t1_pre'].shape == (2, 1, 16, 64, 64)
+        assert result['labels'].shape == (2, 1, 16, 64, 64)
+
+    def test_cond_dual_rejects_bad_image_dim(self):
+        """ConditionalDualMode should reject 3D image tensor."""
+        from medgen.diffusion.modes import ConditionalDualMode
+
+        mode = ConditionalDualMode()
+        batch = {
+            't1_pre': torch.randn(2, 64, 64),  # 3D - bad
+            't1_gd': torch.randn(2, 1, 64, 64),
+        }
+
+        with pytest.raises(ValueError, match="expected 4D or 5D tensor for 't1_pre'"):
+            mode.prepare_batch(batch, torch.device('cpu'))
+
+    def test_cond_dual_rejects_bad_seg_dim(self):
+        """ConditionalDualMode should reject 3D seg tensor."""
+        from medgen.diffusion.modes import ConditionalDualMode
+
+        mode = ConditionalDualMode()
+        batch = {
+            't1_pre': torch.randn(2, 1, 64, 64),
+            't1_gd': torch.randn(2, 1, 64, 64),
+            'seg': torch.randn(2, 64, 64),  # 3D - bad
+        }
+
+        with pytest.raises(ValueError, match="expected 4D or 5D seg"):
+            mode.prepare_batch(batch, torch.device('cpu'))
 
 
 class TestBatchDataFromDict:

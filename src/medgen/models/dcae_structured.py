@@ -332,11 +332,13 @@ class StructuredAutoencoderDC(nn.Module):
 
     def train(self, mode: bool = True):
         """Set training mode."""
+        super().train(mode)
         self.base_model.train(mode)
         return self
 
     def eval(self):
         """Set evaluation mode."""
+        super().eval()
         self.base_model.eval()
         return self
 

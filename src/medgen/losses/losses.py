@@ -83,12 +83,12 @@ class PerceptualLoss(nn.Module):
 
         self.network_type = network_type
 
-    def forward(
+    def _forward_tensor(
         self,
         input: Tensor,
         target: Tensor,
     ) -> Tensor:
-        """Compute perceptual loss between input and target.
+        """Compute perceptual loss between tensor inputs.
 
         Handles any number of input channels by computing per-channel
         perceptual loss and averaging (same approach as DiffusionTrainer).
@@ -116,7 +116,7 @@ class PerceptualLoss(nn.Module):
 
         return sum(losses) / len(losses)
 
-    def forward_dict(
+    def _forward_dict(
         self,
         input: dict[str, Tensor],
         target: dict[str, Tensor],
@@ -147,10 +147,10 @@ class PerceptualLoss(nn.Module):
 
         losses = []
         for key, pred in input.items():
-            losses.append(self(pred, target[key]))
+            losses.append(self._forward_tensor(pred, target[key]))
         return sum(losses) / len(losses)
 
-    def __call__(
+    def forward(
         self,
         input: Tensor | dict[str, Tensor],
         target: Tensor | dict[str, Tensor],
@@ -165,8 +165,8 @@ class PerceptualLoss(nn.Module):
             Scalar perceptual loss tensor.
         """
         if isinstance(input, dict):
-            return self.forward_dict(input, target)
-        return self.forward(input, target)
+            return self._forward_dict(input, target)
+        return self._forward_tensor(input, target)
 
 
 class LPIPSLoss(nn.Module):
@@ -220,12 +220,12 @@ class LPIPSLoss(nn.Module):
         self.net = net
         logger.info(f"LPIPSLoss initialized with {net} backbone")
 
-    def forward(
+    def _forward_tensor(
         self,
         input: Tensor,
         target: Tensor,
     ) -> Tensor:
-        """Compute LPIPS loss between input and target.
+        """Compute LPIPS loss between tensor inputs.
 
         Handles any number of input channels by computing per-channel
         LPIPS loss and averaging.
@@ -258,7 +258,7 @@ class LPIPSLoss(nn.Module):
 
         return sum(losses) / len(losses)
 
-    def forward_dict(
+    def _forward_dict(
         self,
         input: dict[str, Tensor],
         target: dict[str, Tensor],
@@ -289,10 +289,10 @@ class LPIPSLoss(nn.Module):
 
         losses = []
         for key, pred in input.items():
-            losses.append(self.forward(pred, target[key]))
+            losses.append(self._forward_tensor(pred, target[key]))
         return sum(losses) / len(losses)
 
-    def __call__(
+    def forward(
         self,
         input: Tensor | dict[str, Tensor],
         target: Tensor | dict[str, Tensor],
@@ -307,8 +307,8 @@ class LPIPSLoss(nn.Module):
             Scalar LPIPS loss tensor.
         """
         if isinstance(input, dict):
-            return self.forward_dict(input, target)
-        return self.forward(input, target)
+            return self._forward_dict(input, target)
+        return self._forward_tensor(input, target)
 
 
 class SegmentationLoss(nn.Module):
@@ -425,6 +425,6 @@ class SegmentationLoss(nn.Module):
                 logits, target, weight=boundary, reduction='sum'
             ) / (boundary.sum() + 1e-6)
         else:
-            boundary_bce = torch.tensor(0.0, device=logits.device)
+            boundary_bce = logits.new_tensor(0.0)
 
         return boundary_bce

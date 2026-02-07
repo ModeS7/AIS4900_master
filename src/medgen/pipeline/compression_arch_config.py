@@ -17,6 +17,17 @@ class VAEArchConfig:
     attention_levels: tuple[bool, ...] = (False, False, True)
     num_res_blocks: int = 2
 
+    def __post_init__(self):
+        if self.kl_weight <= 0:
+            raise ValueError(f"kl_weight must be > 0, got {self.kl_weight}")
+        if self.latent_channels <= 0:
+            raise ValueError(f"latent_channels must be > 0, got {self.latent_channels}")
+        if len(self.channels) != len(self.attention_levels):
+            raise ValueError(
+                f"channels and attention_levels must have same length, "
+                f"got {len(self.channels)} vs {len(self.attention_levels)}"
+            )
+
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int) -> 'VAEArchConfig':
         """Extract VAE architecture config from Hydra DictConfig."""
@@ -35,28 +46,40 @@ class VQVAEArchConfig:
     """VQ-VAE model architecture config (2D/3D)."""
     # Quantization
     num_embeddings: int = 512
-    embedding_dim: int = 64
+    embedding_dim: int = 3
     commitment_cost: float = 0.25
     decay: float = 0.99
     epsilon: float = 1e-5
     # Architecture
-    channels: tuple[int, ...] = (96, 96, 192)
-    num_res_layers: int = 3
-    num_res_channels: tuple[int, ...] = (96, 96, 192)
+    channels: tuple[int, ...] = (64, 128, 128)
+    num_res_layers: int = 2
+    num_res_channels: tuple[int, ...] = (64, 128, 128)
     downsample_parameters: tuple[tuple[int, ...], ...] = ((2, 4, 1, 1),) * 3
     upsample_parameters: tuple[tuple[int, ...], ...] = ((2, 4, 1, 1, 0),) * 3
     # Segmentation mode (3D only)
     seg_mode: bool = False
-    seg_loss_weights: dict = field(default_factory=lambda: {'bce': 1.0, 'dice': 1.0, 'boundary': 0.5})
+    seg_loss_weights: dict[str, float] = field(default_factory=lambda: {'bce': 1.0, 'dice': 1.0, 'boundary': 0.5})
+
+    def __post_init__(self):
+        if self.num_embeddings <= 0:
+            raise ValueError(f"num_embeddings must be > 0, got {self.num_embeddings}")
+        if self.embedding_dim <= 0:
+            raise ValueError(f"embedding_dim must be > 0, got {self.embedding_dim}")
+        if self.commitment_cost <= 0:
+            raise ValueError(f"commitment_cost must be > 0, got {self.commitment_cost}")
+        if not 0.0 < self.decay < 1.0:
+            raise ValueError(f"decay must be in (0, 1), got {self.decay}")
+        if self.epsilon <= 0:
+            raise ValueError(f"epsilon must be > 0, got {self.epsilon}")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int) -> 'VQVAEArchConfig':
         """Extract VQ-VAE architecture config from Hydra DictConfig."""
         vqvae_cfg = cfg.vqvae_3d if spatial_dims == 3 else cfg.vqvae
 
-        default_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
-        default_res_layers = 3 if spatial_dims == 2 else 2
-        default_res_channels = [96, 96, 192] if spatial_dims == 2 else [64, 128]
+        default_channels = [64, 128, 128] if spatial_dims == 2 else [64, 128]
+        default_res_layers = 2
+        default_res_channels = [64, 128, 128] if spatial_dims == 2 else [64, 128]
         default_downsample = [[2, 4, 1, 1]] * (3 if spatial_dims == 2 else 2)
         default_upsample = [[2, 4, 1, 1, 0]] * (3 if spatial_dims == 2 else 2)
 
@@ -65,7 +88,7 @@ class VQVAEArchConfig:
 
         return cls(
             num_embeddings=vqvae_cfg.get('num_embeddings', 512),
-            embedding_dim=vqvae_cfg.get('embedding_dim', 64 if spatial_dims == 2 else 3),
+            embedding_dim=vqvae_cfg.get('embedding_dim', 3),
             commitment_cost=vqvae_cfg.get('commitment_cost', 0.25),
             decay=vqvae_cfg.get('decay', 0.99),
             epsilon=vqvae_cfg.get('epsilon', 1e-5),
@@ -94,7 +117,7 @@ class DCAEArchConfig:
     pretrained: str | None = None
     training_phase: int = 1
     seg_mode: bool = False
-    seg_loss_weights: dict = field(default_factory=lambda: {'bce': 1.0, 'dice': 1.0, 'boundary': 0.5})
+    seg_loss_weights: dict[str, float] = field(default_factory=lambda: {'bce': 1.0, 'dice': 1.0, 'boundary': 0.5})
     # Structured latent (DC-AE 1.5, 2D only)
     structured_latent_enabled: bool = False
     structured_latent_min: int = 16
@@ -107,6 +130,12 @@ class DCAEArchConfig:
     depth_factors: tuple[int, ...] = ()
     encoder_out_shortcut: bool = True
     decoder_in_shortcut: bool = True
+
+    def __post_init__(self):
+        if self.l1_weight <= 0:
+            raise ValueError(f"l1_weight must be > 0, got {self.l1_weight}")
+        if self.latent_channels <= 0:
+            raise ValueError(f"latent_channels must be > 0, got {self.latent_channels}")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int) -> 'DCAEArchConfig':

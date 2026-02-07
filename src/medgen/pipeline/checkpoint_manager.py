@@ -345,7 +345,7 @@ class CheckpointManager:
         if minor_saved > minor_curr:
             logger.warning(
                 f"Checkpoint from newer version: saved={saved_version}, current={self.VERSION}. "
-                f"Some saved features may be ignored."
+                f"Checkpoint may contain unsupported features."
             )
 
     def _load_model_state(

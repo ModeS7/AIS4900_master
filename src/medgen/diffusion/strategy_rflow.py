@@ -301,11 +301,11 @@ class RFlowStrategy(DiffusionStrategy):
         noisy_images = parsed.noisy_images
         noisy_pre = parsed.noisy_pre
         noisy_gd = parsed.noisy_gd
-        conditioning = parsed.conditioning
+        image_conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
         # Prepare CFG context (flags and unconditional tensors)
-        cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, conditioning, is_dual)
+        cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
 
         # Setup scheduler
         self.scheduler.set_timesteps(
@@ -341,7 +341,7 @@ class RFlowStrategy(DiffusionStrategy):
 
             if is_dual:
                 # Dual-image: process each channel through model together
-                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, conditioning)
+                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
                 velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
                 # Split predictions for each channel (works for both 2D and 3D)
@@ -354,8 +354,8 @@ class RFlowStrategy(DiffusionStrategy):
             else:
                 # Single image or unconditional
                 # Build base model input (without bin_maps - those are handled separately)
-                if conditioning is not None:
-                    current_model_input = torch.cat([noisy_images, conditioning], dim=1)
+                if image_conditioning is not None:
+                    current_model_input = torch.cat([noisy_images, image_conditioning], dim=1)
                 else:
                     current_model_input = noisy_images
 

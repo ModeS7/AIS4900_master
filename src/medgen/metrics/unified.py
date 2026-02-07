@@ -841,7 +841,7 @@ class UnifiedMetrics:
             self._val_msssim_3d_sum = metrics['msssim_3d']
             self._val_msssim_3d_count = 1
         # Support both 'dice' and 'dice_score' keys
-        dice_val = metrics.get('dice') or metrics.get('dice_score')
+        dice_val = metrics.get('dice') if 'dice' in metrics else metrics.get('dice_score')
         if dice_val is not None:
             self._val_dice_sum = dice_val
             self._val_dice_count = 1

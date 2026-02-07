@@ -410,9 +410,9 @@ class Test3DTestEvaluation:
         """
         from medgen.metrics.quality import compute_msssim
 
-        # 3D volumes: [B, C, D, H, W]
-        pred = torch.rand(1, 1, 16, 32, 32)
-        gt = torch.rand(1, 1, 16, 32, 32)
+        # 3D volumes: [B, C, D, H, W] - depth must be >= 23 for 2-scale MS-SSIM
+        pred = torch.rand(1, 1, 24, 32, 32)
+        gt = torch.rand(1, 1, 24, 32, 32)
 
         msssim_3d = compute_msssim(pred, gt, spatial_dims=3)
 

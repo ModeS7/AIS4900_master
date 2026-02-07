@@ -340,6 +340,14 @@ class TestGetImageTypeForMode:
         """BRAVO_SEG_COND mode should return 'bravo'."""
         assert ModeFactory.get_image_type_for_mode(ModeType.BRAVO_SEG_COND) == 'bravo'
 
+    def test_dual_mode(self):
+        """DUAL mode should return 'dual'."""
+        assert ModeFactory.get_image_type_for_mode(ModeType.DUAL) == 'dual'
+
+    def test_multi_mode(self):
+        """MULTI mode should return 'multi'."""
+        assert ModeFactory.get_image_type_for_mode(ModeType.MULTI) == 'multi'
+
 
 class TestModeCategory:
     """Tests for ModeCategory enum."""

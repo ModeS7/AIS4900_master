@@ -444,6 +444,10 @@ def compute_per_modality_validation(
     if not hasattr(trainer, 'per_modality_val_loaders') or not trainer.per_modality_val_loaders:
         return
 
+    # Save random state (same pattern as compute_validation_losses)
+    rng_state = torch.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state(trainer.device) if torch.cuda.is_available() else None
+
     model_to_use = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
     try:
         model_to_use.eval()
@@ -527,3 +531,8 @@ def compute_per_modality_validation(
                     )
     finally:
         model_to_use.train()
+
+        # Restore RNG state
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, trainer.device)

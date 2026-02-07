@@ -28,12 +28,8 @@ size_bins:
   num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
   max_count: 10  # Max count for normalization (count/max_count -> [0,1])
   fov_mm: 240.0  # Field of view for pixel-to-mm conversion
-  image_size: 256  # Image size in pixels
   return_bin_maps: true  # Enable spatial bin maps output
 
 # Classifier-free guidance (CFG) training
 # Higher dropout than FiLM since input conditioning is stronger
 cfg_dropout_prob: 0.15  # Probability of zeroing bin_maps (15% = unconditional)
-
-# Generation with CFG (used during validation denoising)
-cfg_scale: 2.0  # CFG scale for conditional guidance

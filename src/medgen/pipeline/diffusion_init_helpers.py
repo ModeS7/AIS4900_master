@@ -295,31 +295,31 @@ def log_training_tricks_config(trainer: DiffusionTrainer) -> None:
     # Use typed TrainingTricksConfig from base class
     tt = trainer._training_tricks
 
-    if tt.gradient_noise_enabled:
+    if tt.gradient_noise.enabled:
         logger.info(
             f"Gradient noise injection enabled: "
-            f"sigma={tt.gradient_noise_sigma}, decay={tt.gradient_noise_decay}"
+            f"sigma={tt.gradient_noise.sigma}, decay={tt.gradient_noise.decay}"
         )
 
-    if tt.curriculum_enabled:
+    if tt.curriculum.enabled:
         logger.info(
             f"Curriculum timestep scheduling enabled: "
-            f"warmup_epochs={tt.curriculum_warmup_epochs}, "
-            f"range [{tt.curriculum_min_t_start}-{tt.curriculum_max_t_start}] -> "
-            f"[{tt.curriculum_min_t_end}-{tt.curriculum_max_t_end}]"
+            f"warmup_epochs={tt.curriculum.warmup_epochs}, "
+            f"range [{tt.curriculum.min_t_start}-{tt.curriculum.max_t_start}] -> "
+            f"[{tt.curriculum.min_t_end}-{tt.curriculum.max_t_end}]"
         )
 
-    if tt.jitter_enabled:
-        logger.info(f"Timestep jitter enabled: std={tt.jitter_std}")
+    if tt.jitter.enabled:
+        logger.info(f"Timestep jitter enabled: std={tt.jitter.std}")
 
-    if tt.self_cond_enabled:
-        logger.info(f"Self-conditioning enabled: prob={tt.self_cond_prob}")
+    if tt.self_cond.enabled:
+        logger.info(f"Self-conditioning enabled: prob={tt.self_cond.prob}")
 
-    if tt.feature_perturbation_enabled:
+    if tt.feature_perturbation.enabled:
         logger.info(
-            f"Feature perturbation enabled: std={tt.feature_perturbation_std}, "
-            f"layers={tt.feature_perturbation_layers}"
+            f"Feature perturbation enabled: std={tt.feature_perturbation.std}, "
+            f"layers={tt.feature_perturbation.layers}"
         )
 
-    if tt.noise_augmentation_enabled:
-        logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation_std}")
+    if tt.noise_augmentation.enabled:
+        logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation.std}")

@@ -51,6 +51,15 @@ class PixelUnshuffle3D(nn.Module):
         sf = self.spatial_factor
         df = self.depth_factor
 
+        if h % sf != 0 or w % sf != 0:
+            raise ValueError(
+                f"PixelUnshuffle3D: H ({h}) and W ({w}) must be divisible by spatial_factor ({sf})"
+            )
+        if df > 1 and d % df != 0:
+            raise ValueError(
+                f"PixelUnshuffle3D: D ({d}) must be divisible by depth_factor ({df})"
+            )
+
         if df == 1:
             # Spatial-only compression (depth unchanged)
             # [B, C, D, H, W] -> [B, C*sf*sf, D, H/sf, W/sf]
@@ -103,6 +112,13 @@ class PixelShuffle3D(nn.Module):
         b, c, d, h, w = x.shape
         sf = self.spatial_factor
         df = self.depth_factor
+
+        total_factor = df * sf * sf if df > 1 else sf * sf
+        if c % total_factor != 0:
+            raise ValueError(
+                f"PixelShuffle3D: C ({c}) must be divisible by "
+                f"{'df*sf*sf' if df > 1 else 'sf*sf'} ({total_factor})"
+            )
 
         if df == 1:
             # Spatial-only expansion (depth unchanged)

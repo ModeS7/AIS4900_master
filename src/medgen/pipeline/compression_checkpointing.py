@@ -311,8 +311,9 @@ def load_pretrained_weights(
             if trainer.is_main_process:
                 logger.info(f"Loaded discriminator weights from {checkpoint_path}")
     except FileNotFoundError:
-        if trainer.is_main_process:
-            logger.warning(f"Pretrained checkpoint not found: {checkpoint_path}")
+        raise FileNotFoundError(
+            f"Pretrained checkpoint not found: {checkpoint_path}"
+        )
 
 
 def load_pretrained_weights_base(
@@ -352,8 +353,9 @@ def load_pretrained_weights_base(
             if trainer.is_main_process:
                 logger.info(f"Loaded {model_name} weights from {checkpoint_path}")
     except FileNotFoundError:
-        if trainer.is_main_process:
-            logger.warning(f"Checkpoint not found: {checkpoint_path}")
+        raise FileNotFoundError(
+            f"Pretrained checkpoint not found: {checkpoint_path}"
+        )
 
 
 # ---------------------------------------------------------------------------

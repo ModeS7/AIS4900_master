@@ -209,14 +209,16 @@ def compute_psnr(
         gen = torch.clamp(generated.float(), 0, 1)
         ref = torch.clamp(reference.float(), 0, 1)
 
-        mse = torch.mean((gen - ref) ** 2)
+        # Per-sample MSE: flatten all dims except batch, take mean per sample
+        mse_per_sample = ((gen - ref) ** 2).flatten(1).mean(1)  # [B]
 
-        # Avoid log(0)
-        if mse < 1e-10:
-            return 100.0
-
-        psnr = 20 * torch.log10(torch.tensor(data_range, device=mse.device) / torch.sqrt(mse))
-        return float(psnr.item())
+        # Per-sample PSNR, then average
+        psnr_per_sample = 10.0 * torch.log10(
+            data_range ** 2 / (mse_per_sample + PSNR_MSE_EPSILON)
+        )
+        # Cap perfect matches at 100 dB
+        psnr_per_sample = torch.clamp(psnr_per_sample, max=100.0)
+        return float(psnr_per_sample.mean().item())
 
 
 def compute_msssim(

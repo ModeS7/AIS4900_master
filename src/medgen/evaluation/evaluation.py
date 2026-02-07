@@ -289,6 +289,9 @@ class BaseTestEvaluator(ABC):
                 n_batches += 1
                 n_samples += batch_size
 
+                # Free GPU tensors stored for worst batch capture
+                self._current_batch = None
+
         # Compute averages
         metrics = {key: val / n_batches for key, val in accumulators.items()}
         metrics['n_samples'] = n_samples

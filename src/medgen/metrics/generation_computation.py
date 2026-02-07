@@ -30,6 +30,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _validate_conditioning_and_detect_3d(self_: 'GenerationMetrics') -> bool:
+    """Validate fixed_conditioning_masks is set. Returns True if 3D."""
+    if self_.fixed_conditioning_masks is None:
+        raise RuntimeError(
+            "fixed_conditioning_masks is None. "
+            "Call set_fixed_conditioning() before computing metrics."
+        )
+    return self_.fixed_conditioning_masks.ndim == 5
+
+
 def extract_features_batched(
     self_: 'GenerationMetrics',
     samples: torch.Tensor,
@@ -267,8 +277,7 @@ def compute_epoch_metrics(
     cuda_rng_state = torch.cuda.get_rng_state(self_.device)
 
     try:
-        # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-        is_3d = self_.fixed_conditioning_masks.ndim == 5
+        is_3d = _validate_conditioning_and_detect_3d(self_)
 
         if is_3d:
             # 3D: Generate and extract features one at a time (streaming)
@@ -373,8 +382,7 @@ def compute_extended_metrics(
     cuda_rng_state = torch.cuda.get_rng_state(self_.device)
 
     try:
-        # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-        is_3d = self_.fixed_conditioning_masks.ndim == 5
+        is_3d = _validate_conditioning_and_detect_3d(self_)
 
         if is_3d:
             # 3D: Generate and extract features one at a time (streaming)
@@ -548,8 +556,7 @@ def compute_test_metrics(
     """
     from .generation_sampling import generate_and_extract_features_3d_streaming, generate_samples
 
-    # Check if 3D (use streaming to avoid OOM from memory fragmentation)
-    is_3d = self_.fixed_conditioning_masks.ndim == 5
+    is_3d = _validate_conditioning_and_detect_3d(self_)
 
     if is_3d:
         # 3D: Generate and extract features one at a time (streaming)

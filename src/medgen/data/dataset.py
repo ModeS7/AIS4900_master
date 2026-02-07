@@ -99,7 +99,10 @@ class NiFTIDataset(Dataset):
         transform: Compose | None = None
     ) -> None:
         self.data_dir: str = data_dir
-        self.data: list[str] = sorted(os.listdir(data_dir))
+        self.data: list[str] = sorted(
+            d for d in os.listdir(data_dir)
+            if os.path.isdir(os.path.join(data_dir, d))
+        )
         self.mr_sequence: str = mr_sequence
         self.transform: Compose | None = transform
         # Cache loader to avoid recreating on every __getitem__ call

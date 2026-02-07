@@ -333,7 +333,7 @@ class LatentCacheBuilder:
         os.makedirs(cache_dir, exist_ok=True)
 
         if self.spatial_dims == 2:
-            self._build_cache_2d(pixel_dataset, cache_dir, checkpoint_path, batch_size, num_workers)
+            self._build_cache_2d(pixel_dataset, cache_dir, checkpoint_path, batch_size, num_workers, seg_checkpoint_path)
         else:
             self._build_cache_3d(pixel_dataset, cache_dir, checkpoint_path, seg_checkpoint_path)
 
@@ -344,6 +344,7 @@ class LatentCacheBuilder:
         checkpoint_path: str,
         batch_size: int,
         num_workers: int,
+        seg_checkpoint_path: str | None = None,
     ) -> None:
         """Build 2D cache with batched encoding."""
         # Create temporary dataloader for encoding
@@ -357,6 +358,7 @@ class LatentCacheBuilder:
 
         sample_idx = 0
         latent_shape = None
+        has_seg_mask = False
 
         logger.info(f"Encoding {len(pixel_dataset)} 2D samples to {cache_dir}...")
 
@@ -378,7 +380,7 @@ class LatentCacheBuilder:
                 latent_segs = None
                 if seg_masks is not None:
                     seg_masks_device = seg_masks.to(self.device, non_blocking=True)
-                    latent_segs = self._encode(seg_masks_device)
+                    latent_segs = self._encode(seg_masks_device, use_seg_model=True)
 
                 # Save each sample
                 for i in range(latents.shape[0]):
@@ -390,6 +392,7 @@ class LatentCacheBuilder:
 
                     # Include seg mask if available
                     if seg_masks is not None:
+                        has_seg_mask = True
                         # Keep pixel-space seg for regional metrics
                         sample_data['seg_mask'] = seg_masks[i].cpu()
                         # Also store latent seg for seg conditioning
@@ -410,8 +413,14 @@ class LatentCacheBuilder:
             'mode': self.mode,
             'image_size': self.image_size,
             'num_samples': sample_idx,
+            'has_seg_mask': has_seg_mask,
             'created_at': datetime.now().isoformat(),
         }
+
+        # Add SEG checkpoint hash if dual-encoder setup
+        if seg_checkpoint_path is not None:
+            metadata['seg_compression_checkpoint'] = seg_checkpoint_path
+            metadata['seg_checkpoint_hash'] = self.compute_checkpoint_hash(seg_checkpoint_path)
 
         with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)

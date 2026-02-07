@@ -39,6 +39,11 @@ class BatchData:
                 images = data.get('images')
             if images is None:
                 images = data.get('latent')
+            if images is None:
+                raise ValueError(
+                    f"BatchData.from_raw: dict must contain 'image', 'images', or 'latent' key, "
+                    f"got keys: {list(data.keys())}"
+                )
 
             labels = data.get('seg')
             if labels is None:
@@ -75,11 +80,11 @@ class BatchData:
                     )
 
                 # Distinguish (images, labels) from (seg, size_bins)
-                if second.dim() == 1:
-                    # size_bins is 1D
+                # size_bins: [B] (pre-collation) or [B, num_bins] (post-collation, num_bins <= 10)
+                # labels/seg: [B, 1, H, W] (dim >= 3, or dim == 2 with shape[1] > 10)
+                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= 10):
                     return cls(images=first, size_bins=second)
                 else:
-                    # labels/seg is multi-dimensional
                     return cls(images=first, labels=second)
 
             elif len(data) == 3:
@@ -92,11 +97,10 @@ class BatchData:
                             f"BatchData.from_raw: element {i} is {type(elem).__name__}, expected Tensor"
                         )
 
-                if second.dim() == 1:
-                    # (seg, size_bins, bin_maps)
+                # Same heuristic: size_bins has dim <= 2 with small last dim
+                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= 10):
                     return cls(images=first, size_bins=second, bin_maps=third)
                 else:
-                    # (image, seg, mode_id)
                     return cls(images=first, labels=second, mode_id=third)
 
             else:

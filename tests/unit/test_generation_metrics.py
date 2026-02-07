@@ -154,7 +154,7 @@ class TestGenerationMetricsConfig:
     def test_default_values(self):
         """Default config has sensible values."""
         config = GenerationMetricsConfig()
-        assert config.enabled is True
+        assert config.enabled is False
         assert config.samples_per_epoch > 0
         assert config.samples_extended > config.samples_per_epoch
         assert config.steps_per_epoch > 0

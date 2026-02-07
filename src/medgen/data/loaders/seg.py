@@ -13,9 +13,11 @@ This file now imports from there for backward compatibility.
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as TorchDataset
 
@@ -42,30 +44,27 @@ logger = logging.getLogger(__name__)
 # Size Bin Config Extraction
 # =============================================================================
 
+@dataclass
 class SegSizeBinConfig:
-    """Extracted size bin configuration for segmentation dataloaders.
+    """Size bin configuration for segmentation dataloaders."""
+    bin_edges: list[float]
+    num_bins: int
+    voxel_spacing: tuple[float, ...]
+    return_bin_maps: bool
+    max_count: int
 
-    Eliminates repeated cfg.mode.get('size_bins', ...) extraction across
-    train/val/test loader functions.
-    """
-    __slots__ = ('bin_edges', 'num_bins', 'voxel_spacing', 'return_bin_maps', 'max_count')
-
-    def __init__(
-        self,
-        bin_edges: list[float],
-        num_bins: int,
-        voxel_spacing: tuple[float, ...],
-        return_bin_maps: bool,
-        max_count: int,
-    ) -> None:
-        self.bin_edges = bin_edges
-        self.num_bins = num_bins
-        self.voxel_spacing = voxel_spacing
-        self.return_bin_maps = return_bin_maps
-        self.max_count = max_count
+    def __post_init__(self):
+        if self.num_bins <= 0:
+            raise ValueError(f"num_bins must be > 0, got {self.num_bins}")
+        if self.max_count <= 0:
+            raise ValueError(f"max_count must be > 0, got {self.max_count}")
+        if list(self.bin_edges) != sorted(self.bin_edges):
+            raise ValueError(f"bin_edges must be sorted ascending, got {self.bin_edges}")
+        if any(v <= 0 for v in self.voxel_spacing):
+            raise ValueError(f"all voxel_spacing values must be > 0, got {self.voxel_spacing}")
 
     @classmethod
-    def from_cfg(cls, cfg, vcfg: VolumeConfig) -> 'SegSizeBinConfig':
+    def from_hydra(cls, cfg: DictConfig, vcfg: VolumeConfig) -> 'SegSizeBinConfig':
         """Extract size bin config from Hydra DictConfig.
 
         Args:
@@ -217,15 +216,19 @@ class SegDataset(TorchDataset):
             self.positive_patients = self.patients
 
     def _find_positive_patients(self) -> list[str]:
-        """Find patients with at least one tumor voxel."""
+        """Find patients with at least one tumor voxel.
+
+        Uses nibabel for fast raw data access, skipping the full
+        transform pipeline (resize, scale) since only sum > 0 is needed.
+        """
+        import nibabel as nib
+
         positive = []
         for patient in self.patients:
             seg_path = os.path.join(self.data_dir, patient, "seg.nii.gz")
-            # Quick check: load and check sum > 0
-            seg = self.transform(seg_path)
-            if not isinstance(seg, torch.Tensor):
-                seg = torch.from_numpy(seg)
-            if seg.sum() > 0:
+            nii = nib.load(seg_path)
+            data = nii.get_fdata()
+            if data.sum() > 0:
                 positive.append(patient)
         return positive
 
@@ -350,7 +353,7 @@ def create_seg_dataloader(
     data_dir = os.path.join(cfg.paths.data_dir, 'train')
 
     # Extract size bin config (typed)
-    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
+    sbc = SegSizeBinConfig.from_hydra(cfg, vcfg)
 
     # CFG dropout
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.0))
@@ -405,7 +408,7 @@ def create_seg_validation_dataloader(
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
-    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
+    sbc = SegSizeBinConfig.from_hydra(cfg, vcfg)
 
     val_dataset = SegDataset(
         data_dir=val_dir,
@@ -444,7 +447,7 @@ def create_seg_test_dataloader(
         return None
 
     vcfg = VolumeConfig.from_cfg(cfg)
-    sbc = SegSizeBinConfig.from_cfg(cfg, vcfg)
+    sbc = SegSizeBinConfig.from_hydra(cfg, vcfg)
 
     test_dataset = SegDataset(
         data_dir=test_dir,
