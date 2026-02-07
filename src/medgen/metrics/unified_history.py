@@ -105,7 +105,7 @@ def log_console_summary(
     epoch: int,
     total_epochs: int,
     elapsed_time: float,
-    time_estimator: "EpochTimeEstimator | None" = None,
+    time_estimator: EpochTimeEstimator | None = None,
 ) -> None:
     """Log epoch completion summary to console."""
     import time as time_module

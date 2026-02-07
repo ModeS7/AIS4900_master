@@ -31,7 +31,7 @@ def validate_common_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     # Training params
     if cfg.training.epochs <= 0:
@@ -65,7 +65,7 @@ def validate_model_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     if cfg.model.image_size <= 0:
         errors.append(f"image_size must be > 0, got {cfg.model.image_size}")
@@ -89,7 +89,7 @@ def validate_diffusion_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     # Strategy
     if cfg.strategy.name not in ['ddpm', 'rflow']:
@@ -117,7 +117,7 @@ def validate_vae_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     if not hasattr(cfg, 'vae'):
         errors.append("VAE configuration missing. Add 'vae' section to config.")
@@ -145,7 +145,7 @@ def validate_vqvae_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     if not hasattr(cfg, 'vqvae'):
         errors.append("VQ-VAE configuration missing. Add 'vqvae' section to config.")
@@ -174,7 +174,7 @@ def validate_training_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     training = cfg.get('training', {})
 
     # Check compile + gradient_checkpointing conflict
@@ -217,7 +217,7 @@ def validate_strategy_mode_compatibility(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     strategy = cfg.strategy.get('name', 'rflow')
     mode = cfg.mode.get('name', 'seg')
 
@@ -259,7 +259,7 @@ def validate_3d_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     spatial_dims = cfg.model.get('spatial_dims', 2)
 
     if spatial_dims != 3:
@@ -295,7 +295,7 @@ def validate_latent_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     latent_cfg = cfg.get('latent', {})
     if not latent_cfg.get('enabled', False):
@@ -328,7 +328,7 @@ def validate_regional_logging(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
 
     logging_cfg = cfg.training.get('logging', {})
     if not logging_cfg.get('regional_losses', False):
@@ -359,7 +359,7 @@ def validate_strategy_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     strategy = cfg.get('strategy', {})
 
     num_timesteps = strategy.get('num_train_timesteps', 1000)
@@ -383,7 +383,7 @@ def validate_ema_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     training = cfg.get('training', {})
 
     if not training.get('use_ema', False):
@@ -420,7 +420,7 @@ def validate_optimizer_config(cfg: DictConfig) -> list[str]:
         List of error strings (empty if validation passes).
     """
     from omegaconf import ListConfig
-    errors = []
+    errors: list[str] = []
     training = cfg.get('training', {})
     optimizer = training.get('optimizer', {})
 
@@ -457,7 +457,7 @@ def validate_augmentation_config(cfg: DictConfig) -> list[str]:
     Returns:
         List of error strings (empty if validation passes).
     """
-    errors = []
+    errors: list[str] = []
     training = cfg.get('training', {})
     score_aug = training.get('score_aug', {})
 
@@ -489,7 +489,7 @@ def run_validation(
     Raises:
         ValueError: If any validation fails.
     """
-    all_errors = []
+    all_errors: list[str] = []
     for validator in validators:
         errors = validator(cfg)
         all_errors.extend(errors)

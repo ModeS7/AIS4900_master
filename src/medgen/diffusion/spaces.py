@@ -154,9 +154,9 @@ class LatentSpace(DiffusionSpace):
         deterministic: bool = False,
         spatial_dims: int = 2,
         compression_type: str = 'vae',
-        scale_factor: int = None,
-        depth_scale_factor: int = None,
-        latent_channels: int = None,
+        scale_factor: int | None = None,
+        depth_scale_factor: int | None = None,
+        latent_channels: int | None = None,
         slicewise_encoding: bool = False,
     ) -> None:
         # Store as 'vae' for backward compatibility with existing code
@@ -201,15 +201,15 @@ class LatentSpace(DiffusionSpace):
         """Detect latent channels from compression model."""
         # Try common attribute names
         if hasattr(model, 'latent_channels'):
-            return model.latent_channels
+            return int(model.latent_channels)  # type: ignore[arg-type]
         if hasattr(model, 'z_channels'):
-            return model.z_channels
+            return int(model.z_channels)  # type: ignore[arg-type]
         if hasattr(model, 'embedding_dim'):
-            return model.embedding_dim
+            return int(model.embedding_dim)  # type: ignore[arg-type]
         # DC-AE style
         if hasattr(model, 'config') and isinstance(model.config, dict):
             if 'latent_channels' in model.config:
-                return model.config['latent_channels']
+                return int(model.config['latent_channels'])
         # Default
         return 4
 
@@ -230,10 +230,10 @@ class LatentSpace(DiffusionSpace):
             config = model.config
             # DC-AE uses spatial_compression_ratio
             if 'spatial_compression_ratio' in config:
-                return config['spatial_compression_ratio']
+                return int(config['spatial_compression_ratio'])
             # Some models use scale_factor directly
             if 'scale_factor' in config:
-                return config['scale_factor']
+                return int(config['scale_factor'])
             # Check for f{N} notation (e.g., 'f32' -> 32)
             if 'name' in config:
                 name_str = str(config['name'])
@@ -245,7 +245,7 @@ class LatentSpace(DiffusionSpace):
 
         # Check for num_down_blocks (MONAI VAE pattern: 2^num_down_blocks)
         if hasattr(model, 'num_down_blocks'):
-            return 2 ** model.num_down_blocks
+            return 2 ** int(model.num_down_blocks)  # type: ignore[arg-type, no-any-return]
 
         # Count encoder downsampling blocks by checking attribute names
         if hasattr(model, 'encoder'):
@@ -253,7 +253,7 @@ class LatentSpace(DiffusionSpace):
             # Count 'down' blocks
             down_count = sum(1 for name in dir(encoder) if 'down' in name.lower() and not name.startswith('_'))
             if down_count > 0:
-                return 2 ** min(down_count, 6)  # Cap at 64x
+                return int(2 ** min(down_count, 6))  # Cap at 64x
 
         # Default based on compression type
         if compression_type == 'dcae':
@@ -298,36 +298,36 @@ class LatentSpace(DiffusionSpace):
         """Encode a single tensor (2D or 3D) with the compression model."""
         if self.compression_type == 'vae':
             # VAE returns (mu, logvar)
-            z_mu, z_logvar = self.vae.encode(x)
+            z_mu, z_logvar = self.vae.encode(x)  # type: ignore[operator]
 
             if self.deterministic:
-                return z_mu
+                return z_mu  # type: ignore[no-any-return]
 
             # Reparameterization trick: z = mu + sigma * epsilon
             std = torch.exp(0.5 * z_logvar)
             eps = torch.randn_like(std)
-            z = z_mu + std * eps
+            z: Tensor = z_mu + std * eps
             return z
 
         elif self.compression_type == 'vqvae':
             # VQ-VAE returns quantized directly
-            return self.vae.encode(x)
+            return self.vae.encode(x)  # type: ignore[operator, no-any-return]
 
         elif self.compression_type == 'dcae':
             # DC-AE is deterministic - diffusers returns EncoderOutput object
-            result = self.vae.encode(x)
+            result = self.vae.encode(x)  # type: ignore[operator]
             if hasattr(result, 'latent'):
-                return result.latent
+                return result.latent  # type: ignore[no-any-return]
             if isinstance(result, tuple):
-                return result[0]
-            return result
+                return result[0]  # type: ignore[no-any-return]
+            return result  # type: ignore[no-any-return]
 
         else:
             # Generic fallback: try to handle tuple returns
-            result = self.vae.encode(x)
+            result = self.vae.encode(x)  # type: ignore[operator]
             if isinstance(result, tuple):
-                return result[0]  # Assume first element is the latent
-            return result
+                return result[0]  # type: ignore[no-any-return]
+            return result  # type: ignore[no-any-return]
 
     def _encode_slicewise(self, x: Tensor) -> Tensor:
         """Encode 3D volume slice-by-slice using 2D encoder.
@@ -368,11 +368,11 @@ class LatentSpace(DiffusionSpace):
         if self.slicewise_encoding and z.dim() == 5:
             return self._decode_slicewise(z)
 
-        result = self.vae.decode(z)
+        result = self.vae.decode(z)  # type: ignore[operator]
         # Handle diffusers DecoderOutput (has .sample attribute)
         if hasattr(result, 'sample'):
-            return result.sample
-        return result
+            return result.sample  # type: ignore[no-any-return]
+        return result  # type: ignore[no-any-return]
 
     def _decode_slicewise(self, z: Tensor) -> Tensor:
         """Decode 3D latent volume slice-by-slice using 2D decoder.
@@ -390,7 +390,7 @@ class LatentSpace(DiffusionSpace):
             # Extract latent slice [B, C_lat, H_lat, W_lat]
             latent_slice = z[:, :, d, :, :]
             # Decode slice
-            result = self.vae.decode(latent_slice)
+            result = self.vae.decode(latent_slice)  # type: ignore[operator]
             # Handle diffusers DecoderOutput
             if hasattr(result, 'sample'):
                 decoded_slice = result.sample
@@ -433,7 +433,7 @@ class LatentSpace(DiffusionSpace):
 def load_vae_for_latent_space(
     checkpoint_path: str,
     device: torch.device,
-    vae_config: dict = None,
+    vae_config: dict | None = None,
     spatial_dims: int = 2,
 ) -> LatentSpace:
     """Load a trained VAE and create a LatentSpace wrapper.

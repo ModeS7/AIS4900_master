@@ -25,12 +25,13 @@ class DiffusionModel(Protocol):
     This is the base interface for all diffusion models.
     """
 
-    def __call__(self, x: Tensor, timesteps: Tensor) -> Tensor:
+    def __call__(self, x: Tensor, timesteps: Tensor, **kwargs: Any) -> Tensor:
         """Forward pass for noise/velocity prediction.
 
         Args:
             x: Noisy input tensor [B, C, H, W] or [B, C, D, H, W].
             timesteps: Timestep values [B] (continuous or discrete).
+            **kwargs: Additional conditioning arguments (size_bins, omega, mode_id, etc.)
 
         Returns:
             Predicted noise or velocity tensor (same shape as x).

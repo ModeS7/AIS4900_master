@@ -310,10 +310,10 @@ def load_pretrained_weights(
             raw_disc.load_state_dict(checkpoint['discriminator_state_dict'])
             if trainer.is_main_process:
                 logger.info(f"Loaded discriminator weights from {checkpoint_path}")
-    except FileNotFoundError:
+    except FileNotFoundError as err:
         raise FileNotFoundError(
             f"Pretrained checkpoint not found: {checkpoint_path}"
-        )
+        ) from err
 
 
 def load_pretrained_weights_base(
@@ -352,10 +352,10 @@ def load_pretrained_weights_base(
             base_model.load_state_dict(state_dict)
             if trainer.is_main_process:
                 logger.info(f"Loaded {model_name} weights from {checkpoint_path}")
-    except FileNotFoundError:
+    except FileNotFoundError as err:
         raise FileNotFoundError(
             f"Pretrained checkpoint not found: {checkpoint_path}"
-        )
+        ) from err
 
 
 # ---------------------------------------------------------------------------

@@ -119,11 +119,14 @@ class BatchData:
                 return None
             # Handle MONAI MetaTensors - convert to plain tensor first
             if hasattr(x, 'as_tensor'):
-                return x.as_tensor().to(device)
+                result: Tensor = x.as_tensor().to(device)
+                return result
             return x.to(device)
 
+        images = _move(self.images)
+        assert images is not None, "BatchData.images must not be None"
         return BatchData(
-            images=_move(self.images),
+            images=images,
             labels=_move(self.labels),
             size_bins=_move(self.size_bins),
             bin_maps=_move(self.bin_maps),

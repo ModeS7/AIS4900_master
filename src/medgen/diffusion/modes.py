@@ -99,7 +99,7 @@ def _to_device(batch: torch.Tensor | dict[str, Any] | tuple, device: torch.devic
         # Also handles dicts within tuples
         return tuple(_move_to_device(v, device) for v in batch)
     elif isinstance(batch, torch.Tensor):
-        return _move_to_device(batch, device)
+        return _move_to_device(batch, device)  # type: ignore[no-any-return]
     else:
         raise TypeError(f"_to_device: expected Tensor, Dict, or tuple, got {type(batch).__name__}")
 
@@ -253,9 +253,10 @@ class SegmentationMode(TrainingMode):
             Dictionary with images and None labels.
         """
         if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
             return _prepare_latent_batch(batch, device, is_conditional=False)
 
-        batch = _to_device(batch, device)
+        batch = _to_device(batch, device)  # type: ignore[assignment]
 
         # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
@@ -302,7 +303,7 @@ class SegmentationMode(TrainingMode):
             'out_channels': 1
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
@@ -351,9 +352,10 @@ class ConditionalSingleMode(TrainingMode):
             Dictionary with separated images and labels.
         """
         if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
             return _prepare_latent_batch(batch, device, is_conditional=True)
 
-        batch = _to_device(batch, device)
+        batch = _to_device(batch, device)  # type: ignore[assignment]
 
         # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
@@ -404,7 +406,7 @@ class ConditionalSingleMode(TrainingMode):
             'out_channels': 1
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
@@ -418,7 +420,9 @@ class ConditionalSingleMode(TrainingMode):
         Returns:
             [B, 2, H, W] - [noisy_bravo, seg_mask] concatenated.
         """
-        return torch.cat([noisy_images, labels_dict['labels']], dim=1)
+        labels = labels_dict['labels']
+        assert labels is not None, "ConditionalSingleMode requires labels for conditioning"
+        return torch.cat([noisy_images, labels], dim=1)
 
 
 class ConditionalDualMode(TrainingMode):
@@ -433,7 +437,7 @@ class ConditionalDualMode(TrainingMode):
     images anatomically consistent.
     """
 
-    def __init__(self, image_keys: list[str] = None) -> None:
+    def __init__(self, image_keys: list[str] | None = None) -> None:
         """Initialize conditional dual mode.
 
         Args:
@@ -467,14 +471,15 @@ class ConditionalDualMode(TrainingMode):
             Dictionary with image dict and labels.
         """
         if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
             return _prepare_latent_batch(batch, device, is_conditional=True)
 
-        batch = _to_device(batch, device)
+        batch = _to_device(batch, device)  # type: ignore[assignment]
 
         # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
             images_dict: dict[str, torch.Tensor] = {}
-            for i, key in enumerate(self.image_keys):
+            for key in self.image_keys:
                 img = batch.get(key)
                 if img is None:
                     raise ValueError(f"Dict batch missing '{key}' key")
@@ -520,7 +525,7 @@ class ConditionalDualMode(TrainingMode):
             'out_channels': 2
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: dict[str, torch.Tensor],
         labels_dict: dict[str, torch.Tensor | None]
@@ -576,7 +581,7 @@ class MultiModalityMode(TrainingMode):
     with mode embedding to identify which modality is being generated.
     """
 
-    def __init__(self, image_keys: list[str] = None) -> None:
+    def __init__(self, image_keys: list[str] | None = None) -> None:
         """Initialize multi-modality mode.
 
         Args:
@@ -612,6 +617,7 @@ class MultiModalityMode(TrainingMode):
             KeyError: If batch is missing required keys.
         """
         if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
             result = _prepare_latent_batch(batch, device, is_conditional=True)
             # For multi-modality, we might have mode_id in the batch
             result['mode_id'] = batch.get('mode_id')
@@ -629,7 +635,7 @@ class MultiModalityMode(TrainingMode):
         # Validate required keys
         _validate_dict_keys(batch, ['image', 'seg', 'mode_id'], 'MultiModalityMode.prepare_batch')
 
-        batch = _to_device(batch, device)
+        batch = _to_device(batch, device)  # type: ignore[assignment]
         return {
             'images': batch['image'],
             'labels': batch['seg'],
@@ -650,7 +656,7 @@ class MultiModalityMode(TrainingMode):
             'out_channels': 1
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
@@ -664,7 +670,9 @@ class MultiModalityMode(TrainingMode):
         Returns:
             [B, 2, H, W] - [noisy_image, seg_mask] concatenated.
         """
-        return torch.cat([noisy_images, labels_dict['labels']], dim=1)
+        labels = labels_dict['labels']
+        assert labels is not None, "MultiModalityMode requires labels for conditioning"
+        return torch.cat([noisy_images, labels], dim=1)
 
 
 class SegmentationConditionedMode(TrainingMode):
@@ -720,6 +728,7 @@ class SegmentationConditionedMode(TrainingMode):
             Dictionary with images (seg), labels (None), and size_bins.
         """
         if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
             result = _prepare_latent_batch(batch, device, is_conditional=False)
             result['size_bins'] = batch.get('size_bins')
             if result['size_bins'] is not None:
@@ -727,7 +736,9 @@ class SegmentationConditionedMode(TrainingMode):
             return result
 
         # All batches are now dict format
-        batch = _to_device(batch, device)
+        assert isinstance(batch, dict), f"SegmentationConditionedMode requires dict batch, got {type(batch).__name__}"
+        batch = _to_device(batch, device)  # type: ignore[assignment]
+        assert isinstance(batch, dict)
         _validate_dict_keys(batch, ['image', 'size_bins'], 'SegmentationConditionedMode')
         return {
             'images': batch['image'],
@@ -749,7 +760,7 @@ class SegmentationConditionedMode(TrainingMode):
             'out_channels': 1
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
@@ -814,7 +825,9 @@ class SegmentationConditionedInputMode(TrainingMode):
             Dictionary with images (seg), bin_maps, and size_bins.
         """
         # All batches are now dict format
-        batch = _to_device(batch, device)
+        assert isinstance(batch, dict), f"SegmentationConditionedInputMode requires dict batch, got {type(batch).__name__}"
+        batch = _to_device(batch, device)  # type: ignore[assignment]
+        assert isinstance(batch, dict)
         _validate_dict_keys(batch, ['image'], 'SegmentationConditionedInputMode')
         return {
             'images': batch['image'],
@@ -837,7 +850,7 @@ class SegmentationConditionedInputMode(TrainingMode):
             'out_channels': 1
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
@@ -926,6 +939,7 @@ class LatentSegConditionedMode(TrainingMode):
                 "Ensure latent.enabled=true and cache includes latent_seg."
             )
 
+        assert isinstance(batch, dict)
         latent = batch['latent'].to(device, non_blocking=True)
         latent_seg = batch.get('latent_seg')
 
@@ -966,7 +980,7 @@ class LatentSegConditionedMode(TrainingMode):
             'out_channels': 1  # Expands to 4 in latent space
         }
 
-    def format_model_input(
+    def format_model_input(  # type: ignore[override]
         self,
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]

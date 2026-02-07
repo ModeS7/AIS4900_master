@@ -6,7 +6,6 @@ eliminating duplicated spatial_dims conditionals across the codebase.
 
 from collections.abc import Callable
 
-import torch
 import torch.nn.functional as F
 from torch import Tensor
 

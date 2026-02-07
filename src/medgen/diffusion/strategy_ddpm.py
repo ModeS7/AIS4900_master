@@ -41,13 +41,13 @@ class DDPMStrategy(DiffusionStrategy):
         self.scheduler = DDPMScheduler(
             num_train_timesteps=num_timesteps, schedule='cosine'
         )
-        return self.scheduler
+        return self.scheduler  # type: ignore[no-any-return]
 
     def predict_noise_or_velocity(
         self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
         """DDPM predicts noise"""
-        return model(x=model_input, timesteps=timesteps)
+        return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
 
     def compute_target(
         self,
@@ -77,6 +77,7 @@ class DDPMStrategy(DiffusionStrategy):
         if isinstance(noisy_images, dict):
             keys = list(noisy_images.keys())
             # For dual mode, prediction has 2 channels
+            assert isinstance(prediction, torch.Tensor)
             noise_pred_0 = self._slice_channel(prediction, 0, 1)
             noise_pred_1 = self._slice_channel(prediction, 1, 2)
 
@@ -98,6 +99,7 @@ class DDPMStrategy(DiffusionStrategy):
             }
         else:
             # Single-image case
+            assert isinstance(prediction, torch.Tensor)
             alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images.device)
             alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
             sqrt_alpha_t = torch.sqrt(alpha_t)
@@ -292,13 +294,14 @@ class DDPMStrategy(DiffusionStrategy):
         if use_progress_bars:
             timesteps_iter = tqdm(enumerate(timesteps), total=total_steps, desc="DDPM sampling")
         else:
-            timesteps_iter = enumerate(timesteps)
+            timesteps_iter = enumerate(timesteps)  # type: ignore[assignment]
 
         for step_idx, t in timesteps_iter:
             # Compute current CFG scale (dynamic or constant)
             # Note: For single-step (num_steps=1), progress=0 so cfg_scale_end is ignored
             # and only cfg_scale (start value) is used. This is intentional.
             if use_dynamic_cfg:
+                assert cfg_scale_end is not None
                 progress = step_idx / max(total_steps - 1, 1)
                 current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
             else:
@@ -307,6 +310,9 @@ class DDPMStrategy(DiffusionStrategy):
 
             if is_dual:
                 # Dual-image: process each channel through model together
+                assert noisy_pre is not None
+                assert noisy_gd is not None
+                assert image_conditioning is not None
                 current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
                 noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
@@ -319,6 +325,7 @@ class DDPMStrategy(DiffusionStrategy):
 
             else:
                 # Single image or unconditional
+                assert noisy_images is not None
                 # Build base model input (without bin_maps - those are handled separately)
                 if image_conditioning is not None:
                     current_model_input = torch.cat([noisy_images, image_conditioning], dim=1)
@@ -334,6 +341,9 @@ class DDPMStrategy(DiffusionStrategy):
 
         # Return final denoised images
         if is_dual:
+            assert noisy_pre is not None
+            assert noisy_gd is not None
             return torch.cat([noisy_pre, noisy_gd], dim=1)  # [B, 2, H, W]
         else:
+            assert noisy_images is not None
             return noisy_images

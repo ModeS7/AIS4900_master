@@ -4,7 +4,8 @@ Provides base class for gradient-checkpointed model wrappers
 for memory-efficient training of 3D compression models.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 from torch import nn

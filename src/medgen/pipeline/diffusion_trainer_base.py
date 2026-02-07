@@ -46,7 +46,6 @@ from .base_config import StrategyConfig
 from .base_trainer import BaseTrainer
 from .diffusion_config import (
     AugmentedDiffusionConfig,
-    DiffusionTrainerConfig,
     TrainingTricksConfig,
 )
 from .results import BatchType, TrainingStepResult

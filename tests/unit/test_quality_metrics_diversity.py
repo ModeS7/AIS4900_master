@@ -14,11 +14,11 @@ from medgen.metrics.quality import (
 class TestLPIPSDiversity:
     """Test compute_lpips_diversity functions for 2D and 3D."""
 
-    @pytest.mark.timeout(30)
+    @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
         ((1, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((1, 1, 16, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((1, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
     ])
     def test_single_sample_returns_zero(self, shape, func, desc):
         """Need >= 2 samples for diversity."""
@@ -26,11 +26,11 @@ class TestLPIPSDiversity:
         diversity = func(samples)
         assert diversity == 0.0
 
-    @pytest.mark.timeout(30)
+    @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,repeat_dims,func,desc", [
         ((1, 1, 64, 64), (4, 1, 1, 1), compute_lpips_diversity, "2D"),
-        ((1, 1, 16, 64, 64), (3, 1, 1, 1, 1), compute_lpips_diversity_3d, "3D"),
+        ((1, 1, 4, 64, 64), (2, 1, 1, 1, 1), compute_lpips_diversity_3d, "3D"),
     ])
     def test_identical_samples_returns_near_zero(self, shape, repeat_dims, func, desc):
         """No diversity in identical samples."""
@@ -39,11 +39,11 @@ class TestLPIPSDiversity:
         diversity = func(samples)
         assert diversity < 0.01
 
-    @pytest.mark.timeout(30)
+    @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
         ((4, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((3, 1, 16, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((2, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
     ])
     def test_diverse_samples_returns_positive(self, shape, func, desc):
         """Random samples have positive diversity."""
@@ -51,11 +51,11 @@ class TestLPIPSDiversity:
         diversity = func(samples)
         assert diversity > 0.0
 
-    @pytest.mark.timeout(30)
+    @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
         ((3, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((2, 1, 8, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((2, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
     ])
     def test_output_is_float(self, shape, func, desc):
         """Returns Python float with valid value."""

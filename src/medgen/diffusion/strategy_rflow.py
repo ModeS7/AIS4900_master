@@ -69,7 +69,7 @@ class RFlowStrategy(DiffusionStrategy):
         self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
         """RFlow predicts velocity"""
-        return model(x=model_input, timesteps=timesteps)
+        return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
 
     def compute_target(
         self,
@@ -78,7 +78,9 @@ class RFlowStrategy(DiffusionStrategy):
     ) -> ImageOrDict:
         """RFlow predicts velocity: v = x_0 - x_1 (clean - noise)."""
         if isinstance(clean_images, dict):
+            assert isinstance(noise, dict)
             return {k: clean_images[k] - noise[k] for k in clean_images.keys()}
+        assert isinstance(noise, torch.Tensor)
         return clean_images - noise
 
     def compute_predicted_clean(
@@ -103,6 +105,7 @@ class RFlowStrategy(DiffusionStrategy):
         # Handle dual-image case
         if isinstance(noisy_images, dict):
             keys = list(noisy_images.keys())
+            assert isinstance(prediction, torch.Tensor)
             velocity_pred_0 = self._slice_channel(prediction, 0, 1)
             velocity_pred_1 = self._slice_channel(prediction, 1, 2)
             t_expanded = self._expand_to_broadcast(t, prediction)
@@ -111,6 +114,7 @@ class RFlowStrategy(DiffusionStrategy):
                 keys[1]: torch.clamp(noisy_images[keys[1]] + t_expanded * velocity_pred_1, 0, 1)
             }
         else:
+            assert isinstance(prediction, torch.Tensor)
             t_expanded = self._expand_to_broadcast(t, prediction)
             return torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
 
@@ -194,12 +198,12 @@ class RFlowStrategy(DiffusionStrategy):
             t_scaled = t_float * self.scheduler.num_train_timesteps
             # Respect use_discrete_timesteps config
             if self.scheduler.use_discrete_timesteps:
-                return t_scaled.long()
+                return t_scaled.long()  # type: ignore[no-any-return]
             else:
-                return t_scaled
+                return t_scaled  # type: ignore[no-any-return]
 
         # Default: logit-normal sampling
-        return self.scheduler.sample_timesteps(sample_tensor)
+        return self.scheduler.sample_timesteps(sample_tensor)  # type: ignore[no-any-return]
 
     def generate(
         self,
@@ -323,7 +327,7 @@ class RFlowStrategy(DiffusionStrategy):
         timestep_pairs = list(zip(self.scheduler.timesteps, all_next_timesteps))
         total_steps = len(timestep_pairs)
         if use_progress_bars:
-            timestep_pairs = tqdm(timestep_pairs, desc="RFlow sampling")
+            timestep_pairs = tqdm(timestep_pairs, desc="RFlow sampling")  # type: ignore[assignment]
 
         for step_idx, (t, next_t) in enumerate(timestep_pairs):
             # Compute current CFG scale (dynamic or constant)
@@ -331,6 +335,7 @@ class RFlowStrategy(DiffusionStrategy):
             # and only cfg_scale (start value) is used. This is intentional.
             if use_dynamic_cfg:
                 # Linear interpolation: cfg_scale at step 0, cfg_scale_end at last step
+                assert cfg_scale_end is not None
                 progress = step_idx / max(total_steps - 1, 1)
                 current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
             else:
@@ -341,6 +346,9 @@ class RFlowStrategy(DiffusionStrategy):
 
             if is_dual:
                 # Dual-image: process each channel through model together
+                assert noisy_pre is not None
+                assert noisy_gd is not None
+                assert image_conditioning is not None
                 current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
                 velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
@@ -353,6 +361,7 @@ class RFlowStrategy(DiffusionStrategy):
 
             else:
                 # Single image or unconditional
+                assert noisy_images is not None
                 # Build base model input (without bin_maps - those are handled separately)
                 if image_conditioning is not None:
                     current_model_input = torch.cat([noisy_images, image_conditioning], dim=1)
@@ -368,6 +377,9 @@ class RFlowStrategy(DiffusionStrategy):
 
         # Return final denoised images
         if is_dual:
+            assert noisy_pre is not None
+            assert noisy_gd is not None
             return torch.cat([noisy_pre, noisy_gd], dim=1)  # [B, 2, H, W]
         else:
+            assert noisy_images is not None
             return noisy_images

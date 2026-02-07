@@ -284,7 +284,7 @@ def load_diffusion_model_with_metadata(
     # Optionally compile
     if compile_model:
         logger.info("Compiling model with torch.compile...")
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
 
     # Extract epoch
     epoch = checkpoint.get('epoch', 0)
@@ -324,7 +324,7 @@ def _resolve_channels(
 
     # Check checkpoint config
     if name in model_config:
-        return model_config[name]
+        return int(model_config[name])
 
     # Not found
     if required:

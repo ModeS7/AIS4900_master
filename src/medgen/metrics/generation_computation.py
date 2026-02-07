@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _validate_conditioning_and_detect_3d(self_: 'GenerationMetrics') -> bool:
+def _validate_conditioning_and_detect_3d(self_: GenerationMetrics) -> bool:
     """Validate fixed_conditioning_masks is set. Returns True if 3D."""
     if self_.fixed_conditioning_masks is None:
         raise RuntimeError(
@@ -41,7 +41,7 @@ def _validate_conditioning_and_detect_3d(self_: 'GenerationMetrics') -> bool:
 
 
 def extract_features_batched(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     samples: torch.Tensor,
     extractor: nn.Module,
     batch_size: int | None = None,
@@ -89,7 +89,7 @@ def extract_features_batched(
 
 
 def compute_metrics_against_reference(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     gen_resnet: torch.Tensor,
     gen_biomed: torch.Tensor,
     ref_resnet: torch.Tensor,
@@ -130,7 +130,7 @@ def compute_metrics_against_reference(
 
 
 def compute_diversity_metrics(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     samples: torch.Tensor,
     prefix: str = "",
 ) -> dict[str, float]:
@@ -182,7 +182,7 @@ def compute_diversity_metrics(
 
 
 def compute_size_bin_adherence(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     generated_masks: torch.Tensor,
     conditioning_bins: torch.Tensor,
     prefix: str = "",
@@ -252,7 +252,7 @@ def compute_size_bin_adherence(
 
 
 def compute_epoch_metrics(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     model: nn.Module,
     strategy: Any,
     mode: Any,
@@ -357,7 +357,7 @@ def compute_epoch_metrics(
 
 
 def compute_extended_metrics(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     model: nn.Module,
     strategy: Any,
     mode: Any,
@@ -462,7 +462,7 @@ def compute_extended_metrics(
 
 
 def compute_metrics_from_samples(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     samples: torch.Tensor,
     extended: bool = False,
 ) -> dict[str, float]:
@@ -533,7 +533,7 @@ def compute_metrics_from_samples(
 
 
 def compute_test_metrics(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     model: nn.Module,
     strategy: Any,
     mode: Any,

@@ -10,9 +10,7 @@ and implements 2D-specific diffusion training functionality:
 - Compiled forward paths for performance
 """
 import logging
-import os
 import time
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import matplotlib
@@ -24,19 +22,13 @@ import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 from ema_pytorch import EMA
-from monai.networks.nets import DiffusionModelUNet
 from omegaconf import DictConfig
 from torch import nn
 from torch.amp import autocast
-from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 
 from medgen.core import (
     ModeType,
-    create_plateau_scheduler,
-    create_warmup_constant_scheduler,
-    create_warmup_cosine_scheduler,
-    wrap_model_for_training,
 )
 from medgen.diffusion import (
     ConditionalDualMode,
@@ -53,16 +45,7 @@ from medgen.diffusion import (
     TrainingMode,
 )
 from medgen.evaluation import ValidationVisualizer
-from medgen.losses import PerceptualLoss, create_regional_weight_computer
 from medgen.metrics import UnifiedMetrics
-from medgen.models import (
-    ControlNetConditionedUNet,
-    create_controlnet_for_unet,
-    create_diffusion_model,
-    freeze_unet_for_controlnet,
-    get_model_type,
-    is_transformer_model,
-)
 
 from .base_config import ModeConfig, StrategyConfig
 from .diffusion_config import DiffusionTrainerConfig

@@ -39,7 +39,6 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         trainer: DiffusionTrainer instance.
         train_dataset: Training dataset for model config extraction.
     """
-    from ema_pytorch import EMA
     from monai.networks.nets import DiffusionModelUNet
     from torch.optim import AdamW
 

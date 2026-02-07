@@ -137,10 +137,13 @@ class DiffusionStrategy(ABC):
                 _warned_cfg_dual = True
 
         if ctx['use_cfg_size_bins']:
+            assert size_bins is not None
             ctx['uncond_size_bins'] = torch.zeros_like(size_bins)
         if ctx['use_cfg_bin_maps']:
+            assert bin_maps is not None
             ctx['uncond_bin_maps'] = torch.zeros_like(bin_maps)
         if ctx['use_cfg_conditioning']:
+            assert conditioning is not None
             ctx['uncond_conditioning'] = torch.zeros_like(conditioning)
 
         return ctx
@@ -210,6 +213,8 @@ class DiffusionStrategy(ABC):
 
         if use_cfg_bin_maps:
             # CFG for bin_maps input conditioning (seg_conditioned_input mode)
+            assert bin_maps is not None
+            assert uncond_bin_maps is not None
             input_cond = torch.cat([noisy_images, bin_maps], dim=1)
             input_uncond = torch.cat([noisy_images, uncond_bin_maps], dim=1)
             pred_cond = self._call_model(
@@ -236,6 +241,7 @@ class DiffusionStrategy(ABC):
             return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
         elif use_cfg_conditioning:
             # CFG for image conditioning (seg mask)
+            assert uncond_conditioning is not None
             uncond_model_input = torch.cat([noisy_images, uncond_conditioning], dim=1)
             pred_cond = self._call_model(
                 model, current_model_input, timesteps_batch, omega, mode_id, size_bins
@@ -443,7 +449,7 @@ class DiffusionStrategy(ABC):
                 for key in clean_images.keys()
             }
         else:
-            return self.scheduler.add_noise(clean_images, noise, timesteps)
+            return self.scheduler.add_noise(clean_images, noise, timesteps)  # type: ignore[no-any-return]
 
     @abstractmethod
     def predict_noise_or_velocity(
@@ -590,5 +596,5 @@ class DiffusionStrategy(ABC):
 # Re-exports from submodules for backward compatibility
 # =============================================================================
 
-from .strategy_ddpm import DDPMStrategy  # noqa: E402, F401
-from .strategy_rflow import RFlowStrategy  # noqa: E402, F401
+from .strategy_ddpm import DDPMStrategy  # noqa: F401
+from .strategy_rflow import RFlowStrategy  # noqa: F401

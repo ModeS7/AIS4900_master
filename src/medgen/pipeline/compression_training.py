@@ -47,8 +47,9 @@ def prepare_batch(
     Returns:
         Tuple of (images, mask).
     """
-    from .compression_trainer import _tensor_to_device
     from medgen.core.dict_utils import get_with_fallbacks
+
+    from .compression_trainer import _tensor_to_device
 
     # 3D-specific handling
     if trainer.spatial_dims == 3:

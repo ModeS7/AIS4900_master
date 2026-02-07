@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
@@ -386,8 +387,6 @@ def compute_per_modality_validation(
         epoch: Current epoch number.
     """
     from medgen.metrics import (
-        compute_lpips,
-        compute_lpips_3d,
         compute_msssim,
         compute_msssim_2d_slicewise,
         compute_psnr,

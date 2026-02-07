@@ -16,13 +16,12 @@ All compression trainers share:
 from __future__ import annotations
 
 import logging
-import os
-import time
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from medgen.evaluation import ValidationRunner
+
     from .results import BatchType
 
 import matplotlib
@@ -35,14 +34,12 @@ from monai.losses import PatchAdversarialLoss
 from monai.networks.nets import PatchDiscriminator
 from omegaconf import DictConfig
 from torch import nn
-from torch.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
 from medgen.core.defaults import COMPRESSION_DEFAULTS
-from medgen.core.dict_utils import get_with_fallbacks
 from medgen.losses import LPIPSLoss, PerceptualLoss
 from medgen.metrics import (
     GradientNormTracker,
@@ -54,7 +51,6 @@ from medgen.metrics import (
 
 from .base_trainer import BaseTrainer
 from .results import TrainingStepResult
-from .utils import save_full_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -921,7 +917,7 @@ class BaseCompressionTrainer(BaseTrainer):
         from .compression_validation import create_worst_batch_figure
         return create_worst_batch_figure(self, worst_batch_data)
 
-    def _create_validation_runner(self) -> 'ValidationRunner':
+    def _create_validation_runner(self) -> ValidationRunner:
         """Create ValidationRunner for this trainer (2D or 3D)."""
         from .compression_validation import create_validation_runner
         return create_validation_runner(self)

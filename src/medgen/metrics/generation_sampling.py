@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def set_fixed_conditioning(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     train_dataset: Dataset,
     num_masks: int = 500,
     seg_channel_idx: int = 1,
@@ -200,7 +200,7 @@ def set_fixed_conditioning(
 
 @torch.no_grad()
 def generate_samples(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     model: nn.Module,
     strategy: Any,
     mode: Any,
@@ -330,7 +330,7 @@ def generate_samples(
 
 
 def generate_and_extract_features_3d_streaming(
-    self_: 'GenerationMetrics',
+    self_: GenerationMetrics,
     model: nn.Module,
     strategy: Any,
     mode: Any,

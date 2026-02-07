@@ -69,7 +69,7 @@ def log_metrics_to_tensorboard(
     metrics: dict[str, float],
     prefix: str,
     step: int = 0,
-    unified_metrics: "UnifiedMetrics | None" = None,
+    unified_metrics: UnifiedMetrics | None = None,
 ) -> None:
     """Log metrics to TensorBoard.
 
@@ -137,7 +137,7 @@ def log_test_per_modality(
     prefix: str,
     modality: str,
     step: int = 0,
-    unified_metrics: "UnifiedMetrics | None" = None,
+    unified_metrics: UnifiedMetrics | None = None,
 ) -> None:
     """Log per-modality test metrics to TensorBoard.
 

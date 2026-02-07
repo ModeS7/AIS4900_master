@@ -24,7 +24,6 @@ from tqdm import tqdm
 
 if TYPE_CHECKING:
     from medgen.metrics.unified import UnifiedMetrics
-    from medgen.pipeline.compression_trainer import BaseCompressionTrainer
 
 from medgen.core.dict_utils import get_with_fallbacks
 
@@ -690,7 +689,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 # Re-exports from submodules for backward compatibility
 # =============================================================================
 
-from .evaluation_3d import (  # noqa: E402, F401
+from .evaluation_3d import (  # noqa: F401
     Compression3DTestEvaluator,
     create_compression_test_evaluator,
 )

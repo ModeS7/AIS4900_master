@@ -224,9 +224,9 @@ def setup_regional_weighting(trainer: DiffusionTrainer) -> None:
     Sets up:
     - trainer.regional_weight_computer: RegionalWeightComputer | None
     """
-    from .diffusion_config import RegionalWeightingConfig
-
     from medgen.losses import create_regional_weight_computer
+
+    from .diffusion_config import RegionalWeightingConfig
 
     rw_cfg = RegionalWeightingConfig.from_hydra(trainer.cfg)
 

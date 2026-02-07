@@ -12,7 +12,6 @@ import torch
 
 from medgen.core.spatial_utils import broadcast_to_spatial
 
-
 # =============================================================================
 # Mode-Specific Intensity Scaling
 # =============================================================================

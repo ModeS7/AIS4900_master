@@ -28,39 +28,10 @@ from typing import Any
 
 import torch
 
+# Import omega encoding, mode intensity scaling, and wrapper classes
 # Import pattern functions and constants from helper module
 from .score_aug_patterns import (
-    PATTERN_NAMES,
-    PATTERN_NAMES_3D,
-    NUM_PATTERNS,
-    NUM_PATTERNS_3D,
-    generate_pattern_mask,
-    generate_pattern_mask_3d,
     _cached_generate_pattern_mask,
-    clear_pattern_cache,
-)
-
-# Import omega encoding, mode intensity scaling, and wrapper classes
-from .score_aug_omega import (
-    MODE_INTENSITY_SCALE,
-    MODE_INTENSITY_SCALE_INV,
-    MODE_INTENSITY_SCALE_3D,
-    MODE_INTENSITY_SCALE_INV_3D,
-    OMEGA_ENCODING_DIM,
-    OMEGA_ENCODING_DIM_3D,
-    apply_mode_intensity_scale,
-    apply_mode_intensity_scale_3d,
-    inverse_mode_intensity_scale,
-    inverse_mode_intensity_scale_3d,
-    encode_omega,
-    encode_omega_3d,
-)
-
-from .score_aug_wrapper import (
-    OmegaTimeEmbed,
-    OmegaTimeEmbed3D,
-    ScoreAugModelWrapper,
-    ScoreAugModelWrapper3D,
 )
 
 

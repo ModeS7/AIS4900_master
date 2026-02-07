@@ -48,7 +48,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         image_keys: list[str] | None = None,
         seg_loss_fn: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, dict[str, float]]] | None = None,
         modality_name: str | None = None,
-        unified_metrics: "UnifiedMetrics | None" = None,
+        unified_metrics: UnifiedMetrics | None = None,
     ):
         """Initialize 3D compression evaluator.
 
@@ -286,8 +286,8 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 # =============================================================================
 
 def create_compression_test_evaluator(
-    trainer: 'BaseCompressionTrainer',
-) -> 'CompressionTestEvaluator | Compression3DTestEvaluator':
+    trainer: BaseCompressionTrainer,
+) -> CompressionTestEvaluator | Compression3DTestEvaluator:
     """Create test evaluator for compression trainer.
 
     Factory that creates appropriate evaluator based on trainer.spatial_dims.

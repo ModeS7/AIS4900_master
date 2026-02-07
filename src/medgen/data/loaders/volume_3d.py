@@ -19,6 +19,7 @@ Data Augmentation:
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -32,8 +33,6 @@ from monai.transforms import (
     ScaleIntensity,
 )
 from torch.utils.data import DataLoader, Dataset
-
-from dataclasses import dataclass
 
 from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
 
@@ -1278,6 +1277,7 @@ def _validate_vae_modality(
 ) -> bool:
     """Validate VAE modality requirements exist in directory."""
     from medgen.data.dataset import validate_modality_exists
+
     from .common import validate_mode_requirements
     try:
         if modality == 'dual':

@@ -31,7 +31,7 @@ from medgen.core import setup_distributed
 from medgen.metrics import FLOPsTracker, GradientNormTracker
 from medgen.pipeline.results import BatchType, TrainingStepResult
 
-from .base_config import BaseTrainingConfig, PathsConfig, ProfilingConfig
+from .base_config import BaseTrainingConfig, PathsConfig
 from .checkpoint_manager import CheckpointManager
 from .utils import EpochTimeEstimator
 

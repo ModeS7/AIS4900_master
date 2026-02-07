@@ -5,7 +5,7 @@ These are called via thin delegation wrappers in UnifiedMetrics.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 

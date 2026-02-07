@@ -36,12 +36,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from omegaconf import DictConfig
-
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import DictConfig
 from torch.utils.data import DataLoader, Dataset
 
 from medgen.core.dict_utils import get_with_fallbacks
@@ -441,7 +440,6 @@ class ReferenceFeatureCache:
         Returns:
             Feature tensor [N, D].
         """
-        from .generation_3d import extract_features_3d
 
         all_features = []
         sample_count = 0
@@ -695,7 +693,7 @@ class GenerationMetrics:
 # Re-exports from helper modules for backward compatibility
 # =============================================================================
 
-from .generation_3d import (  # noqa: E402, F401
+from .generation_3d import (  # noqa: F401
     compute_cmmd_3d,
     compute_fid_3d,
     compute_kid_3d,

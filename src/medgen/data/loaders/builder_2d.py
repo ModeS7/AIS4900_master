@@ -8,7 +8,6 @@ Each original file becomes a thin wrapper that creates a LoaderSpec and calls
 build_2d_loader().
 """
 import logging
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -861,14 +860,14 @@ def create_single_modality_diffusion_val_loader(
     Returns:
         DataLoader for single modality or None if val/ doesn't exist.
     """
-    from medgen.data.loaders.common import (
-        DataLoaderConfig,
-        get_validated_split_dir,
-    )
     from medgen.data.dataset import (
         NiFTIDataset,
         build_standard_transform,
         validate_modality_exists,
+    )
+    from medgen.data.loaders.common import (
+        DataLoaderConfig,
+        get_validated_split_dir,
     )
     from medgen.data.loaders.datasets import (
         MultiDiffusionDataset,

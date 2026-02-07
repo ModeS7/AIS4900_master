@@ -154,6 +154,7 @@ class ConditioningContext:
         """
         if not self.use_dynamic_cfg:
             return self.cfg_scale
+        assert self.cfg_scale_end is not None  # guaranteed by use_dynamic_cfg check
         progress = step_idx / max(total_steps - 1, 1)
         return self.cfg_scale + progress * (self.cfg_scale_end - self.cfg_scale)
 
