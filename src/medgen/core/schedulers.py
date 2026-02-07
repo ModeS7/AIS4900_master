@@ -3,6 +3,8 @@
 Provides factory functions for common scheduler configurations used
 across different trainers.
 """
+from typing import Literal
+
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import (
     ConstantLR,
@@ -116,7 +118,7 @@ def create_warmup_constant_scheduler(
 
 def create_plateau_scheduler(
     optimizer: Optimizer,
-    mode: str = 'min',
+    mode: Literal['min', 'max'] = 'min',
     factor: float = 0.5,
     patience: int = 10,
     min_lr: float = 1e-6,

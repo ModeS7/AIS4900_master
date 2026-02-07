@@ -180,7 +180,7 @@ class ModeFactory:
             mode_config = cls.get_mode_config(cfg)
 
         from medgen.data.loaders.unified import create_dataloader
-        return create_dataloader(
+        return create_dataloader(  # type: ignore[no-any-return]
             cfg=cfg,
             task='diffusion',
             mode=mode_config.mode.value,
@@ -214,7 +214,7 @@ class ModeFactory:
 
         from medgen.data.loaders.unified import create_dataloader
         try:
-            return create_dataloader(
+            return create_dataloader(  # type: ignore[no-any-return]
                 cfg=cfg,
                 task='diffusion',
                 mode=mode_config.mode.value,
@@ -246,7 +246,7 @@ class ModeFactory:
 
         from medgen.data.loaders.unified import create_dataloader
         try:
-            return create_dataloader(
+            return create_dataloader(  # type: ignore[no-any-return]
                 cfg=cfg,
                 task='diffusion',
                 mode=mode_config.mode.value,
@@ -309,7 +309,7 @@ class ModeFactory:
             Tuple of (DataLoader, Dataset) for pixel-space data.
         """
         from medgen.data.loaders.unified import create_dataloader
-        return create_dataloader(
+        return create_dataloader(  # type: ignore[no-any-return]
             cfg=cfg,
             task='diffusion',
             mode=mode_config.mode.value,

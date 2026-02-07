@@ -82,4 +82,4 @@ def wrap_model_for_training(
             if is_main_process:
                 logger.info("Single-GPU: Raw model (no compilation)")
 
-    return wrapped_model, raw_model
+    return wrapped_model, raw_model  # type: ignore[return-value]

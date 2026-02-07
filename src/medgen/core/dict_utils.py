@@ -10,7 +10,7 @@ MASK_KEYS = ('seg', 'mask', 'labels', 'seg_mask', 'latent_seg')
 PATIENT_KEYS = ('patient_id', 'patient')
 
 
-def get_with_fallbacks(d: dict, *keys: str, default: T = None) -> T | Any:
+def get_with_fallbacks(d: dict, *keys: str, default: T | None = None) -> T | Any:
     """Get value from dict trying multiple keys in order.
 
     Args:

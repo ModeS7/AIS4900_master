@@ -96,13 +96,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install mypy and dependencies
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-mypy-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         run: |
-          pip install mypy torch omegaconf types-tqdm
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r requirements.txt
+          pip install mypy types-tqdm
 
       - name: Type check core modules
         run: |
-          mypy src/medgen/diffusion/ src/medgen/core/validation.py --ignore-missing-imports
+          mypy src/medgen/diffusion/ src/medgen/core/validation.py
 
   integration-tests:
     runs-on: ubuntu-latest
