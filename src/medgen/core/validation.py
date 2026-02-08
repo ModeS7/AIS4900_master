@@ -445,6 +445,71 @@ def validate_optimizer_config(cfg: DictConfig) -> list[str]:
     return errors
 
 
+def validate_space_to_depth_config(cfg: DictConfig) -> list[str]:
+    """Validate space-to-depth configuration.
+
+    Checks:
+    - Skip if not enabled
+    - Requires spatial_dims=3
+    - Incompatible with latent diffusion
+    - Volume dimensions must be divisible by factors
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors: list[str] = []
+
+    s2d_cfg = cfg.get('space_to_depth', {})
+    if not s2d_cfg.get('enabled', False):
+        return errors  # Not enabled, skip
+
+    # Requires 3D
+    spatial_dims = cfg.model.get('spatial_dims', 2)
+    if spatial_dims != 3:
+        errors.append(
+            "space_to_depth requires spatial_dims=3. "
+            "Space-to-depth rearrangement is only meaningful for 3D volumes."
+        )
+
+    # Incompatible with latent diffusion
+    latent_cfg = cfg.get('latent', {})
+    if latent_cfg.get('enabled', False):
+        errors.append(
+            "space_to_depth and latent diffusion cannot be used together. "
+            "Disable one of latent.enabled or space_to_depth.enabled."
+        )
+
+    # Check volume divisibility
+    if spatial_dims == 3 and 'volume' in cfg and cfg.volume is not None:
+        sf = s2d_cfg.get('spatial_factor', 2)
+        df = s2d_cfg.get('depth_factor', 2)
+
+        height = cfg.volume.get('height', 0)
+        width = cfg.volume.get('width', 0)
+        depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', 0))
+
+        if height > 0 and height % sf != 0:
+            errors.append(
+                f"volume.height ({height}) must be divisible by "
+                f"space_to_depth.spatial_factor ({sf})"
+            )
+        if width > 0 and width % sf != 0:
+            errors.append(
+                f"volume.width ({width}) must be divisible by "
+                f"space_to_depth.spatial_factor ({sf})"
+            )
+        if df > 1 and depth > 0 and depth % df != 0:
+            errors.append(
+                f"volume depth ({depth}) must be divisible by "
+                f"space_to_depth.depth_factor ({df})"
+            )
+
+    return errors
+
+
 def validate_augmentation_config(cfg: DictConfig) -> list[str]:
     """Validate score augmentation configuration.
 

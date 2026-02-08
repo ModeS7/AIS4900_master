@@ -126,6 +126,94 @@ class PixelSpace(DiffusionSpace):
         return 1
 
 
+class SpaceToDepthSpace(DiffusionSpace):
+    """Lossless space-to-depth rearrangement for 3D pixel-space diffusion.
+
+    Uses PixelUnshuffle3D/PixelShuffle3D to trade spatial resolution for channels.
+    With default 2x2x2 factors: [B, 1, D, H, W] -> [B, 8, D/2, H/2, W/2].
+
+    This gives the UNet a smaller spatial grid (less memory) while preserving
+    all information losslessly. The UNet operates on 8x channels instead.
+
+    Args:
+        spatial_factor: Downsampling factor for H and W dimensions. Default 2.
+        depth_factor: Downsampling factor for D dimension. Default 2.
+    """
+
+    def __init__(self, spatial_factor: int = 2, depth_factor: int = 2) -> None:
+        from medgen.models.dcae_3d_ops import PixelShuffle3D, PixelUnshuffle3D
+
+        self._unshuffle = PixelUnshuffle3D(spatial_factor, depth_factor)
+        self._shuffle = PixelShuffle3D(spatial_factor, depth_factor)
+        self._channel_multiplier = spatial_factor * spatial_factor * depth_factor
+        self._scale_factor = spatial_factor
+        self._depth_scale_factor = depth_factor
+
+    def encode(self, x: Tensor) -> Tensor:
+        """Rearrange spatial dims to channels (lossless).
+
+        Args:
+            x: 5D tensor [B, C, D, H, W].
+
+        Returns:
+            Rearranged tensor [B, C*factor, D/df, H/sf, W/sf].
+
+        Raises:
+            ValueError: If input is not 5D (3D only).
+        """
+        if x.dim() != 5:
+            raise ValueError(
+                f"SpaceToDepthSpace requires 5D input [B, C, D, H, W], "
+                f"got {x.dim()}D tensor with shape {x.shape}"
+            )
+        return self._unshuffle(x)
+
+    def decode(self, z: Tensor) -> Tensor:
+        """Rearrange channels back to spatial dims (lossless inverse).
+
+        Args:
+            z: 5D tensor [B, C*factor, D/df, H/sf, W/sf].
+
+        Returns:
+            Restored tensor [B, C, D, H, W].
+
+        Raises:
+            ValueError: If input is not 5D (3D only).
+        """
+        if z.dim() != 5:
+            raise ValueError(
+                f"SpaceToDepthSpace requires 5D input [B, C, D, H, W], "
+                f"got {z.dim()}D tensor with shape {z.shape}"
+            )
+        return self._shuffle(z)
+
+    def get_latent_channels(self, input_channels: int) -> int:
+        """Get channel count after space-to-depth rearrangement.
+
+        Args:
+            input_channels: Number of input channels in pixel space.
+
+        Returns:
+            input_channels * channel_multiplier (e.g., 1 -> 8 for 2x2x2).
+        """
+        return input_channels * self._channel_multiplier
+
+    @property
+    def scale_factor(self) -> int:
+        """Spatial downscale factor (H, W dimensions)."""
+        return self._scale_factor
+
+    @property
+    def depth_scale_factor(self) -> int:
+        """Depth downscale factor (D dimension)."""
+        return self._depth_scale_factor
+
+    @property
+    def latent_channels(self) -> int:
+        """Channel multiplier per input channel."""
+        return self._channel_multiplier
+
+
 class LatentSpace(DiffusionSpace):
     """Latent space using a compression model for encoding/decoding.
 

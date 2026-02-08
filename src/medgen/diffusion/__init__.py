@@ -49,6 +49,7 @@ from .modes import (
 from .spaces import (
     DiffusionSpace,
     PixelSpace,
+    SpaceToDepthSpace,
     LatentSpace,
     load_vae_for_latent_space,
 )
@@ -91,6 +92,7 @@ __all__ = [
     # Spaces
     'DiffusionSpace',
     'PixelSpace',
+    'SpaceToDepthSpace',
     'LatentSpace',
     'load_vae_for_latent_space',
     # Loading

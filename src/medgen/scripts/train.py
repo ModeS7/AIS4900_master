@@ -44,6 +44,7 @@ from medgen.core import (
     validate_regional_logging,
     validate_strategy_config,
     validate_strategy_mode_compatibility,
+    validate_space_to_depth_config,
     validate_training_config,
 )
 from medgen.data.loaders.latent import (
@@ -53,7 +54,7 @@ from medgen.data.loaders.latent import (
     create_latent_validation_dataloader,
     load_compression_model,
 )
-from medgen.diffusion import LatentSpace, PixelSpace
+from medgen.diffusion import LatentSpace, PixelSpace, SpaceToDepthSpace
 from medgen.pipeline import DiffusionTrainer
 
 # Enable CUDA optimizations
@@ -79,6 +80,7 @@ def validate_config(cfg: DictConfig) -> None:
         validate_strategy_mode_compatibility,
         validate_3d_config,
         validate_latent_config,
+        validate_space_to_depth_config,
         validate_regional_logging,
         validate_strategy_config,
         validate_ema_config,
@@ -606,7 +608,22 @@ def _train_3d(cfg: DictConfig) -> None:
             val_loader = None
             logger.warning("No validation dataset found")
 
-        space = PixelSpace()
+        # Check for space-to-depth rearrangement
+        s2d_cfg = cfg.get('space_to_depth', {})
+        if s2d_cfg.get('enabled', False):
+            spatial_factor = s2d_cfg.get('spatial_factor', 2)
+            depth_factor = s2d_cfg.get('depth_factor', 2)
+            space = SpaceToDepthSpace(
+                spatial_factor=spatial_factor,
+                depth_factor=depth_factor,
+            )
+            logger.info(
+                f"Space-to-depth: {space.latent_channels}x channels, "
+                f"spatial {spatial_factor}x, depth {depth_factor}x"
+            )
+        else:
+            space = PixelSpace()
+
         # Pixel-space training: no separate loaders needed for reference features
         pixel_train_loader = None
         pixel_val_loader = None

@@ -1,0 +1,27 @@
+# 3D DiffusionModelUNet — 5-Level Architecture
+#
+# L0 dropped from default_3d (6-level).
+# Use when the UNet input has depth that only supports 4 downsampling steps.
+# Example: depth=80 → 40→20→10→5 (clean). A 6th level would need 5/2 = broken.
+#
+# Effective resolution (bravo mode, s2d 2x2x2):
+#   At 128x128 input:  L0=32ch@64x64x80    ... L4=512ch@4x4x5
+#   At 256x256 input:  L0=32ch@128x128x80  ... L4=512ch@8x8x5
+
+type: unet
+spatial_dims: 3
+image_size: 256
+depth_size: 160
+
+# 5-level architecture (default_3d minus L0)
+channels: [32, 64, 256, 512, 512]
+
+# Attention at L3-4
+attention_levels: [false, false, false, true, true]
+
+# Res blocks (matched from default_3d L1-L5)
+num_res_blocks: [1, 1, 2, 2, 2]
+
+# Attention config
+num_head_channels: 16
+norm_num_groups: 16
