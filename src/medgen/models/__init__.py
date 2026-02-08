@@ -1,10 +1,10 @@
 """
 MedGen Models Package.
 
-Provides diffusion model architectures including UNet and SiT.
+Provides diffusion model architectures including UNet and DiT.
 """
 
-from .sit import SiT, create_sit, SiT_S, SiT_B, SiT_L, SiT_XL, SIT_VARIANTS
+from .dit import DiT, create_dit, DiT_S, DiT_B, DiT_L, DiT_XL, DIT_VARIANTS
 from .factory import create_diffusion_model, get_model_type, is_transformer_model
 from .embeddings import (
     PatchEmbed2D,
@@ -13,7 +13,7 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .sit_blocks import SiTBlock, Attention, CrossAttention, Mlp, FinalLayer, DropPath
+from .dit_blocks import DiTBlock, Attention, CrossAttention, Mlp, FinalLayer, DropPath
 from .autoencoder_dc_3d import AutoencoderDC3D, CheckpointedAutoencoderDC3D
 from .dcae_adaptive_layers import AdaptiveOutputConv2d, AdaptiveInputConv2d
 from .dcae_structured import StructuredAutoencoderDC
@@ -29,8 +29,26 @@ from .controlnet import (
     ControlNetGenerationWrapper,
 )
 
+# Backward compatibility aliases
+SiT = DiT
+SiTBlock = DiTBlock
+SIT_VARIANTS = DIT_VARIANTS
+create_sit = create_dit
+SiT_S = DiT_S
+SiT_B = DiT_B
+SiT_L = DiT_L
+SiT_XL = DiT_XL
+
 __all__ = [
     # Main model classes
+    "DiT",
+    "create_dit",
+    "DiT_S",
+    "DiT_B",
+    "DiT_L",
+    "DiT_XL",
+    "DIT_VARIANTS",
+    # Backward compat
     "SiT",
     "create_sit",
     "SiT_S",
@@ -49,6 +67,7 @@ __all__ = [
     "get_2d_sincos_pos_embed",
     "get_3d_sincos_pos_embed",
     # Blocks
+    "DiTBlock",
     "SiTBlock",
     "Attention",
     "CrossAttention",

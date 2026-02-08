@@ -15,7 +15,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== EXP10_3: 3D-SiT with DC-AE 2x2x512 Latent Space ==="
+echo "=== EXP10_3: 3D-DiT with DC-AE 2x2x512 Latent Space ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -47,7 +47,7 @@ echo "Mode: bravo_seg_cond_dcae"
 echo "  in_channels:  1024 = [bravo_latent(512), seg_latent(512)]"
 echo "  out_channels: 512 = velocity prediction for bravo_latent"
 echo ""
-echo "Model: 3D-SiT-B (Scalable Interpolant Transformer)"
+echo "Model: 3D-DiT-B (Scalable Interpolant Transformer)"
 echo "  input_size: 2 (spatial)"
 echo "  depth_size: D (preserved from input)"
 echo "  patch_size: 1"
@@ -60,7 +60,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode.in_channels=1024 \
     mode.out_channels=512 \
     mode.latent_channels=512 \
-    model=sit_3d \
+    model=dit_3d \
     model.variant=B \
     model.patch_size=1 \
     latent.enabled=true \

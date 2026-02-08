@@ -71,7 +71,7 @@ class TestProfilingModule:
         from medgen.pipeline.profiling import get_model_config
 
         trainer = Mock()
-        trainer.model_type = 'sit'
+        trainer.model_type = 'dit'
         trainer.is_transformer = True
         trainer.strategy_name = 'rflow'
         trainer.mode_name = 'bravo'
@@ -84,7 +84,7 @@ class TestProfilingModule:
                 'spatial_dims': 2,
                 'image_size': 256,
                 'patch_size': 4,
-                'variant': 'SiT-XL/2',
+                'variant': 'DiT-XL/2',
                 'mlp_ratio': 4.0,
                 'conditioning': 'concat',
                 'qk_norm': True,
@@ -92,7 +92,7 @@ class TestProfilingModule:
         })
 
         result = get_model_config(trainer)
-        assert result['model_type'] == 'sit'
+        assert result['model_type'] == 'dit'
         assert result['image_size'] == 256
         assert result['patch_size'] == 4
 

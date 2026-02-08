@@ -1,10 +1,11 @@
 """
-Scalable Interpolant Transformers (SiT) for diffusion models.
+Diffusion Transformer (DiT) for diffusion models.
 
 A transformer-based architecture designed for flow matching / interpolant-based
 diffusion, supporting both 2D images and 3D volumes.
 
-Reference: https://arxiv.org/abs/2401.08740 (SiT paper)
+Reference: https://arxiv.org/abs/2212.09748 (DiT paper)
+Reference: https://arxiv.org/abs/2401.08740 (SiT paper — training strategy)
 """
 
 from typing import Literal
@@ -19,10 +20,10 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .sit_blocks import FinalLayer, SiTBlock
+from .dit_blocks import FinalLayer, DiTBlock
 
 # Model variant configurations
-SIT_VARIANTS = {
+DIT_VARIANTS = {
     'S': {'hidden_size': 384, 'depth': 12, 'num_heads': 6},
     'B': {'hidden_size': 768, 'depth': 12, 'num_heads': 12},
     'L': {'hidden_size': 1024, 'depth': 24, 'num_heads': 16},
@@ -30,8 +31,8 @@ SIT_VARIANTS = {
 }
 
 
-class SiT(nn.Module):
-    """Scalable Interpolant Transformer for diffusion.
+class DiT(nn.Module):
+    """Diffusion Transformer for diffusion.
 
     A vision transformer architecture with adaLN-Zero conditioning for
     diffusion / flow matching. Supports 2D and 3D inputs with either
@@ -57,7 +58,7 @@ class SiT(nn.Module):
         depth_size: Depth size for 3D (if different from input_size).
 
     Example:
-        >>> model = SiT(spatial_dims=2, input_size=32, in_channels=4, hidden_size=768, depth=12, num_heads=12)
+        >>> model = DiT(spatial_dims=2, input_size=32, in_channels=4, hidden_size=768, depth=12, num_heads=12)
         >>> x = torch.randn(2, 4, 32, 32)  # Latent images
         >>> t = torch.rand(2)  # Timesteps
         >>> pred = model(x, t)  # Velocity/noise prediction
@@ -146,7 +147,7 @@ class SiT(nn.Module):
 
         # Transformer blocks
         self.blocks = nn.ModuleList([
-            SiTBlock(
+            DiTBlock(
                 hidden_size,
                 num_heads,
                 mlp_ratio=mlp_ratio,
@@ -209,7 +210,7 @@ class SiT(nn.Module):
                 nn.init.xavier_uniform_(block.cross_attn.kv.weight)
                 nn.init.xavier_uniform_(block.cross_attn.proj.weight)
 
-        # Zero-init final layer (matches DiT, SiT, Latte standard)
+        # Zero-init final layer (matches DiT/Latte standard)
         nn.init.zeros_(self.final_layer.adaLN_modulation[-1].weight)
         nn.init.zeros_(self.final_layer.adaLN_modulation[-1].bias)
         nn.init.zeros_(self.final_layer.linear.weight)
@@ -298,7 +299,7 @@ class SiT(nn.Module):
         return x
 
 
-def create_sit(
+def create_dit(
     variant: str = 'B',
     spatial_dims: int = 2,
     input_size: int = 32,
@@ -311,8 +312,8 @@ def create_sit(
     drop_path_rate: float = 0.0,
     depth_size: int | None = None,
     **kwargs,
-) -> SiT:
-    """Create a SiT model with predefined variant configuration.
+) -> DiT:
+    """Create a DiT model with predefined variant configuration.
 
     Args:
         variant: Model variant ('S', 'B', 'L', 'XL')
@@ -326,17 +327,17 @@ def create_sit(
         drop_rate: Dropout rate
         drop_path_rate: Stochastic depth rate (0.0 = disabled, 0.1-0.2 typical)
         depth_size: Depth for 3D (if different from input_size)
-        **kwargs: Additional arguments passed to SiT
+        **kwargs: Additional arguments passed to DiT
 
     Returns:
-        SiT model
+        DiT model
     """
-    if variant not in SIT_VARIANTS:
-        raise ValueError(f"Unknown variant: {variant}. Choose from {list(SIT_VARIANTS.keys())}")
+    if variant not in DIT_VARIANTS:
+        raise ValueError(f"Unknown variant: {variant}. Choose from {list(DIT_VARIANTS.keys())}")
 
-    config = SIT_VARIANTS[variant]
+    config = DIT_VARIANTS[variant]
 
-    return SiT(
+    return DiT(
         spatial_dims=spatial_dims,
         input_size=input_size,
         patch_size=patch_size,
@@ -355,21 +356,32 @@ def create_sit(
 
 
 # Convenience aliases
-def SiT_S(**kwargs) -> SiT:
-    """SiT-Small: 33M parameters"""
-    return create_sit(variant='S', **kwargs)
+def DiT_S(**kwargs) -> DiT:
+    """DiT-Small: 33M parameters"""
+    return create_dit(variant='S', **kwargs)
 
 
-def SiT_B(**kwargs) -> SiT:
-    """SiT-Base: 130M parameters"""
-    return create_sit(variant='B', **kwargs)
+def DiT_B(**kwargs) -> DiT:
+    """DiT-Base: 130M parameters"""
+    return create_dit(variant='B', **kwargs)
 
 
-def SiT_L(**kwargs) -> SiT:
-    """SiT-Large: 458M parameters"""
-    return create_sit(variant='L', **kwargs)
+def DiT_L(**kwargs) -> DiT:
+    """DiT-Large: 458M parameters"""
+    return create_dit(variant='L', **kwargs)
 
 
-def SiT_XL(**kwargs) -> SiT:
-    """SiT-XLarge: 675M parameters"""
-    return create_sit(variant='XL', **kwargs)
+def DiT_XL(**kwargs) -> DiT:
+    """DiT-XLarge: 675M parameters"""
+    return create_dit(variant='XL', **kwargs)
+
+
+# Backward compatibility aliases
+SiT = DiT
+SiTBlock = DiTBlock
+SIT_VARIANTS = DIT_VARIANTS
+create_sit = create_dit
+SiT_S = DiT_S
+SiT_B = DiT_B
+SiT_L = DiT_L
+SiT_XL = DiT_XL

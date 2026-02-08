@@ -1,7 +1,7 @@
 """
 Model factory for diffusion models.
 
-Provides unified creation of diffusion backbones (UNet or SiT) based on config.
+Provides unified creation of diffusion backbones (UNet or DiT) based on config.
 """
 
 import logging
@@ -36,10 +36,10 @@ def create_diffusion_model(
 
     if mc.type == 'unet':
         return _create_unet(cfg, mc, device, in_channels, out_channels)
-    elif mc.type == 'sit':
-        return _create_sit(cfg, mc, device, in_channels, out_channels)
+    elif mc.type in ('dit', 'sit'):
+        return _create_dit(cfg, mc, device, in_channels, out_channels)
     else:
-        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet' or 'sit'")
+        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet' or 'dit'")
 
 
 def _create_unet(
@@ -78,15 +78,15 @@ def _create_unet(
     return model.to(device)
 
 
-def _create_sit(
+def _create_dit(
     cfg: DictConfig,
     mc: ModelConfig,
     device: torch.device,
     in_channels: int,
     out_channels: int,
 ) -> nn.Module:
-    """Create SiT (Scalable Interpolant Transformer)."""
-    from .sit import SIT_VARIANTS, create_sit
+    """Create DiT (Diffusion Transformer)."""
+    from .dit import DIT_VARIANTS, create_dit
 
     # Validate spatial_dims
     if mc.spatial_dims not in (2, 3):
@@ -95,17 +95,17 @@ def _create_sit(
             f"Use 2 for 2D images, 3 for 3D volumes."
         )
 
-    # Validate SiT-specific fields
+    # Validate DiT-specific fields
     valid_variants = ('S', 'B', 'L', 'XL')
     if mc.variant not in valid_variants:
         raise ValueError(
-            f"SiT variant must be one of {valid_variants}, got '{mc.variant}'"
+            f"DiT variant must be one of {valid_variants}, got '{mc.variant}'"
         )
 
     valid_patch_sizes = (1, 2, 4, 8, 16)
     if mc.patch_size not in valid_patch_sizes:
         raise ValueError(
-            f"SiT patch_size must be one of {valid_patch_sizes}, got {mc.patch_size}"
+            f"DiT patch_size must be one of {valid_patch_sizes}, got {mc.patch_size}"
         )
 
     # For concat conditioning, in_channels already includes cond_channels from mode config
@@ -152,7 +152,7 @@ def _create_sit(
     if mc.spatial_dims == 3:
         depth_size = base_depth // depth_scale
 
-    model = create_sit(
+    model = create_dit(
         variant=mc.variant,
         spatial_dims=mc.spatial_dims,
         input_size=input_size,
@@ -168,12 +168,12 @@ def _create_sit(
         drop_path_rate=mc.drop_path_rate,
     )
 
-    variant_info = SIT_VARIANTS[mc.variant]
+    variant_info = DIT_VARIANTS[mc.variant]
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
 
     drop_path_str = f", drop_path={mc.drop_path_rate}" if mc.drop_path_rate > 0 else ""
     logger.info(
-        f"Created SiT-{mc.variant}: spatial_dims={mc.spatial_dims}, input_size={input_size}, "
+        f"Created DiT-{mc.variant}: spatial_dims={mc.spatial_dims}, input_size={input_size}, "
         f"patch_size={mc.patch_size}, hidden_size={variant_info['hidden_size']}, "
         f"depth={variant_info['depth']}, heads={variant_info['num_heads']}, "
         f"conditioning={mc.conditioning}, params={num_params:.1f}M{drop_path_str}"
@@ -189,6 +189,6 @@ def get_model_type(cfg: DictConfig) -> str:
 
 
 def is_transformer_model(cfg: DictConfig) -> bool:
-    """Check if model is transformer-based (SiT, DiT, etc.)."""
+    """Check if model is transformer-based (DiT)."""
     model_type = get_model_type(cfg)
-    return model_type in ('sit', 'dit')
+    return model_type in ('dit', 'sit')

@@ -6,7 +6,7 @@ that centralizes default values in one place.
 
 Dataclasses provided:
 - PathsConfig: Data paths and environment detection
-- ModelConfig: Diffusion model architecture (UNet or SiT)
+- ModelConfig: Diffusion model architecture (UNet or DiT)
 - ModeConfig: Training mode (seg, bravo, dual, multi, etc.)
 - StrategyConfig: Diffusion strategy (DDPM or RFlow)
 - ProfilingConfig: PyTorch profiler settings
@@ -64,7 +64,7 @@ class ModelConfig:
     attention_levels: list[bool] = field(default_factory=lambda: [False, True, True])
     num_res_blocks: int = 1
     num_head_channels: int = 256
-    # SiT-specific
+    # DiT-specific
     variant: str = "B"
     patch_size: int = 2
     conditioning: str = "concat"
@@ -77,7 +77,7 @@ class ModelConfig:
             raise ValueError(f"spatial_dims must be 2 or 3, got {self.spatial_dims}")
         if self.image_size <= 0:
             raise ValueError(f"image_size must be > 0, got {self.image_size}")
-        valid_types = ('unet', 'sit')
+        valid_types = ('unet', 'dit', 'sit')
         if self.type not in valid_types:
             raise ValueError(f"model type must be one of {valid_types}, got '{self.type}'")
         if len(self.channels) != len(self.attention_levels):

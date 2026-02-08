@@ -15,7 +15,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp14.2 SiT-S with dropout=0.2 ==="
+echo "=== Exp14.2 DiT-S with dropout=0.2 ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 nvidia-smi
@@ -26,12 +26,12 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# SiT-S with dropout=0.2 (moderate regularization)
+# DiT-S with dropout=0.2 (moderate regularization)
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model=sit \
+    model=dit \
     model.variant=S \
     model.patch_size=2 \
     model.drop_rate=0.2 \

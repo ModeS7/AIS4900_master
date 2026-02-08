@@ -1,5 +1,5 @@
 """
-Embedding layers for SiT (Scalable Interpolant Transformers).
+Embedding layers for DiT (Diffusion Transformer).
 
 Provides patch embeddings (2D/3D) and timestep embeddings for diffusion transformers.
 """

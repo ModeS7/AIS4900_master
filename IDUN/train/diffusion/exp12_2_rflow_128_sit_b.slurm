@@ -25,14 +25,14 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# exp12_2: SiT-B (Base) - 130M params
-# Based on exp2 settings with SiT architecture
+# exp12_2: DiT-B (Base) - 130M params
+# Based on exp2 settings with DiT architecture
 # Reference: https://arxiv.org/abs/2401.08740
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model=sit \
+    model=dit \
     model.variant=B \
     model.patch_size=2 \
     strategy.num_train_timesteps=100 \

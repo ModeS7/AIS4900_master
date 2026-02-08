@@ -1,7 +1,7 @@
-"""Tests for SiT (Scalable Interpolant Transformers) blocks.
+"""Tests for DiT (Diffusion Transformer) blocks.
 
 Tests cover drop_path function, Attention, CrossAttention, Mlp,
-SiTBlock with adaLN-Zero, and FinalLayer. Includes gradient flow
+DiTBlock with adaLN-Zero, and FinalLayer. Includes gradient flow
 verification to catch silent failures.
 """
 
@@ -9,14 +9,14 @@ import pytest
 import torch
 import torch.nn as nn
 
-from medgen.models.sit_blocks import (
+from medgen.models.dit_blocks import (
     drop_path,
     DropPath,
     modulate,
     Attention,
     CrossAttention,
     Mlp,
-    SiTBlock,
+    DiTBlock,
     FinalLayer,
 )
 
@@ -202,45 +202,45 @@ class TestMlp:
         assert mlp.fc2.out_features == 128
 
 
-class TestSiTBlock:
+class TestDiTBlock:
     """Tests for transformer block with adaLN-Zero."""
 
-    def test_sitblock_forward_shape(self):
+    def test_ditblock_forward_shape(self):
         """Output shape matches input shape."""
-        block = SiTBlock(hidden_size=256, num_heads=8)
+        block = DiTBlock(hidden_size=256, num_heads=8)
         x = torch.randn(2, 64, 256)  # [B, N, D]
         c = torch.randn(2, 256)       # [B, D] conditioning
         output = block(x, c)
         assert output.shape == x.shape
 
-    def test_sitblock_cross_attention_requires_context(self):
+    def test_ditblock_cross_attention_requires_context(self):
         """ValueError when use_cross_attn=True but context=None."""
-        block = SiTBlock(hidden_size=256, num_heads=8, use_cross_attn=True)
+        block = DiTBlock(hidden_size=256, num_heads=8, use_cross_attn=True)
         x = torch.randn(2, 64, 256)
         c = torch.randn(2, 256)
         with pytest.raises(ValueError, match="context"):
             block(x, c, context=None)
 
-    def test_sitblock_cross_attention_with_context(self):
+    def test_ditblock_cross_attention_with_context(self):
         """Cross-attention works when context provided."""
-        block = SiTBlock(hidden_size=256, num_heads=8, use_cross_attn=True)
+        block = DiTBlock(hidden_size=256, num_heads=8, use_cross_attn=True)
         x = torch.randn(2, 64, 256)
         c = torch.randn(2, 256)
         context = torch.randn(2, 32, 256)  # [B, M, D]
         output = block(x, c, context=context)
         assert output.shape == x.shape
 
-    def test_sitblock_without_cross_attention(self):
+    def test_ditblock_without_cross_attention(self):
         """Works without cross-attention."""
-        block = SiTBlock(hidden_size=256, num_heads=8, use_cross_attn=False)
+        block = DiTBlock(hidden_size=256, num_heads=8, use_cross_attn=False)
         x = torch.randn(2, 64, 256)
         c = torch.randn(2, 256)
         output = block(x, c)  # No context needed
         assert output.shape == x.shape
 
-    def test_sitblock_gradients_flow_through_adaln_gate(self):
+    def test_ditblock_gradients_flow_through_adaln_gate(self):
         """Gradients reach adaLN parameters."""
-        block = SiTBlock(hidden_size=256, num_heads=8)
+        block = DiTBlock(hidden_size=256, num_heads=8)
         x = torch.randn(2, 64, 256, requires_grad=True)
         c = torch.randn(2, 256, requires_grad=True)
         output = block(x, c)
@@ -253,9 +253,9 @@ class TestSiTBlock:
         assert linear_layer.weight.grad is not None
         assert linear_layer.weight.grad.abs().sum() > 0
 
-    def test_sitblock_drop_path_propagates_gradients(self):
+    def test_ditblock_drop_path_propagates_gradients(self):
         """Gradients flow through drop_path even with high drop_prob."""
-        block = SiTBlock(hidden_size=256, num_heads=8, drop_path=0.5)
+        block = DiTBlock(hidden_size=256, num_heads=8, drop_path=0.5)
         block.train()
 
         # Run multiple times to ensure we get a valid forward pass
@@ -273,9 +273,9 @@ class TestSiTBlock:
         else:
             pytest.fail("All drop_path samples were dropped")
 
-    def test_sitblock_adaln_modulation_6_params(self):
+    def test_ditblock_adaln_modulation_6_params(self):
         """adaLN produces 6 modulation parameters."""
-        block = SiTBlock(hidden_size=256, num_heads=8)
+        block = DiTBlock(hidden_size=256, num_heads=8)
         # adaLN_modulation projects to 6 * hidden_size
         linear_layer = block.adaLN_modulation[1]
         assert linear_layer.out_features == 6 * 256
@@ -335,8 +335,8 @@ class TestIntegration:
     """Integration tests for combined components."""
 
     def test_full_forward_pass(self):
-        """Full forward pass through SiTBlock + FinalLayer."""
-        block = SiTBlock(hidden_size=256, num_heads=8)
+        """Full forward pass through DiTBlock + FinalLayer."""
+        block = DiTBlock(hidden_size=256, num_heads=8)
         final = FinalLayer(hidden_size=256, patch_size=4, out_channels=4, spatial_dims=2)
 
         x = torch.randn(2, 64, 256)
@@ -354,7 +354,7 @@ class TestIntegration:
     def test_multiple_blocks_gradient_flow(self):
         """Gradients flow through multiple stacked blocks."""
         blocks = nn.ModuleList([
-            SiTBlock(hidden_size=256, num_heads=8)
+            DiTBlock(hidden_size=256, num_heads=8)
             for _ in range(3)
         ])
 

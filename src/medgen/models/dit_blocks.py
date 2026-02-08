@@ -1,5 +1,5 @@
 """
-Transformer blocks for SiT (Scalable Interpolant Transformers).
+Transformer blocks for DiT (Diffusion Transformer).
 
 Implements adaLN-Zero conditioned transformer blocks with self-attention,
 optional cross-attention, and MLP layers.
@@ -273,7 +273,7 @@ class Mlp(nn.Module):
         return x
 
 
-class SiTBlock(nn.Module):
+class DiTBlock(nn.Module):
     """Transformer block with adaLN-Zero conditioning.
 
     Uses adaptive layer normalization to inject timestep information,
@@ -372,7 +372,7 @@ class SiTBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    """Final layer of SiT that projects back to patch space.
+    """Final layer of DiT that projects back to patch space.
 
     Args:
         hidden_size: Input dimension from transformer.
@@ -419,3 +419,7 @@ class FinalLayer(nn.Module):
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
+
+
+# Backward compatibility alias
+SiTBlock = DiTBlock

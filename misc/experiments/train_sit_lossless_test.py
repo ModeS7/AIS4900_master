@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""Test SiT training with lossless mask conditioning on 8x8x32 latent space.
+"""Test DiT training with lossless mask conditioning on 8x8x32 latent space.
 
 Uses REAL segmentation masks from BrainMetShare dataset.
 
 Usage:
-    python scripts/train_sit_lossless_test.py
-    python scripts/train_sit_lossless_test.py --epochs 100
+    python scripts/train_dit_lossless_test.py
+    python scripts/train_dit_lossless_test.py --epochs 100
 """
 
 import argparse
@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-from medgen.models.sit import create_sit
+from medgen.models.dit import create_dit
 from medgen.data.lossless_mask_codec import encode_mask_lossless, decode_mask_lossless
 
 
@@ -118,11 +118,11 @@ class RealMaskDataset(Dataset):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Test SiT with lossless mask conditioning')
+    parser = argparse.ArgumentParser(description='Test DiT with lossless mask conditioning')
     parser.add_argument('--epochs', type=int, default=100, help='Training epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--variant', type=str, default='S', choices=['S', 'B', 'L'], help='SiT variant')
+    parser.add_argument('--variant', type=str, default='S', choices=['S', 'B', 'L'], help='DiT variant')
     parser.add_argument('--data_dir', type=str,
                         default='/home/mode/NTNU/MedicalDataSets/brainmetshare-3',
                         help='Path to BrainMetShare dataset')
@@ -147,7 +147,7 @@ def main():
     # Create models
     mask_encoder = LosslessMaskEncoder(latent_channels=32, hidden_channels=32).to(device)
 
-    model = create_sit(
+    model = create_dit(
         variant=args.variant,
         spatial_dims=2,
         input_size=8,
@@ -158,8 +158,8 @@ def main():
 
     sit_params = sum(p.numel() for p in model.parameters())
     enc_params = sum(p.numel() for p in mask_encoder.parameters())
-    print(f'=== SiT-{args.variant} with Lossless Mask Conditioning ===')
-    print(f'SiT parameters: {sit_params/1e6:.2f}M')
+    print(f'=== DiT-{args.variant} with Lossless Mask Conditioning ===')
+    print(f'DiT parameters: {sit_params/1e6:.2f}M')
     print(f'Mask encoder parameters: {enc_params/1e3:.1f}K')
     print(f'Tokens: {model.num_patches}')
     print()

@@ -103,7 +103,7 @@ Input: [noise, mask]     ← Channel Concat (WHAT goes in)
 
 - [ ] **Diffusion Transformers (DiT)** - Superior scaling, global receptive field for anatomical relationships
 - [ ] **MMDiT** - Separate transformer branches for conditioning and noisy inputs
-- [ ] **SiT** - Scalable interpolant transformer
+- [ ] **DiT** - Scalable interpolant transformer
 - [ ] **Mamba / State Space Models** - Linear complexity, enable higher resolutions or 3D
 
 ---

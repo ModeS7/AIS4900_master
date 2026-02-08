@@ -1,7 +1,7 @@
-# SiT 3D (Scalable Interpolant Transformer for Volumes) Configuration
+# DiT 3D (Diffusion Transformer for Volumes) Configuration
 #
 # 3D Transformer-based diffusion model for volumetric data.
-# Override via CLI: python -m medgen.scripts.train model=sit_3d model.variant=B
+# Override via CLI: python -m medgen.scripts.train model=dit_3d model.variant=B
 #
 # Note: 3D has higher memory requirements. Consider using:
 #   - Smaller variants (S or B)
@@ -14,7 +14,7 @@
 #   L:  hidden_size=1024, depth=24, heads=16 (~458M params)
 #   XL: hidden_size=1152, depth=28, heads=16 (~675M params)
 
-type: sit                            # Model type (sit for transformer)
+type: dit                            # Model type (dit for transformer)
 spatial_dims: 3                      # 3D volumes
 image_size: 32                       # Spatial size (e.g., latent 256/8)
 depth_size: 20                       # Depth size (e.g., latent 160/8)

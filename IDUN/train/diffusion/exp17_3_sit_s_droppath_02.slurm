@@ -14,7 +14,7 @@
 #SBATCH --mail-type=ALL
 
 # =============================================================================
-# exp17_3: SiT-S with DropPath (Stochastic Depth) = 0.2
+# exp17_3: DiT-S with DropPath (Stochastic Depth) = 0.2
 # =============================================================================
 # DropPath randomly drops transformer blocks during training.
 # Rate increases linearly from 0 (first block) to 0.2 (last block).
@@ -30,7 +30,7 @@ cd ${SLURM_SUBMIT_DIR}
 echo "============================================================"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
-echo "Experiment: SiT-S with DropPath rate = 0.2"
+echo "Experiment: DiT-S with DropPath rate = 0.2"
 echo "============================================================"
 nvidia-smi
 
@@ -45,7 +45,7 @@ time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model=sit \
+    model=dit \
     model.variant=S \
     model.patch_size=2 \
     model.drop_path_rate=0.2 \

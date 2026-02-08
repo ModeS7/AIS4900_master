@@ -25,14 +25,14 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# exp12_2c: SiT-B (Base) - 130M params, 256x256 with patch_size=4
+# exp12_2c: DiT-B (Base) - 130M params, 256x256 with patch_size=4
 # Same computation as 128x128 with patch_size=2 (4096 tokens)
 # Reference: https://arxiv.org/abs/2401.08740
 time python -m medgen.scripts.train \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model=sit \
+    model=dit \
     model.variant=B \
     model.patch_size=4 \
     model.image_size=256 \

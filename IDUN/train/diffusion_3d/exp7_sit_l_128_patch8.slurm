@@ -16,7 +16,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp7: 3D-SiT-L @ 160x128x128, patch=8 (5,120 tokens) ==="
+echo "=== Exp7: 3D-DiT-L @ 160x128x128, patch=8 (5,120 tokens) ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -32,9 +32,9 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
-# 3D-SiT-L: Bravo mode @ 160x128x128, patch_size=8
+# 3D-DiT-L: Bravo mode @ 160x128x128, patch_size=8
 # ============================================================================
-# Architecture: SiT-L (458M params)
+# Architecture: DiT-L (458M params)
 #   - hidden_size: 1024, depth: 24, heads: 16
 #   - patch_size: 8 -> 5,120 tokens (comparable to 2D 256x256 @ patch=4)
 #
@@ -49,7 +49,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=rflow \
     mode=bravo \
-    model=sit_3d \
+    model=dit_3d \
     model.variant=L \
     model.patch_size=8 \
     volume.height=128 \

@@ -8,7 +8,7 @@
 #   - Middle: attention blocks at bottleneck
 #   - Decoder: progressive upsampling with skip connections
 
-type: unet                           # Model type: unet or sit
+type: unet                           # Model type: unet or dit
 spatial_dims: 2                      # Spatial dimensions (2 or 3)
 image_size: 128                      # Input image size (must be power of 2)
 channels: [128, 256, 256]            # Channels at each encoder level

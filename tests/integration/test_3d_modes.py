@@ -223,15 +223,15 @@ class TestGenerationMetrics:
         assert image.shape == (1, 32, 64, 64)
 
 
-class TestSiTCheckpoint:
-    """Test SiT model checkpoint save/load."""
+class TestDiTCheckpoint:
+    """Test DiT model checkpoint save/load."""
 
-    def test_get_model_config_sit(self):
-        """_get_model_config should return SiT-specific keys."""
+    def test_get_model_config_dit(self):
+        """_get_model_config should return DiT-specific keys."""
         # Mock the trainer's config and state
         mock_cfg = OmegaConf.create({
             'model': {
-                'type': 'sit',
+                'type': 'dit',
                 'spatial_dims': 2,
                 'image_size': 256,
                 'patch_size': 4,
@@ -253,9 +253,9 @@ class TestSiTCheckpoint:
                 return {'in_channels': 2, 'out_channels': 1}
 
         # Simulate what _get_model_config does for transformers
-        is_transformer = mock_cfg.model.type == 'sit'
+        is_transformer = mock_cfg.model.type == 'dit'
         config = {
-            'model_type': 'sit',
+            'model_type': 'dit',
             'in_channels': 2,
             'out_channels': 1,
             'strategy': 'rflow',
