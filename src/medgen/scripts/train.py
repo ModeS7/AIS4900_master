@@ -42,10 +42,11 @@ from medgen.core import (
     validate_model_config,
     validate_optimizer_config,
     validate_regional_logging,
+    validate_space_to_depth_config,
     validate_strategy_config,
     validate_strategy_mode_compatibility,
-    validate_space_to_depth_config,
     validate_training_config,
+    validate_wavelet_config,
 )
 from medgen.data.loaders.latent import (
     LatentCacheBuilder,
@@ -54,7 +55,7 @@ from medgen.data.loaders.latent import (
     create_latent_validation_dataloader,
     load_compression_model,
 )
-from medgen.diffusion import LatentSpace, PixelSpace, SpaceToDepthSpace
+from medgen.diffusion import LatentSpace, PixelSpace, SpaceToDepthSpace, WaveletSpace
 from medgen.pipeline import DiffusionTrainer
 
 # Enable CUDA optimizations
@@ -81,6 +82,7 @@ def validate_config(cfg: DictConfig) -> None:
         validate_3d_config,
         validate_latent_config,
         validate_space_to_depth_config,
+        validate_wavelet_config,
         validate_regional_logging,
         validate_strategy_config,
         validate_ema_config,
@@ -608,8 +610,10 @@ def _train_3d(cfg: DictConfig) -> None:
             val_loader = None
             logger.warning("No validation dataset found")
 
-        # Check for space-to-depth rearrangement
+        # Check for space-to-depth or wavelet rearrangement
         s2d_cfg = cfg.get('space_to_depth', {})
+        wavelet_cfg = cfg.get('wavelet', {})
+
         if s2d_cfg.get('enabled', False):
             spatial_factor = s2d_cfg.get('spatial_factor', 2)
             depth_factor = s2d_cfg.get('depth_factor', 2)
@@ -621,6 +625,9 @@ def _train_3d(cfg: DictConfig) -> None:
                 f"Space-to-depth: {space.latent_channels}x channels, "
                 f"spatial {spatial_factor}x, depth {depth_factor}x"
             )
+        elif wavelet_cfg.get('enabled', False):
+            space = WaveletSpace()
+            logger.info("Wavelet space: Haar 3D 2x2x2, 8x channels")
         else:
             space = PixelSpace()
 

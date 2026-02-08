@@ -13,6 +13,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
+from .dit_blocks import DiTBlock, FinalLayer
 from .embeddings import (
     PatchEmbed2D,
     PatchEmbed3D,
@@ -20,7 +21,6 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .dit_blocks import FinalLayer, DiTBlock
 
 # Model variant configurations
 DIT_VARIANTS = {

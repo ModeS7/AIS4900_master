@@ -214,6 +214,89 @@ class SpaceToDepthSpace(DiffusionSpace):
         return self._channel_multiplier
 
 
+class WaveletSpace(DiffusionSpace):
+    """3D Haar wavelet decomposition for pixel-space diffusion.
+
+    Decomposes each 2x2x2 voxel block into 8 frequency subbands
+    (LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH) using the Haar wavelet.
+
+    Same shape as SpaceToDepthSpace: [B, 1, D, H, W] -> [B, 8, D/2, H/2, W/2].
+    Difference: produces frequency subbands instead of raw pixel rearrangement.
+
+    Lossless (orthogonal transform), fully differentiable, parameter-free.
+    """
+
+    def __init__(self) -> None:
+        from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
+
+        self._forward = HaarForward3D()
+        self._inverse = HaarInverse3D()
+
+    def encode(self, x: Tensor) -> Tensor:
+        """Apply Haar wavelet decomposition.
+
+        Args:
+            x: 5D tensor [B, C, D, H, W]. All spatial dims must be even.
+
+        Returns:
+            Wavelet coefficients [B, C*8, D/2, H/2, W/2].
+
+        Raises:
+            ValueError: If input is not 5D or spatial dims are odd.
+        """
+        if x.dim() != 5:
+            raise ValueError(
+                f"WaveletSpace requires 5D input [B, C, D, H, W], "
+                f"got {x.dim()}D tensor with shape {x.shape}"
+            )
+        return self._forward(x)
+
+    def decode(self, z: Tensor) -> Tensor:
+        """Apply inverse Haar wavelet reconstruction.
+
+        Args:
+            z: 5D wavelet coefficients [B, C*8, D/2, H/2, W/2].
+
+        Returns:
+            Reconstructed tensor [B, C, D, H, W].
+
+        Raises:
+            ValueError: If input is not 5D.
+        """
+        if z.dim() != 5:
+            raise ValueError(
+                f"WaveletSpace requires 5D input [B, C*8, D/2, H/2, W/2], "
+                f"got {z.dim()}D tensor with shape {z.shape}"
+            )
+        return self._inverse(z)
+
+    def get_latent_channels(self, input_channels: int) -> int:
+        """Get channel count after wavelet decomposition.
+
+        Args:
+            input_channels: Number of input channels in pixel space.
+
+        Returns:
+            input_channels * 8 (always 2x2x2 decomposition).
+        """
+        return input_channels * 8
+
+    @property
+    def scale_factor(self) -> int:
+        """Spatial downscale factor (H, W dimensions)."""
+        return 2
+
+    @property
+    def depth_scale_factor(self) -> int:
+        """Depth downscale factor (D dimension)."""
+        return 2
+
+    @property
+    def latent_channels(self) -> int:
+        """Channel multiplier per input channel."""
+        return 8
+
+
 class LatentSpace(DiffusionSpace):
     """Latent space using a compression model for encoding/decoding.
 

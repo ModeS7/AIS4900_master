@@ -50,6 +50,7 @@ from .spaces import (
     DiffusionSpace,
     PixelSpace,
     SpaceToDepthSpace,
+    WaveletSpace,
     LatentSpace,
     load_vae_for_latent_space,
 )
@@ -93,6 +94,7 @@ __all__ = [
     'DiffusionSpace',
     'PixelSpace',
     'SpaceToDepthSpace',
+    'WaveletSpace',
     'LatentSpace',
     'load_vae_for_latent_space',
     # Loading

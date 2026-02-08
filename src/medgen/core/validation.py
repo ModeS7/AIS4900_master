@@ -510,6 +510,74 @@ def validate_space_to_depth_config(cfg: DictConfig) -> list[str]:
     return errors
 
 
+def validate_wavelet_config(cfg: DictConfig) -> list[str]:
+    """Validate wavelet (Haar) configuration.
+
+    Checks:
+    - Skip if not enabled
+    - Requires spatial_dims=3
+    - Incompatible with latent diffusion
+    - Incompatible with space_to_depth (can't use both)
+    - Volume dimensions must be divisible by 2
+
+    Args:
+        cfg: Hydra configuration object.
+
+    Returns:
+        List of error strings (empty if validation passes).
+    """
+    errors: list[str] = []
+
+    wavelet_cfg = cfg.get('wavelet', {})
+    if not wavelet_cfg.get('enabled', False):
+        return errors  # Not enabled, skip
+
+    # Requires 3D
+    spatial_dims = cfg.model.get('spatial_dims', 2)
+    if spatial_dims != 3:
+        errors.append(
+            "wavelet requires spatial_dims=3. "
+            "Haar 3D wavelet decomposition is only meaningful for 3D volumes."
+        )
+
+    # Incompatible with latent diffusion
+    latent_cfg = cfg.get('latent', {})
+    if latent_cfg.get('enabled', False):
+        errors.append(
+            "wavelet and latent diffusion cannot be used together. "
+            "Disable one of latent.enabled or wavelet.enabled."
+        )
+
+    # Incompatible with space_to_depth
+    s2d_cfg = cfg.get('space_to_depth', {})
+    if s2d_cfg.get('enabled', False):
+        errors.append(
+            "wavelet and space_to_depth cannot be used together. "
+            "Disable one of space_to_depth.enabled or wavelet.enabled."
+        )
+
+    # Check volume divisibility (Haar always uses factor 2)
+    if spatial_dims == 3 and 'volume' in cfg and cfg.volume is not None:
+        height = cfg.volume.get('height', 0)
+        width = cfg.volume.get('width', 0)
+        depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', 0))
+
+        if height > 0 and height % 2 != 0:
+            errors.append(
+                f"volume.height ({height}) must be divisible by 2 for wavelet decomposition"
+            )
+        if width > 0 and width % 2 != 0:
+            errors.append(
+                f"volume.width ({width}) must be divisible by 2 for wavelet decomposition"
+            )
+        if depth > 0 and depth % 2 != 0:
+            errors.append(
+                f"volume depth ({depth}) must be divisible by 2 for wavelet decomposition"
+            )
+
+    return errors
+
+
 def validate_augmentation_config(cfg: DictConfig) -> list[str]:
     """Validate score augmentation configuration.
 

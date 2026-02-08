@@ -40,6 +40,7 @@ from .validation import (
     validate_ema_config,
     validate_optimizer_config,
     validate_space_to_depth_config,
+    validate_wavelet_config,
     validate_augmentation_config,
     run_validation,
 )
@@ -103,6 +104,7 @@ __all__ = [
     'validate_ema_config',
     'validate_optimizer_config',
     'validate_space_to_depth_config',
+    'validate_wavelet_config',
     'validate_augmentation_config',
     'run_validation',
     # Model utilities

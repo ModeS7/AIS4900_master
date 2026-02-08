@@ -34,6 +34,7 @@ defaults:
   - paths: local          # local.yaml or cluster.yaml (AFTER training so it can override verbose)
   - optional latent: default          # Latent diffusion settings
   - optional space_to_depth: default # Lossless space-to-depth for pixel diffusion
+  - optional wavelet: default        # Haar wavelet decomposition for pixel diffusion
   - optional controlnet: default     # ControlNet conditioning
   - _self_
 
