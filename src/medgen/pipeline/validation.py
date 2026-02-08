@@ -166,11 +166,13 @@ def compute_validation_losses(
             # Track worst batch (only from full-sized batches)
             if loss_val > worst_loss and current_batch_size >= min_batch_size:
                 worst_loss = loss_val
+                # Use pixel-space labels for mask overlay (not latent-space labels)
+                mask_for_viz = labels_pixel if labels_pixel is not None else labels
                 if isinstance(images, dict):
                     worst_batch_data = {
                         'original': {k: v.cpu() for k, v in images.items()},
                         'generated': {k: v.cpu() for k, v in predicted_clean.items()},
-                        'mask': labels.cpu() if labels is not None else None,
+                        'mask': mask_for_viz.cpu() if mask_for_viz is not None else None,
                         'timesteps': timesteps.cpu(),
                         'loss': loss_val,
                     }
@@ -178,7 +180,7 @@ def compute_validation_losses(
                     worst_batch_data = {
                         'original': images.cpu(),
                         'generated': predicted_clean.cpu(),
-                        'mask': labels.cpu() if labels is not None else None,
+                        'mask': mask_for_viz.cpu() if mask_for_viz is not None else None,
                         'timesteps': timesteps.cpu(),
                         'loss': loss_val,
                     }

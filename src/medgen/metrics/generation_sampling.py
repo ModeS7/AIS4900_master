@@ -260,10 +260,19 @@ def generate_samples(
     model.eval()
     all_samples = []
 
+    # Check if using latent diffusion
+    is_latent = self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1
+
     # Generate in batches to avoid OOM with CUDA graphs
     for start_idx in range(0, num_to_use, batch_size):
         end_idx = min(start_idx + batch_size, num_to_use)
         masks = self_.fixed_conditioning_masks[start_idx:end_idx]
+
+        # For latent diffusion, encode pixel-space masks to latent space
+        # so noise and model input have correct latent dimensions
+        if is_latent:
+            with torch.no_grad():
+                masks = self_.space.encode(masks)
 
         # Generate noise
         noise = torch.randn_like(masks)
