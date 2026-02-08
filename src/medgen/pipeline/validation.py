@@ -90,6 +90,8 @@ def compute_validation_losses(
             images = prepared['images']
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
+            size_bins = prepared.get('size_bins')  # For seg_conditioned mode
+            bin_maps = prepared.get('bin_maps')  # For seg_conditioned_input mode
             is_latent = prepared.get('is_latent', False)  # Latent dataloader flag
             labels_is_latent = prepared.get('labels_is_latent', False)  # Labels already encoded
 
@@ -112,7 +114,7 @@ def compute_validation_losses(
             if labels is not None and not labels_is_latent:
                 labels = trainer.space.encode(labels)
 
-            labels_dict = {'labels': labels}
+            labels_dict = {'labels': labels, 'bin_maps': bin_maps}
 
             # Sample timesteps and noise
             if isinstance(images, dict):
@@ -136,6 +138,8 @@ def compute_validation_losses(
             # Predict and compute loss
             if trainer.use_mode_embedding and mode_id is not None:
                 prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
+            elif trainer.use_size_bin_embedding:
+                prediction = model_to_use(model_input, timesteps, size_bins=size_bins)
             else:
                 prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
             mse_loss, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
@@ -473,13 +477,15 @@ def compute_per_modality_validation(
                     prepared = trainer.mode.prepare_batch(batch, trainer.device)
                     images = prepared['images']
                     labels = prepared.get('labels')
+                    size_bins = prepared.get('size_bins')
+                    bin_maps = prepared.get('bin_maps')
 
                     # Encode to diffusion space (identity for PixelSpace)
                     images = trainer.space.encode_batch(images)
                     if labels is not None:
                         labels = trainer.space.encode(labels)
 
-                    labels_dict = {'labels': labels}
+                    labels_dict = {'labels': labels, 'bin_maps': bin_maps}
 
                     # Sample timesteps and noise
                     noise = torch.randn_like(images).to(trainer.device)
@@ -488,7 +494,10 @@ def compute_per_modality_validation(
                     model_input = trainer.mode.format_model_input(noisy_images, labels_dict)
 
                     # Predict
-                    prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                    if trainer.use_size_bin_embedding:
+                        prediction = model_to_use(model_input, timesteps, size_bins=size_bins)
+                    else:
+                        prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                     # Compute metrics
