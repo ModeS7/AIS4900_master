@@ -4,7 +4,7 @@
 #SBATCH --time=5-00:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp11_s2d_bravo"
@@ -36,9 +36,9 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # Space-to-depth 2x2x2:
 #   - Input:  [B, 1, 160, 128, 128] (downsampled resolution)
 #   - S2D:    [B, 8, 80, 64, 64]    (lossless rearrangement)
-#   - UNet 5-level: in=16, out=8, L0=32ch@64x64x80 ... L4=512ch@4x4x5
-#
-# Analogue of exp1 (128x128x160 pixel) but with s2d
+#   - UNet 5-level [64,128,512,1024,1024] r=2,2,3,3,3
+#     1424M params, ~40 GB training
+#     in=16 out=8, L0=64ch@64x64x80 ... L4=1024ch@4x4x5
 # ============================================================================
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \

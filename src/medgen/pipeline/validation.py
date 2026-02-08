@@ -502,15 +502,25 @@ def compute_per_modality_validation(
                         prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
-                    # Compute metrics
-                    total_psnr += compute_psnr(predicted_clean, images)
+                    # Decode to pixel space for metrics (S2D/Wavelet/Latent)
+                    if trainer.space.scale_factor > 1:
+                        metrics_pred = trainer.space.decode_batch(predicted_clean)
+                        metrics_gt = trainer.space.decode_batch(images)
+                        metrics_labels = trainer.space.decode(labels) if labels is not None else None
+                    else:
+                        metrics_pred = predicted_clean
+                        metrics_gt = images
+                        metrics_labels = labels
+
+                    # Compute metrics in pixel space
+                    total_psnr += compute_psnr(metrics_pred, metrics_gt)
                     if trainer.log_lpips:
-                        total_lpips += compute_lpips(predicted_clean, images, device=trainer.device)
-                    total_msssim += compute_msssim(predicted_clean, images)
+                        total_lpips += compute_lpips(metrics_pred, metrics_gt, device=trainer.device)
+                    total_msssim += compute_msssim(metrics_pred, metrics_gt)
 
                     # Regional tracking (tumor vs background)
-                    if regional_tracker is not None and labels is not None:
-                        regional_tracker.update(predicted_clean, images, labels)
+                    if regional_tracker is not None and metrics_labels is not None:
+                        regional_tracker.update(metrics_pred, metrics_gt, metrics_labels)
 
                     n_batches += 1
 

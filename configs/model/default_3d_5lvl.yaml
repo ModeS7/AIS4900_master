@@ -1,27 +1,34 @@
 # 3D DiffusionModelUNet — 5-Level Architecture
 #
-# L0 dropped from default_3d (6-level).
+# For S2D / Wavelet pixel-space 3D diffusion on H100 80GB.
 # Use when the UNet input has depth that only supports 4 downsampling steps.
 # Example: depth=80 → 40→20→10→5 (clean). A 6th level would need 5/2 = broken.
 #
-# Effective resolution (bravo mode, s2d 2x2x2):
-#   At 128x128 input:  L0=32ch@64x64x80    ... L4=512ch@4x4x5
-#   At 256x256 input:  L0=32ch@128x128x80  ... L4=512ch@8x8x5
+# 1424M params. Deeper residual blocks at levels 2-4 where spatial grids are small.
+#
+# Profiled VRAM (AMP BF16, gradient checkpointing, batch=1, bravo mode):
+#   128x128x160 (encoded 64x64x80):   26.7 GB profiling → ~40 GB training
+#   256x256x160 (encoded 128x128x80):  52.9 GB profiling → ~66 GB training
+#   Same tightness as exp9 LDM jobs (~65 GB on 80 GB H100, ~15 GB headroom).
+#
+# After S2D/Wavelet encoding:
+#   128x128: L0=64ch@64x64x80  L1=128ch@32x32x40  L2=512ch@16x16x20  L3=1024ch@8x8x10  L4=1024ch@4x4x5
+#   256x256: L0=64ch@128x128x80 L1=128ch@64x64x40 L2=512ch@32x32x20 L3=1024ch@16x16x10 L4=1024ch@8x8x5
 
 type: unet
 spatial_dims: 3
 image_size: 256
 depth_size: 160
 
-# 5-level architecture (default_3d minus L0)
-channels: [32, 64, 256, 512, 512]
+# 5-level wide architecture (1424M params)
+channels: [64, 128, 512, 1024, 1024]
 
-# Attention at L3-4
+# Attention at L3+L4 (small spatial grids — cheap)
 attention_levels: [false, false, false, true, true]
 
-# Res blocks (matched from default_3d L1-L5)
-num_res_blocks: [1, 1, 2, 2, 2]
+# Deeper residual blocks at levels 2-4 where spatial grids are small
+num_res_blocks: [2, 2, 3, 3, 3]
 
 # Attention config
-num_head_channels: 16
-norm_num_groups: 16
+num_head_channels: 32
+norm_num_groups: 32
