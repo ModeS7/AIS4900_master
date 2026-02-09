@@ -208,8 +208,7 @@ def test_pipeline_smoke(
     """Full pipeline: init -> setup_model -> train (2 epochs).
 
     Validates:
-    - No deadlocks (60s timeout)
-    - Loss is finite
+    - No deadlocks (120s timeout)
     - Checkpoint is saved
     - EMA is initialized and updated
     """
@@ -226,18 +225,26 @@ def test_pipeline_smoke(
     # 1. Init trainer
     trainer = DiffusionTrainer(cfg, spatial_dims=spatial_dims, space=space)
 
-    # 2. Create synthetic dataset and dataloader
-    dataset = SyntheticDiffusionDataset(
+    # 2. Create synthetic datasets and dataloaders (train + val, like real training)
+    train_dataset = SyntheticDiffusionDataset(
         num_samples=NUM_SAMPLES,
         image_size=IMAGE_SIZE,
         spatial_dims=spatial_dims,
         mode=mode,
         depth=VOLUME_DEPTH,
     )
-    loader = _build_dataloader(dataset, persistent_workers=True)
+    val_dataset = SyntheticDiffusionDataset(
+        num_samples=4,
+        image_size=IMAGE_SIZE,
+        spatial_dims=spatial_dims,
+        mode=mode,
+        depth=VOLUME_DEPTH,
+    )
+    loader = _build_dataloader(train_dataset, persistent_workers=True)
+    val_loader = _build_dataloader(val_dataset, persistent_workers=True)
 
     # 3. Setup model
-    trainer.setup_model(dataset)
+    trainer.setup_model(train_dataset)
     assert trainer.model is not None, 'Model not created'
     assert trainer.optimizer is not None, 'Optimizer not created'
 
@@ -245,8 +252,8 @@ def test_pipeline_smoke(
     with _Timeout(120):
         trainer.train(
             train_loader=loader,
-            train_dataset=dataset,
-            val_loader=None,
+            train_dataset=train_dataset,
+            val_loader=val_loader,
         )
 
     # 5. Assertions
@@ -267,3 +274,4 @@ def test_pipeline_smoke(
     if trainer.writer is not None:
         trainer.writer.close()
     del loader
+    del val_loader

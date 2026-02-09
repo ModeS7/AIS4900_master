@@ -84,6 +84,25 @@ def set_fixed_conditioning(
                     seg_data = torch.from_numpy(seg_data).float()
                 tensor = seg_data  # Use seg_mask directly
                 local_seg_idx = 0  # Seg is at channel 0
+            elif 'size_bins' in data:
+                # seg_conditioned dict format: {'image': seg_mask, 'size_bins': ...}
+                # The 'image' IS the seg mask (no separate seg key)
+                is_seg_conditioned = True
+                seg_data = get_with_fallbacks(data, 'image', 'images')
+                if seg_data is None:
+                    samples_without_seg += 1
+                    attempts += 1
+                    continue
+                if isinstance(seg_data, np.ndarray):
+                    seg_data = torch.from_numpy(seg_data).float()
+                elif isinstance(seg_data, torch.Tensor):
+                    seg_data = seg_data.float()
+                tensor = seg_data
+                local_seg_idx = 0
+                size_bins_data = data['size_bins']
+                if isinstance(size_bins_data, np.ndarray):
+                    size_bins_data = torch.from_numpy(size_bins_data)
+                current_size_bins = size_bins_data.long()
             else:
                 # Pixel dataset: image and seg at same resolution
                 image = get_with_fallbacks(data, 'image', 'images')
@@ -162,10 +181,10 @@ def set_fixed_conditioning(
             if local_seg_idx > 0:
                 gt_images.append(tensor[0:local_seg_idx, ...])
             # Save size_bins for seg_conditioned mode
-            if isinstance(data, tuple) and is_seg_conditioned:
+            if is_seg_conditioned and current_size_bins is not None:
                 size_bins_list.append(current_size_bins)
             # Save bin_maps for seg_conditioned_input mode
-            if isinstance(data, tuple) and is_seg_conditioned_input and current_bin_maps is not None:
+            if is_seg_conditioned_input and current_bin_maps is not None:
                 bin_maps_list.append(current_bin_maps)
         attempts += 1
 

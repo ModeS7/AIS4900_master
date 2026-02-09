@@ -28,8 +28,8 @@ ema:
   update_every: 1
 
 # Disable expensive features
-use_compile: false
-compile_fused_forward: false
+use_compile: true
+compile_fused_forward: true
 use_fp32_loss: true
 perceptual_weight: 0.0
 gradient_checkpointing: false

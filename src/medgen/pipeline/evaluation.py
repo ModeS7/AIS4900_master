@@ -627,6 +627,10 @@ def compute_volume_3d_msssim_native(
                 # Data is in pixel space - encode for model
                 volume_pixel = volume
                 volume_latent = trainer.space.encode_batch(volume)
+                # Encode labels to match (s2d/wavelet/latent space)
+                if labels is not None:
+                    labels = trainer.space.encode(labels)
+                    labels_dict = {'labels': labels}
 
             # Add noise in latent/pixel space (model always operates here)
             noise = torch.randn_like(volume_latent)

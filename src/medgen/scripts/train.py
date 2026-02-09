@@ -23,6 +23,7 @@ Usage:
 """
 import logging
 import os
+import sys
 
 import hydra
 import torch
@@ -60,6 +61,11 @@ from medgen.pipeline import DiffusionTrainer
 
 # Enable CUDA optimizations
 setup_cuda_optimizations()
+
+# Flush logs immediately (SLURM buffers output when not a TTY)
+logging.basicConfig(stream=sys.stderr, force=False)
+for handler in logging.root.handlers:
+    handler.flush = lambda: sys.stderr.flush()
 
 logger = logging.getLogger(__name__)
 
