@@ -1,0 +1,92 @@
+# Minimal training config for smoke tests
+#
+# Exercises EMA, validation, checkpointing in 2 epochs with minimal data.
+# Uses persistent_workers to catch deadlock bugs.
+#
+# Usage:
+#   pytest tests/integration/test_pipeline_smoke.py -m slow -v
+
+epochs: 2
+batch_size: 1
+learning_rate: 1.0e-4
+warmup_epochs: 0
+num_figures: 1
+augment: false
+
+# DataLoader - uses persistent workers to test deadlock fix
+dataloader:
+  num_workers: 2
+  prefetch_factor: 2
+  pin_memory: true
+  persistent_workers: true
+
+# EMA enabled to test EMA init/update path
+use_ema: true
+ema:
+  decay: 0.999
+  update_after_step: 0
+  update_every: 1
+
+# Disable expensive features
+use_compile: false
+compile_fused_forward: false
+use_fp32_loss: true
+perceptual_weight: 0.0
+gradient_checkpointing: false
+use_min_snr: false
+use_multi_gpu: false
+
+# Scheduler
+scheduler: cosine
+eta_min: 1.0e-6
+
+# Disable all training tricks
+score_aug:
+  enabled: false
+sda:
+  enabled: false
+conditioning_dropout:
+  prob: 0.0
+gradient_noise:
+  enabled: false
+curriculum:
+  enabled: false
+timestep_jitter:
+  enabled: false
+self_conditioning:
+  enabled: false
+feature_perturbation:
+  enabled: false
+noise_augmentation:
+  enabled: false
+augmented_diffusion:
+  enabled: false
+regional_weighting:
+  enabled: false
+sam:
+  enabled: false
+batch_augment:
+  enabled: false
+
+# Logging - enable FLOPs to test that path
+logging:
+  grad_norm: true
+  timestep_losses: false
+  regional_losses: false
+  timestep_region_losses: false
+  msssim: false
+  psnr: false
+  lpips: false
+  boundary_sharpness: false
+  intermediate_steps: false
+  worst_batch: false
+  flops: true
+
+# Disable profiling and generation metrics
+profiling:
+  enabled: false
+generation_metrics:
+  enabled: false
+
+# Verbose for test output
+verbose: false

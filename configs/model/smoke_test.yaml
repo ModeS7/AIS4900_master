@@ -1,0 +1,16 @@
+# Tiny UNet for smoke testing (~174K params 2D, ~456K params 3D)
+#
+# Minimal model that exercises all pipeline stages without
+# significant GPU memory or compute requirements.
+#
+# Usage:
+#   pytest tests/integration/test_pipeline_smoke.py -m slow -v
+
+type: unet
+spatial_dims: 2
+channels: [4, 8, 16, 32]
+attention_levels: [false, false, true, true]
+num_res_blocks: 1
+num_head_channels: 4
+norm_num_groups: 4
+image_size: 32
