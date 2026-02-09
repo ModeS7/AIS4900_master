@@ -19,7 +19,9 @@ from torch.utils.data import DataLoader
 from medgen.core import create_warmup_cosine_scheduler
 from medgen.losses import SegmentationLoss
 from medgen.metrics import SimpleLossAccumulator, UnifiedMetrics
+from medgen.metrics.mc_dropout import MCDropoutEvaluator
 from medgen.metrics.regional import SegRegionalMetricsTracker
+from medgen.metrics.seg_metrics import GlobalSegMetrics
 from medgen.pipeline.base_trainer import BaseTrainer
 from medgen.pipeline.results import TrainingStepResult
 from medgen.pipeline.utils import create_epoch_iterator, get_vram_usage
@@ -79,6 +81,10 @@ class SegmentationTrainer(BaseTrainer):
 
         # Seg mode flag for consistency with compression trainers
         self.seg_mode = True
+
+        # Evaluation config
+        self.compute_hd95: bool = cfg.evaluation.get('compute_hd95', True)
+        self.mc_dropout_samples: int = cfg.evaluation.get('mc_dropout_samples', 0)
 
     @classmethod
     def create_2d(cls, cfg: DictConfig) -> 'SegmentationTrainer':
@@ -172,6 +178,12 @@ class SegmentationTrainer(BaseTrainer):
             device=self.device,
         )
 
+        # Create global metrics tracker (precision, recall, HD95)
+        self.global_metrics = GlobalSegMetrics(
+            compute_hd95=self.compute_hd95,
+            device=self.device,
+        )
+
         # Setup optimizer
         self.optimizer = AdamW(
             self.model_raw.parameters(),
@@ -248,12 +260,14 @@ class SegmentationTrainer(BaseTrainer):
 
         total_loss.backward()
 
-        # Gradient clipping
+        # Gradient clipping + norm tracking
         if self.gradient_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model_raw.parameters(),
                 max_norm=self.gradient_clip_norm,
             )
+            if self.log_grad_norm:
+                self._grad_norm_tracker.update(grad_norm.item())
 
         self.optimizer.step()
 
@@ -342,9 +356,12 @@ class SegmentationTrainer(BaseTrainer):
 
         self.model.eval()
         self.regional_tracker.reset()
+        self.global_metrics.reset()
 
         val_losses = {'loss': 0.0, 'bce': 0.0, 'dice_loss': 0.0}
         n_batches = 0
+        worst_loss = 0.0
+        worst_batch_data: dict[str, Any] | None = None
 
         with torch.no_grad():
             for batch in self.val_loader:
@@ -355,10 +372,25 @@ class SegmentationTrainer(BaseTrainer):
                     logits = self.model(images)
                     total_loss, breakdown = self.loss_fn(logits.float(), targets.float())
 
-                val_losses['loss'] += total_loss.item()
+                batch_loss = total_loss.item()
+                val_losses['loss'] += batch_loss
                 val_losses['bce'] += breakdown['bce'].item()
                 val_losses['dice_loss'] += breakdown['dice'].item()
                 n_batches += 1
+
+                # Track worst batch (highest loss)
+                if batch_loss > worst_loss:
+                    worst_loss = batch_loss
+                    preds = (torch.sigmoid(logits) > 0.5).float()
+                    worst_batch_data = {
+                        'target': targets.cpu(),
+                        'prediction': preds.cpu(),
+                        'loss': batch_loss,
+                        'breakdown': {
+                            'bce': breakdown['bce'].item(),
+                            'dice': breakdown['dice'].item(),
+                        },
+                    }
 
                 # Update regional tracker
                 self.regional_tracker.update(
@@ -367,6 +399,9 @@ class SegmentationTrainer(BaseTrainer):
                     apply_sigmoid=True,
                 )
 
+                # Update global metrics (precision, recall, HD95)
+                self.global_metrics.update(logits, targets, apply_sigmoid=True)
+
         # Average losses
         for key in val_losses:
             val_losses[key] /= max(n_batches, 1)
@@ -374,8 +409,17 @@ class SegmentationTrainer(BaseTrainer):
         # Compute per-size metrics
         regional_metrics = self.regional_tracker.compute()
 
+        # Compute global metrics
+        global_results = self.global_metrics.compute()
+
         # Merge metrics
-        metrics = {**val_losses, **regional_metrics}
+        metrics = {**val_losses, **regional_metrics, **global_results}
+
+        # MC Dropout confidence estimation (on first batch only)
+        mc_metrics: dict[str, float] = {}
+        if self.mc_dropout_samples > 0 and log_figures:
+            mc_metrics, mc_mean_pred, mc_uncertainty = self._run_mc_dropout()
+            metrics.update(mc_metrics)
 
         # Log to TensorBoard using unified metrics
         if hasattr(self, '_unified_metrics') and self._unified_metrics is not None:
@@ -389,13 +433,36 @@ class SegmentationTrainer(BaseTrainer):
             }
             self._unified_metrics.log_seg_validation(seg_metrics, epoch)
 
+        # Log global + MC metrics to TensorBoard
+        if self.writer is not None:
+            for key in ('precision', 'recall', 'hd95'):
+                if key in global_results:
+                    self.writer.add_scalar(f'Validation/{key}', global_results[key], epoch)
+            for key in ('confidence_tp', 'confidence_fp', 'confidence_fn', 'ece'):
+                if key in mc_metrics:
+                    self.writer.add_scalar(f'Validation/{key}', mc_metrics[key], epoch)
+
+        # Log worst batch figure (Ground Truth vs Prediction vs |Diff|)
+        if log_figures and worst_batch_data is not None and self._unified_metrics is not None:
+            self._unified_metrics.log_worst_batch(
+                original=worst_batch_data['target'],
+                reconstructed=worst_batch_data['prediction'],
+                loss=worst_batch_data['loss'],
+                epoch=epoch,
+                phase='val',
+                display_metrics=worst_batch_data['breakdown'],
+            )
+
         # Log regional metrics (per-size dice) separately
         if self.writer is not None:
             self.regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional_seg')
 
             # Log predictions figure
             if log_figures and n_batches > 0:
-                self._log_predictions_figure(epoch)
+                if self.mc_dropout_samples > 0 and mc_metrics:
+                    self._log_predictions_figure(epoch, mc_mean_pred, mc_uncertainty)
+                else:
+                    self._log_predictions_figure(epoch)
 
         # Log summary
         if self.is_main_process:
@@ -406,12 +473,50 @@ class SegmentationTrainer(BaseTrainer):
                 f"medium: {metrics.get('dice_medium', 0):.3f}, "
                 f"large: {metrics.get('dice_large', 0):.3f}"
             )
-            logger.info(f"Validation - {dice_str} | {size_str}")
+            global_str = (
+                f"Prec: {metrics.get('precision', 0):.3f}, "
+                f"Rec: {metrics.get('recall', 0):.3f}"
+            )
+            if 'hd95' in metrics:
+                global_str += f", HD95: {metrics['hd95']:.1f}"
+            logger.info(f"Validation - {dice_str} | {size_str} | {global_str}")
 
         return metrics
 
-    def _log_predictions_figure(self, epoch: int) -> None:
-        """Log sample predictions to TensorBoard."""
+    def _run_mc_dropout(self) -> tuple[dict[str, float], torch.Tensor, torch.Tensor]:
+        """Run MC Dropout on first validation batch.
+
+        Returns:
+            Tuple of (confidence_metrics, mean_prediction, uncertainty_map).
+        """
+        mc_eval = MCDropoutEvaluator(self.model, self.mc_dropout_samples, self.device)
+
+        batch = next(iter(self.val_loader))
+        images = batch['image'].to(self.device)
+        targets = batch['seg'].to(self.device)
+
+        mean_pred, uncertainty = mc_eval.predict_with_uncertainty(images)
+        conf_metrics = mc_eval.compute_confidence_metrics(mean_pred, uncertainty, targets)
+
+        return conf_metrics, mean_pred, uncertainty
+
+    def _log_predictions_figure(
+        self,
+        epoch: int,
+        mc_mean_pred: torch.Tensor | None = None,
+        mc_uncertainty: torch.Tensor | None = None,
+    ) -> None:
+        """Log sample predictions to TensorBoard.
+
+        Columns: Input | Ground Truth | Prediction | Confidence | Uncertainty
+        If MC dropout disabled, shows 4 columns (sigmoid as confidence).
+        If MC dropout enabled, shows 5 columns with MC-based confidence + uncertainty.
+
+        Args:
+            epoch: Current epoch number.
+            mc_mean_pred: MC mean prediction [B, 1, ...] (optional).
+            mc_uncertainty: MC variance map [B, 1, ...] (optional).
+        """
         if self.val_loader is None or self.writer is None:
             return
 
@@ -421,62 +526,72 @@ class SegmentationTrainer(BaseTrainer):
 
         self.model.eval()
 
-        # Get one batch
+        has_mc = mc_mean_pred is not None and mc_uncertainty is not None
+
+        # Get one batch for predictions
         batch = next(iter(self.val_loader))
         images = batch['image'].to(self.device)
         targets = batch['seg'].to(self.device)
 
         with torch.no_grad():
             logits = self.model(images)
-            preds = torch.sigmoid(logits) > 0.5
+            sigmoid_pred = torch.sigmoid(logits)
 
-        # Take first 4 samples
+        if has_mc:
+            pred_binary = (mc_mean_pred > 0.5)
+            confidence = mc_mean_pred
+            uncertainty = mc_uncertainty
+            n_cols = 5
+        else:
+            pred_binary = (sigmoid_pred > 0.5)
+            confidence = sigmoid_pred
+            uncertainty = None
+            n_cols = 4
+
         n_samples = min(4, images.shape[0])
+        fig, axes = plt.subplots(n_samples, n_cols, figsize=(4 * n_cols, 4 * n_samples))
+        if n_samples == 1:
+            axes = axes.reshape(1, -1)
 
-        if self.spatial_dims == 2:
-            fig, axes = plt.subplots(n_samples, 3, figsize=(12, 4 * n_samples))
-            if n_samples == 1:
-                axes = axes.reshape(1, -1)
-
-            for i in range(n_samples):
+        for i in range(n_samples):
+            if self.spatial_dims == 3:
+                s = images.shape[2] // 2  # middle slice
+                img = images[i, 0, s].cpu().numpy()
+                tgt = targets[i, 0, s].cpu().numpy()
+                pred = pred_binary[i, 0, s].float().cpu().numpy()
+                conf = confidence[i, 0, s].cpu().numpy()
+                unc = uncertainty[i, 0, s].cpu().numpy() if uncertainty is not None else None
+                slice_label = ' (mid slice)'
+            else:
                 img = images[i, 0].cpu().numpy()
                 tgt = targets[i, 0].cpu().numpy()
-                pred = preds[i, 0].cpu().numpy()
+                pred = pred_binary[i, 0].float().cpu().numpy()
+                conf = confidence[i, 0].cpu().numpy()
+                unc = uncertainty[i, 0].cpu().numpy() if uncertainty is not None else None
+                slice_label = ''
 
-                axes[i, 0].imshow(img, cmap='gray')
-                axes[i, 0].set_title('Input')
-                axes[i, 0].axis('off')
+            axes[i, 0].imshow(img, cmap='gray')
+            axes[i, 0].set_title(f'Input{slice_label}')
+            axes[i, 0].axis('off')
 
-                axes[i, 1].imshow(tgt, cmap='gray')
-                axes[i, 1].set_title('Ground Truth')
-                axes[i, 1].axis('off')
+            axes[i, 1].imshow(tgt, cmap='gray')
+            axes[i, 1].set_title('Ground Truth')
+            axes[i, 1].axis('off')
 
-                axes[i, 2].imshow(pred, cmap='gray')
-                axes[i, 2].set_title('Prediction')
-                axes[i, 2].axis('off')
-        else:
-            # For 3D, show middle slices
-            fig, axes = plt.subplots(n_samples, 3, figsize=(12, 4 * n_samples))
-            if n_samples == 1:
-                axes = axes.reshape(1, -1)
+            axes[i, 2].imshow(pred, cmap='gray')
+            axes[i, 2].set_title('Prediction')
+            axes[i, 2].axis('off')
 
-            for i in range(n_samples):
-                mid_slice = images.shape[2] // 2
-                img = images[i, 0, mid_slice].cpu().numpy()
-                tgt = targets[i, 0, mid_slice].cpu().numpy()
-                pred = preds[i, 0, mid_slice].cpu().numpy()
+            im = axes[i, 3].imshow(conf, cmap='viridis', vmin=0, vmax=1)
+            axes[i, 3].set_title('Confidence' if has_mc else 'Sigmoid')
+            axes[i, 3].axis('off')
+            fig.colorbar(im, ax=axes[i, 3], fraction=0.046, pad=0.04)
 
-                axes[i, 0].imshow(img, cmap='gray')
-                axes[i, 0].set_title('Input (mid slice)')
-                axes[i, 0].axis('off')
-
-                axes[i, 1].imshow(tgt, cmap='gray')
-                axes[i, 1].set_title('Ground Truth')
-                axes[i, 1].axis('off')
-
-                axes[i, 2].imshow(pred, cmap='gray')
-                axes[i, 2].set_title('Prediction')
-                axes[i, 2].axis('off')
+            if has_mc and unc is not None:
+                im = axes[i, 4].imshow(unc, cmap='hot')
+                axes[i, 4].set_title('Uncertainty')
+                axes[i, 4].axis('off')
+                fig.colorbar(im, ax=axes[i, 4], fraction=0.046, pad=0.04)
 
         plt.tight_layout()
         self.writer.add_figure('val/predictions', fig, epoch)
@@ -525,6 +640,12 @@ class SegmentationTrainer(BaseTrainer):
     ) -> None:
         """Hook called at end of each epoch."""
         super()._on_epoch_end(epoch, avg_losses, val_metrics)
+
+        # Log gradient norms
+        if self.log_grad_norm and self._unified_metrics is not None:
+            self._unified_metrics.log_grad_norm_from_tracker(
+                self._grad_norm_tracker, epoch, prefix='training/grad_norm'
+            )
 
         # Early stopping check (compare against best_dice, not best_loss)
         val_dice = val_metrics.get('dice', 0)

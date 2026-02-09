@@ -129,9 +129,6 @@ evaluation:
   # Field of view for pixel->mm conversion
   fov_mm: 240.0
 
-  # Metrics to compute
-  metrics:
-    - dice
-    - hausdorff95
-    - sensitivity
-    - precision
+  # Global metrics flags
+  compute_hd95: true           # Hausdorff distance 95th percentile (expensive for 3D)
+  mc_dropout_samples: 0        # MC Dropout passes (0 = disabled, 10 = recommended)

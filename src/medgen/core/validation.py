@@ -319,32 +319,17 @@ def validate_latent_config(cfg: DictConfig) -> list[str]:
 def validate_regional_logging(cfg: DictConfig) -> list[str]:
     """Validate regional logging configuration.
 
-    Checks that regional losses logging is compatible with the mode.
-    Regional losses need segmentation masks as conditioning (e.g., bravo, dual).
+    Regional losses/weighting need segmentation masks as conditioning.
+    For seg modes (no separate mask), these features are silently skipped
+    at runtime — no need to block the entire run.
 
     Args:
         cfg: Hydra configuration object.
 
     Returns:
-        List of error strings (empty if validation passes).
+        List of error strings (empty — regional config is always valid).
     """
-    errors: list[str] = []
-
-    logging_cfg = cfg.training.get('logging', {})
-    if not logging_cfg.get('regional_losses', False):
-        return errors
-
-    mode = cfg.mode.get('name', 'seg')
-    # Regional losses need segmentation masks as separate conditioning
-    # seg mode generates masks (has no separate mask input)
-    # seg_conditioned generates masks from size_bin input (has no pixel mask)
-    if mode in ('seg', 'seg_conditioned'):
-        errors.append(
-            "logging.regional_losses=true requires a mode with segmentation masks "
-            "as conditioning (e.g., bravo, dual). seg mode has no separate mask."
-        )
-
-    return errors
+    return []
 
 
 def validate_strategy_config(cfg: DictConfig) -> list[str]:
