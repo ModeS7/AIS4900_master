@@ -32,6 +32,8 @@ size_bins:
   num_bins: 7  # 6 bounded bins + 1 overflow bin (30+)
   max_count: 10  # Cap embedding vocabulary at 0-10
   embedding_dim: 32  # Embedding dimension per bin
+  projection_hidden_dim: 0   # 0 = legacy 2-layer MLP; >0 = deeper MLP with this hidden width
+  projection_num_layers: 2   # Number of hidden layers in deep projection MLP
   # Voxel spacing for physical measurements [depth_mm, height_mm, width_mm]
   # Default: 1mm depth (typical brain MRI), pixel spacing for H/W
   # For 256x256 with 240mm FOV: 240/256 = 0.9375mm

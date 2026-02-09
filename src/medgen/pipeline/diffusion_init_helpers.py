@@ -180,6 +180,8 @@ def setup_conditional_embeddings(trainer: DiffusionTrainer) -> None:
         trainer.size_bin_num_bins = size_bin_cfg.num_bins
         trainer.size_bin_max_count = size_bin_cfg.max_count
         trainer.size_bin_embed_dim = size_bin_cfg.embed_dim
+        trainer.size_bin_projection_hidden_dim = size_bin_cfg.projection_hidden_dim
+        trainer.size_bin_projection_num_layers = size_bin_cfg.projection_num_layers
         if trainer.is_main_process:
             logger.info(
                 f"Size bin embedding enabled: num_bins={trainer.size_bin_num_bins}, "

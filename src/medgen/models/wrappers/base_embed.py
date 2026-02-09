@@ -40,6 +40,48 @@ def create_zero_init_mlp(input_dim: int, embed_dim: int) -> nn.Sequential:
     return mlp
 
 
+def create_deep_zero_init_mlp(
+    input_dim: int,
+    output_dim: int,
+    hidden_dim: int = 512,
+    num_hidden_layers: int = 2,
+) -> nn.Sequential:
+    """Create deeper MLP with zero-initialized output for stronger conditioning.
+
+    Architecture: Linear(in,hidden)→SiLU→[Linear(hidden,hidden)→SiLU]×(n-1)→Linear(hidden,out,zero-init)
+
+    Zero-initialization on the last layer ensures identity at start, same principle
+    as create_zero_init_mlp but with configurable depth and width.
+
+    Args:
+        input_dim: Input dimension.
+        output_dim: Output dimension.
+        hidden_dim: Hidden layer width (default: 512).
+        num_hidden_layers: Number of hidden layers before output (default: 2).
+            Total layers = num_hidden_layers + 1 (output).
+
+    Returns:
+        nn.Sequential with deeper MLP, output layer zero-initialized.
+    """
+    if num_hidden_layers < 1:
+        raise ValueError(f"num_hidden_layers must be >= 1, got {num_hidden_layers}")
+
+    layers: list[nn.Module] = [
+        nn.Linear(input_dim, hidden_dim),
+        nn.SiLU(),
+    ]
+    for _ in range(num_hidden_layers - 1):
+        layers.append(nn.Linear(hidden_dim, hidden_dim))
+        layers.append(nn.SiLU())
+    layers.append(nn.Linear(hidden_dim, output_dim))
+
+    mlp = nn.Sequential(*layers)
+    # Zero-init output layer for neutral start
+    nn.init.zeros_(mlp[-1].weight)
+    nn.init.zeros_(mlp[-1].bias)
+    return mlp
+
+
 def create_film_mlp(input_dim: int, embed_dim: int) -> nn.Sequential:
     """Create MLP for FiLM conditioning (outputs gamma and beta).
 

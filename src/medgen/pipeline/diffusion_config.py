@@ -316,6 +316,8 @@ class SizeBinConfig:
     max_count: int = 10
     embed_dim: int = 32
     fov_mm: float = 240.0
+    projection_hidden_dim: int = 0    # 0 = legacy 2-layer MLP
+    projection_num_layers: int = 2    # only used when projection_hidden_dim > 0
 
     def __post_init__(self):
         if not self.enabled:
@@ -353,6 +355,8 @@ class SizeBinConfig:
             max_count=size_bin_cfg.get('max_count', 10),
             embed_dim=size_bin_cfg.get('embedding_dim', 32),
             fov_mm=float(size_bin_cfg.get('fov_mm', 240.0)),
+            projection_hidden_dim=size_bin_cfg.get('projection_hidden_dim', 0),
+            projection_num_layers=size_bin_cfg.get('projection_num_layers', 2),
         )
 
 

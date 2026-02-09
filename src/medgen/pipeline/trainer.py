@@ -660,10 +660,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         )
 
                     # Apply regional weighting (per-pixel weights by tumor size)
-                    if self.regional_weight_computer is not None and labels is not None:
-                        mse_loss = self._compute_region_weighted_mse(
-                            prediction, images, noise, labels
-                        )
+                    if self.regional_weight_computer is not None:
+                        # For seg_conditioned: images IS the seg mask (labels=None)
+                        seg_for_weighting = labels if labels is not None else images
+                        if seg_for_weighting is not None and not isinstance(seg_for_weighting, dict):
+                            mse_loss = self._compute_region_weighted_mse(
+                                prediction, images, noise, seg_for_weighting
+                            )
 
                     # Compute perceptual loss (decode for latent space)
                     # For 3D: use 2.5D approach (center slice) for efficiency

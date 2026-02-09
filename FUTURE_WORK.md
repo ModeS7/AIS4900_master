@@ -41,6 +41,7 @@ Features that have been completed and are available in the codebase.
 - [x] **SDA** - Shifted Data Augmentation (clean augmentation with timestep compensation)
 - [x] **Curriculum timesteps** - Train from easier to harder denoising tasks over warmup period
 - [x] **Regional loss weighting** - Upweight small tumor regions (RANO-BM clinical thresholds)
+- [x] **Self-conditioning** - Consistency loss via dual prediction during training
 
 ### Evaluation
 - [x] **Generation metrics** - KID, CMMD, FID tracking during training (ResNet50 + BiomedCLIP)

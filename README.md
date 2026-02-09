@@ -109,7 +109,8 @@ BaseTrainer
 | `bravo` | 2 | 1 | Seg mask |
 | `dual` | 3 | 2 | Seg mask |
 | `multi` | 2 | 1 | Seg mask + mode_id |
-| `seg_conditioned` | 1 + size_bins | 1 | Tumor size bins |
+| `seg_conditioned` | 1 | 1 | Tumor size bins (FiLM embedding) |
+| `seg_conditioned_input` | 1 + 7 bin maps | 1 | Tumor size bins (channel concat) |
 
 ### Compression Modes (no seg conditioning)
 
@@ -192,8 +193,8 @@ AIS4900_master/
 │   ├── visualization/               # NIfTI viewer, scheduler plots
 │   └── tensorboard/                 # TensorBoard utilities
 │
-├── tests/                           # Test suite (1060+ tests)
-│   ├── unit/                        # Unit tests (40+ files)
+├── tests/                           # Test suite (1126 tests)
+│   ├── unit/                        # Unit tests (36 files)
 │   ├── integration/                 # Integration tests
 │   ├── e2e/                         # End-to-end pipeline tests
 │   └── benchmarks/                  # Performance benchmarks
@@ -297,7 +298,7 @@ sbatch IDUN/train/compression/exp9_dcae_f32.slurm
 ./IDUN/submit_prefer_h100.sh IDUN/train/compression/exp9_dcae_f32.slurm --bg
 
 # Validate before submit (catches syntax/import/config errors)
-./scripts/validate_before_submit.sh IDUN/train/your_job.slurm
+./misc/validate_before_submit.sh IDUN/train/your_job.slurm
 ```
 
 ## Data Preprocessing

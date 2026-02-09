@@ -189,6 +189,8 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             num_bins=trainer.size_bin_num_bins,
             max_count=trainer.size_bin_max_count,
             per_bin_embed_dim=trainer.size_bin_embed_dim,
+            projection_hidden_dim=trainer.size_bin_projection_hidden_dim,
+            projection_num_layers=trainer.size_bin_projection_num_layers,
         ).to(trainer.device)
 
         if trainer.is_main_process:

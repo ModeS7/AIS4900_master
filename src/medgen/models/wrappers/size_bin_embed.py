@@ -18,7 +18,7 @@ FiLM modulation: out = time_embed * (1 + scale) + shift
 import torch
 from torch import nn
 
-from .base_embed import create_zero_init_mlp
+from .base_embed import create_deep_zero_init_mlp, create_zero_init_mlp
 from .device_utils import move_module_to_model_device
 
 # Default bin configuration (aligned with RANO-BM thresholds)
@@ -83,6 +83,8 @@ class SizeBinTimeEmbed(nn.Module):
         num_bins: int = DEFAULT_NUM_BINS,
         max_count: int = DEFAULT_MAX_COUNT,
         per_bin_embed_dim: int = DEFAULT_EMBEDDING_DIM,
+        projection_hidden_dim: int = 0,
+        projection_num_layers: int = 2,
     ):
         """Initialize size bin conditioned time embedding.
 
@@ -92,6 +94,8 @@ class SizeBinTimeEmbed(nn.Module):
             num_bins: Number of size bins (default: 7)
             max_count: Maximum count per bin for embedding vocabulary (default: 10)
             per_bin_embed_dim: Embedding dimension per bin before projection
+            projection_hidden_dim: Hidden dim for deeper projection MLP (0 = legacy 2-layer)
+            projection_num_layers: Number of hidden layers in deep projection MLP
         """
         super().__init__()
         self.original = original_time_embed
@@ -110,7 +114,14 @@ class SizeBinTimeEmbed(nn.Module):
         # Input: num_bins * per_bin_embed_dim (concatenated)
         # Output: embed_dim * 2 (scale and shift for FiLM modulation)
         combined_dim = num_bins * per_bin_embed_dim
-        self.projection = create_zero_init_mlp(combined_dim, embed_dim * 2)
+        if projection_hidden_dim > 0:
+            self.projection = create_deep_zero_init_mlp(
+                combined_dim, embed_dim * 2,
+                hidden_dim=projection_hidden_dim,
+                num_hidden_layers=projection_num_layers,
+            )
+        else:
+            self.projection = create_zero_init_mlp(combined_dim, embed_dim * 2)
 
         # Store current size bins (set before each forward)
         self._size_bins: torch.Tensor | None = None
@@ -195,6 +206,8 @@ class SizeBinModelWrapper(nn.Module):
         num_bins: int = DEFAULT_NUM_BINS,
         max_count: int = DEFAULT_MAX_COUNT,
         per_bin_embed_dim: int = DEFAULT_EMBEDDING_DIM,
+        projection_hidden_dim: int = 0,
+        projection_num_layers: int = 2,
     ):
         """Initialize wrapper.
 
@@ -204,6 +217,8 @@ class SizeBinModelWrapper(nn.Module):
             num_bins: Number of size bins
             max_count: Maximum count per bin
             per_bin_embed_dim: Embedding dimension per bin
+            projection_hidden_dim: Hidden dim for deeper projection MLP (0 = legacy 2-layer)
+            projection_num_layers: Number of hidden layers in deep projection MLP
         """
         super().__init__()
         self.model = model
@@ -220,6 +235,8 @@ class SizeBinModelWrapper(nn.Module):
             num_bins=num_bins,
             max_count=max_count,
             per_bin_embed_dim=per_bin_embed_dim,
+            projection_hidden_dim=projection_hidden_dim,
+            projection_num_layers=projection_num_layers,
         )
 
         # Replace the model's time_embed and ensure it's on same device

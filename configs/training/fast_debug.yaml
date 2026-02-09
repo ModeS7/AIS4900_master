@@ -41,6 +41,10 @@ eta_min: 1.0e-6
 use_compile: true
 compile_fused_forward: false  # Only used in diffusion, not VAE
 
+# Regional weighting (disabled for debug)
+regional_weighting:
+  enabled: false
+
 # Logging (minimal for fast debug)
 logging:
   grad_norm: true
