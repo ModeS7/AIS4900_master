@@ -41,7 +41,6 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 #   C. CFG dropout: 15% → 25% for stronger conditioned/unconditioned contrast
 #
 # Resolution: 256x256x160 (same as exp2_1)
-# Stability fixes from exp2_1: lr=5e-5, grad_clip=0.5, warmup=10
 # ============================================================================
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
