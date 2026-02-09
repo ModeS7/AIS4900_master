@@ -211,6 +211,29 @@ class TestGenerationMetrics:
 
         assert metrics.fixed_conditioning_masks is not None
 
+    def test_dict_format_seg_conditioned(self, tmp_path):
+        """REGRESSION: 3D SegDataset returns {'image': seg, 'size_bins': ...} dict."""
+        from medgen.metrics.generation import GenerationMetrics, GenerationMetricsConfig
+
+        class MockDataset:
+            def __len__(self):
+                return 10
+
+            def __getitem__(self, idx):
+                seg = (torch.rand(1, 16, 64, 64) > 0.5).float()
+                size_bins = torch.randint(0, 5, (7,))
+                return {'image': seg, 'size_bins': size_bins}
+
+        config = GenerationMetricsConfig(
+            samples_per_epoch=2, samples_extended=2, samples_test=2,
+        )
+        metrics = GenerationMetrics(config, mode_name='seg_conditioned', device='cpu', run_dir=str(tmp_path))
+        metrics.set_fixed_conditioning(MockDataset(), num_masks=2, seg_channel_idx=0)
+
+        assert metrics.fixed_conditioning_masks is not None
+        assert metrics.fixed_size_bins is not None
+        assert metrics.fixed_size_bins.shape[0] == metrics.fixed_conditioning_masks.shape[0]
+
     def test_3d_slicing(self):
         """Slicing should work for 3D tensors [C, D, H, W]."""
         tensor = torch.randn(2, 32, 64, 64)  # [C, D, H, W]

@@ -187,6 +187,26 @@ def mock_seg_conditioned_dataset():
 
 
 @pytest.fixture
+def mock_seg_conditioned_dataset_3d():
+    """Mock 3D dataset returning dict format for seg_conditioned mode.
+
+    Matches real SegDataset (seg.py) which returns:
+        {'image': seg_volume, 'size_bins': size_bins}
+    """
+    class MockDataset:
+        def __len__(self):
+            return 10
+
+        def __getitem__(self, idx):
+            torch.manual_seed(idx)
+            seg = (torch.rand(1, 16, 64, 64) > 0.5).float()  # [C, D, H, W]
+            size_bins = torch.randint(0, 5, (7,))
+            return {'image': seg, 'size_bins': size_bins}
+
+    return MockDataset()
+
+
+@pytest.fixture
 def mock_bravo_dataset():
     """Mock dataset returning (image, seg) tuples for bravo mode."""
     class MockDataset:

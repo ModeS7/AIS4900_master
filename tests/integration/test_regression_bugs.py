@@ -384,6 +384,31 @@ class TestSizeBinsRegression:
                 assert has_size_bins, \
                     "REGRESSION: size_bins not passed to strategy.generate()"
 
+    def test_size_bins_reaches_generate_method_dict_format(self):
+        """REGRESSION: dict format from 3D SegDataset also stores size_bins."""
+        from medgen.metrics.generation import GenerationMetrics, GenerationMetricsConfig
+
+        class MockSegConditionedDataset3D:
+            def __len__(self):
+                return 20
+
+            def __getitem__(self, idx):
+                torch.manual_seed(idx)
+                seg = (torch.rand(1, 16, 64, 64) > 0.3).float()
+                size_bins = torch.randint(0, 5, (7,))
+                return {'image': seg, 'size_bins': size_bins}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = GenerationMetricsConfig(samples_per_epoch=4, steps_per_epoch=2)
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            metrics.set_fixed_conditioning(MockSegConditionedDataset3D(), num_masks=10)
+
+            assert metrics.fixed_size_bins is not None, \
+                "REGRESSION: fixed_size_bins not stored for dict-format seg_conditioned"
+
     def test_fixed_size_bins_dtype(self):
         """fixed_size_bins should be long dtype for embedding lookup."""
         from medgen.metrics.generation import GenerationMetrics, GenerationMetricsConfig

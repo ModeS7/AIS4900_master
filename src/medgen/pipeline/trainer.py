@@ -1148,7 +1148,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         self._unified_metrics.log_training(epoch)
                         self._unified_metrics.reset_training()
 
+                    logger.info(f"[DIAG] Epoch {epoch}: starting validation...")
+                    _val_t0 = time.time()
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
+                    logger.info(f"[DIAG] Epoch {epoch}: validation done ({time.time()-_val_t0:.1f}s)")
                     log_figures = (epoch + 1) % self.figure_interval == 0
 
                     self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
@@ -1181,9 +1184,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     self._compute_per_modality_validation(epoch)
 
                     if log_figures or (epoch + 1) == self.n_epochs:
+                        logger.info(f"[DIAG] Epoch {epoch}: generating visualization samples...")
+                        _viz_t0 = time.time()
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self._visualize_samples(model_to_use, epoch, train_dataset)
+                        logger.info(f"[DIAG] Epoch {epoch}: visualization done ({time.time()-_viz_t0:.1f}s)")
 
+                    logger.info(f"[DIAG] Epoch {epoch}: saving checkpoint...")
                     self._save_checkpoint(epoch, "latest")
 
                     loss_for_selection = val_metrics.get('total', avg_loss)

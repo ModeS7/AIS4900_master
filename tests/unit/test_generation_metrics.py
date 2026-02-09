@@ -249,6 +249,21 @@ class TestSetFixedConditioning:
             assert metrics.fixed_size_bins is not None
             assert metrics.fixed_size_bins.shape[0] == metrics.fixed_conditioning_masks.shape[0]
 
+    def test_seg_conditioned_dict_format_stores_size_bins(self, mock_seg_conditioned_dataset_3d):
+        """REGRESSION: dict format {'image': seg, 'size_bins': ...} from 3D SegDataset."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = GenerationMetricsConfig()
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            metrics.set_fixed_conditioning(mock_seg_conditioned_dataset_3d, num_masks=5)
+
+            assert metrics.fixed_conditioning_masks is not None
+            assert metrics.fixed_size_bins is not None
+            assert metrics.fixed_size_bins.shape[0] == metrics.fixed_conditioning_masks.shape[0]
+            assert metrics.fixed_size_bins.dtype == torch.long
+
     def test_positive_masks_only(self):
         """Only samples with positive masks are kept."""
         with tempfile.TemporaryDirectory() as tmpdir:

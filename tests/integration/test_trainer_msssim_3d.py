@@ -115,6 +115,32 @@ class TestSizeBinsRegression:
             # Size bins should be long for embedding lookup
             assert metrics.fixed_size_bins.dtype == torch.long
 
+    def test_set_fixed_conditioning_dict_format(self):
+        """REGRESSION: 3D SegDataset dict format stores size_bins."""
+
+        class MockSegConditionedDataset3D:
+            def __len__(self):
+                return 10
+
+            def __getitem__(self, idx):
+                torch.manual_seed(idx)
+                seg = (torch.rand(1, 16, 64, 64) > 0.3).float()
+                size_bins = torch.randint(0, 5, (7,))
+                return {'image': seg, 'size_bins': size_bins}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = GenerationMetricsConfig()
+            metrics = GenerationMetrics(
+                config, torch.device('cpu'), Path(tmpdir), mode_name='seg_conditioned'
+            )
+
+            metrics.set_fixed_conditioning(MockSegConditionedDataset3D(), num_masks=5)
+
+            assert metrics.fixed_size_bins is not None
+            assert metrics.fixed_size_bins.shape[0] == metrics.fixed_conditioning_masks.shape[0]
+            assert metrics.fixed_size_bins.shape[1] == 7
+            assert metrics.fixed_size_bins.dtype == torch.long
+
 
 class TestModeDetection:
     """Test mode detection for seg_conditioned."""

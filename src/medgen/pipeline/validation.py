@@ -6,6 +6,7 @@ This module provides validation loop functionality:
 - Timestep bin loss tracking
 """
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -84,8 +85,11 @@ def compute_validation_losses(
     # Mark CUDA graph step boundary to prevent tensor caching issues
     torch.compiler.cudagraph_mark_step_begin()
 
+    _val_t0 = time.time()
     with torch.no_grad():
-        for batch in trainer.val_loader:
+        for _val_step, batch in enumerate(trainer.val_loader):
+            if _val_step == 0:
+                logger.info(f"[DIAG] Val loop: first batch loaded ({time.time()-_val_t0:.1f}s)")
             prepared = trainer.mode.prepare_batch(batch, trainer.device)
             images = prepared['images']
             labels = prepared.get('labels')
@@ -312,6 +316,8 @@ def compute_validation_losses(
                             t_norm, tumor_loss, bg_loss, int(tumor_px), int(bg_px)
                         )
 
+    logger.info(f"[DIAG] Val loop: completed {n_batches} batches ({time.time()-_val_t0:.1f}s)")
+
     # Restore model state and RNG using try/finally for robustness
     try:
         model_to_use.train()
@@ -347,7 +353,10 @@ def compute_validation_losses(
             # Compute 3D MS-SSIM first so we can include it in metrics
             msssim_3d = None
             if trainer.log_msssim:
+                logger.info(f"[DIAG] Epoch {epoch}: computing 3D MS-SSIM...")
+                _t0 = time.time()
                 msssim_3d = trainer._compute_volume_3d_msssim(epoch, data_split='val')
+                logger.info(f"[DIAG] Epoch {epoch}: 3D MS-SSIM done ({time.time()-_t0:.1f}s, val={msssim_3d})")
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
 
@@ -396,16 +405,22 @@ def compute_validation_losses(
                     gen_model.eval()
 
                     # Quick metrics every epoch
+                    logger.info(f"[DIAG] Epoch {epoch}: computing generation metrics (quick)...")
+                    _t0 = time.time()
                     gen_results = trainer._gen_metrics.compute_epoch_metrics(
                         gen_model, trainer.strategy, trainer.mode
                     )
+                    logger.info(f"[DIAG] Epoch {epoch}: generation metrics done ({time.time()-_t0:.1f}s)")
                     trainer._unified_metrics.log_generation(epoch, gen_results)
 
                     # Extended metrics at figure_interval
                     if (epoch + 1) % trainer.figure_interval == 0:
+                        logger.info(f"[DIAG] Epoch {epoch}: computing generation metrics (extended)...")
+                        _t0 = time.time()
                         extended_results = trainer._gen_metrics.compute_extended_metrics(
                             gen_model, trainer.strategy, trainer.mode
                         )
+                        logger.info(f"[DIAG] Epoch {epoch}: extended generation metrics done ({time.time()-_t0:.1f}s)")
                         trainer._unified_metrics.log_generation(epoch, extended_results)
 
                     gen_model.train()
