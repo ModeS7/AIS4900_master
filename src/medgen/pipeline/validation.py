@@ -86,10 +86,13 @@ def compute_validation_losses(
     torch.compiler.cudagraph_mark_step_begin()
 
     _val_t0 = time.time()
+    _diag_val = True  # Log detailed diagnostics for first val batch
     with torch.no_grad():
         for _val_step, batch in enumerate(trainer.val_loader):
             if _val_step == 0:
                 logger.info(f"[DIAG] Val loop: first batch loaded ({time.time()-_val_t0:.1f}s)")
+            elif _val_step % 5 == 0:
+                logger.info(f"[DIAG] Val loop: batch {_val_step}/{len(trainer.val_loader)} ({time.time()-_val_t0:.1f}s)")
             prepared = trainer.mode.prepare_batch(batch, trainer.device)
             images = prepared['images']
             labels = prepared.get('labels')
@@ -113,6 +116,8 @@ def compute_validation_losses(
 
             # Encode to diffusion space (identity for PixelSpace)
             # Skip encoding if data is already in latent space (from latent dataloader)
+            if _diag_val:
+                logger.info("[DIAG] Val batch 0: encoding...")
             if not is_latent:
                 images = trainer.space.encode_batch(images)
             if labels is not None and not labels_is_latent:
@@ -140,6 +145,8 @@ def compute_validation_losses(
                 model_input, _ = trainer._apply_mode_intensity_scale(model_input, mode_id)
 
             # Predict and compute loss
+            if _diag_val:
+                logger.info(f"[DIAG] Val batch 0: forward pass (input={model_input.shape})...")
             if trainer.use_mode_embedding and mode_id is not None:
                 prediction = model_to_use(model_input, timesteps, mode_id=mode_id)
             elif trainer.use_size_bin_embedding:
@@ -147,6 +154,8 @@ def compute_validation_losses(
             else:
                 prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
             mse_loss, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+            if _diag_val:
+                logger.info(f"[DIAG] Val batch 0: forward done (mse={mse_loss.item():.4f})")
 
             # Compute perceptual loss
             if trainer.perceptual_weight > 0:
@@ -190,6 +199,8 @@ def compute_validation_losses(
                     }
 
             # Quality metrics (decode to pixel space for latent diffusion)
+            if _diag_val:
+                logger.info("[DIAG] Val batch 0: decoding to pixel space...")
             if trainer.space.scale_factor > 1:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
                 metrics_gt = trainer.space.decode_batch(images)
@@ -224,10 +235,16 @@ def compute_validation_losses(
                 psnr_val = sum(channel_psnr.values()) / len(keys)
                 lpips_val = sum(channel_lpips.values()) / len(keys) if trainer.log_lpips else 0.0
             else:
+                if _diag_val:
+                    logger.info(f"[DIAG] Val batch 0: computing MS-SSIM (shape={metrics_pred.shape})...")
                 # Use dimension-appropriate metric functions
                 msssim_val = compute_msssim(metrics_pred, metrics_gt, spatial_dims=trainer.spatial_dims)
+                if _diag_val:
+                    logger.info("[DIAG] Val batch 0: computing PSNR...")
                 psnr_val = compute_psnr(metrics_pred, metrics_gt)
                 if trainer.log_lpips:
+                    if _diag_val:
+                        logger.info("[DIAG] Val batch 0: computing LPIPS...")
                     if trainer.spatial_dims == 3:
                         # 3D: use center-slice LPIPS (2.5D approach)
                         lpips_val = compute_lpips_3d(metrics_pred, metrics_gt, trainer.device)
@@ -235,6 +252,8 @@ def compute_validation_losses(
                         lpips_val = compute_lpips(metrics_pred, metrics_gt, trainer.device)
                 else:
                     lpips_val = 0.0
+                if _diag_val:
+                    logger.info(f"[DIAG] Val batch 0: metrics done (msssim={msssim_val:.4f}, psnr={psnr_val:.2f}, lpips={lpips_val:.4f})")
 
             total_msssim += msssim_val
             total_psnr += psnr_val
@@ -315,6 +334,8 @@ def compute_validation_losses(
                         trainer._unified_metrics.update_timestep_region_loss(
                             t_norm, tumor_loss, bg_loss, int(tumor_px), int(bg_px)
                         )
+
+            _diag_val = False  # Only detailed diagnostics for first val batch
 
     logger.info(f"[DIAG] Val loop: completed {n_batches} batches ({time.time()-_val_t0:.1f}s)")
 

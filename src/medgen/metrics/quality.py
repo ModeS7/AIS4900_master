@@ -102,7 +102,9 @@ class _WarningFlags:
 _warning_flags = _WarningFlags()
 
 # Lock for torch.compile operations (not thread-safe)
-_compile_lock = threading.Lock()
+# Must be RLock (reentrant) because compute_lpips holds the lock
+# while calling _get_lpips_metric, which also acquires it.
+_compile_lock = threading.RLock()
 
 
 def reset_msssim_nan_warning() -> None:
