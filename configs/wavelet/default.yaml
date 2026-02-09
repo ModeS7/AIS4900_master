@@ -1,0 +1,15 @@
+# Haar wavelet configuration for 3D pixel-space diffusion
+#
+# Lossless 3D Haar wavelet decomposition: frequency subbands instead of pixel rearrangement.
+# [B, 1, 160, 256, 256] -> [B, 8, 80, 128, 128]
+# UNet operates on smaller spatial grid with 8 frequency channels (LLL, LLH, ..., HHH).
+#
+# Same shape as space_to_depth but with frequency separation that may help diffusion.
+#
+# Usage:
+#   python -m medgen.scripts.train --config-name=diffusion_3d \
+#       wavelet.enabled=true \
+#       volume.height=256 volume.width=256 volume.pad_depth_to=160
+
+# Master switch
+enabled: false

@@ -323,12 +323,19 @@ def main(cfg: DictConfig) -> None:
     # Setup model
     trainer.setup_model(train_dataset)
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    resume_from = cfg.training.get('resume_from', None)
+    if resume_from:
+        start_epoch = trainer.load_checkpoint(resume_from)
+
     # Train with optional validation loader
     trainer.train(
         dataloader, train_dataset,
         val_loader=val_loader,
         pixel_train_loader=pixel_train_loader,
         pixel_val_loader=pixel_val_loader,
+        start_epoch=start_epoch,
     )
 
     # Create test dataloader and evaluate (if test_new/ directory exists)
@@ -640,6 +647,12 @@ def _train_3d(cfg: DictConfig) -> None:
     trainer = DiffusionTrainer.create_3d(cfg, space=space)
     trainer.setup_model(train_dataset)
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    resume_from = cfg.training.get('resume_from', None)
+    if resume_from:
+        start_epoch = trainer.load_checkpoint(resume_from)
+
     # Log model info
     logger.info(f"Model parameters: {sum(p.numel() for p in trainer.model.parameters()):,}")
     logger.info(f"Space: {type(space).__name__}")
@@ -653,6 +666,7 @@ def _train_3d(cfg: DictConfig) -> None:
         val_loader=val_loader,
         pixel_train_loader=pixel_train_loader,
         pixel_val_loader=pixel_val_loader,
+        start_epoch=start_epoch,
     )
 
     # Test evaluation (if test_new set exists and enabled)

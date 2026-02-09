@@ -3,6 +3,10 @@
 # Common training hyperparameters used across all training scripts.
 # Override via CLI: python -m medgen.scripts.train training.epochs=1000
 
+# Resume training from a checkpoint (e.g., runs/.../checkpoint_latest.pt)
+# Each run still creates a new timestamped directory - state is loaded from old run
+resume_from: null
+
 # Experiment name prefix for run directory
 # Include trailing underscore: training.name=exp1_ -> exp1_rflow_128_...
 name: ""

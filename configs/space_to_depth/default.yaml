@@ -1,0 +1,19 @@
+# Space-to-depth configuration for 3D pixel-space diffusion
+#
+# Lossless 2x2x2 rearrangement: trades spatial resolution for channels.
+# [B, 1, 160, 256, 256] -> [B, 8, 80, 128, 128]
+# UNet operates on smaller spatial grid with 8x channels.
+#
+# Usage:
+#   python -m medgen.scripts.train --config-name=diffusion_3d \
+#       space_to_depth.enabled=true \
+#       volume.height=256 volume.width=256 volume.pad_depth_to=160
+
+# Master switch
+enabled: false
+
+# Downsampling factor for H and W dimensions
+spatial_factor: 2
+
+# Downsampling factor for D dimension
+depth_factor: 2

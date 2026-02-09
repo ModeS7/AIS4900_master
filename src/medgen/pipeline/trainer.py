@@ -922,7 +922,43 @@ class DiffusionTrainer(DiffusionTrainerBase):
             model_config=model_config,
             scheduler=self.lr_scheduler,
             ema=self.ema,
+            extra_state={'best_loss': self.best_loss},
         )
+
+    def load_checkpoint(self, checkpoint_path: str) -> int:
+        """Load training state from a checkpoint for resume.
+
+        Restores model weights, optimizer, scheduler, EMA, and best_loss.
+        Handles missing keys gracefully for older checkpoints.
+
+        Args:
+            checkpoint_path: Path to checkpoint file (.pt).
+
+        Returns:
+            start_epoch: The epoch to resume from (saved epoch + 1).
+        """
+        logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+        self.model_raw.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        if 'scheduler_state_dict' in checkpoint and self.lr_scheduler is not None:
+            self.lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            logger.info("Restored LR scheduler state")
+
+        if 'ema_state_dict' in checkpoint and self.ema is not None:
+            self.ema.load_state_dict(checkpoint['ema_state_dict'])
+            logger.info("Restored EMA state")
+
+        if 'best_loss' in checkpoint:
+            self.best_loss = checkpoint['best_loss']
+            logger.info(f"Restored best_loss: {self.best_loss:.6f}")
+
+        saved_epoch = checkpoint['epoch']
+        start_epoch = saved_epoch + 1
+        logger.info(f"Resuming from epoch {start_epoch} (checkpoint saved at epoch {saved_epoch})")
+        return start_epoch
 
     def train(
         self,
@@ -931,6 +967,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         val_loader: DataLoader | None = None,
         pixel_train_loader: DataLoader | None = None,
         pixel_val_loader: DataLoader | None = None,
+        start_epoch: int = 0,
     ) -> None:
         """Main training loop.
 
@@ -942,6 +979,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 Only needed when train_loader is latent space.
             pixel_val_loader: Optional pixel-space val loader for reference features.
                 Only needed when val_loader is latent space.
+            start_epoch: Epoch to start from (0 for fresh training, >0 for resume).
         """
         # Clear caches from any previous run
         self._clear_caches()
@@ -1037,10 +1075,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         avg_loss = float('inf')
         avg_mse = float('inf')
-        time_estimator = EpochTimeEstimator(self.n_epochs)
+        remaining_epochs = self.n_epochs - start_epoch
+        time_estimator = EpochTimeEstimator(remaining_epochs)
+
+        if start_epoch > 0:
+            logger.info(f"Resuming training from epoch {start_epoch}/{self.n_epochs}")
 
         try:
-            for epoch in range(self.n_epochs):
+            for epoch in range(start_epoch, self.n_epochs):
                 epoch_start = time.time()
 
                 if self.use_multi_gpu and hasattr(train_loader.sampler, 'set_epoch'):
