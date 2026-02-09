@@ -175,11 +175,9 @@ def load_diffusion_model_with_metadata(
         ValueError: If channels not resolvable from args or checkpoint.
         FileNotFoundError: If checkpoint file doesn't exist.
     """
-    # Load checkpoint - allowlist OmegaConf types that may be in older checkpoints
-    # (newer checkpoints use plain dicts, but some still contain ListConfig/DictConfig)
-    from omegaconf import DictConfig as _DC, ListConfig as _LC
-    torch.serialization.add_safe_globals([_DC, _LC])
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    # weights_only=False because checkpoints contain OmegaConf config objects
+    # (ListConfig, DictConfig, ContainerMetadata, etc.) - these are our own checkpoints
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Extract state dict
     if 'model_state_dict' in checkpoint:
