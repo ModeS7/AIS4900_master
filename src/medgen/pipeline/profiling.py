@@ -110,7 +110,19 @@ def measure_model_flops(
         return
 
     try:
-        batch = next(iter(train_loader))
+        # Use a temporary single-process loader to avoid poisoning the
+        # train_loader's persistent workers.  Creating then abandoning an
+        # iterator on a DataLoader with persistent_workers=True can deadlock
+        # when the training loop later tries to create its own iterator
+        # (workers are stuck with un-consumed prefetched items).
+        temp_loader = DataLoader(
+            train_loader.dataset,
+            batch_size=train_loader.batch_size,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=train_loader.collate_fn,
+        )
+        batch = next(iter(temp_loader))
         prepared = trainer.mode.prepare_batch(batch, trainer.device)
         images = prepared['images']
         labels = prepared.get('labels')

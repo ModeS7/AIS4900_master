@@ -1084,6 +1084,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if start_epoch > 0:
             logger.info(f"Resuming training from epoch {start_epoch}/{self.n_epochs}")
 
+        if self.is_main_process:
+            n_batches = len(train_loader)
+            logger.info(
+                f"Starting training: {self.n_epochs} epochs, "
+                f"{n_batches} batches/epoch, batch_size={self.batch_size}"
+            )
+
         try:
             for epoch in range(start_epoch, self.n_epochs):
                 epoch_start = time.time()

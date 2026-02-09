@@ -75,7 +75,8 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             logger.info(f"ControlNet {stage}: UNet in_channels={in_channels} (no conditioning concatenation)")
 
     if trainer.is_main_process and trainer.space.scale_factor > 1:
-        logger.info(f"Latent space: {model_cfg['in_channels']} -> {in_channels} channels, "
+        space_name = type(trainer.space).__name__
+        logger.info(f"{space_name}: {model_cfg['in_channels']} -> {in_channels} channels, "
                    f"scale factor {trainer.space.scale_factor}x")
 
     # Get model type and check if transformer-based
@@ -109,6 +110,12 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             num_head_channels=num_head_channels,
             norm_num_groups=getattr(trainer.cfg.model, 'norm_num_groups', 32),
         ).to(trainer.device)
+
+    # Enable gradient checkpointing for 3D UNet (required to fit in GPU memory)
+    # Must be applied BEFORE torch.compile or DDP wrapping
+    if trainer.use_gradient_checkpointing and not trainer.is_transformer:
+        from .checkpointing import enable_unet_gradient_checkpointing
+        enable_unet_gradient_checkpointing(raw_model)
 
     # Determine if DDPOptimizer should be disabled for large models
     disable_ddp_opt = getattr(trainer.cfg.training, 'disable_ddp_optimizer', False)

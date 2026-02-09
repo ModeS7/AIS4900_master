@@ -1,15 +1,19 @@
 """Gradient checkpointing utilities for 3D models.
 
 Provides base class for gradient-checkpointed model wrappers
-for memory-efficient training of 3D compression models.
+for memory-efficient training of 3D compression models,
+and block-level checkpointing for MONAI DiffusionModelUNet.
 """
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint as grad_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 class BaseCheckpointedModel(nn.Module):
@@ -69,3 +73,45 @@ class BaseCheckpointedModel(nn.Module):
             Reconstructed output [B, C, D, H, W].
         """
         return self.model.decode(z)
+
+
+def enable_unet_gradient_checkpointing(model: nn.Module) -> None:
+    """Enable gradient checkpointing on a MONAI DiffusionModelUNet.
+
+    Monkey-patches each down_block, middle_block, and up_block to use
+    torch.utils.checkpoint, trading ~30% extra compute for ~50% activation
+    memory savings. Required for 3D volumetric training to fit in GPU memory.
+
+    MONAI's DiffusionModelUNet has no native checkpointing support,
+    so we patch block-level forward methods directly.
+
+    Args:
+        model: A MONAI DiffusionModelUNet instance.
+    """
+    if not hasattr(model, 'down_blocks'):
+        raise TypeError(
+            f"Expected MONAI DiffusionModelUNet with down_blocks/up_blocks, "
+            f"got {type(model).__name__}"
+        )
+
+    def _make_checkpointed_forward(original_forward: Callable) -> Callable:
+        """Create a checkpointed version of a block's forward method."""
+        def checkpointed_forward(*args, **kwargs):
+            # use_reentrant=False handles non-tensor args (like lists) correctly
+            # and is the recommended mode for PyTorch >= 2.0
+            return grad_checkpoint(original_forward, *args, use_reentrant=False, **kwargs)
+        return checkpointed_forward
+
+    count = 0
+    for block in model.down_blocks:
+        block.forward = _make_checkpointed_forward(block.forward)
+        count += 1
+
+    model.middle_block.forward = _make_checkpointed_forward(model.middle_block.forward)
+    count += 1
+
+    for block in model.up_blocks:
+        block.forward = _make_checkpointed_forward(block.forward)
+        count += 1
+
+    logger.info(f"UNet gradient checkpointing enabled ({count} blocks patched)")
