@@ -166,7 +166,8 @@ class SpaceToDepthSpace(DiffusionSpace):
                 f"SpaceToDepthSpace requires 5D input [B, C, D, H, W], "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
-        return self._unshuffle(x)
+        result: Tensor = self._unshuffle(x)
+        return result
 
     def decode(self, z: Tensor) -> Tensor:
         """Rearrange channels back to spatial dims (lossless inverse).
@@ -185,7 +186,8 @@ class SpaceToDepthSpace(DiffusionSpace):
                 f"SpaceToDepthSpace requires 5D input [B, C, D, H, W], "
                 f"got {z.dim()}D tensor with shape {z.shape}"
             )
-        return self._shuffle(z)
+        result: Tensor = self._shuffle(z)
+        return result
 
     def get_latent_channels(self, input_channels: int) -> int:
         """Get channel count after space-to-depth rearrangement.
@@ -249,7 +251,8 @@ class WaveletSpace(DiffusionSpace):
                 f"WaveletSpace requires 5D input [B, C, D, H, W], "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
-        return self._forward(x)
+        result: Tensor = self._forward(x)
+        return result
 
     def decode(self, z: Tensor) -> Tensor:
         """Apply inverse Haar wavelet reconstruction.
@@ -268,7 +271,8 @@ class WaveletSpace(DiffusionSpace):
                 f"WaveletSpace requires 5D input [B, C*8, D/2, H/2, W/2], "
                 f"got {z.dim()}D tensor with shape {z.shape}"
             )
-        return self._inverse(z)
+        result: Tensor = self._inverse(z)
+        return result
 
     def get_latent_channels(self, input_channels: int) -> int:
         """Get channel count after wavelet decomposition.
