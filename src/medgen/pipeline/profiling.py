@@ -115,6 +115,12 @@ def measure_model_flops(
         images = prepared['images']
         labels = prepared.get('labels')
 
+        # Encode to diffusion space (S2D, wavelet, latent, or identity for pixel)
+        # Must match what train_epoch does so dummy input has correct channels
+        images = trainer.space.encode_batch(images)
+        if labels is not None:
+            labels = trainer.space.encode(labels)
+
         # Slice to batch_size=1 to avoid OOM during torch.compile tracing
         # torch.compile compiles for specific shapes; using full batch can cause
         # excessive memory during the compilation graph creation
