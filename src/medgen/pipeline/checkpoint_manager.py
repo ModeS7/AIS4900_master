@@ -269,8 +269,9 @@ class CheckpointManager:
             return False
 
         if self._is_better(current, self._best_metric):
-            self._best_metric = current
             self.save(epoch, metrics, name="best", extra_state=extra_state)
+            # Only update after successful save
+            self._best_metric = current
             logger.info(f"New best {self.metric_name}: {current:.4f}")
             return True
         return False
