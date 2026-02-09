@@ -128,6 +128,9 @@ def _build_cfg(tmp_path, spatial_dims, mode, strategy, space_type):
         f'strategy={strategy}',
         f'model.spatial_dims={spatial_dims}',
         f'+save_dir_override={tmp_path}',
+        # Point data_dir to tmp_path so volume loaders find no NiFTI files
+        # (prevents loading real 256x256 volumes during smoke tests)
+        f'paths.data_dir={tmp_path}',
     ]
 
     if is_3d:

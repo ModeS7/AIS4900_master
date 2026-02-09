@@ -108,17 +108,31 @@ def set_fixed_conditioning(
                 image = get_with_fallbacks(data, 'image', 'images')
                 seg_data = get_with_fallbacks(data, 'seg', 'mask', 'labels')
 
-                if image is None or seg_data is None:
+                if image is None:
                     samples_without_seg += 1
                     attempts += 1
                     continue
-                # Convert to tensors
-                if isinstance(image, np.ndarray):
-                    image = torch.from_numpy(image).float()
-                if isinstance(seg_data, np.ndarray):
-                    seg_data = torch.from_numpy(seg_data).float()
-                tensor = torch.cat([image, seg_data], dim=0)
-                local_seg_idx = image.shape[0]  # seg follows image channels
+
+                # For seg mode (seg_channel_idx=0): image IS the seg mask
+                if seg_data is None and seg_channel_idx == 0:
+                    if isinstance(image, np.ndarray):
+                        image = torch.from_numpy(image).float()
+                    elif isinstance(image, torch.Tensor):
+                        image = image.float()
+                    tensor = image
+                    local_seg_idx = 0
+                elif seg_data is None:
+                    samples_without_seg += 1
+                    attempts += 1
+                    continue
+                else:
+                    # Convert to tensors
+                    if isinstance(image, np.ndarray):
+                        image = torch.from_numpy(image).float()
+                    if isinstance(seg_data, np.ndarray):
+                        seg_data = torch.from_numpy(seg_data).float()
+                    tensor = torch.cat([image, seg_data], dim=0)
+                    local_seg_idx = image.shape[0]  # seg follows image channels
         elif isinstance(data, tuple):
             # Handle 2-element (images, seg) or 3-element (seg, size_bins, bin_maps) tuples
             if len(data) == 2:

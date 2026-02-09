@@ -526,19 +526,22 @@ class BaseTrainer(ABC):
 
         extra_state = self._get_checkpoint_extra_state()
 
-        if self.checkpoint_manager is not None:
-            # Use CheckpointManager
-            self.checkpoint_manager.save(epoch, val_metrics, name="latest", extra_state=extra_state)
-            if self.checkpoint_manager.save_if_best(epoch, val_metrics, extra_state=extra_state):
-                logger.info(f"New best model saved (loss: {val_metrics.get(self._get_best_metric_name(), 0):.4f})")
-        else:
-            # Fallback to legacy method
-            self._save_checkpoint(epoch, "latest")
-            val_loss = val_metrics.get('gen', val_metrics.get('total', float('inf')))
-            if val_loss < self.best_loss:
-                self.best_loss = val_loss
-                self._save_checkpoint(epoch, "best")
-                logger.info(f"New best model saved (loss: {val_loss:.4f})")
+        try:
+            if self.checkpoint_manager is not None:
+                # Use CheckpointManager
+                self.checkpoint_manager.save(epoch, val_metrics, name="latest", extra_state=extra_state)
+                if self.checkpoint_manager.save_if_best(epoch, val_metrics, extra_state=extra_state):
+                    logger.info(f"New best model saved (loss: {val_metrics.get(self._get_best_metric_name(), 0):.4f})")
+            else:
+                # Fallback to legacy method
+                self._save_checkpoint(epoch, "latest")
+                val_loss = val_metrics.get('gen', val_metrics.get('total', float('inf')))
+                if val_loss < self.best_loss:
+                    self.best_loss = val_loss
+                    self._save_checkpoint(epoch, "best")
+                    logger.info(f"New best model saved (loss: {val_loss:.4f})")
+        except (RuntimeError, OSError) as e:
+            logger.error(f"Checkpoint save failed at epoch {epoch}: {e}. Training continues.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Abstract methods (must be implemented by subclasses)

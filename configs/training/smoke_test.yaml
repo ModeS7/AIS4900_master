@@ -1,7 +1,8 @@
-# Minimal training config for smoke tests
+# Smoke test config — mirrors production defaults with minimal data
 #
-# Exercises EMA, validation, checkpointing in 2 epochs with minimal data.
-# Uses persistent_workers to catch deadlock bugs.
+# PRINCIPLE: Test the REAL pipeline. Only reduce data size and epochs,
+# never disable features that run on the cluster. A smoke test that
+# skips features is useless — it won't catch bugs where they happen.
 #
 # Usage:
 #   pytest tests/integration/test_pipeline_smoke.py -m slow -v
@@ -13,7 +14,7 @@ warmup_epochs: 0
 num_figures: 1
 augment: false
 
-# DataLoader - uses persistent workers to test deadlock fix
+# DataLoader - uses persistent workers to match cluster
 dataloader:
   num_workers: 2
   prefetch_factor: 2
@@ -27,12 +28,12 @@ ema:
   update_after_step: 0
   update_every: 1
 
-# Disable expensive features
+# Compile and precision — match cluster defaults
 use_compile: true
 compile_fused_forward: true
 use_fp32_loss: true
-perceptual_weight: 0.0
 gradient_checkpointing: false
+perceptual_weight: 0.0
 use_min_snr: false
 use_multi_gpu: false
 
@@ -40,13 +41,15 @@ use_multi_gpu: false
 scheduler: cosine
 eta_min: 1.0e-6
 
-# Disable all training tricks
+# Conditioning dropout — match cluster default (0.15)
+conditioning_dropout:
+  prob: 0.15
+
+# Training tricks disabled (these are opt-in on cluster too)
 score_aug:
   enabled: false
 sda:
   enabled: false
-conditioning_dropout:
-  prob: 0.0
 gradient_noise:
   enabled: false
 curriculum:
@@ -68,24 +71,32 @@ sam:
 batch_augment:
   enabled: false
 
-# Logging - enable FLOPs to test that path
+# Logging — ALL enabled, matching cluster defaults
 logging:
   grad_norm: true
-  timestep_losses: false
-  regional_losses: false
-  timestep_region_losses: false
-  msssim: false
-  psnr: false
-  lpips: false
-  boundary_sharpness: false
-  intermediate_steps: false
-  worst_batch: false
+  timestep_losses: true
+  regional_losses: true
+  timestep_region_losses: true
+  msssim: true
+  psnr: true
+  lpips: true
+  boundary_sharpness: true
+  intermediate_steps: true
+  worst_batch: true
   flops: true
 
-# Disable profiling and generation metrics
-profiling:
-  enabled: false
+# Generation metrics — enabled with minimal samples
 generation_metrics:
+  enabled: true
+  samples_per_epoch: 1
+  samples_extended: 1
+  steps_per_epoch: 5
+  steps_extended: 5
+  cache_dir: null
+  cfg_scale: 2.0
+
+# Profiling disabled (not a pipeline feature, just profiler tooling)
+profiling:
   enabled: false
 
 # Verbose for test output

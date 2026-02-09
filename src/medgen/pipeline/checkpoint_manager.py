@@ -13,6 +13,8 @@ Features:
 """
 import logging
 import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -181,10 +183,63 @@ class CheckpointManager:
             checkpoint.update(extra_state)
 
         path = self.save_dir / f"checkpoint_{name}.pt"
-        torch.save(checkpoint, path)
+        self._safe_save(checkpoint, path)
         logger.debug(f"Saved checkpoint: {path}")
 
         return str(path)
+
+    def _safe_save(
+        self,
+        checkpoint: dict[str, Any],
+        path: Path,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+    ) -> None:
+        """Save checkpoint with atomic write and retry on I/O errors.
+
+        Writes to a temp file first, then atomically renames. This prevents
+        corrupted checkpoints from NFS hiccups or disk issues.
+
+        Args:
+            checkpoint: Checkpoint dict to save.
+            path: Target file path.
+            max_retries: Number of retry attempts on I/O errors.
+            retry_delay: Seconds to wait between retries.
+
+        Raises:
+            RuntimeError: If all retry attempts fail.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries):
+            try:
+                # Write to temp file in same directory (same filesystem for rename)
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(path.parent), suffix='.pt.tmp',
+                )
+                os.close(fd)
+                torch.save(checkpoint, tmp_path)
+                # Atomic rename
+                os.replace(tmp_path, str(path))
+                return
+            except (RuntimeError, OSError) as e:
+                last_error = e
+                # Clean up failed temp file
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Checkpoint save failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    time.sleep(retry_delay)
+
+        raise RuntimeError(
+            f"Failed to save checkpoint after {max_retries} attempts: {last_error}"
+        )
 
     def save_if_best(
         self,

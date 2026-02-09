@@ -348,7 +348,10 @@ def compute_validation_losses(
             # Compute 3D MS-SSIM first so we can include it in metrics
             msssim_3d = None
             if trainer.log_msssim:
-                msssim_3d = trainer._compute_volume_3d_msssim(epoch, data_split='val')
+                try:
+                    msssim_3d = trainer._compute_volume_3d_msssim(epoch, data_split='val')
+                except Exception as e:
+                    logger.warning(f"Volume 3D MS-SSIM failed (skipping): {e}")
                 if msssim_3d is not None:
                     metrics['msssim_3d'] = msssim_3d
 
