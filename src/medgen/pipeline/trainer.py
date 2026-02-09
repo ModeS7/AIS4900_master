@@ -508,8 +508,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
         Returns:
             TrainingStepResult with total, MSE, and perceptual losses.
         """
-        _diag = not hasattr(self, '_diag_first_step_done')
-
         self.optimizer.zero_grad(set_to_none=True)
 
         with autocast('cuda', enabled=True, dtype=torch.bfloat16):
@@ -535,8 +533,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             # Encode to diffusion space (identity for PixelSpace)
             # Skip encoding if data is already in latent space (from latent dataloader)
-            if _diag and self.is_main_process:
-                logger.info(f"[DIAG] Space encoding... (space={type(self.space).__name__})")
             if not is_latent:
                 images = self.space.encode_batch(images)
             # For ControlNet: keep labels in pixel space (conditioning through ControlNet)
@@ -646,12 +642,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         # Model is SizeBinModelWrapper, pass size_bins for conditioning
                         prediction = self.model(model_input, timesteps, size_bins=size_bins)
                     else:
-                        if _diag and self.is_main_process:
-                            _shape = model_input.shape if isinstance(model_input, torch.Tensor) else {k: v.shape for k, v in model_input.items()}
-                            logger.info(f"[DIAG] Model forward pass... (input={_shape}, compiled={hasattr(self.model, '_orig_mod')})")
                         prediction = self.strategy.predict_noise_or_velocity(self.model, model_input, timesteps)
-                        if _diag and self.is_main_process:
-                            logger.info("[DIAG] Model forward pass done")
 
                     # DC-AE 1.5: Mask prediction for augmented diffusion training
                     # Paper Eq. 2: ||ε·mask - ε_θ(x_t·mask, t)·mask||²
@@ -749,10 +740,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
             grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
             self._unified_metrics.update_grad_norm(grad_val)
 
-        if _diag and self.is_main_process:
-            logger.info(f"[DIAG] First train_step complete (loss={total_loss.item():.4f})")
-            self._diag_first_step_done = True
-
         return TrainingStepResult(
             total_loss=total_loss.item(),
             reconstruction_loss=0.0,  # Not applicable for diffusion
@@ -781,12 +768,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             limit_batches=self.limit_train_batches
         )
 
-        if epoch == 0 and self.is_main_process:
-            logger.info("[DIAG] Epoch 0: loading first batch...")
-
         for step, batch in enumerate(epoch_iter):
-            if epoch == 0 and step == 0 and self.is_main_process:
-                logger.info("[DIAG] Epoch 0: first batch loaded, starting train_step...")
             # Cache first batch for deterministic visualization (for 3D, uses real conditioning)
             if self._cached_train_batch is None and self.spatial_dims == 3:
                 prepared = self.mode.prepare_batch(batch, self.device)
@@ -1054,11 +1036,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self._unified_metrics.set_scheduler(self.scheduler)
 
         # Measure FLOPs
-        if self.is_main_process:
-            logger.info("[DIAG] Measuring FLOPs...")
         self._measure_model_flops(train_loader)
-        if self.is_main_process:
-            logger.info("[DIAG] FLOPs done")
 
         if self.is_main_process and self.mode_name in ('seg', 'seg_conditioned'):
             logger.info(f"{self.mode_name} mode: perceptual loss and LPIPS disabled (binary masks)")
@@ -1092,14 +1070,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
                 cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
                 cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
-                logger.info("[DIAG] Caching reference features...")
                 self._gen_metrics.cache_reference_features(
                     ref_train_loader,
                     ref_val_loader,
                     experiment_id=cache_id,
                 )
-                logger.info("[DIAG] Reference features cached")
-
         avg_loss = float('inf')
         avg_mse = float('inf')
         remaining_epochs = self.n_epochs - start_epoch
@@ -1148,10 +1123,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         self._unified_metrics.log_training(epoch)
                         self._unified_metrics.reset_training()
 
-                    logger.info(f"[DIAG] Epoch {epoch}: starting validation...")
-                    _val_t0 = time.time()
                     val_metrics, worst_val_data = self.compute_validation_losses(epoch)
-                    logger.info(f"[DIAG] Epoch {epoch}: validation done ({time.time()-_val_t0:.1f}s)")
                     log_figures = (epoch + 1) % self.figure_interval == 0
 
                     self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
@@ -1184,13 +1156,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     self._compute_per_modality_validation(epoch)
 
                     if log_figures or (epoch + 1) == self.n_epochs:
-                        logger.info(f"[DIAG] Epoch {epoch}: generating visualization samples...")
-                        _viz_t0 = time.time()
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self._visualize_samples(model_to_use, epoch, train_dataset)
-                        logger.info(f"[DIAG] Epoch {epoch}: visualization done ({time.time()-_viz_t0:.1f}s)")
 
-                    logger.info(f"[DIAG] Epoch {epoch}: saving checkpoint...")
                     self._save_checkpoint(epoch, "latest")
 
                     loss_for_selection = val_metrics.get('total', avg_loss)
