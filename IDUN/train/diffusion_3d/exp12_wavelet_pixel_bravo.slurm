@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu40g"
+#SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp12_wavelet_bravo"
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp12_wavelet_pixel_bravo_%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp12_wavelet_pixel_bravo_%j.err
