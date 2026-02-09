@@ -618,7 +618,8 @@ class SegmentationTrainer(BaseTrainer):
         }
 
         path = os.path.join(self.save_dir, f'checkpoint_{name}.pt')
-        torch.save(checkpoint, path)
+        from medgen.pipeline.utils import _safe_torch_save
+        _safe_torch_save(checkpoint, path)
 
     def _get_model_config(self) -> dict[str, Any]:
         """Get model configuration for checkpoint."""

@@ -1159,7 +1159,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
                         self._visualize_samples(model_to_use, epoch, train_dataset)
 
-                    self._save_checkpoint(epoch, "latest")
+                    try:
+                        self._save_checkpoint(epoch, "latest")
+                    except (RuntimeError, OSError) as e:
+                        logger.error(f"Checkpoint save failed at epoch {epoch}: {e}. Training continues.")
 
                     loss_for_selection = val_metrics.get('total', avg_loss)
 
@@ -1168,10 +1171,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         self.lr_scheduler.step(loss_for_selection)
 
                     if loss_for_selection < self.best_loss:
-                        self.best_loss = loss_for_selection
-                        self._save_checkpoint(epoch, "best")
-                        loss_type = "val" if val_metrics else "train"
-                        logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
+                        try:
+                            self._save_checkpoint(epoch, "best")
+                            # Only update after successful save
+                            self.best_loss = loss_for_selection
+                            loss_type = "val" if val_metrics else "train"
+                            logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
+                        except (RuntimeError, OSError) as e:
+                            logger.error(f"Best checkpoint save failed at epoch {epoch}: {e}. Training continues.")
 
                     # Log epoch summary with FULL epoch time (training + validation + viz + checkpointing)
                     # This gives accurate ETA by including all epoch overhead, not just training
