@@ -1,12 +1,12 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=5-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g"
+#SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp2c_seg_improved_128"
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp2c_pixel_seg_improved_%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp2c_pixel_seg_improved_%j.err
