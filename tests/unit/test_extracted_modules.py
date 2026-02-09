@@ -476,27 +476,14 @@ class TestConfigValidationExtended:
         errors = validate_latent_config(cfg)
         assert len(errors) == 0
 
-    def test_validate_regional_logging_seg_mode_error(self):
-        """Verify error when regional losses enabled with seg mode."""
+    def test_validate_regional_logging_always_passes(self):
+        """Regional logging validation is a no-op (runtime handles incompatible modes)."""
         from medgen.core.validation import validate_regional_logging
 
-        cfg = OmegaConf.create({
-            'mode': {'name': 'seg'},
-            'training': {'logging': {'regional_losses': True}},
-        })
-
-        errors = validate_regional_logging(cfg)
-        assert len(errors) == 1
-        assert 'seg' in errors[0].lower()
-
-    def test_validate_regional_logging_valid_with_bravo(self):
-        """Verify no error when regional losses enabled with bravo mode."""
-        from medgen.core.validation import validate_regional_logging
-
-        cfg = OmegaConf.create({
-            'mode': {'name': 'bravo'},
-            'training': {'logging': {'regional_losses': True}},
-        })
-
-        errors = validate_regional_logging(cfg)
-        assert len(errors) == 0
+        for mode_name in ('seg', 'seg_conditioned', 'bravo'):
+            cfg = OmegaConf.create({
+                'mode': {'name': mode_name},
+                'training': {'logging': {'regional_losses': True}},
+            })
+            errors = validate_regional_logging(cfg)
+            assert len(errors) == 0
