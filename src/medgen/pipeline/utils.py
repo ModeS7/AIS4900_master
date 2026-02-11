@@ -7,6 +7,7 @@ DiffusionTrainer and VAETrainer.
 
 Note: GradientNormTracker and FLOPsTracker have been moved to tracking/.
 """
+import contextlib
 import itertools
 import logging
 import os
@@ -294,10 +295,8 @@ def _safe_torch_save(obj: Any, path: str) -> None:
         os.replace(tmp_path, path)
     except BaseException:
         os.close(fd)
-        try:
+        with contextlib.suppress(OSError):
             os.remove(tmp_path)
-        except OSError:
-            pass
         raise
 
 
