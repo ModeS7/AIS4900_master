@@ -15,7 +15,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp9.1 LDM_4x BRAVO: Mid-size UNet (500 epochs in ~13h) ==="
+echo "=== Exp9.1 LDM_4x BRAVO: Mid-size UNet (500 epochs) ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
