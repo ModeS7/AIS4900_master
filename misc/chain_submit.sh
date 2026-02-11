@@ -11,12 +11,25 @@
 #     CHAIN_ARGS=""
 #     if [ -n "${CHAIN_RUN_DIR:-}" ]; then
 #         CHAIN_ARGS="hydra.run.dir=${CHAIN_RUN_DIR}"
+#         echo "Chain mode: writing to ${CHAIN_RUN_DIR}"
 #     fi
 #     if [ -n "${CHAIN_RESUME:-}" ]; then
 #         if [ -f "${CHAIN_RESUME}" ]; then
-#             CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CHAIN_RESUME}"
+#             if python -c "import torch; torch.load('${CHAIN_RESUME}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+#                 CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CHAIN_RESUME}"
+#                 echo "Chain mode: resuming from ${CHAIN_RESUME}"
+#             else
+#                 echo "WARNING: checkpoint_latest.pt is corrupted, trying checkpoint_best.pt"
+#                 BEST_CKPT="$(dirname "${CHAIN_RESUME}")/checkpoint_best.pt"
+#                 if [ -f "$BEST_CKPT" ] && python -c "import torch; torch.load('${BEST_CKPT}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+#                     CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${BEST_CKPT}"
+#                     echo "Chain mode: resuming from ${BEST_CKPT} (fallback)"
+#                 else
+#                     echo "WARNING: no valid checkpoint found, starting fresh."
+#                 fi
+#             fi
 #         else
-#             echo "No checkpoint found at ${CHAIN_RESUME}, starting fresh."
+#             echo "Chain mode: no checkpoint at ${CHAIN_RESUME}, starting fresh."
 #         fi
 #     fi
 #

@@ -366,6 +366,7 @@ def _safe_torch_save(obj: Any, path: str) -> None:
     fd, tmp_path = tempfile.mkstemp(dir=parent, suffix='.pt.tmp')
     try:
         os.write(fd, buffer.getvalue())
+        os.fsync(fd)  # Flush to disk — critical for NFS (SLURM clusters)
         os.close(fd)
         os.replace(tmp_path, path)
     except BaseException:

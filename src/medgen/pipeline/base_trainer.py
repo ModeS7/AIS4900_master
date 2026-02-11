@@ -13,6 +13,7 @@ or from BaseCompressionTrainer which extends it.
 """
 import logging
 import os
+import signal
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -98,6 +99,10 @@ class BaseTrainer(ABC):
         # Gradient spike detection — skip optimizer step on anomalous gradients
         from .utils import GradientSkipDetector
         self._grad_skip_detector = GradientSkipDetector()
+
+        # SIGTERM handling for graceful SLURM shutdown
+        self._sigterm_received = False
+        self._install_sigterm_handler()
 
         # Determine if running on cluster
         self.is_cluster: bool = pc.is_cluster
@@ -463,6 +468,23 @@ class BaseTrainer(ABC):
         return batch.to(self.device, non_blocking=True), None
 
     # ─────────────────────────────────────────────────────────────────────────
+    # SIGTERM handling (graceful SLURM shutdown)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _install_sigterm_handler(self) -> None:
+        """Install SIGTERM handler for graceful SLURM shutdown.
+
+        When SLURM's time limit is reached, it sends SIGTERM before SIGKILL.
+        This handler sets a flag so the training loop can finish the current
+        epoch, save a checkpoint, and exit cleanly.
+        """
+        def _sigterm_handler(signum: int, frame: Any) -> None:
+            logger.warning("SIGTERM received — finishing current epoch then saving and exiting.")
+            self._sigterm_received = True
+
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Checkpoint management
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -763,6 +785,14 @@ class BaseTrainer(ABC):
                     # Check for early stopping
                     if self._should_stop_early():
                         logger.info("Stopping training early")
+                        break
+
+                    # Check for SIGTERM (SLURM time limit)
+                    if self._sigterm_received:
+                        logger.info(
+                            f"Graceful shutdown after epoch {epoch + 1} "
+                            f"(SIGTERM received). Checkpoint saved."
+                        )
                         break
 
         except KeyboardInterrupt:
