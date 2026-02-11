@@ -259,15 +259,20 @@ class SegmentationTrainer(BaseTrainer):
         total_loss.backward()
 
         # Gradient clipping + norm tracking
+        grad_norm_val = 0.0
         if self.gradient_clip_norm > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model_raw.parameters(),
                 max_norm=self.gradient_clip_norm,
             )
+            grad_norm_val = grad_norm.item()
             if self.log_grad_norm:
-                self._grad_norm_tracker.update(grad_norm.item())
+                self._grad_norm_tracker.update(grad_norm_val)
 
-        self.optimizer.step()
+        if self._grad_skip_detector.should_skip(grad_norm_val):
+            self.optimizer.zero_grad()
+        else:
+            self.optimizer.step()
 
         return TrainingStepResult(
             total_loss=total_loss.item(),

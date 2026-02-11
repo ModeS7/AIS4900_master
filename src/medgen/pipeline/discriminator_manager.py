@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LRScheduler
 
 from medgen.core import create_warmup_cosine_scheduler, wrap_model_for_training
+from medgen.pipeline.utils import GradientSkipDetector
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ class DiscriminatorManager:
         self.enabled = enabled
         self.gradient_clip_norm = gradient_clip_norm
         self.is_main_process = is_main_process
+
+        # Gradient spike detection
+        self._grad_skip_detector = GradientSkipDetector()
 
         # State
         self.discriminator: nn.Module | None = None
@@ -223,7 +227,10 @@ class DiscriminatorManager:
                 self.discriminator_raw.parameters(), max_norm=self.gradient_clip_norm
             ).item()
 
-        self.optimizer.step()
+        if self._grad_skip_detector.should_skip(grad_norm_d):
+            self.optimizer.zero_grad()
+        else:
+            self.optimizer.step()
 
         # Track discriminator gradient norm
         if log_grad_norm and grad_norm_tracker is not None:

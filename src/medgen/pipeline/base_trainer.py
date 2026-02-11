@@ -95,6 +95,10 @@ class BaseTrainer(ABC):
         self.gradient_clip_norm: float = tc.gradient_clip_norm
         self.limit_train_batches: int | None = tc.limit_train_batches
 
+        # Gradient spike detection — skip optimizer step on anomalous gradients
+        from .utils import GradientSkipDetector
+        self._grad_skip_detector = GradientSkipDetector()
+
         # Determine if running on cluster
         self.is_cluster: bool = pc.is_cluster
 

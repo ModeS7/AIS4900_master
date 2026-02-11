@@ -25,6 +25,81 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+class GradientSkipDetector:
+    """Skip optimizer steps when gradient norms are anomalously high.
+
+    Tracks an exponential moving average (EMA) of gradient norms and skips
+    the optimizer step when the current norm exceeds a threshold relative
+    to the running average. This prevents training collapse from pathological
+    batches that produce gradient spikes.
+
+    After a warmup period (to establish a stable baseline), any gradient norm
+    exceeding `threshold * ema` triggers a skip — the optimizer step is not
+    applied and the gradients are zeroed.
+    """
+
+    def __init__(
+        self,
+        threshold: float = 10.0,
+        warmup_steps: int = 100,
+        ema_decay: float = 0.99,
+    ):
+        """Initialize detector.
+
+        Args:
+            threshold: Skip if grad_norm > threshold * running_average.
+            warmup_steps: Steps before skip detection activates.
+            ema_decay: EMA smoothing factor for grad norm tracking.
+        """
+        self.threshold = threshold
+        self.warmup_steps = warmup_steps
+        self.ema_decay = ema_decay
+        self.ema_grad_norm: float | None = None
+        self.step_count = 0
+        self.skip_count = 0
+
+    def should_skip(self, grad_norm: float) -> bool:
+        """Check if this optimizer step should be skipped.
+
+        Args:
+            grad_norm: Pre-clip gradient norm from clip_grad_norm_.
+
+        Returns:
+            True if the step should be skipped (anomalous gradient).
+        """
+        self.step_count += 1
+
+        # During warmup, build the EMA baseline without skipping
+        if self.step_count <= self.warmup_steps:
+            if self.ema_grad_norm is None:
+                self.ema_grad_norm = grad_norm
+            else:
+                self.ema_grad_norm = (
+                    self.ema_decay * self.ema_grad_norm
+                    + (1 - self.ema_decay) * grad_norm
+                )
+            return False
+
+        # Check for anomaly
+        if self.ema_grad_norm is not None and self.ema_grad_norm > 0:
+            ratio = grad_norm / self.ema_grad_norm
+            if ratio > self.threshold:
+                self.skip_count += 1
+                logger.warning(
+                    f"Gradient spike detected: norm={grad_norm:.2f}, "
+                    f"EMA={self.ema_grad_norm:.4f}, ratio={ratio:.1f}x. "
+                    f"Skipping optimizer step. (total skips: {self.skip_count})"
+                )
+                return True
+
+        # Update EMA with non-anomalous norm
+        self.ema_grad_norm = (
+            self.ema_decay * self.ema_grad_norm
+            + (1 - self.ema_decay) * grad_norm
+        )
+        return False
+
+
 class EpochTimeEstimator:
     """Track epoch times and estimate completion time with adaptive correction.
 

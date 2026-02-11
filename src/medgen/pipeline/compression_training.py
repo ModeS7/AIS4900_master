@@ -140,7 +140,10 @@ def train_discriminator_step(
             trainer.discriminator_raw.parameters(), max_norm=grad_clip
         ).item()
 
-    trainer.optimizer_d.step()
+    if trainer._grad_skip_detector.should_skip(grad_norm_d):
+        trainer.optimizer_d.zero_grad()
+    else:
+        trainer.optimizer_d.step()
 
     # Track discriminator gradient norm
     if trainer.log_grad_norm:
@@ -343,7 +346,10 @@ def compression_train_step(
             trainer.model_raw.parameters(), max_norm=grad_clip
         ).item()
 
-    trainer.optimizer.step()
+    if trainer._grad_skip_detector.should_skip(grad_norm_g):
+        trainer.optimizer.zero_grad()
+    else:
+        trainer.optimizer.step()
 
     # Track gradient norm
     if trainer.log_grad_norm:

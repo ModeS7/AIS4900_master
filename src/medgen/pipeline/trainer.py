@@ -718,8 +718,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model_raw.parameters(), max_norm=self.gradient_clip_norm
             )
-            self._add_gradient_noise(self._global_step)
-            self.scaler.step(self.optimizer)
+            grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+            if self._grad_skip_detector.should_skip(grad_val):
+                self.optimizer.zero_grad()
+            else:
+                self._add_gradient_noise(self._global_step)
+                self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
             # 2D path: standard backward
@@ -727,8 +731,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model_raw.parameters(), max_norm=self.gradient_clip_norm
             )
-            self._add_gradient_noise(self._global_step)
-            self.optimizer.step()
+            grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+            if self._grad_skip_detector.should_skip(grad_val):
+                self.optimizer.zero_grad()
+            else:
+                self._add_gradient_noise(self._global_step)
+                self.optimizer.step()
 
         self._global_step += 1
 
