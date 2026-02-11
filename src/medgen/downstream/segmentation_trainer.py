@@ -127,13 +127,11 @@ class SegmentationTrainer(BaseTrainer):
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         exp_name = self.cfg.training.get('name', '')
-        scenario = self.cfg.get('scenario', 'baseline')
-        run_name = f"{exp_name}{scenario}_{timestamp}"
+        run_name = f"{exp_name}{timestamp}"
         return os.path.join(
             self.cfg.paths.model_dir,
             'segmentation',
             f'{self.spatial_dims}d',
-            scenario,
             run_name
         )
 

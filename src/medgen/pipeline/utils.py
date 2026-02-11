@@ -269,54 +269,36 @@ def save_full_checkpoint(
     return save_path
 
 
-def _safe_torch_save(
-    obj: Any,
-    path: str,
-    max_retries: int = 3,
-    retry_delay: float = 2.0,
-) -> None:
-    """Save with atomic write and retry on I/O errors.
+def _safe_torch_save(obj: Any, path: str) -> None:
+    """Save with memory-buffered write and atomic rename.
 
-    Writes to a temp file first, then atomically renames. Retries on
-    transient NFS/disk errors.
+    Serializes to an in-memory buffer first to avoid NFS position tracking
+    bugs in PyTorch's PytorchStreamWriter (which does many small incremental
+    writes that NFS can corrupt). Then writes raw bytes to a temp file and
+    atomically renames to the target path.
 
     Args:
         obj: Object to save (checkpoint dict).
         path: Target file path.
-        max_retries: Number of retry attempts on I/O errors.
-        retry_delay: Seconds to wait between retries.
-
-    Raises:
-        RuntimeError: If all retry attempts fail.
     """
+    import io
+
+    buffer = io.BytesIO()
+    torch.save(obj, buffer)
+
     parent = os.path.dirname(path)
-    last_error: Exception | None = None
-
-    for attempt in range(max_retries):
-        tmp_path = ""
+    fd, tmp_path = tempfile.mkstemp(dir=parent, suffix='.pt.tmp')
+    try:
+        os.write(fd, buffer.getvalue())
+        os.close(fd)
+        os.replace(tmp_path, path)
+    except BaseException:
+        os.close(fd)
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=parent, suffix='.pt.tmp')
-            os.close(fd)
-            torch.save(obj, tmp_path)
-            os.replace(tmp_path, path)
-            return
-        except (RuntimeError, OSError) as e:
-            last_error = e
-            try:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
-            if attempt < max_retries - 1:
-                logger.warning(
-                    f"Checkpoint save failed (attempt {attempt + 1}/{max_retries}): {e}. "
-                    f"Retrying in {retry_delay}s..."
-                )
-                time.sleep(retry_delay)
-
-    raise RuntimeError(
-        f"Failed to save checkpoint after {max_retries} attempts: {last_error}"
-    )
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def create_epoch_iterator(
