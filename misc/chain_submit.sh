@@ -75,6 +75,12 @@ if [ -n "$TIME_OVERRIDE" ]; then
     SBATCH_EXTRA="--time=$TIME_OVERRIDE"
 fi
 
+# Create SLURM output directory if script uses a subdirectory
+OUTPUT_DIR=$(grep -m1 '#SBATCH --output=' "$SCRIPT" | sed 's/.*--output=//' | xargs dirname)
+if [ -n "$OUTPUT_DIR" ] && [ "$OUTPUT_DIR" != "." ]; then
+    mkdir -p "$OUTPUT_DIR"
+fi
+
 echo "=== Chain Submit ==="
 echo "Script:       $SCRIPT"
 echo "Segments:     $NUM_SEGMENTS"

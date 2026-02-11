@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp1_chained"
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp1_chained_%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp1_chained_%j.err
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp1_chained/%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp1_chained/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
