@@ -1113,6 +1113,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 epoch_losses = self.train_epoch(train_loader, epoch)
                 avg_loss, avg_mse, avg_perceptual = epoch_losses['loss'], epoch_losses['mse'], epoch_losses['perceptual']
 
+                # On SIGTERM: skip validation/viz, save checkpoint immediately, exit
+                if self._sigterm_received:
+                    if self.is_main_process:
+                        logger.info("SIGTERM: skipping validation, saving checkpoint and exiting.")
+                        try:
+                            self._save_checkpoint(epoch, "latest")
+                            logger.info(f"SIGTERM: checkpoint saved at epoch {epoch}")
+                        except (RuntimeError, OSError) as e:
+                            logger.error(f"SIGTERM: checkpoint save failed: {e}")
+                    break
+
                 if self.use_multi_gpu:
                     # Synchronize all ranks before collective operation to prevent deadlock
                     dist.barrier()

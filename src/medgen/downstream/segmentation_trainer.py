@@ -325,6 +325,11 @@ class SegmentationTrainer(BaseTrainer):
             if epoch == 0 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
 
+            # Break mid-epoch on SIGTERM so checkpoint can be saved before SIGKILL
+            if self._sigterm_received:
+                logger.warning(f"SIGTERM: breaking out of epoch {epoch} at step {step + 1}")
+                break
+
         avg_losses = self._loss_accumulator.compute()
 
         # Log training losses using unified metrics

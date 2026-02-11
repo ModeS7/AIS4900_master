@@ -437,6 +437,11 @@ def compression_train_epoch(
         if epoch == 1 and step == 0 and trainer.is_main_process:
             logger.info(get_vram_usage(trainer.device))
 
+        # Break mid-epoch on SIGTERM so checkpoint can be saved before SIGKILL
+        if trainer._sigterm_received:
+            logger.warning(f"SIGTERM: breaking out of epoch {epoch} at step {step + 1}")
+            break
+
     # Compute average losses using unified system
     avg_losses = trainer._loss_accumulator.compute()
 
