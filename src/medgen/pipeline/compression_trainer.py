@@ -849,7 +849,6 @@ class BaseCompressionTrainer(BaseTrainer):
     def _on_epoch_start(self, epoch: int) -> None:
         """Reset gradient trackers at start of epoch."""
         super()._on_epoch_start(epoch)
-        self._grad_norm_tracker.reset()
         self._grad_norm_tracker_d.reset()
 
     def _log_grad_norms(self, epoch: int) -> None:
@@ -873,30 +872,24 @@ class BaseCompressionTrainer(BaseTrainer):
         val_metrics: dict[str, float],
     ) -> None:
         """Handle end of epoch: step schedulers, log metrics."""
-        # Step schedulers (only if not using constant LR)
-        if not self.use_constant_lr:
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
-            if not self.disable_gan and self.lr_scheduler_d is not None:
-                self.lr_scheduler_d.step()
+        super()._on_epoch_end(epoch, avg_losses, val_metrics)
 
-        # Log learning rates
-        self._log_learning_rate(epoch, self.lr_scheduler, "LR/Generator")
+        # Compression-specific: step discriminator scheduler
+        if not self.disable_gan and self.lr_scheduler_d is not None:
+            self.lr_scheduler_d.step()
+
+        # Compression-specific: log discriminator LR
         if not self.disable_gan and self.lr_scheduler_d is not None:
             self._log_learning_rate(epoch, self.lr_scheduler_d, "LR/Discriminator")
 
-        # Log gradient norms
+        # Compression-specific: gradient norms (G + D)
         self._log_grad_norms(epoch)
 
-        # Log VRAM and FLOPs
-        self._log_vram(epoch)
-        self._log_flops(epoch)
-
-        # Per-modality validation (multi_modality mode, skip for seg_mode)
+        # Compression-specific: per-modality validation
         if self.per_modality_val_loaders and not self.seg_mode:
             self._compute_per_modality_validation(epoch)
 
-        # Per-channel validation (dual mode, skip for seg_mode)
+        # Compression-specific: per-channel validation
         if not self.seg_mode:
             self._compute_per_channel_validation(epoch)
 

@@ -335,12 +335,14 @@ def main(cfg: DictConfig) -> None:
     if resume_from:
         start_epoch = trainer.load_checkpoint(resume_from)
 
+    # Set pixel-space loaders for latent diffusion reference features
+    trainer.pixel_train_loader = pixel_train_loader
+    trainer.pixel_val_loader = pixel_val_loader
+
     # Train with optional validation loader
     trainer.train(
         dataloader, train_dataset,
         val_loader=val_loader,
-        pixel_train_loader=pixel_train_loader,
-        pixel_val_loader=pixel_val_loader,
         start_epoch=start_epoch,
     )
 
@@ -665,13 +667,15 @@ def _train_3d(cfg: DictConfig) -> None:
     if hasattr(space, 'scale_factor'):
         logger.info(f"Space scale factor: {space.scale_factor}x")
 
+    # Set pixel-space loaders for latent diffusion reference features
+    trainer.pixel_train_loader = pixel_train_loader
+    trainer.pixel_val_loader = pixel_val_loader
+
     # Train
     logger.info("=== Starting Training ===")
     trainer.train(
         train_loader, train_dataset,
         val_loader=val_loader,
-        pixel_train_loader=pixel_train_loader,
-        pixel_val_loader=pixel_val_loader,
         start_epoch=start_epoch,
     )
 

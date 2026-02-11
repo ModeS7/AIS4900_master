@@ -183,7 +183,8 @@ class CheckpointManager:
         path = self.save_dir / f"checkpoint_{name}.pt"
         from .utils import _safe_torch_save
         _safe_torch_save(checkpoint, str(path))
-        logger.debug(f"Saved checkpoint: {path}")
+        size_mb = path.stat().st_size / (1024 * 1024)
+        logger.info(f"Checkpoint saved: {path} ({size_mb:.0f} MB, epoch {epoch})")
 
         return str(path)
 

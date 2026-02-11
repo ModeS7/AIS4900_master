@@ -342,6 +342,8 @@ def save_full_checkpoint(
         checkpoint.update(extra_state)
     save_path = os.path.join(save_dir, f"{filename}.pt")
     _safe_torch_save(checkpoint, save_path)
+    size_mb = os.path.getsize(save_path) / (1024 * 1024)
+    logger.info(f"Checkpoint saved: {save_path} ({size_mb:.0f} MB, epoch {epoch})")
     return save_path
 
 
@@ -356,14 +358,22 @@ def _safe_torch_save(obj: Any, path: str) -> None:
     NFS position tracking bugs with PyTorch's many small writes).
     For large checkpoints: writes directly to temp file (avoids OOM).
 
+    After saving, validates the file by checking the zip header (PyTorch
+    checkpoints are zip archives). This catches silent filesystem corruption.
+
     Args:
         obj: Object to save (checkpoint dict).
         path: Target file path.
+
+    Raises:
+        RuntimeError: If post-save validation fails (corrupted file).
     """
     import io
+    import zipfile
 
     parent = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=parent, suffix='.pt.tmp')
+    fd_closed = False
     try:
         # Try memory-buffered write (fast, avoids NFS incremental write bugs)
         try:
@@ -376,14 +386,35 @@ def _safe_torch_save(obj: Any, path: str) -> None:
             os.lseek(fd, 0, os.SEEK_SET)
             with os.fdopen(os.dup(fd), 'wb') as f:
                 torch.save(obj, f)
-        os.fsync(fd)  # Flush to disk — critical for NFS (SLURM clusters)
+        os.fsync(fd)  # Flush file data to disk
         os.close(fd)
+        fd_closed = True
         os.replace(tmp_path, path)
+        # Fsync parent directory to make the rename durable.
+        # Without this, a crash could leave the old directory entry pointing
+        # to stale data even though the file contents were fsynced.
+        dir_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
-        os.close(fd)
+        if not fd_closed:
+            os.close(fd)
         with contextlib.suppress(OSError):
             os.remove(tmp_path)
         raise
+
+    # Post-save validation: verify the file is a valid zip archive
+    try:
+        zipfile.ZipFile(path).close()
+    except (zipfile.BadZipFile, OSError) as e:
+        file_size = os.path.getsize(path) if os.path.exists(path) else 0
+        raise RuntimeError(
+            f"Checkpoint verification failed after save: {path} "
+            f"(size={file_size} bytes, error={e}). "
+            f"Filesystem may not have flushed data to disk."
+        ) from e
 
 
 def create_epoch_iterator(

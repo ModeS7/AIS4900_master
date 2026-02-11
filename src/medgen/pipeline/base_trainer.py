@@ -389,9 +389,8 @@ class BaseTrainer(ABC):
             avg_losses: Dictionary of average training losses.
             val_metrics: Dictionary of validation metrics.
         """
-        # Step scheduler
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+        # Step scheduler (overridable for plateau/custom scheduling)
+        self._step_scheduler(epoch, val_metrics)
 
         # Log learning rate
         self._log_learning_rate(epoch)
@@ -401,6 +400,11 @@ class BaseTrainer(ABC):
 
         # Log FLOPs
         self._log_flops(epoch)
+
+    def _step_scheduler(self, epoch: int, val_metrics: dict[str, float]) -> None:
+        """Step learning rate scheduler. Override for plateau/custom scheduling."""
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
 
     def _should_stop_early(self) -> bool:
         """Check if training should stop early.
@@ -719,6 +723,8 @@ class BaseTrainer(ABC):
         n_epochs = max_epochs if max_epochs is not None else self.n_epochs
         self.val_loader = val_loader
         self.per_modality_val_loaders = per_modality_val_loaders
+        self.train_dataset = train_dataset
+        self._train_loader = train_loader
 
         # Store train sampler for DDP epoch setting
         if hasattr(train_loader, 'sampler'):
@@ -732,16 +738,7 @@ class BaseTrainer(ABC):
 
         # Measure FLOPs once at start
         if self.is_main_process and self.log_flops:
-            try:
-                sample_batch = next(iter(train_loader))
-                sample_images, _ = self._prepare_batch(sample_batch)
-                self._measure_model_flops(sample_images, len(train_loader))
-            except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-                logger.warning(f"FLOPs measurement failed (OOM or CUDA error): {e}")
-            except StopIteration:
-                logger.warning("FLOPs measurement failed: empty dataloader")
-            except (ImportError, AssertionError) as e:
-                logger.exception(f"FLOPs measurement failed unexpectedly: {e}")
+            self._measure_model_flops(train_loader)
 
         # Setup PyTorch profiler if enabled
         self._profiler = self._setup_profiler()
@@ -809,29 +806,31 @@ class BaseTrainer(ABC):
 
         return last_epoch
 
-    def _measure_model_flops(
-        self,
-        sample_images: torch.Tensor,
-        steps_per_epoch: int,
-    ) -> None:
-        """Measure model FLOPs using sample input.
+    def _measure_model_flops(self, train_loader: DataLoader) -> None:
+        """Measure model FLOPs using sample input from dataloader.
 
         Subclasses can override to handle special model architectures.
 
         Args:
-            sample_images: Sample input batch for FLOPs measurement.
-            steps_per_epoch: Number of training steps per epoch.
+            train_loader: Training data loader for extracting a sample batch.
         """
-        if not self.log_flops or self.model_raw is None:
+        if not self.is_main_process or not self.log_flops:
             return
-
-        self._flops_tracker.measure(
-            model=self.model_raw,
-            sample_input=sample_images[:1],
-            steps_per_epoch=steps_per_epoch,
-            timesteps=None,
-            is_main_process=self.is_main_process,
-        )
+        try:
+            sample_batch = next(iter(train_loader))
+            sample_images, _ = self._prepare_batch(sample_batch)
+            self._flops_tracker.measure(
+                model=self.model_raw,
+                sample_input=sample_images[:1].to(self.device),
+                steps_per_epoch=len(train_loader),
+                is_main_process=self.is_main_process,
+            )
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            logger.warning(f"FLOPs measurement failed: {e}")
+        except StopIteration:
+            logger.warning("FLOPs measurement failed: empty dataloader")
+        except (ImportError, AssertionError) as e:
+            logger.exception(f"FLOPs measurement failed: {e}")
 
     def _log_epoch_summary(
         self,

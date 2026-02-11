@@ -38,6 +38,10 @@ if [ -n "${CHAIN_RUN_DIR:-}" ]; then
 fi
 if [ -n "${CHAIN_RESUME:-}" ]; then
     if [ -f "${CHAIN_RESUME}" ]; then
+        # Diagnostic: show file details to help debug corruption
+        echo "Chain mode: found checkpoint at ${CHAIN_RESUME}"
+        ls -la "${CHAIN_RESUME}"
+        echo "File header (hex):" && xxd -l 32 "${CHAIN_RESUME}" 2>/dev/null || true
         # Lightweight validation: check zip header (PyTorch saves are zip files)
         if python -c "import zipfile; zipfile.ZipFile('${CHAIN_RESUME}').close()"; then
             CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CHAIN_RESUME}"
@@ -45,11 +49,17 @@ if [ -n "${CHAIN_RESUME:-}" ]; then
         else
             echo "WARNING: checkpoint_latest.pt failed validation, trying checkpoint_best.pt"
             BEST_CKPT="$(dirname "${CHAIN_RESUME}")/checkpoint_best.pt"
+            if [ -f "$BEST_CKPT" ]; then
+                ls -la "$BEST_CKPT"
+                echo "File header (hex):" && xxd -l 32 "$BEST_CKPT" 2>/dev/null || true
+            fi
             if [ -f "$BEST_CKPT" ] && python -c "import zipfile; zipfile.ZipFile('${BEST_CKPT}').close()"; then
                 CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${BEST_CKPT}"
                 echo "Chain mode: resuming from ${BEST_CKPT} (fallback)"
             else
                 echo "WARNING: no valid checkpoint found, starting fresh."
+                echo "Directory listing:"
+                ls -la "$(dirname "${CHAIN_RESUME}")"/*.pt* 2>/dev/null || echo "  (no .pt files found)"
             fi
         fi
     else

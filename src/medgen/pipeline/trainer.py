@@ -10,7 +10,6 @@ and implements 2D-specific diffusion training functionality:
 - Compiled forward paths for performance
 """
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 import matplotlib
@@ -52,10 +51,8 @@ from .diffusion_config import DiffusionTrainerConfig
 from .diffusion_trainer_base import DiffusionTrainerBase
 from .results import BatchType, TrainingStepResult
 from .utils import (
-    EpochTimeEstimator,
     create_epoch_iterator,
     get_vram_usage,
-    log_epoch_summary,
     save_full_checkpoint,
 )
 
@@ -235,6 +232,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # ControlNet configuration
         self._setup_controlnet()
 
+        # Pixel-space loaders for latent diffusion reference features
+        # (set by script before train() call)
+        self.pixel_train_loader: DataLoader | None = None
+        self.pixel_val_loader: DataLoader | None = None
+
+        # Hook state attributes
+        self._last_worst_val_data: dict[str, Any] | None = None
+        self._last_avg_losses: dict[str, float] = {}
+
     # ─────────────────────────────────────────────────────────────────────────
     # Convenience Constructors
     # ─────────────────────────────────────────────────────────────────────────
@@ -385,6 +391,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         """Initialize model, optimizer, and loss functions."""
         from .diffusion_model_setup import setup_model
         setup_model(self, train_dataset)
+        self._setup_checkpoint_manager()
 
     def _setup_ema(self) -> None:
         """Setup EMA wrapper if enabled."""
@@ -814,8 +821,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         avg_mse = epoch_mse_loss / n_batches
         avg_perceptual = epoch_perceptual_loss / n_batches
 
-        # Log training losses using unified system
-        if self.is_main_process and not self.use_multi_gpu:
+        # Sync losses across DDP ranks before logging
+        if self.use_multi_gpu:
+            dist.barrier()
+            loss_tensor = torch.tensor([avg_loss, avg_mse, avg_perceptual], device=self.device)
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            avg_loss, avg_mse, avg_perceptual = (loss_tensor / self.world_size).cpu().tolist()
+
+        # Log training losses (always uses synced values for multi-GPU)
+        if self.is_main_process:
             self._unified_metrics.update_loss('MSE', avg_mse)
             if self.perceptual_weight > 0:
                 self._unified_metrics.update_loss('Total', avg_loss)
@@ -827,10 +841,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         return {'loss': avg_loss, 'mse': avg_mse, 'perceptual': avg_perceptual}
 
-    def compute_validation_losses(self, epoch: int) -> tuple[dict[str, float], dict[str, Any] | None]:
+    def compute_validation_losses(self, epoch: int, log_figures: bool = True) -> dict[str, float]:
         """Compute losses and metrics on validation set."""
         from .validation import compute_validation_losses
-        return compute_validation_losses(self, epoch)
+        val_metrics, worst_val_data = compute_validation_losses(self, epoch)
+        self._last_worst_val_data = worst_val_data if log_figures else None
+        return val_metrics
 
     # ─────────────────────────────────────────────────────────────────────────
     # Sample Generation and Visualization (unified for 2D/3D)
@@ -926,6 +942,160 @@ class DiffusionTrainer(DiffusionTrainerBase):
             capture_every=capture_every,
         )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Hook Overrides (customize BaseTrainer.train() behavior)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_training_start(self) -> None:
+        """Initialize metrics, generation metrics, and logging."""
+        super()._on_training_start()
+        self._clear_caches()
+
+        # Initialize unified metrics system
+        volume_size = None
+        if self.spatial_dims == 3:
+            volume_size = (self.volume_height, self.volume_width, self.volume_depth)
+
+        # Determine modality for metric suffixes
+        if self.mode_name in ('multi', 'dual'):
+            metric_modality = None
+        elif self.mode_name.startswith('seg_conditioned'):
+            metric_modality = None
+        elif self.mode_name == 'bravo_seg_cond':
+            metric_modality = 'bravo'
+        else:
+            metric_modality = self.mode_name
+
+        self._unified_metrics = UnifiedMetrics(
+            writer=self.writer,
+            mode=self.mode_name,
+            spatial_dims=self.spatial_dims,
+            modality=metric_modality,
+            device=self.device,
+            enable_regional=self.log_regional_losses,
+            num_timestep_bins=10,
+            image_size=self.image_size,
+            volume_size=volume_size,
+            fov_mm=self._paths_config.fov_mm,
+            log_grad_norm=self.log_grad_norm,
+            log_timestep_losses=self.log_timestep_losses,
+            log_regional_losses=self.log_regional_losses,
+            log_msssim=self.log_msssim,
+            log_psnr=self.log_psnr,
+            log_lpips=self.log_lpips,
+            log_flops=self.log_flops,
+            strategy_name=self.strategy_name,
+            num_train_timesteps=self.num_timesteps,
+            use_min_snr=self.use_min_snr,
+            min_snr_gamma=self.min_snr_gamma,
+        )
+        self._unified_metrics.set_scheduler(self.scheduler)
+
+        if self.is_main_process and self.mode_name in ('seg', 'seg_conditioned'):
+            logger.info(f"{self.mode_name} mode: perceptual loss and LPIPS disabled (binary masks)")
+
+        # Initialize generation metrics (cache reference features)
+        if self._gen_metrics is not None and self.is_main_process:
+            if self.mode_name in ('seg', 'seg_conditioned'):
+                seg_channel_idx = 0
+            elif self.mode_name in ('bravo', 'multi', 'multi_modality'):
+                seg_channel_idx = 1
+            else:
+                seg_channel_idx = 2
+            self._gen_metrics.set_fixed_conditioning(
+                self.train_dataset,
+                num_masks=self._gen_metrics_config.samples_extended,
+                seg_channel_idx=seg_channel_idx,
+            )
+            ref_train_loader = self.pixel_train_loader if self.pixel_train_loader is not None else self._train_loader
+            ref_val_loader = self.pixel_val_loader if self.pixel_val_loader is not None else self.val_loader
+            if ref_val_loader is not None:
+                import hashlib
+                data_dir = str(self._paths_config.data_dir)
+                cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
+                cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
+                cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
+                self._gen_metrics.cache_reference_features(
+                    ref_train_loader,
+                    ref_val_loader,
+                    experiment_id=cache_id,
+                )
+
+        if self.is_main_process:
+            n_batches = len(self._train_loader) if hasattr(self, '_train_loader') else 0
+            logger.info(
+                f"Starting training: {self.n_epochs} epochs, "
+                f"{n_batches} batches/epoch, batch_size={self.batch_size}"
+            )
+
+    def _step_scheduler(self, epoch: int, val_metrics: dict[str, float]) -> None:
+        """Step scheduler, handling plateau type specially."""
+        if self.lr_scheduler is None:
+            return
+        if self.scheduler_type == 'plateau':
+            loss = val_metrics.get('total', val_metrics.get('loss', 0))
+            self.lr_scheduler.step(loss)
+        else:
+            self.lr_scheduler.step()
+
+    def _on_epoch_end(self, epoch: int, avg_losses: dict[str, float], val_metrics: dict[str, float]) -> None:
+        super()._on_epoch_end(epoch, avg_losses, val_metrics)
+
+        # Store for _on_training_end metadata finalization
+        self._last_avg_losses = avg_losses
+
+        # Worst-batch visualization
+        log_figures = (epoch + 1) % self.figure_interval == 0
+        worst_val_data = getattr(self, '_last_worst_val_data', None)
+        if log_figures and worst_val_data is not None:
+            original = worst_val_data['original']
+            generated = worst_val_data['generated']
+            if self.space.scale_factor > 1:
+                self._unified_metrics.log_latent_samples(
+                    generated.to(self.device), epoch, tag='val/worst_batch_latent'
+                )
+                original = self.space.decode(original.to(self.device))
+                generated = self.space.decode(generated.to(self.device))
+            self._unified_metrics.log_worst_batch(
+                original=original,
+                reconstructed=generated,
+                loss=worst_val_data['loss'],
+                epoch=epoch,
+                phase='val',
+                mask=worst_val_data.get('mask'),
+                timesteps=worst_val_data.get('timesteps'),
+            )
+
+        # Per-modality validation
+        self._compute_per_modality_validation(epoch)
+
+        # Sample visualization
+        if log_figures or (epoch + 1) == self.n_epochs:
+            model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
+            self._visualize_samples(model_to_use, epoch, self.train_dataset)
+
+    def _on_training_end(self, total_time: float) -> None:
+        if self.is_main_process:
+            last_losses = getattr(self, '_last_avg_losses', {})
+            avg_loss = last_losses.get('loss', float('inf'))
+            avg_mse = last_losses.get('mse', float('inf'))
+            self._update_metadata_final(avg_loss, avg_mse, total_time)
+        super()._on_training_end(total_time)
+
+    def _get_best_metric_name(self) -> str:
+        return 'total'
+
+    def _get_checkpoint_extra_state(self) -> dict | None:
+        return {'best_loss': self.best_loss}
+
+    def _log_epoch_summary(self, epoch, total_epochs, avg_losses, val_metrics, elapsed_time):
+        from .utils import log_epoch_summary
+        log_epoch_summary(
+            epoch, total_epochs,
+            (avg_losses.get('loss', 0), avg_losses.get('mse', 0), avg_losses.get('perceptual', 0)),
+            elapsed_time, self._time_estimator,
+        )
+
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint using standardized format."""
         model_config = self._get_model_config()
@@ -975,253 +1145,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
         start_epoch = saved_epoch + 1
         logger.info(f"Resuming from epoch {start_epoch} (checkpoint saved at epoch {saved_epoch})")
         return start_epoch
-
-    def train(
-        self,
-        train_loader: DataLoader,
-        train_dataset: Dataset,
-        val_loader: DataLoader | None = None,
-        pixel_train_loader: DataLoader | None = None,
-        pixel_val_loader: DataLoader | None = None,
-        start_epoch: int = 0,
-    ) -> None:
-        """Main training loop.
-
-        Args:
-            train_loader: Training data loader (latent or pixel space).
-            train_dataset: Training dataset (for sample generation).
-            val_loader: Optional validation dataloader (latent or pixel space).
-            pixel_train_loader: Optional pixel-space train loader for reference features.
-                Only needed when train_loader is latent space.
-            pixel_val_loader: Optional pixel-space val loader for reference features.
-                Only needed when val_loader is latent space.
-            start_epoch: Epoch to start from (0 for fresh training, >0 for resume).
-        """
-        # Clear caches from any previous run
-        self._clear_caches()
-
-        total_start = time.time()
-        self.val_loader = val_loader
-
-        # Initialize unified metrics system
-        # Build volume_size for 3D regional tracking
-        volume_size = None
-        if self.spatial_dims == 3:
-            volume_size = (self.volume_height, self.volume_width, self.volume_depth)
-
-        # Determine modality for metric suffixes
-        # seg_conditioned modes: no suffix (distinguish by TensorBoard run color)
-        # bravo_seg_cond: use 'bravo' as the target modality
-        if self.mode_name in ('multi', 'dual'):
-            metric_modality = None
-        elif self.mode_name.startswith('seg_conditioned'):
-            metric_modality = None  # No suffix for seg_conditioned modes
-        elif self.mode_name == 'bravo_seg_cond':
-            metric_modality = 'bravo'
-        else:
-            metric_modality = self.mode_name
-
-        self._unified_metrics = UnifiedMetrics(
-            writer=self.writer,
-            mode=self.mode_name,
-            spatial_dims=self.spatial_dims,
-            modality=metric_modality,
-            device=self.device,
-            enable_regional=self.log_regional_losses,
-            num_timestep_bins=10,
-            image_size=self.image_size,
-            volume_size=volume_size,
-            fov_mm=self._paths_config.fov_mm,
-            # Logging config flags
-            log_grad_norm=self.log_grad_norm,
-            log_timestep_losses=self.log_timestep_losses,
-            log_regional_losses=self.log_regional_losses,
-            log_msssim=self.log_msssim,
-            log_psnr=self.log_psnr,
-            log_lpips=self.log_lpips,
-            log_flops=self.log_flops,
-            # SNR weight config
-            strategy_name=self.strategy_name,
-            num_train_timesteps=self.num_timesteps,
-            use_min_snr=self.use_min_snr,
-            min_snr_gamma=self.min_snr_gamma,
-        )
-        self._unified_metrics.set_scheduler(self.scheduler)
-
-        # Measure FLOPs
-        self._measure_model_flops(train_loader)
-
-        if self.is_main_process and self.mode_name in ('seg', 'seg_conditioned'):
-            logger.info(f"{self.mode_name} mode: perceptual loss and LPIPS disabled (binary masks)")
-
-        # Initialize generation metrics (cache reference features)
-        if self._gen_metrics is not None and self.is_main_process:
-            # Determine seg channel index based on mode
-            # seg/seg_conditioned: data is just [seg] or (seg, size_bins), so index 0
-            # bravo, multi, multi_modality: data is [image, seg], so index 1
-            # dual: data is [t1_pre, t1_gd, seg], so index 2
-            if self.mode_name in ('seg', 'seg_conditioned'):
-                seg_channel_idx = 0
-            elif self.mode_name in ('bravo', 'multi', 'multi_modality'):
-                seg_channel_idx = 1
-            else:
-                seg_channel_idx = 2
-            self._gen_metrics.set_fixed_conditioning(
-                train_dataset,
-                num_masks=self._gen_metrics_config.samples_extended,  # Use extended count for conditioning
-                seg_channel_idx=seg_channel_idx,
-            )
-            # Cache reference features from pixel-space loaders
-            # For latent diffusion: use separate pixel loaders for feature extraction
-            # For pixel-space diffusion: use train/val loaders directly
-            # Use content-based cache key so all experiments with same data share cache
-            ref_train_loader = pixel_train_loader if pixel_train_loader is not None else train_loader
-            ref_val_loader = pixel_val_loader if pixel_val_loader is not None else val_loader
-            if ref_val_loader is not None:
-                import hashlib
-                data_dir = str(self._paths_config.data_dir)
-                cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
-                cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
-                cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
-                self._gen_metrics.cache_reference_features(
-                    ref_train_loader,
-                    ref_val_loader,
-                    experiment_id=cache_id,
-                )
-        avg_loss = float('inf')
-        avg_mse = float('inf')
-        remaining_epochs = self.n_epochs - start_epoch
-        time_estimator = EpochTimeEstimator(remaining_epochs)
-
-        if start_epoch > 0:
-            logger.info(f"Resuming training from epoch {start_epoch}/{self.n_epochs}")
-
-        if self.is_main_process:
-            n_batches = len(train_loader)
-            logger.info(
-                f"Starting training: {self.n_epochs} epochs, "
-                f"{n_batches} batches/epoch, batch_size={self.batch_size}"
-            )
-
-        try:
-            for epoch in range(start_epoch, self.n_epochs):
-                epoch_start = time.time()
-
-                if self.use_multi_gpu and hasattr(train_loader.sampler, 'set_epoch'):
-                    train_loader.sampler.set_epoch(epoch)
-
-                epoch_losses = self.train_epoch(train_loader, epoch)
-                avg_loss, avg_mse, avg_perceptual = epoch_losses['loss'], epoch_losses['mse'], epoch_losses['perceptual']
-
-                # On SIGTERM: skip validation/viz, save checkpoint immediately, exit
-                if self._sigterm_received:
-                    if self.is_main_process:
-                        logger.info("SIGTERM: skipping validation, saving checkpoint and exiting.")
-                        try:
-                            self._save_checkpoint(epoch, "latest")
-                            logger.info(f"SIGTERM: checkpoint saved at epoch {epoch}")
-                        except (RuntimeError, OSError) as e:
-                            logger.error(f"SIGTERM: checkpoint save failed: {e}")
-                    break
-
-                if self.use_multi_gpu:
-                    # Synchronize all ranks before collective operation to prevent deadlock
-                    dist.barrier()
-                    loss_tensor = torch.tensor([avg_loss, avg_mse, avg_perceptual], device=self.device)
-                    dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-                    avg_loss, avg_mse, avg_perceptual = (loss_tensor / self.world_size).cpu().numpy()
-
-                # Step non-plateau schedulers here (plateau needs val_loss, stepped later)
-                if self.scheduler_type != 'plateau':
-                    self.lr_scheduler.step()
-
-                if self.is_main_process:
-                    # Log training losses using unified system (DDP path)
-                    if self.use_multi_gpu:
-                        self._unified_metrics.update_loss('MSE', avg_mse)
-                        if self.perceptual_weight > 0:
-                            self._unified_metrics.update_loss('Total', avg_loss)
-                            self._unified_metrics.update_loss('Perceptual', avg_perceptual)
-                        self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
-                        self._unified_metrics.update_vram()
-                        self._unified_metrics.log_training(epoch)
-                        self._unified_metrics.reset_training()
-
-                    val_metrics, worst_val_data = self.compute_validation_losses(epoch)
-                    log_figures = (epoch + 1) % self.figure_interval == 0
-
-                    self._unified_metrics.log_flops_from_tracker(self._flops_tracker, epoch)
-                    self._unified_metrics.log_vram(epoch)
-
-                    if log_figures and worst_val_data is not None:
-                        # Get latent-space data
-                        original = worst_val_data['original']
-                        generated = worst_val_data['generated']
-
-                        # Log latent space visualization before decoding (for latent diffusion)
-                        if self.space.scale_factor > 1:
-                            self._unified_metrics.log_latent_samples(
-                                generated.to(self.device), epoch, tag='val/worst_batch_latent'
-                            )
-                            # Decode from latent space
-                            original = self.space.decode(original.to(self.device))
-                            generated = self.space.decode(generated.to(self.device))
-
-                        self._unified_metrics.log_worst_batch(
-                            original=original,
-                            reconstructed=generated,
-                            loss=worst_val_data['loss'],
-                            epoch=epoch,
-                            phase='val',
-                            mask=worst_val_data.get('mask'),
-                            timesteps=worst_val_data.get('timesteps'),
-                        )
-
-                    self._compute_per_modality_validation(epoch)
-
-                    if log_figures or (epoch + 1) == self.n_epochs:
-                        model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
-                        self._visualize_samples(model_to_use, epoch, train_dataset)
-
-                    try:
-                        self._save_checkpoint(epoch, "latest")
-                    except (RuntimeError, OSError) as e:
-                        logger.error(f"Checkpoint save failed at epoch {epoch}: {e}. Training continues.")
-
-                    loss_for_selection = val_metrics.get('total', avg_loss)
-
-                    # Step plateau scheduler with validation loss
-                    if self.scheduler_type == 'plateau':
-                        self.lr_scheduler.step(loss_for_selection)
-
-                    if loss_for_selection < self.best_loss:
-                        try:
-                            self._save_checkpoint(epoch, "best")
-                            # Only update after successful save
-                            self.best_loss = loss_for_selection
-                            loss_type = "val" if val_metrics else "train"
-                            logger.info(f"New best model saved ({loss_type} loss: {loss_for_selection:.6f})")
-                        except (RuntimeError, OSError) as e:
-                            logger.error(f"Best checkpoint save failed at epoch {epoch}: {e}. Training continues.")
-
-                    # Log epoch summary with FULL epoch time (training + validation + viz + checkpointing)
-                    # This gives accurate ETA by including all epoch overhead, not just training
-                    epoch_time = time.time() - epoch_start
-                    log_epoch_summary(epoch, self.n_epochs, (avg_loss, avg_mse, avg_perceptual), epoch_time, time_estimator)
-
-        finally:
-            total_time = time.time() - total_start
-
-            if self.is_main_process:
-                logger.info(f"Training completed! Total time: {total_time:.1f}s ({total_time / 3600:.1f}h)")
-                self._update_metadata_final(avg_loss, avg_mse, total_time)
-
-            if self.use_multi_gpu:
-                try:
-                    dist.destroy_process_group()
-                except RuntimeError as e:
-                    # Expected during abnormal shutdown (e.g., process already terminated)
-                    logger.debug(f"Process group cleanup (rank={self.rank}): {e}")
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using batch_size=1 to avoid OOM during torch.compile."""
@@ -1279,8 +1202,3 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .evaluation import create_test_reconstruction_figure
         return create_test_reconstruction_figure(original, predicted, metrics, label, timesteps)
 
-    def close_writer(self) -> None:
-        """Close TensorBoard writer. Call after all logging is complete."""
-        if self.writer is not None:
-            self.writer.close()
-            self.writer = None
