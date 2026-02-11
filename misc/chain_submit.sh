@@ -59,15 +59,61 @@ fi
 SCRIPT_NAME=$(basename "$SCRIPT" .slurm)
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-# Detect 2D vs 3D from script path
-case "$SCRIPT" in
-    *diffusion_3d*)   RUNS_SUBDIR="diffusion_3d" ;;
-    *compression_3d*) RUNS_SUBDIR="compression_3d" ;;
-    *compression*)    RUNS_SUBDIR="compression_2d" ;;
-    *)                RUNS_SUBDIR="diffusion_2d" ;;
+# Determine runs subdirectory by parsing --config-name from the python command.
+# This is the source of truth — it determines the Hydra output directory structure.
+#
+# Mapping:
+#   config-name         -> runs subdir          -> has mode subdir?
+#   diffusion           -> diffusion_2d/{mode}  -> yes (mode.subdir or mode.name)
+#   diffusion_3d        -> diffusion_3d/{mode}  -> yes
+#   vae/vqvae/dcae      -> compression_2d/{mode}-> yes (mode.name)
+#   vae_3d/vqvae_3d/... -> compression_3d/{mode}-> yes
+#   segmentation        -> segmentation_{N}d    -> no (uses spatial_dims)
+# Detect script type: config-name for diffusion/compression, script name for segmentation
+CONFIG_NAME=$(grep -oP '\-\-config-name=\K\S+' "$SCRIPT" | head -1)
+TRAIN_SCRIPT=$(grep -oP 'python -m \K\S+' "$SCRIPT" | head -1)
+
+# Segmentation uses train_segmentation without --config-name
+if [ "$TRAIN_SCRIPT" = "medgen.scripts.train_segmentation" ]; then
+    CONFIG_NAME="segmentation"
+fi
+
+case "$CONFIG_NAME" in
+    diffusion)      RUNS_SUBDIR="diffusion_2d" ;;
+    diffusion_3d)   RUNS_SUBDIR="diffusion_3d" ;;
+    vae|vqvae|dcae) RUNS_SUBDIR="compression_2d" ;;
+    vae_3d|vqvae_3d|dcae_3d) RUNS_SUBDIR="compression_3d" ;;
+    segmentation)
+        SPATIAL_DIMS=$(grep -oP 'spatial_dims=\K[23]' "$SCRIPT" | head -1)
+        RUNS_SUBDIR="segmentation_${SPATIAL_DIMS:-2}d" ;;
+    *)
+        echo "Warning: unknown config-name '${CONFIG_NAME}', defaulting to diffusion_2d"
+        RUNS_SUBDIR="diffusion_2d" ;;
 esac
 
-RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/${RUNS_SUBDIR}/${SCRIPT_NAME}_chain_${TIMESTAMP}"
+# Extract mode subdirectory to match Hydra's directory structure.
+# Diffusion + compression configs use a mode subdir; segmentation does not.
+MODE=$(grep -oP '^\s*mode=\K\S+' "$SCRIPT" | head -1 | tr -d ' \\')
+MODE_SUBDIR=""
+if [ -n "$MODE" ]; then
+    MODE_SUBDIR="$MODE"
+    # Check for subdir override in mode config (e.g., bravo_seg_cond -> bravo_latent)
+    SCRIPT_DIR=$(dirname "$0")
+    MODE_CONFIG="${SCRIPT_DIR}/../configs/mode/${MODE}.yaml"
+    if [ -f "$MODE_CONFIG" ]; then
+        SUBDIR_OVERRIDE=$(grep -oP 'subdir:\s*\K\S+' "$MODE_CONFIG" 2>/dev/null || true)
+        if [ -n "$SUBDIR_OVERRIDE" ]; then
+            MODE_SUBDIR="$SUBDIR_OVERRIDE"
+        fi
+    fi
+fi
+
+# Build run directory: runs/{type}/{mode?}/{name}_chain_{timestamp}
+if [ -n "$MODE_SUBDIR" ]; then
+    RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/${RUNS_SUBDIR}/${MODE_SUBDIR}/${SCRIPT_NAME}_chain_${TIMESTAMP}"
+else
+    RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/${RUNS_SUBDIR}/${SCRIPT_NAME}_chain_${TIMESTAMP}"
+fi
 
 # Optional time override
 SBATCH_EXTRA=""

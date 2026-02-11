@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-03:00:00
+#SBATCH --time=0-01:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -53,7 +53,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.height=128 \
     volume.width=128 \
     volume.pad_depth_to=160 \
-    training.epochs=500 \
+    training.epochs=100 \
     training.learning_rate=1e-4 \
     training.name=exp1_chained_ \
     ${CHAIN_ARGS}
