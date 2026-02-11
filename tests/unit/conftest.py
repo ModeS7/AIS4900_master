@@ -3,6 +3,26 @@ import pytest
 from unittest.mock import Mock
 import torch
 
+from medgen.metrics.quality import compute_lpips
+
+
+@pytest.fixture(scope="session")
+def lpips_available():
+    """Check if LPIPS model weights can be downloaded.
+
+    Skips tests when the RadImageNet weights are unavailable
+    (Google Drive rate-limiting, network errors, etc.).
+    """
+    try:
+        compute_lpips(torch.rand(2, 1, 64, 64), torch.rand(2, 1, 64, 64))
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        # Google Drive rate-limiting, network errors, download failures
+        skip_patterns = ["FileURLRetrievalError", "Too many users", "gdown", "urlopen"]
+        if any(p in err for p in skip_patterns):
+            pytest.skip(f"LPIPS model weights unavailable: {err}")
+        raise
+
 
 @pytest.fixture
 def mock_model_dynamic():

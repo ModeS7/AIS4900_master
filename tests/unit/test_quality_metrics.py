@@ -173,6 +173,7 @@ class TestMSSSIM2DSlicewise:
         assert msssim > 0.99
 
 
+@pytest.mark.usefixtures("lpips_available")
 class TestLPIPS:
     """Test compute_lpips function (2D only)."""
 
@@ -247,6 +248,7 @@ class TestLPIPS:
         assert not torch.isnan(torch.tensor(lpips))
 
 
+@pytest.mark.usefixtures("lpips_available")
 class TestLPIPS3D:
     """Test compute_lpips_3d for 3D volumes."""
 

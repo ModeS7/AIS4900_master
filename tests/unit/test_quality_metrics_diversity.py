@@ -11,6 +11,7 @@ from medgen.metrics.quality import (
 )
 
 
+@pytest.mark.usefixtures("lpips_available")
 class TestLPIPSDiversity:
     """Test compute_lpips_diversity functions for 2D and 3D."""
 
