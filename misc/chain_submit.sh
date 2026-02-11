@@ -15,13 +15,13 @@
 #     fi
 #     if [ -n "${CHAIN_RESUME:-}" ]; then
 #         if [ -f "${CHAIN_RESUME}" ]; then
-#             if python -c "import torch; torch.load('${CHAIN_RESUME}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+#             if python -c "import zipfile; zipfile.ZipFile('${CHAIN_RESUME}').close()"; then
 #                 CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CHAIN_RESUME}"
 #                 echo "Chain mode: resuming from ${CHAIN_RESUME}"
 #             else
-#                 echo "WARNING: checkpoint_latest.pt is corrupted, trying checkpoint_best.pt"
+#                 echo "WARNING: checkpoint_latest.pt failed validation, trying checkpoint_best.pt"
 #                 BEST_CKPT="$(dirname "${CHAIN_RESUME}")/checkpoint_best.pt"
-#                 if [ -f "$BEST_CKPT" ] && python -c "import torch; torch.load('${BEST_CKPT}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+#                 if [ -f "$BEST_CKPT" ] && python -c "import zipfile; zipfile.ZipFile('${BEST_CKPT}').close()"; then
 #                     CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${BEST_CKPT}"
 #                     echo "Chain mode: resuming from ${BEST_CKPT} (fallback)"
 #                 else
@@ -133,6 +133,12 @@ SBATCH_EXTRA=""
 if [ -n "$TIME_OVERRIDE" ]; then
     SBATCH_EXTRA="--time=$TIME_OVERRIDE"
 fi
+
+# Send SIGTERM 5 minutes before SLURM's time limit.
+# This gives the trainer enough time to finish the current batch,
+# save a checkpoint (even 50GB+ models), and exit cleanly.
+# The B: prefix sends to the entire process group (so Python gets it).
+SBATCH_EXTRA="$SBATCH_EXTRA --signal=B:TERM@300"
 
 # Create SLURM output directory if script uses a subdirectory
 OUTPUT_DIR=$(grep -m1 '#SBATCH --output=' "$SCRIPT" | sed 's/.*--output=//' | xargs dirname)

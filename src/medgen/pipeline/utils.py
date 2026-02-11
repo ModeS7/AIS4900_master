@@ -346,12 +346,15 @@ def save_full_checkpoint(
 
 
 def _safe_torch_save(obj: Any, path: str) -> None:
-    """Save with memory-buffered write and atomic rename.
+    """Save checkpoint with atomic rename to prevent corruption.
 
-    Serializes to an in-memory buffer first to avoid NFS position tracking
-    bugs in PyTorch's PytorchStreamWriter (which does many small incremental
-    writes that NFS can corrupt). Then writes raw bytes to a temp file and
-    atomically renames to the target path.
+    Writes to a temp file first, then atomically renames. This ensures
+    the target path always contains either the old or new complete file,
+    never a half-written one.
+
+    For small checkpoints (<2GB): buffers in memory then writes (avoids
+    NFS position tracking bugs with PyTorch's many small writes).
+    For large checkpoints: writes directly to temp file (avoids OOM).
 
     Args:
         obj: Object to save (checkpoint dict).
@@ -359,13 +362,20 @@ def _safe_torch_save(obj: Any, path: str) -> None:
     """
     import io
 
-    buffer = io.BytesIO()
-    torch.save(obj, buffer)
-
     parent = os.path.dirname(path)
     fd, tmp_path = tempfile.mkstemp(dir=parent, suffix='.pt.tmp')
     try:
-        os.write(fd, buffer.getvalue())
+        # Try memory-buffered write (fast, avoids NFS incremental write bugs)
+        try:
+            buffer = io.BytesIO()
+            torch.save(obj, buffer)
+            os.write(fd, buffer.getvalue())
+            del buffer
+        except MemoryError:
+            # Fall back to direct file write for very large checkpoints
+            os.lseek(fd, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(fd), 'wb') as f:
+                torch.save(obj, f)
         os.fsync(fd)  # Flush to disk — critical for NFS (SLURM clusters)
         os.close(fd)
         os.replace(tmp_path, path)

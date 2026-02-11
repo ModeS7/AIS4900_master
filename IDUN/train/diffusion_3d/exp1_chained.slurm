@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-01:00:00
+#SBATCH --time=0-00:30:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -38,14 +38,14 @@ if [ -n "${CHAIN_RUN_DIR:-}" ]; then
 fi
 if [ -n "${CHAIN_RESUME:-}" ]; then
     if [ -f "${CHAIN_RESUME}" ]; then
-        # Validate checkpoint integrity before attempting resume
-        if python -c "import torch; torch.load('${CHAIN_RESUME}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+        # Lightweight validation: check zip header (PyTorch saves are zip files)
+        if python -c "import zipfile; zipfile.ZipFile('${CHAIN_RESUME}').close()"; then
             CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CHAIN_RESUME}"
             echo "Chain mode: resuming from ${CHAIN_RESUME}"
         else
-            echo "WARNING: checkpoint_latest.pt is corrupted, trying checkpoint_best.pt"
+            echo "WARNING: checkpoint_latest.pt failed validation, trying checkpoint_best.pt"
             BEST_CKPT="$(dirname "${CHAIN_RESUME}")/checkpoint_best.pt"
-            if [ -f "$BEST_CKPT" ] && python -c "import torch; torch.load('${BEST_CKPT}', map_location='cpu', weights_only=False)" 2>/dev/null; then
+            if [ -f "$BEST_CKPT" ] && python -c "import zipfile; zipfile.ZipFile('${BEST_CKPT}').close()"; then
                 CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${BEST_CKPT}"
                 echo "Chain mode: resuming from ${BEST_CKPT} (fallback)"
             else

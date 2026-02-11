@@ -764,6 +764,13 @@ class BaseTrainer(ABC):
                 # Training
                 avg_losses = self.train_epoch(train_loader, epoch)
 
+                # On SIGTERM: skip validation, just save checkpoint and exit
+                if self._sigterm_received and self.is_main_process:
+                    logger.info("SIGTERM: skipping validation, saving checkpoint and exiting.")
+                    merged_metrics = {**avg_losses}
+                    self._handle_checkpoints(epoch, merged_metrics)
+                    break
+
                 # Validation (main process only)
                 val_metrics: dict[str, float] = {}
                 if self.is_main_process:
@@ -785,14 +792,6 @@ class BaseTrainer(ABC):
                     # Check for early stopping
                     if self._should_stop_early():
                         logger.info("Stopping training early")
-                        break
-
-                    # Check for SIGTERM (SLURM time limit)
-                    if self._sigterm_received:
-                        logger.info(
-                            f"Graceful shutdown after epoch {epoch + 1} "
-                            f"(SIGTERM received). Checkpoint saved."
-                        )
                         break
 
         except KeyboardInterrupt:

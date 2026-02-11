@@ -804,7 +804,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if epoch == 1 and step == 0 and self.is_main_process:
                 logger.info(get_vram_usage(self.device))
 
-        n_batches = self.limit_train_batches if self.limit_train_batches else len(data_loader)
+            # Break mid-epoch on SIGTERM so checkpoint can be saved before SIGKILL
+            if self._sigterm_received:
+                logger.warning(f"SIGTERM: breaking out of epoch {epoch} at step {step + 1}/{len(data_loader)}")
+                break
+
+        n_batches = min(step + 1, self.limit_train_batches or len(data_loader))
         avg_loss = epoch_loss / n_batches
         avg_mse = epoch_mse_loss / n_batches
         avg_perceptual = epoch_perceptual_loss / n_batches
