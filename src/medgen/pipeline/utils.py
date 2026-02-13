@@ -379,8 +379,18 @@ def _safe_torch_save(obj: Any, path: str) -> None:
         try:
             buffer = io.BytesIO()
             torch.save(obj, buffer)
-            os.write(fd, buffer.getvalue())
+            data = buffer.getvalue()
             del buffer
+            # os.write() transfers at most 0x7FFFF000 bytes (~2GB) per call
+            # on Linux, so loop to handle large checkpoints
+            view = memoryview(data)
+            offset = 0
+            while offset < len(view):
+                written = os.write(fd, view[offset:])
+                if written == 0:
+                    raise OSError(f"os.write returned 0 at offset {offset}/{len(data)}")
+                offset += written
+            del data, view
         except MemoryError:
             # Fall back to direct file write for very large checkpoints
             os.lseek(fd, 0, os.SEEK_SET)
