@@ -563,7 +563,8 @@ class BaseTrainer(ABC):
                 # Use CheckpointManager
                 self.checkpoint_manager.save(epoch, val_metrics, name="latest", extra_state=extra_state)
                 if self.checkpoint_manager.save_if_best(epoch, val_metrics, extra_state=extra_state):
-                    logger.info(f"New best model saved (loss: {val_metrics.get(self._get_best_metric_name(), 0):.4f})")
+                    metric = val_metrics.get(self.checkpoint_manager.metric_name, 0)
+                    logger.info(f"New best model saved (val loss: {metric:.6f})")
             else:
                 # Fallback to legacy method
                 self._save_checkpoint(epoch, "latest")

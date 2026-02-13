@@ -188,7 +188,7 @@ class CheckpointManager:
         from .utils import _safe_torch_save
         _safe_torch_save(checkpoint, str(path))
         size_mb = path.stat().st_size / (1024 * 1024)
-        logger.info(f"Checkpoint saved: {path} ({size_mb:.0f} MB, epoch {epoch})")
+        logger.debug(f"Saved checkpoint_{name}.pt ({size_mb:.0f} MB, epoch {epoch})")
 
         return str(path)
 
@@ -223,7 +223,7 @@ class CheckpointManager:
             self.save(epoch, metrics, name="best", extra_state=extra_state)
             # Only update after successful save
             self._best_metric = current
-            logger.info(f"New best {self.metric_name}: {current:.4f}")
+            logger.debug(f"New best {self.metric_name}: {current:.4f}")
             return True
         return False
 
