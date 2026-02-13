@@ -1138,6 +1138,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if 'best_loss' in checkpoint:
             self.best_loss = checkpoint['best_loss']
             logger.info(f"Restored best_loss: {self.best_loss:.6f}")
+            # Sync to CheckpointManager to prevent best model regression
+            if self.checkpoint_manager is not None:
+                self.checkpoint_manager.set_best_metric(self.best_loss)
+        elif 'best_metric' in checkpoint:
+            self.best_loss = checkpoint['best_metric']
+            logger.info(f"Restored best_loss (from best_metric): {self.best_loss:.6f}")
+            if self.checkpoint_manager is not None:
+                self.checkpoint_manager.set_best_metric(self.best_loss)
 
         saved_epoch = checkpoint['epoch']
         start_epoch = saved_epoch + 1

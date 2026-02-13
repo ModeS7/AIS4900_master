@@ -107,8 +107,8 @@ def main(cfg: DictConfig) -> None:
     # Validate configuration before proceeding
     validate_config(cfg)
 
-    # Log resolved configuration
-    logger.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
+    # Log resolved configuration (saved to config.yaml in run dir, debug-only to stdout)
+    logger.debug(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
 
     # Detect spatial dimensions (2D or 3D)
     spatial_dims = cfg.model.get('spatial_dims', 2)
@@ -177,14 +177,11 @@ def main(cfg: DictConfig) -> None:
         space = PixelSpace()
         space_name = "pixel"
 
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info(f"Training {mode} mode with {strategy} strategy ({space_name} space)")
-    logger.info(f"Image size: {cfg.model.image_size} | Batch size: {cfg.training.batch_size}")
-    logger.info(f"Epochs: {cfg.training.epochs} | Multi-GPU: {use_multi_gpu}")
-    logger.info(f"EMA: {cfg.training.use_ema} | Min-SNR: {cfg.training.use_min_snr}")
-    logger.info("=" * 60)
-    logger.info("")
+    logger.info(
+        f"Training: {mode} mode, {strategy} strategy, {space_name} space | "
+        f"Image: {cfg.model.image_size} | Batch: {cfg.training.batch_size} | "
+        f"Epochs: {cfg.training.epochs} | EMA: {cfg.training.use_ema}"
+    )
 
     # Create trainer
     trainer = DiffusionTrainer(cfg, space=space)
@@ -346,6 +343,12 @@ def main(cfg: DictConfig) -> None:
         start_epoch=start_epoch,
     )
 
+    # On wall-time signal: skip test eval, let SLURM script handle resubmission
+    if getattr(trainer, '_sigterm_received', False):
+        logger.info("Wall time signal received — skipping test evaluation")
+        trainer.close_writer()
+        return
+
     # Create test dataloader and evaluate (if test_new/ directory exists)
     if use_latent:
         test_result = create_latent_test_dataloader(
@@ -368,6 +371,10 @@ def main(cfg: DictConfig) -> None:
 
     # Close TensorBoard writer after all logging
     trainer.close_writer()
+
+    # Mark training complete for SLURM job chaining
+    from pathlib import Path
+    (Path(trainer.save_dir) / '.training_complete').touch()
 
 
 def _train_3d(cfg: DictConfig) -> None:
@@ -398,13 +405,11 @@ def _train_3d(cfg: DictConfig) -> None:
     # Get mode configuration using ModeFactory (available for both latent and pixel paths)
     mode_config = ModeFactory.get_mode_config(cfg)
 
-    logger.info("")
-    logger.info("=" * 60)
-    logger.info("3D Volumetric Diffusion Training")
-    logger.info(f"Mode: {mode} | Strategy: {strategy}")
-    logger.info(f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width}")
-    logger.info("=" * 60)
-    logger.info("")
+    logger.info(
+        f"Training 3D: {mode} mode, {strategy} strategy | "
+        f"Volume: {cfg.volume.depth}x{cfg.volume.height}x{cfg.volume.width} | "
+        f"Batch: {cfg.training.batch_size} | Epochs: {cfg.training.epochs}"
+    )
 
     # Check latent diffusion config
     latent_cfg = cfg.get('latent', {})
@@ -651,7 +656,6 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_loader = None
 
     # Create and setup trainer
-    logger.info("=== Creating 3D Trainer ===")
     trainer = DiffusionTrainer.create_3d(cfg, space=space)
     trainer.setup_model(train_dataset)
 
@@ -672,12 +676,17 @@ def _train_3d(cfg: DictConfig) -> None:
     trainer.pixel_val_loader = pixel_val_loader
 
     # Train
-    logger.info("=== Starting Training ===")
     trainer.train(
         train_loader, train_dataset,
         val_loader=val_loader,
         start_epoch=start_epoch,
     )
+
+    # On wall-time signal: skip test eval, let SLURM script handle resubmission
+    if getattr(trainer, '_sigterm_received', False):
+        logger.info("Wall time signal received — skipping test evaluation")
+        trainer.close_writer()
+        return
 
     # Test evaluation (if test_new set exists and enabled)
     run_test = cfg.training.get('test_after_training', True)
@@ -721,6 +730,10 @@ def _train_3d(cfg: DictConfig) -> None:
 
     # Close TensorBoard writer
     trainer.close_writer()
+
+    # Mark training complete for SLURM job chaining
+    from pathlib import Path
+    (Path(trainer.save_dir) / '.training_complete').touch()
 
 
 if __name__ == "__main__":

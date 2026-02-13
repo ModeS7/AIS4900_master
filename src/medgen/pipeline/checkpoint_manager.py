@@ -120,6 +120,10 @@ class CheckpointManager:
         """Current best metric value."""
         return self._best_metric
 
+    def set_best_metric(self, value: float) -> None:
+        """Set best metric value (e.g., after loading a legacy checkpoint)."""
+        self._best_metric = value
+
     def _is_better(self, current: float, best: float) -> bool:
         """Check if current metric is better than best."""
         if self.metric_mode == 'min':

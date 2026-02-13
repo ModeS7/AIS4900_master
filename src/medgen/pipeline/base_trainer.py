@@ -100,9 +100,9 @@ class BaseTrainer(ABC):
         from .utils import GradientSkipDetector
         self._grad_skip_detector = GradientSkipDetector()
 
-        # SIGTERM handling for graceful SLURM shutdown
+        # Signal handling for graceful SLURM shutdown (SIGTERM + SIGUSR1)
         self._sigterm_received = False
-        self._install_sigterm_handler()
+        self._install_signal_handlers()
 
         # Determine if running on cluster
         self.is_cluster: bool = pc.is_cluster
@@ -475,18 +475,20 @@ class BaseTrainer(ABC):
     # SIGTERM handling (graceful SLURM shutdown)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _install_sigterm_handler(self) -> None:
-        """Install SIGTERM handler for graceful SLURM shutdown.
+    def _install_signal_handlers(self) -> None:
+        """Install signal handlers for graceful shutdown.
 
-        When SLURM's time limit is reached, it sends SIGTERM before SIGKILL.
-        This handler sets a flag so the training loop can finish the current
-        epoch, save a checkpoint, and exit cleanly.
+        SIGTERM: Sent by scancel or SLURM's final warning before SIGKILL.
+        SIGUSR1: Sent by auto-chaining SLURM scripts before wall time.
+        Both trigger: finish current epoch -> save checkpoint -> exit.
         """
-        def _sigterm_handler(signum: int, frame: Any) -> None:
-            logger.warning("SIGTERM received — finishing current epoch then saving and exiting.")
+        def _handler(signum: int, frame: Any) -> None:
+            sig_name = signal.Signals(signum).name
+            logger.warning(f"{sig_name} received — finishing current epoch then saving and exiting.")
             self._sigterm_received = True
 
-        signal.signal(signal.SIGTERM, _sigterm_handler)
+        signal.signal(signal.SIGTERM, _handler)
+        signal.signal(signal.SIGUSR1, _handler)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Checkpoint management
