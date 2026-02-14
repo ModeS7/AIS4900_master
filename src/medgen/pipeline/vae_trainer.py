@@ -43,7 +43,13 @@ class CheckpointedAutoencoder(BaseCheckpointedModel):
     """
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass with gradient checkpointing."""
+        """Forward pass with gradient checkpointing.
+
+        Encoder is checkpointed as a single segment.
+        Decoder uses per-block checkpointing so that during backward,
+        only one block's activations exist at a time — critical for 3D
+        volumes where a single Conv3d workspace can exceed 30 GiB.
+        """
         def encode_fn(x):
             h = self.model.encoder(x)
             z_mu = self.model.quant_conv_mu(h)
@@ -53,12 +59,12 @@ class CheckpointedAutoencoder(BaseCheckpointedModel):
         z_mu, z_log_var = self.checkpoint(encode_fn, x)
         z = self.model.sampling(z_mu, z_log_var)
 
-        def decode_fn(z):
-            z_post = self.model.post_quant_conv(z)
-            return self.model.decoder(z_post)
+        # Decoder: per-block checkpointing for large 3D volumes
+        h = self.model.post_quant_conv(z)
+        for block in self.model.decoder.blocks:
+            h = self.checkpoint(block, h)
 
-        reconstruction = self.checkpoint(decode_fn, z)
-        return reconstruction, z_mu, z_log_var
+        return h, z_mu, z_log_var
 
     def encode_stage_2_inputs(self, x: torch.Tensor) -> torch.Tensor:
         """Get latent representation for diffusion model."""
