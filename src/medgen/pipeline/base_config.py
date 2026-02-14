@@ -240,6 +240,7 @@ class BaseTrainingConfig:
     learning_rate: float = 1e-4
     warmup_epochs: int = 5
     gradient_clip_norm: float = 1.0
+    gradient_accumulation_steps: int = 1
     limit_train_batches: int | None = None
     use_multi_gpu: bool = False
     # Figure interval
@@ -270,6 +271,8 @@ class BaseTrainingConfig:
             raise ValueError(f"learning_rate must be > 0, got {self.learning_rate}")
         if self.warmup_epochs < 0:
             raise ValueError(f"warmup_epochs must be >= 0, got {self.warmup_epochs}")
+        if self.gradient_accumulation_steps < 1:
+            raise ValueError(f"gradient_accumulation_steps must be >= 1, got {self.gradient_accumulation_steps}")
         if self.num_figures < 0:
             raise ValueError(f"num_figures must be >= 0, got {self.num_figures}")
 
@@ -304,6 +307,7 @@ class BaseTrainingConfig:
             learning_rate=t.get('learning_rate', 1e-4),
             warmup_epochs=t.get('warmup_epochs', 5),
             gradient_clip_norm=t.get('gradient_clip_norm', 1.0),
+            gradient_accumulation_steps=t.get('gradient_accumulation_steps', 1),
             limit_train_batches=t.get('limit_train_batches', None),
             use_multi_gpu=t.get('use_multi_gpu', False),
             # Figure interval

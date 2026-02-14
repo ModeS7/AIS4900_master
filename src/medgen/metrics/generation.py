@@ -145,14 +145,18 @@ class GenerationMetricsConfig:
             size_bin_edges = list(size_bin_cfg.get('edges', [0, 3, 6, 10, 15, 20, 30]))
             size_bin_fov_mm = float(size_bin_cfg.get('fov_mm', 240.0))
 
+        # DDPM uses DDIM for inference which needs more steps than RFlow
+        strategy_name = cfg.strategy.name
+        step_mult = 2 if strategy_name == 'ddpm' else 1
+
         return cls(
             enabled=True,
             samples_per_epoch=samples_per_epoch,
             samples_extended=samples_extended,
             samples_test=samples_test,
-            steps_per_epoch=gen_cfg.get('steps_per_epoch', 10),
-            steps_extended=gen_cfg.get('steps_extended', 25),
-            steps_test=gen_cfg.get('steps_test', 50),
+            steps_per_epoch=gen_cfg.get('steps_per_epoch', 10) * step_mult,
+            steps_extended=gen_cfg.get('steps_extended', 25) * step_mult,
+            steps_test=gen_cfg.get('steps_test', 50) * step_mult,
             cache_dir=cache_dir,
             feature_batch_size=feature_batch_size,
             cfg_scale=gen_cfg.get('cfg_scale', 2.0),

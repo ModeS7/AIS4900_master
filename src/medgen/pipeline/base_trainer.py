@@ -94,7 +94,11 @@ class BaseTrainer(ABC):
         self.figure_interval: int = tc.get_figure_interval()
         self.use_multi_gpu: bool = tc.use_multi_gpu
         self.gradient_clip_norm: float = tc.gradient_clip_norm
+        self.gradient_accumulation_steps: int = tc.gradient_accumulation_steps
         self.limit_train_batches: int | None = tc.limit_train_batches
+
+        # Gradient accumulation counter (tracks micro-batch index within accumulation window)
+        self._accum_step: int = 0
 
         # Gradient spike detection — skip optimizer step on anomalous gradients
         from .utils import GradientSkipDetector

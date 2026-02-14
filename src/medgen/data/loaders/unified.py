@@ -510,15 +510,16 @@ def _create_3d_bravo_loader(
         return create_single_modality_dataloader_with_seg(
             cfg, vol_cfg, modality='bravo', augment=augment
         )
-    elif split == 'val':
+    elif split in ('val', 'test'):
         result = create_single_modality_validation_dataloader_with_seg(
-            cfg, vol_cfg, modality='bravo'
+            cfg, vol_cfg, modality='bravo',
+            split='test_new' if split == 'test' else 'val',
         )
         if result is None:
-            raise ValueError("No 3D validation data found")
+            raise ValueError(f"No 3D {split} data found")
         return result
     else:
-        raise ValueError("3D bravo test loader not yet supported")
+        raise ValueError(f"Unknown split: {split}")
 
 
 def _create_3d_seg_conditioned_loader(

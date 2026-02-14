@@ -34,6 +34,7 @@ class RFlowStrategy(DiffusionStrategy):
         use_discrete_timesteps: bool = True,
         sample_method: str = 'logit-normal',
         use_timestep_transform: bool = True,
+        **kwargs,
     ):
         """Setup RFlow scheduler.
 
@@ -45,6 +46,7 @@ class RFlowStrategy(DiffusionStrategy):
             use_discrete_timesteps: Use discrete integer timesteps (default True).
             sample_method: Timestep sampling - 'uniform' or 'logit-normal' (default).
             use_timestep_transform: Apply resolution-based timestep transform (default True).
+            **kwargs: Ignored (for interface compatibility with DDPMStrategy).
         """
         self.spatial_dims = spatial_dims
 

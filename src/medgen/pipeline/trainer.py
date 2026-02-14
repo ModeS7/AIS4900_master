@@ -149,6 +149,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
             'use_discrete_timesteps': sc.use_discrete_timesteps,
             'sample_method': sc.sample_method,
             'use_timestep_transform': sc.use_timestep_transform,
+            'prediction_type': sc.prediction_type,
+            'schedule': sc.schedule,
         }
         if spatial_dims == 3:
             scheduler_kwargs['depth_size'] = self.volume_depth
@@ -509,13 +511,21 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def train_step(self, batch: BatchType) -> TrainingStepResult:
         """Execute single training step.
 
+        Supports gradient accumulation: gradients are accumulated over
+        `gradient_accumulation_steps` micro-batches before optimizer.step().
+
         Args:
             batch: Input batch from dataloader.
 
         Returns:
             TrainingStepResult with total, MSE, and perceptual losses.
         """
-        self.optimizer.zero_grad(set_to_none=True)
+        accum_steps = self.gradient_accumulation_steps
+        is_accum_start = (self._accum_step % accum_steps == 0)
+        is_accum_end = (self._accum_step % accum_steps == accum_steps - 1)
+
+        if is_accum_start:
+            self.optimizer.zero_grad(set_to_none=True)
 
         with autocast('cuda', enabled=True, dtype=torch.bfloat16):
             prepared = self.mode.prepare_batch(batch, self.device)
@@ -717,41 +727,52 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 )
                 total_loss = total_loss + self.sda_weight * sda_loss
 
-        # Optimizer step (with gradient scaler for 3D AMP)
+        # Scale loss for gradient accumulation (so accumulated gradients average correctly)
+        scaled_loss = total_loss / accum_steps if accum_steps > 1 else total_loss
+
+        # Backward pass (always runs, accumulates gradients)
+        grad_norm = None
         if self.scaler is not None:
             # 3D path: use gradient scaler
-            self.scaler.scale(total_loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.gradient_clip_norm
-            )
-            grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-            if self._grad_skip_detector.should_skip(grad_val):
-                self.optimizer.zero_grad()
-            else:
-                self._add_gradient_noise(self._global_step)
-                self.scaler.step(self.optimizer)
-            self.scaler.update()
+            self.scaler.scale(scaled_loss).backward()
         else:
             # 2D path: standard backward
-            total_loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model_raw.parameters(), max_norm=self.gradient_clip_norm
-            )
-            grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-            if self._grad_skip_detector.should_skip(grad_val):
-                self.optimizer.zero_grad()
+            scaled_loss.backward()
+
+        # Optimizer step only at accumulation boundary
+        if is_accum_end:
+            if self.scaler is not None:
+                self.scaler.unscale_(self.optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.gradient_clip_norm
+                )
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                if self._grad_skip_detector.should_skip(grad_val):
+                    self.optimizer.zero_grad()
+                else:
+                    self._add_gradient_noise(self._global_step)
+                    self.scaler.step(self.optimizer)
+                self.scaler.update()
             else:
-                self._add_gradient_noise(self._global_step)
-                self.optimizer.step()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.gradient_clip_norm
+                )
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                if self._grad_skip_detector.should_skip(grad_val):
+                    self.optimizer.zero_grad()
+                else:
+                    self._add_gradient_noise(self._global_step)
+                    self.optimizer.step()
 
-        self._global_step += 1
+            self._global_step += 1
 
-        if self.use_ema:
-            self._update_ema()
+            if self.use_ema:
+                self._update_ema()
 
-        # Track gradient norm
-        if self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
+        self._accum_step += 1
+
+        # Track gradient norm (only when optimizer stepped)
+        if is_accum_end and self.log_grad_norm and grad_norm is not None and self._unified_metrics is not None:
             grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
             self._unified_metrics.update_grad_norm(grad_val)
 
@@ -815,6 +836,31 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self._sigterm_received:
                 logger.warning(f"SIGTERM: breaking out of epoch {epoch} at step {step + 1}/{len(data_loader)}")
                 break
+
+        # Flush partial gradient accumulation window at epoch end
+        accum_steps = self.gradient_accumulation_steps
+        if accum_steps > 1 and self._accum_step % accum_steps != 0:
+            if self.scaler is not None:
+                self.scaler.unscale_(self.optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.gradient_clip_norm
+                )
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                if not self._grad_skip_detector.should_skip(grad_val):
+                    self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model_raw.parameters(), max_norm=self.gradient_clip_norm
+                )
+                grad_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+                if not self._grad_skip_detector.should_skip(grad_val):
+                    self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            self._global_step += 1
+            if self.use_ema:
+                self._update_ema()
+            self._accum_step = 0
 
         n_batches = min(step + 1, self.limit_train_batches or len(data_loader))
         avg_loss = epoch_loss / n_batches
@@ -1021,9 +1067,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         if self.is_main_process:
             n_batches = len(self._train_loader) if hasattr(self, '_train_loader') else 0
+            accum = self.gradient_accumulation_steps
+            effective_bs = self.batch_size * accum
+            accum_info = f", grad_accum={accum} (effective_bs={effective_bs})" if accum > 1 else ""
             logger.info(
                 f"Starting training: {self.n_epochs} epochs, "
-                f"{n_batches} batches/epoch, batch_size={self.batch_size}"
+                f"{n_batches} batches/epoch, batch_size={self.batch_size}{accum_info}"
             )
 
     def _step_scheduler(self, epoch: int, val_metrics: dict[str, float]) -> None:

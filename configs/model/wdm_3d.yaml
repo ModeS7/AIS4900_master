@@ -1,0 +1,32 @@
+# 3D DiffusionModelUNet — WDM-style Architecture
+#
+# Modeled after WDM (Wavelet Diffusion Models, Friedrich et al. 2024):
+#   - Base channels: 64
+#   - Channel multipliers: (1, 2, 2, 4, 4) → channels [64, 128, 128, 256, 256]
+#   - NO attention at any level (saves memory, avoids quadratic cost)
+#   - 2 residual blocks per level
+#   - Used with Haar wavelet space (8-channel input from 3D Haar decomposition)
+#
+# For wavelet input [B, 8, 80, 64, 64]:
+#   L0=64ch@64x64x80  L1=128ch@32x32x40  L2=128ch@16x16x20  L3=256ch@8x8x10  L4=256ch@4x4x5
+#
+# Reference: "WDM: 3D Wavelet Diffusion Models for High-Resolution Medical Image Synthesis"
+#            https://arxiv.org/abs/2402.19043
+
+type: unet
+spatial_dims: 3
+image_size: 256
+depth_size: 160
+
+# 5-level WDM architecture (~74M params with bravo mode, no attention = much lighter)
+channels: [64, 128, 128, 256, 256]
+
+# NO attention (WDM key design: attention-free for memory efficiency)
+attention_levels: [false, false, false, false, false]
+
+# 2 residual blocks per level (matches WDM)
+num_res_blocks: [2, 2, 2, 2, 2]
+
+# GroupNorm config
+num_head_channels: 32
+norm_num_groups: 32

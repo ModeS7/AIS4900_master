@@ -1,6 +1,10 @@
 """DDPM (Denoising Diffusion Probabilistic Models) strategy implementation.
 
 Moved from strategies.py during file split.
+
+Supports prediction types:
+- 'epsilon': Predict noise (standard DDPM)
+- 'sample': Predict clean image x₀ (used by WDM for wavelet space)
 """
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from monai.networks.schedulers import DDPMScheduler
+from monai.networks.schedulers import DDIMScheduler, DDPMScheduler
 from torch import nn
 from tqdm import tqdm
 
@@ -22,31 +26,53 @@ if TYPE_CHECKING:
 class DDPMStrategy(DiffusionStrategy):
     """Denoising Diffusion Probabilistic Model strategy.
 
-    Implements the DDPM algorithm for noise prediction-based diffusion.
+    Implements the DDPM algorithm with configurable prediction target.
+    Supports both noise prediction (epsilon) and clean image prediction (sample/x₀).
     """
 
+    # Set by setup_scheduler, used by compute_target/compute_predicted_clean
+    prediction_type: str = "epsilon"
+
     def setup_scheduler(
-        self, num_timesteps: int = 1000, image_size: int = 128, **kwargs
+        self,
+        num_timesteps: int = 1000,
+        image_size: int = 128,
+        prediction_type: str = "epsilon",
+        schedule: str = "cosine",
+        **kwargs,
     ) -> DDPMScheduler:
-        """Setup DDPM scheduler with cosine schedule.
+        """Setup DDPM scheduler.
 
         Args:
             num_timesteps: Number of diffusion timesteps.
             image_size: Size of input images (unused but kept for interface).
+            prediction_type: What the model predicts — 'epsilon' (noise) or 'sample' (x₀).
+            schedule: Noise schedule type ('cosine', 'linear', 'scaled_linear').
             **kwargs: Ignored (for interface compatibility with RFlowStrategy).
 
         Returns:
             Configured DDPMScheduler instance.
         """
+        self.prediction_type = prediction_type
+        self._schedule = schedule
+        self._num_train_timesteps = num_timesteps
         self.scheduler = DDPMScheduler(
-            num_train_timesteps=num_timesteps, schedule='cosine'
+            num_train_timesteps=num_timesteps,
+            schedule=schedule,
+            prediction_type=prediction_type,
+        )
+        # DDIM scheduler for fast inference (same noise schedule, fewer steps)
+        self._inference_scheduler = DDIMScheduler(
+            num_train_timesteps=num_timesteps,
+            schedule=schedule,
+            prediction_type=prediction_type,
         )
         return self.scheduler  # type: ignore[no-any-return]
 
     def predict_noise_or_velocity(
         self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
-        """DDPM predicts noise"""
+        """DDPM model forward pass (predicts noise or x₀ depending on prediction_type)."""
         return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
 
     def compute_target(
@@ -54,7 +80,13 @@ class DDPMStrategy(DiffusionStrategy):
         clean_images: ImageOrDict,
         noise: ImageOrDict,
     ) -> ImageOrDict:
-        """DDPM predicts noise, so target is the noise itself."""
+        """Compute training target based on prediction type.
+
+        - epsilon: target is noise
+        - sample: target is clean images (x₀)
+        """
+        if self.prediction_type == "sample":
+            return clean_images
         return noise
 
     def compute_predicted_clean(
@@ -63,25 +95,32 @@ class DDPMStrategy(DiffusionStrategy):
         prediction: ImageOrDict,
         timesteps: torch.Tensor,
     ) -> ImageOrDict:
-        """Reconstruct clean from noise prediction: x_0 = (x_t - sqrt(1-a) * eps) / sqrt(a).
+        """Reconstruct clean image from model prediction.
+
+        For epsilon prediction: x_0 = (x_t - sqrt(1-a) * eps) / sqrt(a)
+        For sample prediction: x_0 = prediction (model directly outputs x₀)
 
         Args:
             noisy_images: Noisy images at timestep t (x_t).
-            prediction: Model noise prediction (epsilon).
+            prediction: Model prediction (epsilon or x₀).
             timesteps: Current timesteps (integer indices).
 
         Returns:
             Predicted clean images (x_0), clamped to [0, 1].
         """
-        # Handle dual-image case
+        if self.prediction_type == "sample":
+            # Model directly predicts x₀
+            if isinstance(prediction, dict):
+                return {k: torch.clamp(v, 0, 1) for k, v in prediction.items()}
+            return torch.clamp(prediction, 0, 1)
+
+        # Epsilon prediction: reconstruct x₀ from noise prediction
         if isinstance(noisy_images, dict):
             keys = list(noisy_images.keys())
-            # For dual mode, prediction has 2 channels
             assert isinstance(prediction, torch.Tensor)
             noise_pred_0 = self._slice_channel(prediction, 0, 1)
             noise_pred_1 = self._slice_channel(prediction, 1, 2)
 
-            # Get alpha values
             alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images[keys[0]].device)
             alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
             sqrt_alpha_t = torch.sqrt(alpha_t)
@@ -98,7 +137,6 @@ class DDPMStrategy(DiffusionStrategy):
                 )
             }
         else:
-            # Single-image case
             assert isinstance(prediction, torch.Tensor)
             alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images.device)
             alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
@@ -119,12 +157,13 @@ class DDPMStrategy(DiffusionStrategy):
         timesteps: torch.Tensor,
     ) -> tuple[torch.Tensor, ImageOrDict]:
         """
-        Compute DDPM loss
+        Compute DDPM loss.
 
         Works for both 2D (4D tensors) and 3D (5D tensors).
+        Target depends on prediction_type: noise (epsilon) or clean images (sample).
 
         Args:
-            prediction: Model output [B, C, H, W] or [B, C, D, H, W] where C=1 (single) or C=2 (dual)
+            prediction: Model output [B, C, H, W] or [B, C, D, H, W]
             target_images: Clean images (tensor or dict)
             noise: Noise added (tensor or dict)
             noisy_images: Noisy images at timestep t (tensor or dict)
@@ -133,16 +172,16 @@ class DDPMStrategy(DiffusionStrategy):
         Returns:
             (mse_loss, predicted_clean_images)
         """
-        # Get target (noise for DDPM)
+        # Get target (noise for epsilon, clean images for sample)
         target = self.compute_target(target_images, noise)
 
         # Compute loss
         if isinstance(target, dict):
             keys = list(target.keys())
-            noise_pred_0 = self._slice_channel(prediction, 0, 1)
-            noise_pred_1 = self._slice_channel(prediction, 1, 2)
-            mse_loss_0 = F.mse_loss(noise_pred_0.float(), target[keys[0]].float())
-            mse_loss_1 = F.mse_loss(noise_pred_1.float(), target[keys[1]].float())
+            pred_0 = self._slice_channel(prediction, 0, 1)
+            pred_1 = self._slice_channel(prediction, 1, 2)
+            mse_loss_0 = F.mse_loss(pred_0.float(), target[keys[0]].float())
+            mse_loss_1 = F.mse_loss(pred_1.float(), target[keys[1]].float())
             mse_loss = (mse_loss_0 + mse_loss_1) / 2
         else:
             mse_loss = F.mse_loss(prediction.float(), target.float())
@@ -209,7 +248,10 @@ class DDPMStrategy(DiffusionStrategy):
         latent_channels: int = 1,
     ) -> torch.Tensor:
         """
-        Generate using DDPM sampling
+        Generate using DDPM sampling.
+
+        Works with both epsilon and sample (x₀) prediction types.
+        The scheduler.step() handles the prediction type internally.
 
         Handles both unconditional and conditional generation:
         - Unconditional: model_input is [B, 1, H, W] (just noise)
@@ -274,8 +316,9 @@ class DDPMStrategy(DiffusionStrategy):
         # Dynamic CFG: interpolate from cfg_scale (at t=T) to cfg_scale_end (at t=0)
         use_dynamic_cfg = conditioning.use_dynamic_cfg
 
-        # Set timesteps for inference
-        self.scheduler.set_timesteps(num_inference_steps=num_steps)
+        # Use DDIM for fast inference (compatible with DDPM-trained models)
+        inf_scheduler = self._inference_scheduler
+        inf_scheduler.set_timesteps(num_inference_steps=num_steps)
 
         # Parse model input into components
         parsed = self._parse_model_input(model_input, latent_channels=latent_channels)
@@ -288,18 +331,15 @@ class DDPMStrategy(DiffusionStrategy):
         # Prepare CFG context (flags and unconditional tensors)
         cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
 
-        # Sampling loop
-        timesteps = list(self.scheduler.timesteps)
+        # Sampling loop (DDIM — works in 10-50 steps)
+        timesteps = list(inf_scheduler.timesteps)
         total_steps = len(timesteps)
         if use_progress_bars:
-            timesteps_iter = tqdm(enumerate(timesteps), total=total_steps, desc="DDPM sampling")
+            timesteps_iter = tqdm(enumerate(timesteps), total=total_steps, desc="DDIM sampling")
         else:
             timesteps_iter = enumerate(timesteps)  # type: ignore[assignment]
 
         for step_idx, t in timesteps_iter:
-            # Compute current CFG scale (dynamic or constant)
-            # Note: For single-step (num_steps=1), progress=0 so cfg_scale_end is ignored
-            # and only cfg_scale (start value) is used. This is intentional.
             if use_dynamic_cfg:
                 assert cfg_scale_end is not None
                 progress = step_idx / max(total_steps - 1, 1)
@@ -309,35 +349,30 @@ class DDPMStrategy(DiffusionStrategy):
             timesteps_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
             if is_dual:
-                # Dual-image: process each channel through model together
                 assert noisy_pre is not None
                 assert noisy_gd is not None
                 assert image_conditioning is not None
                 current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
-                noise_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
+                model_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                # Split predictions for each channel
-                noise_pred_pre, noise_pred_gd = self._split_dual_predictions(noise_pred)
+                pred_pre, pred_gd = self._split_dual_predictions(model_pred)
 
-                # Denoise each channel SEPARATELY using scheduler
-                noisy_pre, _ = self.scheduler.step(noise_pred_pre, t, noisy_pre)
-                noisy_gd, _ = self.scheduler.step(noise_pred_gd, t, noisy_gd)
+                noisy_pre, _ = inf_scheduler.step(pred_pre, t, noisy_pre)
+                noisy_gd, _ = inf_scheduler.step(pred_gd, t, noisy_gd)
 
             else:
-                # Single image or unconditional
                 assert noisy_images is not None
-                # Build base model input (without bin_maps - those are handled separately)
                 if image_conditioning is not None:
                     current_model_input = torch.cat([noisy_images, image_conditioning], dim=1)
                 else:
                     current_model_input = noisy_images
 
-                noise_pred = self._compute_cfg_prediction(
+                model_pred = self._compute_cfg_prediction(
                     model, cfg_ctx, current_cfg, current_model_input, noisy_images,
                     bin_maps, size_bins, timesteps_batch, omega, mode_id
                 )
 
-                noisy_images, _ = self.scheduler.step(noise_pred, t, noisy_images)
+                noisy_images, _ = inf_scheduler.step(model_pred, t, noisy_images)
 
         # Return final denoised images
         if is_dual:
