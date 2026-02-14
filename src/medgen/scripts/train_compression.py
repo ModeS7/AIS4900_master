@@ -397,13 +397,26 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
         logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    resume_from = cfg.training.get('resume_from', None)
+    if resume_from:
+        start_epoch = trainer.load_checkpoint(resume_from)
+
     # Train
     trainer.train(
         train_loader,
         train_dataset,
         val_loader=val_loader,
         per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None,
+        start_epoch=start_epoch,
     )
+
+    # On wall-time signal: skip test eval, let SLURM script handle resubmission
+    if getattr(trainer, '_sigterm_received', False):
+        logger.info("Wall time signal received — skipping test evaluation")
+        trainer.close_writer()
+        return
 
     # Test evaluation
     if is_seg_mode or mode == 'seg_compression':
@@ -424,6 +437,10 @@ def _train_2d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     run_test_evaluation(trainer, test_result)
 
     trainer.close_writer()
+
+    # Mark training complete for SLURM job chaining
+    from pathlib import Path
+    (Path(trainer.save_dir) / '.training_complete').touch()
 
 
 def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
@@ -505,13 +522,26 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
         logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    resume_from = cfg.training.get('resume_from', None)
+    if resume_from:
+        start_epoch = trainer.load_checkpoint(resume_from)
+
     # Train
     trainer.train(
         train_loader,
         train_dataset,
         val_loader=val_loader,
         per_modality_val_loaders=per_modality_val_loaders if per_modality_val_loaders else None,
+        start_epoch=start_epoch,
     )
+
+    # On wall-time signal: skip test eval, let SLURM script handle resubmission
+    if getattr(trainer, '_sigterm_received', False):
+        logger.info("Wall time signal received — skipping test evaluation")
+        trainer.close_writer()
+        return
 
     # Test evaluation
     if is_multi_modality:
@@ -522,6 +552,10 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
     run_test_evaluation(trainer, test_result, eval_method="evaluate_test_set")
 
     trainer.close_writer()
+
+    # Mark training complete for SLURM job chaining
+    from pathlib import Path
+    (Path(trainer.save_dir) / '.training_complete').touch()
 
 
 def _build_extra_info(trainer_config: TrainerConfig, cfg: DictConfig) -> str:
