@@ -65,7 +65,7 @@ trap handle_timeout SIGUSR1
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp13: DiT-S LDM @ VQ-VAE 4x, patch=1 (163,840 tokens) ==="
+echo "=== Exp13: DiT-S LDM @ VQ-VAE 4x, patch=2 (20,480 tokens) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -84,10 +84,10 @@ COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d
 # Compression: VQ-VAE 4x (exp8_1)
 #   - Pixel: 256x256x160 -> Latent: 64x64x40
 #
-# Architecture: DiT-S (33M params)
+# Architecture: DiT-S (40M params)
 #   - hidden_size: 384, depth: 12, heads: 6
-#   - patch_size: 1 -> 163,840 tokens (no patchification)
-#   - Profiled: ~45.7 GB on A100 80GB
+#   - patch_size: 2 -> 20,480 tokens
+#   - Profiled: ~6.0 GB on A100 80GB
 #
 # Mode: bravo_seg_cond
 #   - in_channels:  8 = [bravo_latent(4), seg_latent(4)]
@@ -99,10 +99,12 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo_seg_cond \
     model=dit_3d \
     model.variant=S \
-    model.patch_size=1 \
+    model.patch_size=2 \
     latent.enabled=true \
     latent.compression_checkpoint=${COMPRESSION_CHECKPOINT} \
     latent.compression_type=vqvae \
+    training.gradient_checkpointing=false \
+    training.use_compile=true \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
