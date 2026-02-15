@@ -43,7 +43,7 @@ python -m medgen.scripts.lr_finder mode=dual strategy=rflow
 ### Diffusion Training
 - **Two strategies**: DDPM (noise prediction) and Rectified Flow (velocity prediction, continuous timesteps)
 - **Multiple modes**: seg, bravo, dual, multi, seg_conditioned (tumor-size-conditioned mask generation)
-- **Two architectures**: UNet (MONAI) and DiT (Scalable Interpolant Transformer, S/B/L variants)
+- **Two architectures**: UNet (MONAI) and DiT/SiT (Scalable Interpolant Transformer, S/B/L/XL variants)
 - **Pixel and latent space**: Direct pixel diffusion or compressed latent diffusion
 - **2D and 3D**: Unified trainer via `model.spatial_dims` parameter
 - **ControlNet**: Pixel-resolution conditioning for latent diffusion (two-stage training)
@@ -52,7 +52,7 @@ python -m medgen.scripts.lr_finder mode=dual strategy=rflow
 
 ### Compression Training
 - **VAE**: AutoencoderKL with PatchDiscriminator (8x compression)
-- **VQ-VAE**: Vector-quantized discrete latent space (8x, 512 codebook)
+- **VQ-VAE**: Vector-quantized discrete latent space (4x/8x, 512 codebook)
 - **DC-AE**: Deep Compression Autoencoder (32x/64x/128x spatial compression)
 - **DC-AE 1.5**: Structured latent space with channel masking for faster diffusion convergence
 - **Seg mask compression**: BCE + Dice + Boundary loss for binary mask encoding
@@ -111,6 +111,7 @@ BaseTrainer
 | `multi` | 2 | 1 | Seg mask + mode_id |
 | `seg_conditioned` | 1 | 1 | Tumor size bins (FiLM embedding) |
 | `seg_conditioned_input` | 1 + 7 bin maps | 1 | Tumor size bins (channel concat) |
+| `bravo_seg_cond` | 8 | 4 | Latent seg mask (for latent diffusion) |
 
 ### Compression Modes (no seg conditioning)
 
@@ -127,7 +128,7 @@ BaseTrainer
 | Space | Compression | Use Case |
 |-------|-------------|----------|
 | `PixelSpace` | 1x | Direct pixel diffusion (default) |
-| `LatentSpace` | 8x-128x | VAE/DC-AE compressed latent diffusion |
+| `LatentSpace` | 4x-128x | VAE/VQ-VAE/DC-AE compressed latent diffusion |
 | `SpaceToDepthSpace` | 2x | Lossless 2x2x2 rearrangement (3D) |
 | `WaveletSpace` | 2x | 3D Haar wavelet frequency decomposition |
 
@@ -148,7 +149,7 @@ AIS4900_master/
 │   ├── space_to_depth/              # 3D space-to-depth transform
 │   ├── wavelet/                     # 3D Haar wavelet transform
 │   ├── dcae/{f32,f64,f128}.yaml     # DC-AE compression variants
-│   ├── model/{default,dit,...}.yaml  # Model architectures
+│   ├── model/{default,dit,wdm_3d,...}.yaml  # Model architectures
 │   ├── strategy/{ddpm,rflow}.yaml   # Diffusion strategies
 │   ├── mode/{seg,bravo,...}.yaml    # Generation modes
 │   ├── training/                    # Training hyperparameters
@@ -180,21 +181,26 @@ AIS4900_master/
 │       └── visualize_augmentations.py
 │
 ├── IDUN/                            # SLURM cluster jobs
-│   ├── train/compression/           # Compression experiments
-│   ├── train/diffusion/             # Diffusion experiments
+│   ├── train/compression/           # Compression experiments (VAE/VQ-VAE/DC-AE)
+│   ├── train/diffusion/             # 2D diffusion experiments
+│   ├── train/diffusion_3d/          # 3D diffusion experiments (pixel/latent/DiT)
 │   ├── downstream/                  # Segmentation evaluation jobs
 │   ├── generate/                    # Generation jobs
+│   ├── profiling/                   # VRAM profiling jobs
 │   └── submit_prefer_h100.sh       # H100 with A100 fallback
 │
 ├── misc/                            # Utilities
 │   ├── data_processing/             # Preprocessing (resize, align, trim, split)
 │   ├── analysis/                    # Dataset and tumor analysis
-│   ├── profiling/                   # Memory profiling
+│   ├── profiling/                   # Memory profiling (UNet, VAE, DiT)
 │   ├── visualization/               # NIfTI viewer, scheduler plots
-│   └── tensorboard/                 # TensorBoard utilities
+│   ├── tensorboard/                 # TensorBoard utilities
+│   ├── profile_dit_memory.py        # 3D DiT VRAM profiling across variants
+│   ├── local_ci.sh                  # Local CI (mirrors GitHub Actions)
+│   └── validate_before_submit.sh    # Pre-submission validation
 │
-├── tests/                           # Test suite (1126 tests)
-│   ├── unit/                        # Unit tests (36 files)
+├── tests/                           # Test suite (1135 tests)
+│   ├── unit/                        # Unit tests
 │   ├── integration/                 # Integration tests
 │   ├── e2e/                         # End-to-end pipeline tests
 │   └── benchmarks/                  # Performance benchmarks
@@ -285,6 +291,22 @@ pip install -e .
 - **3D training**: 40-80GB VRAM (gradient checkpointing recommended)
 - **Multi-GPU**: DDP support for scaling
 
+## Local CI
+
+```bash
+# Run all checks (syntax + lint + unit tests)
+./misc/local_ci.sh
+
+# Quick mode (syntax + lint only, ~5s)
+./misc/local_ci.sh --quick
+
+# Full mode (includes integration + CLI tests)
+./misc/local_ci.sh --full
+
+# Install as git pre-push hook
+./misc/local_ci.sh --install
+```
+
 ## Cluster (IDUN)
 
 ```bash
@@ -300,6 +322,8 @@ sbatch IDUN/train/compression/exp9_dcae_f32.slurm
 # Validate before submit (catches syntax/import/config errors)
 ./misc/validate_before_submit.sh IDUN/train/your_job.slurm
 ```
+
+SLURM scripts support **auto-chaining** for long training runs: SIGUSR1 signal handler saves checkpoint and resubmits before wall time expires.
 
 ## Data Preprocessing
 
@@ -330,7 +354,7 @@ logging:
   grad_norm: true              # Gradient norm tracking
   timestep_losses: true        # Loss by diffusion timestep (10 bins)
   regional_losses: true        # Tumor vs background per-pixel error
-  ssim: true                   # Structural similarity
+  msssim: true                 # Multi-scale structural similarity
   psnr: true                   # Peak signal-to-noise ratio
   lpips: true                  # Perceptual similarity
   worst_batch: true            # Highest loss batch visualization
@@ -343,6 +367,6 @@ logging:
 |-----|----------|
 | `docs/architecture.md` | Architecture reference, TensorBoard metrics, config details |
 | `docs/commands.md` | Full command reference with all options |
-| `docs/common-pitfalls.md` | 71 known issues, bug fixes, and gotchas |
+| `docs/common-pitfalls.md` | 70+ known issues, bug fixes, and gotchas |
 | `papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
 | `CLAUDE.md` | Claude Code context file |
