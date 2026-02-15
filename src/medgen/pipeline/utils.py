@@ -81,6 +81,7 @@ class GradientSkipDetector:
             return False
 
         # Check for anomaly
+        skip = False
         if self.ema_grad_norm is not None and self.ema_grad_norm > 0:
             ratio = grad_norm / self.ema_grad_norm
             if ratio > self.threshold:
@@ -90,14 +91,17 @@ class GradientSkipDetector:
                     f"EMA={self.ema_grad_norm:.4f}, ratio={ratio:.1f}x. "
                     f"Skipping optimizer step. (total skips: {self.skip_count})"
                 )
-                return True
+                skip = True
 
-        # Update EMA with non-anomalous norm
+        # Always update EMA — prevents death spiral where skipped steps
+        # freeze the EMA at a stale low value, making all subsequent
+        # gradients look like spikes. Gradients are already clipped by
+        # clip_grad_norm_ before reaching here, so this is safe.
         self.ema_grad_norm = (
             self.ema_decay * self.ema_grad_norm
             + (1 - self.ema_decay) * grad_norm
         )
-        return False
+        return skip
 
 
 class EpochTimeEstimator:
