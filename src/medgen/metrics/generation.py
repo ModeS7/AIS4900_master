@@ -87,6 +87,7 @@ class GenerationMetricsConfig:
     # Size bin adherence config (for seg_conditioned mode)
     size_bin_edges: list[float] | None = None  # Bin edges in mm (default from loader)
     size_bin_fov_mm: float = 240.0  # Field of view in mm
+    compile_extractors: bool = True  # torch.compile on feature extractors (disable for 3D to save ~10GB VRAM)
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
@@ -149,6 +150,11 @@ class GenerationMetricsConfig:
         strategy_name = cfg.strategy.name
         step_mult = 2 if strategy_name == 'ddpm' else 1
 
+        # Disable torch.compile on feature extractors for 3D to save ~10GB VRAM
+        # (CUDA Graph private pools are permanently allocated and wasteful for
+        # infrequent generation metrics — 1 sample/epoch with 10 steps)
+        compile_extractors = spatial_dims != 3
+
         return cls(
             enabled=True,
             samples_per_epoch=samples_per_epoch,
@@ -163,6 +169,7 @@ class GenerationMetricsConfig:
             original_depth=original_depth,
             size_bin_edges=size_bin_edges,
             size_bin_fov_mm=size_bin_fov_mm,
+            compile_extractors=compile_extractors,
         )
 
 
@@ -632,8 +639,9 @@ class GenerationMetrics:
         self.is_seg_mode = mode_name in ('seg', 'seg_conditioned', 'seg_conditioned_input')
 
         # Initialize feature extractors (lazy-loaded)
-        self.resnet = ResNet50Features(device, cache_dir=Path(config.cache_dir))
-        self.biomed = BiomedCLIPFeatures(device, cache_dir=config.cache_dir)
+        # For 3D: compile_extractors=False saves ~10GB VRAM from CUDA Graph pools
+        self.resnet = ResNet50Features(device, cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
+        self.biomed = BiomedCLIPFeatures(device, cache_dir=config.cache_dir, compile_model=config.compile_extractors)
 
         # Reference feature cache
         self.cache = ReferenceFeatureCache(
