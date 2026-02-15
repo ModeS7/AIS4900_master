@@ -27,7 +27,7 @@ import sys
 
 import hydra
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from medgen.core import (
     ModeFactory,
@@ -152,6 +152,11 @@ def main(cfg: DictConfig) -> None:
         # Allow config overrides for scale_factor and latent_channels
         scale_factor = latent_cfg.get('scale_factor') or detected_scale
         latent_channels = latent_cfg.get('latent_channels') or detected_latent_ch
+
+        # Write detected values back to config so model factory can use them
+        with open_dict(cfg):
+            cfg.latent.scale_factor = scale_factor
+            cfg.latent.latent_channels = latent_channels
 
         # Create LatentSpace wrapper with detected/configured parameters
         space = LatentSpace(
@@ -458,6 +463,12 @@ def _train_3d(cfg: DictConfig) -> None:
         scale_factor = latent_cfg.get('scale_factor') or detected_scale
         depth_scale_factor = latent_cfg.get('depth_scale_factor') or scale_factor
         latent_channels = latent_cfg.get('latent_channels') or detected_latent_ch
+
+        # Write detected values back to config so model factory can use them
+        with open_dict(cfg):
+            cfg.latent.scale_factor = scale_factor
+            cfg.latent.depth_scale_factor = depth_scale_factor
+            cfg.latent.latent_channels = latent_channels
 
         logger.info(f"Loaded {comp_type} compression model ({detected_dims}D)")
         logger.info(f"Scale factor: {scale_factor}x (depth: {depth_scale_factor}x), Latent channels: {latent_channels}")
