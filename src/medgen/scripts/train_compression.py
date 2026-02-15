@@ -543,6 +543,20 @@ def _train_3d(cfg: DictConfig, trainer_config: TrainerConfig) -> None:
         trainer.close_writer()
         return
 
+    # Full-resolution test: free training resources and override resolution
+    test_height = cfg.volume.get('test_height', None)
+    test_width = cfg.volume.get('test_width', None)
+    if test_height is not None or test_width is not None:
+        trainer.free_training_resources()
+        from omegaconf import open_dict
+        with open_dict(cfg):
+            if test_height is not None:
+                logger.info(f"Test resolution override: height {cfg.volume.height} → {test_height}")
+                cfg.volume.height = test_height
+            if test_width is not None:
+                logger.info(f"Test resolution override: width {cfg.volume.width} → {test_width}")
+                cfg.volume.width = test_width
+
     # Test evaluation
     if is_multi_modality:
         test_result = create_vae_3d_multi_modality_test_dataloader(cfg=cfg)

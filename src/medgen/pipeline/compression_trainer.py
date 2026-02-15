@@ -1096,6 +1096,35 @@ class BaseCompressionTrainer(BaseTrainer):
         ...
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Resource management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def free_training_resources(self) -> None:
+        """Free GPU memory used by training-only components.
+
+        Deletes discriminator, optimizers, schedulers, perceptual loss, and
+        adversarial loss. Keeps only the generator model for inference.
+        Call this before full-resolution test evaluation when training at
+        reduced resolution to free enough GPU memory.
+        """
+        import gc
+
+        freed = []
+        for attr in (
+            'discriminator', 'discriminator_raw', 'optimizer_d', 'lr_scheduler_d',
+            'perceptual_loss_fn', 'adv_loss_fn', 'optimizer', 'lr_scheduler', 'ema',
+        ):
+            obj = getattr(self, attr, None)
+            if obj is not None:
+                setattr(self, attr, None)
+                freed.append(attr)
+
+        if freed:
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info(f"Freed training resources: {', '.join(freed)}")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Test evaluation
     # ─────────────────────────────────────────────────────────────────────────
 

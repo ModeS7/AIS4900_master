@@ -14,6 +14,12 @@ width: 256
 train_height: null                # null = use height (256)
 train_width: null                 # null = use width (256)
 
+# Test resolution (optional - defaults to height/width if not set)
+# Allows running test evaluation at full resolution after training at lower resolution.
+# Training resources are freed before test to fit full-res volumes in GPU memory.
+test_height: null                 # null = use height
+test_width: null                  # null = use width
+
 # Padding
 pad_depth_to: 160                 # Target depth after padding
 pad_mode: replicate               # replicate or constant (zeros)

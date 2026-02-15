@@ -55,7 +55,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp14_2 3D KL-VAE 8x: Multi-Modality train 128x128x160, val 256x256x160 ==="
+echo "=== Exp14_2 3D KL-VAE 8x: Multi-Modality 128x128x160, full-res test 256x256x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -70,8 +70,10 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 time python -m medgen.scripts.train_compression --config-name=vae_3d \
     paths=cluster \
     mode=multi_modality \
-    volume.train_height=128 \
-    volume.train_width=128 \
+    volume.height=128 \
+    volume.width=128 \
+    volume.test_height=256 \
+    volume.test_width=256 \
     training.epochs=125 \
     training.batch_size=1 \
     training.learning_rate=5e-5 \
