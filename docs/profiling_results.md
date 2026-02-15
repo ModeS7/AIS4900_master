@@ -1,4 +1,237 @@
-# 3D UNet VRAM Profiling Results
+# 3D VRAM Profiling Results
+
+---
+---
+
+# 3D DiT VRAM Profiling
+
+Profiled on IDUN cluster, February 15, 2026.
+
+## Hardware
+- **GPU**: NVIDIA A100-SXM4-80GB
+- **Driver**: 575.57.08
+- **CUDA**: 12.9
+
+## Test Configuration
+- **Batch size**: 1
+- **Precision**: AMP bfloat16
+- **Input channels**: 1 (single modality)
+- **Configs tested**: 116 (56 latent + 60 pixel)
+- **Viable**: 99, **OOM**: 17
+
+## DiT Variants
+
+| Variant | Hidden dim | Heads | Depth | Base params |
+|---------|-----------|-------|-------|-------------|
+| S | 384 | 6 | 12 | ~33M |
+| B | 768 | 12 | 12 | ~130M |
+| L | 1024 | 16 | 24 | ~457M |
+| XL | 1152 | 16 | 28 | ~674M |
+
+Token count = (D/patch) × (H/patch) × (W/patch). Attention is O(n²) in tokens.
+
+---
+
+## Latent Space DiT (after VAE/VQ-VAE compression)
+
+### DiT-S (Latent)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 16x16x10 | 2 | 320 | 32.6M | 0.7 GB | OK |
+| 16x16x20 | 2 | 640 | 32.7M | 0.7 GB | OK |
+| 16x16x20 | 4 | 80 | 32.5M | 0.7 GB | OK |
+| 32x32x20 | 2 | 2,560 | 33.5M | 1.0 GB | OK |
+| 32x32x20 | 4 | 320 | 32.6M | 0.7 GB | OK |
+| 32x32x40 | 2 | 5,120 | 34.4M | 1.7 GB | OK |
+| 32x32x40 | 4 | 640 | 32.8M | 0.7 GB | OK |
+| 32x32x40 | 8 | 80 | 32.9M | 0.7 GB | OK |
+| 64x64x40 | 2 | 20,480 | 40.3M | 6.0 GB | OK |
+| 64x64x40 | 4 | 2,560 | 33.5M | 1.0 GB | OK |
+| 64x64x40 | 8 | 320 | 33.0M | 0.7 GB | OK |
+| 64x64x80 | 2 | 40,960 | 48.2M | 11.7 GB | OK |
+| 64x64x80 | 4 | 5,120 | 34.5M | 1.7 GB | OK |
+| 64x64x80 | 8 | 640 | 33.1M | 0.7 GB | OK |
+
+### DiT-B (Latent)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 16x16x10 | 2 | 320 | 129.8M | 2.5 GB | OK |
+| 16x16x20 | 2 | 640 | 130.0M | 2.5 GB | OK |
+| 16x16x20 | 4 | 80 | 129.7M | 2.5 GB | OK |
+| 32x32x20 | 2 | 2,560 | 131.5M | 2.5 GB | OK |
+| 32x32x20 | 4 | 320 | 129.9M | 2.5 GB | OK |
+| 32x32x40 | 2 | 5,120 | 133.5M | 3.8 GB | OK |
+| 32x32x40 | 4 | 640 | 130.1M | 2.5 GB | OK |
+| 32x32x40 | 8 | 80 | 130.4M | 2.5 GB | OK |
+| 64x64x40 | 2 | 20,480 | 145.3M | 12.2 GB | OK |
+| 64x64x40 | 4 | 2,560 | 131.6M | 2.5 GB | OK |
+| 64x64x40 | 8 | 320 | 130.5M | 2.5 GB | OK |
+| 64x64x80 | 2 | 40,960 | 161.0M | 23.5 GB | OK |
+| 64x64x80 | 4 | 5,120 | 133.5M | 3.8 GB | OK |
+| 64x64x80 | 8 | 640 | 130.8M | 2.5 GB | OK |
+
+### DiT-L (Latent)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 16x16x10 | 2 | 320 | 457.1M | 8.6 GB | OK |
+| 16x16x20 | 2 | 640 | 457.4M | 8.6 GB | OK |
+| 16x16x20 | 4 | 80 | 457.0M | 8.6 GB | OK |
+| 32x32x20 | 2 | 2,560 | 459.4M | 8.6 GB | OK |
+| 32x32x20 | 4 | 320 | 457.2M | 8.6 GB | OK |
+| 32x32x40 | 2 | 5,120 | 462.0M | 10.1 GB | OK |
+| 32x32x40 | 4 | 640 | 457.6M | 8.6 GB | OK |
+| 32x32x40 | 8 | 80 | 457.9M | 8.6 GB | OK |
+| 64x64x40 | 2 | 20,480 | 477.8M | 32.4 GB | OK |
+| 64x64x40 | 4 | 2,560 | 459.5M | 8.6 GB | OK |
+| 64x64x40 | 8 | 320 | 458.1M | 8.6 GB | OK |
+| **64x64x80** | **2** | **40,960** | **498.7M** | **62.1 GB** | **OK (17.9GB free)** |
+| 64x64x80 | 4 | 5,120 | 462.1M | 10.1 GB | OK |
+| 64x64x80 | 8 | 640 | 458.5M | 8.6 GB | OK |
+
+### DiT-XL (Latent)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 16x16x10 | 2 | 320 | 674.0M | 12.7 GB | OK |
+| 16x16x20 | 2 | 640 | 674.4M | 12.7 GB | OK |
+| 16x16x20 | 4 | 80 | 673.9M | 12.7 GB | OK |
+| 32x32x20 | 2 | 2,560 | 676.6M | 12.7 GB | OK |
+| 32x32x20 | 4 | 320 | 674.2M | 12.7 GB | OK |
+| 32x32x40 | 2 | 5,120 | 679.6M | 13.7 GB | OK |
+| 32x32x40 | 4 | 640 | 674.5M | 12.7 GB | OK |
+| 32x32x40 | 8 | 80 | 674.9M | 12.7 GB | OK |
+| **64x64x40** | **2** | **20,480** | **697.2M** | **43.0 GB** | **OK** |
+| 64x64x40 | 4 | 2,560 | 676.7M | 12.7 GB | OK |
+| 64x64x40 | 8 | 320 | 675.2M | 12.7 GB | OK |
+| 64x64x80 | 2 | 40,960 | 720.8M | --- | **OOM** |
+| 64x64x80 | 4 | 5,120 | 679.7M | 13.7 GB | OK |
+| 64x64x80 | 8 | 640 | 675.6M | 12.7 GB | OK |
+
+---
+
+## Pixel Space DiT (no compression)
+
+### DiT-S (Pixel)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 64x64x40 | 2 | 20,480 | 40.3M | 6.0 GB | OK |
+| 64x64x40 | 4 | 2,560 | 33.5M | 1.0 GB | OK |
+| 64x64x40 | 8 | 320 | 33.0M | 0.7 GB | OK |
+| 64x64x80 | 2 | 40,960 | 48.2M | 11.7 GB | OK |
+| 64x64x80 | 4 | 5,120 | 34.5M | 1.7 GB | OK |
+| 64x64x80 | 8 | 640 | 33.1M | 0.7 GB | OK |
+| **128x128x80** | **2** | **163,840** | **95.4M** | **45.6 GB** | **OK** |
+| 128x128x80 | 4 | 20,480 | 40.4M | 6.0 GB | OK |
+| 128x128x80 | 8 | 2,560 | 33.8M | 1.0 GB | OK |
+| 128x128x160 | 2 | 327,680 | 158.3M | --- | **OOM** |
+| 128x128x160 | 4 | 40,960 | 48.2M | 11.7 GB | OK |
+| 128x128x160 | 8 | 5,120 | 34.8M | 1.7 GB | OK |
+| 256x256x160 | 4 | 163,840 | 95.4M | 45.7 GB | OK |
+| 256x256x160 | 8 | 20,480 | 40.7M | 6.1 GB | OK |
+
+### DiT-B (Pixel)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 64x64x40 | 2 | 20,480 | 145.3M | 12.2 GB | OK |
+| 64x64x40 | 4 | 2,560 | 131.6M | 2.5 GB | OK |
+| 64x64x40 | 8 | 320 | 130.5M | 2.5 GB | OK |
+| 64x64x80 | 2 | 40,960 | 161.0M | 23.5 GB | OK |
+| 64x64x80 | 4 | 5,120 | 133.5M | 3.8 GB | OK |
+| 64x64x80 | 8 | 640 | 130.8M | 2.5 GB | OK |
+| 128x128x80 | 2 | 163,840 | 255.4M | --- | **OOM** |
+| 128x128x80 | 4 | 20,480 | 145.3M | 12.2 GB | OK |
+| 128x128x80 | 8 | 2,560 | 132.3M | 2.6 GB | OK |
+| 128x128x160 | 2 | 327,680 | 381.2M | --- | **OOM** |
+| 128x128x160 | 4 | 40,960 | 161.1M | 23.5 GB | OK |
+| 128x128x160 | 8 | 5,120 | 134.2M | 3.8 GB | OK |
+| 256x256x160 | 4 | 163,840 | 255.4M | --- | **OOM** |
+| 256x256x160 | 8 | 20,480 | 146.0M | 12.3 GB | OK |
+
+### DiT-L (Pixel)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 64x64x40 | 2 | 20,480 | 477.8M | 32.4 GB | OK |
+| 64x64x40 | 4 | 2,560 | 459.5M | 8.6 GB | OK |
+| 64x64x40 | 8 | 320 | 458.1M | 8.6 GB | OK |
+| **64x64x80** | **2** | **40,960** | **498.7M** | **62.1 GB** | **OK (17.9GB free)** |
+| 64x64x80 | 4 | 5,120 | 462.1M | 10.1 GB | OK |
+| 64x64x80 | 8 | 640 | 458.5M | 8.6 GB | OK |
+| 128x128x80 | 2 | 163,840 | 624.6M | --- | **OOM** |
+| 128x128x80 | 4 | 20,480 | 477.9M | 32.4 GB | OK |
+| 128x128x80 | 8 | 2,560 | 460.4M | 8.6 GB | OK |
+| 128x128x160 | 2 | 327,680 | 792.3M | --- | **OOM** |
+| 128x128x160 | 4 | 40,960 | 498.8M | 62.1 GB | OK (17.9GB free) |
+| 128x128x160 | 8 | 5,120 | 463.1M | 10.1 GB | OK |
+| 256x256x160 | 4 | 163,840 | 624.7M | --- | **OOM** |
+| 256x256x160 | 8 | 20,480 | 478.8M | 32.5 GB | OK |
+
+### DiT-XL (Pixel)
+
+| Resolution | Patch | Tokens | Params | Peak VRAM | Status |
+|-----------|-------|--------|--------|-----------|--------|
+| 64x64x40 | 2 | 20,480 | 697.2M | 43.0 GB | OK |
+| 64x64x40 | 4 | 2,560 | 676.7M | 12.7 GB | OK |
+| 64x64x40 | 8 | 320 | 675.2M | 12.7 GB | OK |
+| 64x64x80 | 2 | 40,960 | 720.8M | --- | **OOM** |
+| 64x64x80 | 4 | 5,120 | 679.7M | 13.7 GB | OK |
+| 64x64x80 | 8 | 640 | 675.6M | 12.7 GB | OK |
+| 128x128x80 | 2 | 163,840 | 862.4M | --- | **OOM** |
+| 128x128x80 | 4 | 20,480 | 697.4M | 43.0 GB | OK |
+| 128x128x80 | 8 | 2,560 | 677.8M | 12.7 GB | OK |
+| 128x128x160 | 2 | 327,680 | 1051.1M | --- | **OOM** |
+| 128x128x160 | 4 | 40,960 | 721.0M | --- | **OOM** |
+| 128x128x160 | 8 | 5,120 | 680.7M | 13.8 GB | OK |
+| 256x256x160 | 4 | 163,840 | 862.5M | --- | **OOM** |
+| 256x256x160 | 8 | 20,480 | 698.4M | 43.1 GB | OK |
+
+---
+
+## Best Viable Config Per Variant
+
+Maximum token count that fits on A100 80GB:
+
+| Variant | Best Resolution | Patch | Tokens | Peak VRAM | Headroom |
+|---------|----------------|-------|--------|-----------|----------|
+| **S** | 128x128x80 (pixel) | 2 | 163,840 | 45.6 GB | 34.4 GB |
+| **B** | 64x64x80 (latent) | 2 | 40,960 | 23.5 GB | 56.5 GB |
+| **L** | 64x64x80 (both) | 2 | 40,960 | 62.1 GB | 17.9 GB |
+| **XL** | 64x64x40 (latent) | 2 | 20,480 | 43.0 GB | 37.0 GB |
+
+## Token Count OOM Boundaries
+
+| Variant | Max viable tokens (patch=2) | OOM starts at |
+|---------|---------------------------|---------------|
+| S | 163,840 | 327,680 |
+| B | 40,960 | 163,840 |
+| L | 40,960 | 163,840 |
+| XL | 20,480 | 40,960 |
+
+## Key Insights
+
+1. **VRAM scales O(n²) with token count**: Doubling tokens roughly quadruples attention VRAM. The patch embedding layer only adds linear cost.
+
+2. **Patch size dominates VRAM more than variant**: DiT-XL at patch=4 (13.7GB) uses less VRAM than DiT-S at patch=2 with many tokens (45.6GB). Choose patch size first, then variant.
+
+3. **DiT-S is uniquely scalable**: Can handle 163,840 tokens (patch=2 at 128x128x80) at 45.6GB. All other variants OOM at this token count.
+
+4. **DiT-L at 64x64x80 is the sweet spot for latent diffusion**: 40,960 tokens, 62.1GB — tight but viable on A100 80GB with 17.9GB headroom.
+
+5. **XL gains are marginal**: XL (675M) vs L (457M) is only +48% params but halves maximum viable resolution. L is likely the better tradeoff.
+
+6. **Latent vs pixel space have identical VRAM for same resolution**: The token count is what matters, not whether the volume is compressed. A 64x64x80 latent has the same token count as a 64x64x80 pixel volume.
+
+7. **For exp13 (4x VQ-VAE latent, bravo_seg_cond)**: Latent shape is ~64x64x40. DiT-S/B/L/XL all fit comfortably at patch=2. DiT-L at 20,480 tokens uses only 32.4GB.
+
+---
+---
+
+# 3D UNet VRAM Profiling (Latent Diffusion)
 
 Profiled on IDUN cluster, January 31, 2026.
 
@@ -137,7 +370,7 @@ model.num_head_channels=64
 ---
 ---
 
-# S2D 3D UNet VRAM Profiling Results
+# S2D 3D UNet VRAM Profiling
 
 Profiled on IDUN cluster, February 8, 2026.
 
