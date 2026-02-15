@@ -54,9 +54,8 @@ echo "Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 echo "Port:  ${PORT}"
 echo "Log:   ${LOGDIR}"
 echo ""
-echo "Connect via SSH tunnel:"
-echo "  ssh -L ${PORT}:${SLURM_JOB_NODELIST}:${PORT} modestas@idun-login1.hpc.ntnu.no"
-echo "  Then open: http://localhost:${PORT}"
+echo "Open in browser:"
+echo "  https://apps.hpc.ntnu.no/rnode/${SLURM_JOB_NODELIST}/${PORT}/"
 echo "============================================"
 
 tensorboard --logdir=${LOGDIR} --port=${PORT} --bind_all &
