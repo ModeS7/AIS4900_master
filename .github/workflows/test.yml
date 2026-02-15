@@ -27,7 +27,7 @@ on:
 #   pip install -r /path/to/AIS4900_master/requirements.txt
 #   pip install pytest pytest-cov pytest-timeout ruff
 env:
-  VENV: ~/actions-venv/bin/activate
+  VENV: /home/mode/actions-venv/bin/activate
 
 jobs:
   test:
