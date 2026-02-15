@@ -20,6 +20,7 @@ import logging
 import numpy as np
 import torch
 from scipy.ndimage import label as scipy_label
+from scipy.spatial import QhullError
 from skimage.measure import regionprops
 from torch import Tensor
 
@@ -216,9 +217,16 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
             region: skimage regionprops region object.
 
         Returns:
-            Feret diameter in pixels.
+            Feret diameter in pixels. Falls back to bounding box diagonal
+            for degenerate regions where convex hull computation fails.
         """
-        return region.feret_diameter_max
+        try:
+            return region.feret_diameter_max
+        except (ValueError, QhullError):
+            # Degenerate region (e.g., single-pixel thick) — convex hull fails.
+            # Fall back to bounding box diagonal.
+            minr, minc, maxr, maxc = region.bbox
+            return float(np.sqrt((maxr - minr) ** 2 + (maxc - minc) ** 2)) or 1.0
 
     def _get_3d_feret(self, tumor_mask_3d: np.ndarray) -> float | None:
         """Get Feret diameter for a 3D tumor by extracting max slice.
@@ -245,7 +253,7 @@ class RegionalMetricsTracker(BaseRegionalMetricsTracker):
 
         # Use the largest region in this slice
         largest_region = max(regions_2d, key=lambda r: r.area)
-        return largest_region.feret_diameter_max
+        return self._get_2d_feret(largest_region)
 
     def _update_2d(
         self,

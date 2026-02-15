@@ -16,7 +16,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from medgen.metrics import (
-    RegionalMetricsTracker,
     compute_msssim,
     compute_psnr,
     create_reconstruction_figure,
@@ -106,12 +105,7 @@ def evaluate_test_set(
     # Initialize regional tracker for test (if enabled)
     regional_tracker = None
     if trainer.log_regional_losses:
-        regional_tracker = RegionalMetricsTracker(
-            image_size=trainer.image_size,
-            fov_mm=trainer._paths_config.fov_mm,
-            loss_fn='mse',
-            device=trainer.device,
-        )
+        regional_tracker = trainer._create_regional_tracker(loss_fn='mse')
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Test evaluation", ncols=100, disable=not trainer.verbose):
