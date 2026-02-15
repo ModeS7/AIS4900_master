@@ -18,27 +18,33 @@ on:
       - '.gitignore'
       - 'LICENSE'
 
+# Pre-built venv on the self-hosted runner.
+# One-time setup:
+#   python3 -m venv ~/actions-venv
+#   source ~/actions-venv/bin/activate
+#   pip install --upgrade pip
+#   pip install -e /path/to/AIS4900_master
+#   pip install -r /path/to/AIS4900_master/requirements.txt
+#   pip install pytest pytest-cov pytest-timeout ruff
+env:
+  VENV: ~/actions-venv/bin/activate
+
 jobs:
   test:
     runs-on: self-hosted
-    strategy:
-      matrix:
-        python-version: ['3.12']
-      fail-fast: false
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install package in editable mode
         run: |
+          source $VENV
           pip install -e .
-          pip install pytest pytest-cov
 
       - name: Run unit tests
         run: |
+          source $VENV
           pytest tests/unit -m "not slow" -v --tb=short \
             --cov=src/medgen \
-            --cov-report=xml \
             --cov-report=term-missing \
             --cov-fail-under=15
 
@@ -47,47 +53,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install linters
-        run: |
-          pip install ruff
-
       - name: Check syntax with py_compile
         run: |
+          source $VENV
           python -m py_compile src/medgen/**/*.py
 
       - name: Lint with ruff
         run: |
+          source $VENV
           ruff check src/medgen/
 
   integration-tests:
     runs-on: self-hosted
     timeout-minutes: 30
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install package in editable mode
         run: |
+          source $VENV
           pip install -e .
-          pip install pytest pytest-timeout
 
       - name: Run integration tests (CPU only)
         run: |
+          source $VENV
           pytest tests/integration -m "not slow and not gpu and not baseline" \
             -v --tb=short --timeout=60
 
   cli-tests:
     runs-on: self-hosted
     timeout-minutes: 15
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install package in editable mode
         run: |
+          source $VENV
           pip install -e .
-          pip install pytest pytest-timeout
 
       - name: Run CLI tests (help commands, imports)
         run: |
+          source $VENV
           pytest tests/e2e/test_cli_complete.py -v --tb=short --timeout=120
