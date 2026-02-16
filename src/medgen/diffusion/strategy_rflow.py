@@ -250,11 +250,11 @@ class RFlowStrategy(DiffusionStrategy):
         """
         try:
             from torchdiffeq import odeint
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
                 f"torchdiffeq is required for ode_solver='{self.ode_solver}'. "
                 "Install it with: pip install torchdiffeq"
-            )
+            ) from err
 
         T = self.scheduler.num_train_timesteps
         omega = conditioning.omega

@@ -9,6 +9,7 @@
 #   ./misc/local_ci.sh --quick      # Syntax + lint only (fast, ~5s)
 #   ./misc/local_ci.sh --unit       # Syntax + lint + unit tests
 #   ./misc/local_ci.sh --full       # Everything including integration + CLI
+#   ./misc/local_ci.sh --nightly    # Comprehensive tests (mirrors GitHub nightly)
 #   ./misc/local_ci.sh --install    # Install as git pre-push hook
 #   ./misc/local_ci.sh --uninstall  # Remove pre-push hook
 
@@ -131,6 +132,7 @@ for arg in "$@"; do
         --quick)     MODE="quick" ;;
         --unit)      MODE="unit" ;;
         --full)      MODE="full" ;;
+        --nightly)   MODE="nightly" ;;
         --install)   install_hook ;;
         --uninstall) uninstall_hook ;;
         --help|-h)
@@ -139,6 +141,7 @@ for arg in "$@"; do
             echo "  --quick      Syntax + lint only (~5s)"
             echo "  --unit       Syntax + lint + unit tests (~30s) [default]"
             echo "  --full       All checks including integration + CLI (~2min)"
+            echo "  --nightly    Comprehensive tests, mirrors GitHub nightly (~5min)"
             echo "  --install    Install as git pre-push hook"
             echo "  --uninstall  Remove pre-push hook"
             exit 0
@@ -207,7 +210,7 @@ fi
 # Phase 4: Unit tests
 # ══════════════════════════════════════════════════════════════════════════════
 
-if [ "$MODE" = "unit" ] || [ "$MODE" = "default" ] || [ "$MODE" = "full" ]; then
+if [ "$MODE" = "unit" ] || [ "$MODE" = "default" ] || [ "$MODE" = "full" ] || [ "$MODE" = "nightly" ]; then
     run_step "Unit tests" python -m pytest tests/unit -m "not slow and not nightly" \
         --tb=short -q --no-header || true
 fi
@@ -216,7 +219,7 @@ fi
 # Phase 5: Integration + CLI tests (--full only)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if [ "$MODE" = "full" ]; then
+if [ "$MODE" = "full" ] || [ "$MODE" = "nightly" ]; then
     run_step "Integration tests" python -m pytest tests/integration \
         -m "not slow and not gpu and not baseline" \
         --tb=short -q --no-header --timeout=60 || true
@@ -225,6 +228,17 @@ if [ "$MODE" = "full" ]; then
         run_step "CLI tests" python -m pytest tests/e2e/test_cli_complete.py \
             --tb=short -q --no-header --timeout=120 || true
     fi
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 6: Nightly comprehensive tests (--nightly only)
+# Mirrors GitHub Actions tests-nightly.yml comprehensive-cpu job
+# ══════════════════════════════════════════════════════════════════════════════
+
+if [ "$MODE" = "nightly" ]; then
+    run_step "Nightly comprehensive tests" python -m pytest tests/ \
+        -m "not gpu and not baseline" \
+        -v --tb=short --timeout=120 || true
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

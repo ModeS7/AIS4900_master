@@ -50,11 +50,20 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import nibabel as nib
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.amp import autocast
+
+from medgen.scripts.eval_ode_solvers import (
+    compute_all_metrics,
+    discover_splits,
+    generate_noise_tensors,
+    get_or_cache_reference_features,
+    load_conditioning,
+    save_conditioning,
+    save_volumes,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -193,22 +202,6 @@ def build_eval_configs(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Reuse infrastructure from eval_ode_solvers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from medgen.scripts.eval_ode_solvers import (
-    compute_all_metrics,
-    discover_splits,
-    extract_generated_features,
-    generate_noise_tensors,
-    get_or_cache_reference_features,
-    load_conditioning,
-    save_conditioning,
-    save_volumes,
-)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Volume generation
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -254,7 +247,7 @@ def generate_volumes(
     volumes = []
     start_time = time.time()
 
-    for i, (noise, (patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
+    for i, (noise, (_patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
         seg_on_device = seg_tensor.to(device)
         model_input = torch.cat([noise, seg_on_device], dim=1)  # [1, 2, D, H, W]
 

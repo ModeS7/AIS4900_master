@@ -238,7 +238,7 @@ def estimate_adaptive_thresholds(
         input_numel = sample_shape[1] * sample_shape[2]
     else:
         input_numel = 1
-    for d in sample_shape[1:]:
+    for _d in sample_shape[1:]:
         pass  # already computed above
 
     # Set up scheduler timesteps
@@ -316,7 +316,7 @@ def estimate_adaptive_thresholds(
             log_ratio_final = discriminator.get_log_ratio(
                 disc_final, final_t,
             ).cpu()
-            for i, lr in enumerate(log_ratio_final):
+            for lr in log_ratio_final:
                 lst_adaptive[n_steps].append(lr)
 
             # Re-init completed samples
@@ -602,4 +602,4 @@ def _do_backstep_rejection(
         # Update eligibility
         eligible[check_idx[accepted]] = False
         eligible[lst_idx <= min_backsteps] = False
-        count += 1
+        count += 1  # noqa: SIM113

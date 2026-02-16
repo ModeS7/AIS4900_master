@@ -1,18 +1,18 @@
 name: Nightly Tests
 
-# Run comprehensive tests nightly - includes slow tests and E2E tests
-# These tests are too slow/resource-intensive for PR checks
+# DISABLED: Moved to local cron to avoid GitHub Actions billing.
+# Run locally: ./misc/nightly_cron.sh
+# Install cron: ./misc/nightly_cron.sh --install
 #
 # NOTE: GPU-dependent jobs (e2e-tests, slow-integration-tests, baseline-tests)
 # are disabled until a self-hosted GPU runner is configured.
 # To re-enable, uncomment the jobs below and set up a runner with labels [self-hosted, gpu].
 
 on:
-  schedule:
-    # Run at 3 AM UTC daily
-    - cron: "0 3 * * *"
+  # schedule:
+  #   - cron: "0 3 * * *"
   workflow_dispatch:
-    # Allow manual triggers
+    # Allow manual triggers only
 
 jobs:
   # ==========================================================================
