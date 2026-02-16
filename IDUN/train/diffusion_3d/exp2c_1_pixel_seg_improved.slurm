@@ -80,6 +80,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode.size_bins.projection_num_layers=4 \
     mode.cfg_dropout_prob=0.25 \
     training.regional_weighting.enabled=true \
+    training.epochs=20 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

@@ -700,6 +700,16 @@ class GenerationMetrics:
     def compute_test_metrics(self, model, strategy, mode, test_loader=None):
         return compute_test_metrics(self, model, strategy, mode, test_loader)
 
+    def unload_extractors(self) -> None:
+        """Unload feature extractors from GPU to free VRAM.
+
+        Should be called after generation metrics to prevent OOM
+        during the next training backward pass (especially at 256x256x160).
+        Extractors are lazy-loaded, so they'll reload on next use.
+        """
+        self.resnet.unload()
+        self.biomed.unload()
+
 
 # =============================================================================
 # Re-exports from helper modules for backward compatibility

@@ -5,6 +5,7 @@ This module provides validation loop functionality:
 - Per-modality validation for multi-modality mode
 - Timestep bin loss tracking
 """
+import gc
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -419,7 +420,10 @@ def compute_validation_losses(
                 except (RuntimeError, ValueError) as e:
                     logger.exception(f"Generation metrics computation failed at epoch {epoch}: {e}")
                 finally:
-                    # Always clean up after generation metrics to prevent memory buildup
+                    # Unload feature extractors to free VRAM for next training backward pass
+                    # (prevents OOM at 256x256x160 where extractors + training compete for memory)
+                    trainer._gen_metrics.unload_extractors()
+                    gc.collect()
                     torch.cuda.empty_cache()
 
             # Record epoch history for JSON export (before reset)
