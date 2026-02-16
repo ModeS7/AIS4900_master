@@ -1,0 +1,3 @@
+{
+  "customInstructions": "ALWAYS ask for clarification before proceeding when: (1) the request involves training scripts and it's unclear which one (train.py vs train_vae.py vs train_vae_progressive.py), (2) terminology is ambiguous (e.g., 'progressive', 'dual', 'VAE training'), (3) mode or channel counts are involved, (4) you're about to make assumptions about the training pipeline. Present options when multiple interpretations exist. Read CLAUDE.md first for project context."
+}
