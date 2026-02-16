@@ -131,8 +131,18 @@ def _create_dit(
         slicewise = latent_cfg.get('slicewise_encoding', False)
         depth_scale = 1 if slicewise else (latent_cfg.get('depth_scale_factor') or spatial_scale)
     else:
-        spatial_scale = 1
-        depth_scale = 1
+        # Check for wavelet or space-to-depth spatial reduction
+        wavelet_cfg = cfg.get('wavelet', {})
+        s2d_cfg = cfg.get('space_to_depth', {})
+        if wavelet_cfg.get('enabled', False):
+            spatial_scale = 2  # Haar wavelet: 2x2x2 decomposition
+            depth_scale = 2
+        elif s2d_cfg.get('enabled', False):
+            spatial_scale = s2d_cfg.get('spatial_factor', 2)
+            depth_scale = s2d_cfg.get('depth_factor', 2)
+        else:
+            spatial_scale = 1
+            depth_scale = 1
 
     # Get input size - prefer volume config for 3D, fallback to model config
     # This avoids redundant specification of dimensions
