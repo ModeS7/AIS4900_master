@@ -57,6 +57,12 @@ cfg_scale_bravo: 1.0      # CFG for bravo generation (seg mask conditioning)
 cfg_scale_seg_end: null   # Ending CFG for seg (null = constant)
 cfg_scale_bravo_end: null # Ending CFG for bravo (null = constant)
 
+# ODE solver for generation (requires torchdiffeq for non-euler solvers)
+# Options: euler (default), midpoint, rk4, dopri5
+ode_solver: euler
+ode_atol: 1e-5                    # Absolute tolerance (dopri5 only)
+ode_rtol: 1e-5                    # Relative tolerance (dopri5 only)
+
 # Seg mask validation (3D: per-slice check, same threshold as 2D)
 max_white_percentage: 0.04   # Max tumor percentage per slice (4%)
 max_retries: 10              # Max retries for invalid seg masks

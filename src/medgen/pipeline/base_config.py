@@ -168,12 +168,20 @@ class StrategyConfig:
     use_timestep_transform: bool = True
     schedule: str = "cosine"
 
+    # ODE solver config (generation only, RFlow only)
+    ode_solver: str = "euler"
+    ode_atol: float = 1e-5
+    ode_rtol: float = 1e-5
+
     def __post_init__(self):
         valid_names = ('ddpm', 'rflow')
         if self.name not in valid_names:
             raise ValueError(f"strategy name must be one of {valid_names}, got '{self.name}'")
         if self.num_train_timesteps <= 0:
             raise ValueError(f"num_train_timesteps must be > 0, got {self.num_train_timesteps}")
+        valid_solvers = ('euler', 'midpoint', 'rk4', 'dopri5')
+        if self.ode_solver not in valid_solvers:
+            raise ValueError(f"ode_solver must be one of {valid_solvers}, got '{self.ode_solver}'")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'StrategyConfig':
@@ -187,6 +195,9 @@ class StrategyConfig:
             sample_method=strat_cfg.get('sample_method', 'logit-normal'),
             use_timestep_transform=strat_cfg.get('use_timestep_transform', True),
             schedule=strat_cfg.get('schedule', 'cosine'),
+            ode_solver=strat_cfg.get('ode_solver', 'euler'),
+            ode_atol=strat_cfg.get('ode_atol', 1e-5),
+            ode_rtol=strat_cfg.get('ode_rtol', 1e-5),
         )
 
 

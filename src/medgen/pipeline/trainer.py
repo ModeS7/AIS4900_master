@@ -157,6 +157,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             scheduler_kwargs['spatial_dims'] = 3
         self.scheduler = self.strategy.setup_scheduler(**scheduler_kwargs)
 
+        # ODE solver config (RFlow only, used during generation)
+        if hasattr(self.strategy, 'ode_solver'):
+            self.strategy.ode_solver = sc.ode_solver
+            self.strategy.ode_atol = sc.ode_atol
+            self.strategy.ode_rtol = sc.ode_rtol
+
         # ─────────────────────────────────────────────────────────────────────
         # 3D-specific memory optimizations (from typed config)
         # ─────────────────────────────────────────────────────────────────────

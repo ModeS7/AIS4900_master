@@ -218,6 +218,12 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     strategy: DiffusionStrategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
     strategy.setup_scheduler(1000, cfg.image_size)
 
+    # ODE solver config (RFlow only)
+    if hasattr(strategy, 'ode_solver'):
+        strategy.ode_solver = cfg.get('ode_solver', 'euler')
+        strategy.ode_atol = cfg.get('ode_atol', 1e-5)
+        strategy.ode_rtol = cfg.get('ode_rtol', 1e-5)
+
     # Load models
     logger.info("Loading segmentation model...")
     seg_model = load_diffusion_model(
@@ -367,6 +373,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         depth_size=cfg.depth,
         spatial_dims=3,
     )
+
+    # ODE solver config (RFlow only)
+    if hasattr(strategy, 'ode_solver'):
+        strategy.ode_solver = cfg.get('ode_solver', 'euler')
+        strategy.ode_atol = cfg.get('ode_atol', 1e-5)
+        strategy.ode_rtol = cfg.get('ode_rtol', 1e-5)
 
     # Parse fixed size bins if provided
     fixed_bins = None

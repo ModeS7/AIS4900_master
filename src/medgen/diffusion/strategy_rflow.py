@@ -4,8 +4,9 @@ Moved from strategies.py during file split.
 """
 from __future__ import annotations
 
+import logging
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
@@ -18,12 +19,24 @@ from .strategies import DiffusionStrategy, ImageOrDict
 if TYPE_CHECKING:
     from .conditioning import ConditioningContext
 
+logger = logging.getLogger(__name__)
+
 
 class RFlowStrategy(DiffusionStrategy):
     """Rectified Flow algorithm.
 
     Supports both 2D (images) and 3D (volumes).
+
+    Attributes:
+        ode_solver: ODE solver for generation. 'euler' uses built-in loop,
+            others ('midpoint', 'rk4', 'dopri5') use torchdiffeq.
+        ode_atol: Absolute tolerance for adaptive solvers (dopri5).
+        ode_rtol: Relative tolerance for adaptive solvers (dopri5).
     """
+
+    ode_solver: str = 'euler'
+    ode_atol: float = 1e-5
+    ode_rtol: float = 1e-5
 
     def setup_scheduler(
         self,
@@ -207,6 +220,138 @@ class RFlowStrategy(DiffusionStrategy):
         # Default: logit-normal sampling
         return self.scheduler.sample_timesteps(sample_tensor)  # type: ignore[no-any-return]
 
+    def _generate_torchdiffeq(
+        self,
+        model: nn.Module,
+        parsed: Any,  # ParsedModelInput
+        cfg_ctx: dict[str, Any],
+        conditioning: ConditioningContext,
+        num_steps: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Generate samples using torchdiffeq ODE solvers.
+
+        Reparameterizes the RFlow ODE as dx/ds = v(x, T*(1-s)) where s in [0,1],
+        s=0 is noise, s=1 is clean data. T = num_train_timesteps.
+
+        Args:
+            model: Trained diffusion model.
+            parsed: ParsedModelInput from _parse_model_input().
+            cfg_ctx: CFG context from _prepare_cfg_context().
+            conditioning: ConditioningContext with all generation params.
+            num_steps: Number of sampling steps (for fixed-step methods).
+            device: Computation device.
+
+        Returns:
+            Generated image tensor.
+        """
+        try:
+            from torchdiffeq import odeint
+        except ImportError:
+            raise ImportError(
+                f"torchdiffeq is required for ode_solver='{self.ode_solver}'. "
+                "Install it with: pip install torchdiffeq"
+            )
+
+        T = self.scheduler.num_train_timesteps
+        omega = conditioning.omega
+        mode_id = conditioning.mode_id
+        size_bins = conditioning.size_bins
+        bin_maps = conditioning.bin_maps
+        cfg_scale = conditioning.cfg_scale
+        cfg_scale_end = conditioning.cfg_scale_end
+        use_dynamic_cfg = conditioning.use_dynamic_cfg
+        batch_size = parsed.noisy_images.shape[0] if parsed.noisy_images is not None else parsed.noisy_pre.shape[0]
+
+        is_dual = parsed.is_dual
+        image_conditioning = parsed.conditioning
+
+        if is_dual:
+            assert parsed.noisy_pre is not None and parsed.noisy_gd is not None
+            assert image_conditioning is not None
+            # State vector: concatenate [pre, gd] along channel dim
+            y0 = torch.cat([parsed.noisy_pre, parsed.noisy_gd], dim=1)  # [B, 2, ...]
+        else:
+            assert parsed.noisy_images is not None
+            y0 = parsed.noisy_images  # [B, C, ...]
+
+        def ode_fn(s: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            """ODE function: dx/ds = v(x, t) where t = T*(1-s).
+
+            The RFlow ODE in model timestep space: x_{next} = x + v * (t - t_next) / T.
+            Reparameterized with s = 1 - t/T (s in [0,1], noise->clean):
+                dx/ds = v(x, T*(1-s))
+
+            Args:
+                s: Current ODE time in [0, 1] (scalar tensor).
+                x: Current state.
+
+            Returns:
+                dx/ds = v(x, t).
+            """
+            # Convert s -> t (model timestep space)
+            t_val = T * (1.0 - s.item())
+            timesteps_batch = torch.full((batch_size,), t_val, device=device)
+
+            # Compute current CFG scale
+            if use_dynamic_cfg:
+                assert cfg_scale_end is not None
+                progress = s.item()  # s=0 -> start, s=1 -> end
+                current_cfg = cfg_scale + progress * (cfg_scale_end - cfg_scale)
+            else:
+                current_cfg = cfg_scale
+
+            if is_dual:
+                # Split state vector back into pre and gd
+                noisy_pre = x[:, 0:1]
+                noisy_gd = x[:, 1:2]
+                current_model_input = self._prepare_dual_model_input(
+                    noisy_pre, noisy_gd, image_conditioning
+                )
+                velocity_pred = self._call_model(
+                    model, current_model_input, timesteps_batch, omega, mode_id, size_bins
+                )
+                return velocity_pred
+            else:
+                # Build model input
+                if image_conditioning is not None:
+                    current_model_input = torch.cat([x, image_conditioning], dim=1)
+                else:
+                    current_model_input = x
+
+                velocity_pred = self._compute_cfg_prediction(
+                    model, cfg_ctx, current_cfg, current_model_input, x,
+                    bin_maps, size_bins, timesteps_batch, omega, mode_id
+                )
+                return velocity_pred
+
+        # Build time span and solver options
+        t_span = torch.tensor([0.0, 1.0], device=device)
+        solver_kwargs: dict[str, Any] = {'method': self.ode_solver}
+
+        if self.ode_solver == 'dopri5':
+            solver_kwargs['atol'] = self.ode_atol
+            solver_kwargs['rtol'] = self.ode_rtol
+        else:
+            # Fixed-step methods: step_size = 1/num_steps
+            solver_kwargs['options'] = {'step_size': 1.0 / num_steps}
+
+        logger.info(
+            "ODE generation: solver=%s, steps=%s",
+            self.ode_solver,
+            'adaptive' if self.ode_solver == 'dopri5' else num_steps,
+        )
+
+        # Solve ODE: y0 at s=0 (noise) -> y1 at s=1 (clean)
+        solution = odeint(ode_fn, y0, t_span, **solver_kwargs)
+        result = solution[-1]  # Final state at s=1
+
+        # Return result
+        if is_dual:
+            return result  # [B, 2, ...]
+        else:
+            return result
+
     def generate(
         self,
         model: nn.Module,
@@ -313,7 +458,13 @@ class RFlowStrategy(DiffusionStrategy):
         # Prepare CFG context (flags and unconditional tensors)
         cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
 
-        # Setup scheduler
+        # Branch: use torchdiffeq for non-euler solvers
+        if self.ode_solver != 'euler':
+            return self._generate_torchdiffeq(
+                model, parsed, cfg_ctx, conditioning, num_steps, device,
+            )
+
+        # Setup scheduler (Euler path)
         self.scheduler.set_timesteps(
             num_inference_steps=num_steps,
             device=device,
