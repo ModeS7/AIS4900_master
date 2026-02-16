@@ -23,7 +23,7 @@ EXP_NAME="exp2c_1_pixel_seg_improved"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg_conditioned/${EXP_NAME}_${TIMESTAMP}"
+    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg/${EXP_NAME}_${TIMESTAMP}"
 fi
 
 CHAIN_ARGS="hydra.run.dir=${CHAIN_RUN_DIR}"
@@ -80,7 +80,6 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode.size_bins.projection_num_layers=4 \
     mode.cfg_dropout_prob=0.25 \
     training.regional_weighting.enabled=true \
-    training.epochs=20 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

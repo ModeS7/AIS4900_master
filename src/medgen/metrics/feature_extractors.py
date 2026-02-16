@@ -229,11 +229,22 @@ class BiomedCLIPFeatures(nn.Module):
 
         logger.info(f"Loading BiomedCLIP from {model_name}...")
 
-        # Load using open_clip which properly handles BiomedCLIP
-        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-            model_name,
-            device=self.device,
-        )
+        # Suppress verbose open_clip/HF Hub logging during model creation
+        _open_clip_loggers = ['root', 'open_clip', 'huggingface_hub']
+        _prev_levels = {}
+        for name in _open_clip_loggers:
+            _lg = logging.getLogger(name if name != 'root' else None)
+            _prev_levels[name] = _lg.level
+            _lg.setLevel(logging.WARNING)
+
+        try:
+            self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+                model_name,
+                device=self.device,
+            )
+        finally:
+            for name, level in _prev_levels.items():
+                logging.getLogger(name if name != 'root' else None).setLevel(level)
 
         self._model.eval()
 
