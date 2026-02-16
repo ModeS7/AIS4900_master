@@ -39,7 +39,7 @@ import csv
 import json
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import nibabel as nib
@@ -492,7 +492,7 @@ def generate_volumes(
     volumes = []
     start_time = time.time()
 
-    for i, (noise, (patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
+    for i, (noise, (_patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
         seg_on_device = seg_tensor.to(device)
         model_input = torch.cat([noise, seg_on_device], dim=1)  # [1, 2, D, H, W]
 
@@ -1139,7 +1139,7 @@ def main():
         save_volumes(volumes, cond_list, vol_dir, voxel_size, args.trim_slices)
 
         # Compute metrics
-        logger.info(f"  Computing metrics...")
+        logger.info("  Computing metrics...")
         split_metrics = compute_all_metrics(
             volumes, ref_features, device, args.trim_slices,
         )
