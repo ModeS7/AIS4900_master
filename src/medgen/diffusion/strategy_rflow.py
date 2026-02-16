@@ -29,10 +29,13 @@ class RFlowStrategy(DiffusionStrategy):
 
     Attributes:
         ode_solver: ODE solver for generation. 'euler' uses built-in loop,
-            others ('midpoint', 'rk4', 'dopri5') use torchdiffeq.
-        ode_atol: Absolute tolerance for adaptive solvers (dopri5).
-        ode_rtol: Relative tolerance for adaptive solvers (dopri5).
+            others use torchdiffeq. Fixed-step: midpoint, heun2, heun3, rk4.
+            Adaptive: fehlberg2, bosh3, dopri5, dopri8.
+        ode_atol: Absolute tolerance for adaptive solvers.
+        ode_rtol: Relative tolerance for adaptive solvers.
     """
+
+    ADAPTIVE_SOLVERS = frozenset({'fehlberg2', 'bosh3', 'dopri5', 'dopri8', 'adaptive_heun'})
 
     ode_solver: str = 'euler'
     ode_atol: float = 1e-5
@@ -329,17 +332,17 @@ class RFlowStrategy(DiffusionStrategy):
         t_span = torch.tensor([0.0, 1.0], device=device)
         solver_kwargs: dict[str, Any] = {'method': self.ode_solver}
 
-        if self.ode_solver == 'dopri5':
+        if self.ode_solver in self.ADAPTIVE_SOLVERS:
             solver_kwargs['atol'] = self.ode_atol
             solver_kwargs['rtol'] = self.ode_rtol
         else:
             # Fixed-step methods: step_size = 1/num_steps
             solver_kwargs['options'] = {'step_size': 1.0 / num_steps}
 
-        logger.info(
+        logger.debug(
             "ODE generation: solver=%s, steps=%s",
             self.ode_solver,
-            'adaptive' if self.ode_solver == 'dopri5' else num_steps,
+            'adaptive' if self.ode_solver in self.ADAPTIVE_SOLVERS else num_steps,
         )
 
         # Solve ODE: y0 at s=0 (noise) -> y1 at s=1 (clean)
@@ -351,6 +354,99 @@ class RFlowStrategy(DiffusionStrategy):
             return result  # [B, 2, ...]
         else:
             return result
+
+    def _generate_diffrs(
+        self,
+        model: nn.Module,
+        parsed: Any,  # ParsedModelInput
+        cfg_ctx: dict[str, Any],
+        conditioning: ConditioningContext,
+        num_steps: int,
+        device: torch.device,
+        diffrs_discriminator: Any,  # DiffRSDiscriminator
+        diffrs_config: dict[str, Any],
+    ) -> torch.Tensor:
+        """Generate samples using DiffRS (Diffusion Rejection Sampling).
+
+        Wraps the normal Euler sampling loop with a discriminator that
+        rejects bad intermediate samples and retries with new noise.
+
+        Args:
+            model: Trained diffusion model.
+            parsed: ParsedModelInput from _parse_model_input().
+            cfg_ctx: CFG context from _prepare_cfg_context().
+            conditioning: ConditioningContext with all generation params.
+            num_steps: Number of sampling steps.
+            device: Computation device.
+            diffrs_discriminator: DiffRSDiscriminator instance.
+            diffrs_config: Dict with DiffRS hyperparameters:
+                rej_percentile, backsteps, max_iter, iter_warmup.
+
+        Returns:
+            Generated image tensor.
+        """
+        from .diffrs import (
+            diffrs_sampling_loop,
+            estimate_adaptive_thresholds,
+        )
+
+        if parsed.is_dual:
+            raise NotImplementedError("DiffRS does not support dual-image mode yet")
+
+        assert parsed.noisy_images is not None
+        noise = parsed.noisy_images
+
+        rej_percentile = diffrs_config.get('rej_percentile', 0.75)
+        backsteps = diffrs_config.get('backsteps', 1)
+        max_iter = diffrs_config.get('max_iter', 999999)
+        iter_warmup = diffrs_config.get('iter_warmup', 10)
+
+        # Estimate adaptive thresholds (cached per session)
+        if not hasattr(self, '_diffrs_adaptive_cache'):
+            self._diffrs_adaptive_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+
+        cache_key = f"{num_steps}_{rej_percentile}_{iter_warmup}"
+        if cache_key not in self._diffrs_adaptive_cache:
+            logger.info(
+                "DiffRS: estimating adaptive thresholds "
+                "(warmup=%d, percentile=%.2f)...",
+                iter_warmup, rej_percentile,
+            )
+            adaptive, adaptive2 = estimate_adaptive_thresholds(
+                strategy=self,
+                model=model,
+                discriminator=diffrs_discriminator,
+                sample_shape=noise.shape,
+                num_steps=num_steps,
+                device=device,
+                iter_warmup=iter_warmup,
+                rej_percentile=rej_percentile,
+                conditioning=conditioning,
+            )
+            self._diffrs_adaptive_cache[cache_key] = (adaptive, adaptive2)
+        else:
+            logger.info("DiffRS: using cached adaptive thresholds")
+
+        adaptive, adaptive2 = self._diffrs_adaptive_cache[cache_key]
+
+        logger.info(
+            "DiffRS sampling: steps=%d, backsteps=%d, max_iter=%d",
+            num_steps, backsteps, max_iter,
+        )
+
+        return diffrs_sampling_loop(
+            strategy=self,
+            model=model,
+            discriminator=diffrs_discriminator,
+            noise=noise,
+            num_steps=num_steps,
+            device=device,
+            adaptive=adaptive,
+            adaptive2=adaptive2,
+            conditioning=conditioning,
+            backsteps=backsteps,
+            max_iter=max_iter,
+        )
 
     def generate(
         self,
@@ -369,6 +465,9 @@ class RFlowStrategy(DiffusionStrategy):
         cfg_scale: float = 1.0,
         cfg_scale_end: float | None = None,
         latent_channels: int = 1,
+        # DiffRS (opt-in)
+        diffrs_discriminator: Any | None = None,
+        diffrs_config: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         """
         Generate using RFlow sampling
@@ -457,6 +556,13 @@ class RFlowStrategy(DiffusionStrategy):
 
         # Prepare CFG context (flags and unconditional tensors)
         cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
+
+        # Branch: DiffRS rejection sampling (opt-in)
+        if diffrs_discriminator is not None:
+            return self._generate_diffrs(
+                model, parsed, cfg_ctx, conditioning, num_steps, device,
+                diffrs_discriminator, diffrs_config or {},
+            )
 
         # Branch: use torchdiffeq for non-euler solvers
         if self.ode_solver != 'euler':

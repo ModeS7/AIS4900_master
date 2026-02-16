@@ -179,7 +179,10 @@ class StrategyConfig:
             raise ValueError(f"strategy name must be one of {valid_names}, got '{self.name}'")
         if self.num_train_timesteps <= 0:
             raise ValueError(f"num_train_timesteps must be > 0, got {self.num_train_timesteps}")
-        valid_solvers = ('euler', 'midpoint', 'rk4', 'dopri5')
+        valid_solvers = (
+            'euler', 'midpoint', 'heun2', 'heun3', 'rk4',  # fixed-step
+            'fehlberg2', 'bosh3', 'dopri5', 'dopri8',       # adaptive
+        )
         if self.ode_solver not in valid_solvers:
             raise ValueError(f"ode_solver must be one of {valid_solvers}, got '{self.ode_solver}'")
 

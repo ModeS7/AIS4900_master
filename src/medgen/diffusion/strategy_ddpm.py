@@ -246,6 +246,7 @@ class DDPMStrategy(DiffusionStrategy):
         cfg_scale: float = 1.0,
         cfg_scale_end: float | None = None,
         latent_channels: int = 1,
+        **kwargs,
     ) -> torch.Tensor:
         """
         Generate using DDPM sampling.

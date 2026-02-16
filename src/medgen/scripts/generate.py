@@ -164,6 +164,8 @@ def generate_batch(
     cfg_scale_end: float | None = None,
     use_progress: bool = False,
     latent_channels: int = 1,
+    diffrs_discriminator: object | None = None,
+    diffrs_config: dict | None = None,
 ) -> torch.Tensor:
     """Generate a batch using diffusion model.
 
@@ -182,6 +184,8 @@ def generate_batch(
         cfg_scale_end: Optional ending CFG scale (at t=0). If None, uses constant cfg_scale.
         use_progress: Show progress bar.
         latent_channels: Number of noise channels (1 for pixel, 4 for latent space).
+        diffrs_discriminator: Optional DiffRSDiscriminator for rejection sampling.
+        diffrs_config: Optional DiffRS config dict (rej_percentile, backsteps, etc.).
 
     Returns:
         Generated tensor.
@@ -191,17 +195,48 @@ def generate_batch(
     else:
         model_input = noise
 
+    # Build kwargs for strategy.generate()
+    gen_kwargs: dict = dict(
+        size_bins=size_bins,
+        bin_maps=bin_maps,
+        cfg_scale=cfg_scale,
+        cfg_scale_end=cfg_scale_end,
+        use_progress_bars=use_progress,
+        latent_channels=latent_channels,
+    )
+    if diffrs_discriminator is not None:
+        gen_kwargs['diffrs_discriminator'] = diffrs_discriminator
+        gen_kwargs['diffrs_config'] = diffrs_config
+
     with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
         with torch.no_grad():
             return strategy.generate(
                 model, model_input, num_steps, device,
-                size_bins=size_bins,
-                bin_maps=bin_maps,
-                cfg_scale=cfg_scale,
-                cfg_scale_end=cfg_scale_end,
-                use_progress_bars=use_progress,
-                latent_channels=latent_channels,
+                **gen_kwargs,
             )
+
+
+def _build_diffrs(cfg: DictConfig, model: torch.nn.Module, device: torch.device):
+    """Build DiffRS discriminator and config from generate config.
+
+    Returns (discriminator, config_dict) or (None, None) if disabled.
+    """
+    diffrs_ckpt = cfg.get('diffrs_checkpoint', None)
+    if not diffrs_ckpt:
+        return None, None
+
+    from medgen.diffusion.diffrs import DiffRSDiscriminator, load_diffrs_head
+
+    head = load_diffrs_head(diffrs_ckpt, device)
+    disc = DiffRSDiscriminator(model, head, device)
+    diffrs_config = {
+        'rej_percentile': cfg.get('diffrs_rej_percentile', 0.75),
+        'backsteps': cfg.get('diffrs_backsteps', 1),
+        'max_iter': cfg.get('diffrs_max_iter', 999999),
+        'iter_warmup': cfg.get('diffrs_iter_warmup', 10),
+    }
+    logger.info("DiffRS enabled: %s", diffrs_ckpt)
+    return disc, diffrs_config
 
 
 def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
@@ -241,6 +276,9 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         cfg.image_model, device=device,
         in_channels=in_ch, out_channels=out_ch, compile_model=True
     )
+
+    # DiffRS (opt-in, applied to image model only)
+    diffrs_disc, diffrs_cfg = _build_diffrs(cfg, image_model, device)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Generating {cfg.num_images} samples...")
@@ -300,7 +338,10 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Generate images
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, cfg.image_size, 0), device=device)
-            images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
+            images = generate_batch(
+                image_model, strategy, noise, cfg.num_steps, device, masks_tensor,
+                diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
+            )
 
             # Save
             for i, counter in enumerate(batch_counters):
@@ -323,7 +364,10 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             masks_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).to(device, dtype=torch.float32)
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(1, out_ch, 2, cfg.image_size, 0), device=device)
-            images = generate_batch(image_model, strategy, noise, cfg.num_steps, device, masks_tensor)
+            images = generate_batch(
+                image_model, strategy, noise, cfg.num_steps, device, masks_tensor,
+                diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
+            )
 
             output_path = output_dir / f"{counter:05d}.nii.gz"
             if cfg.gen_mode == 'bravo':
@@ -492,6 +536,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
         )
 
+        # DiffRS (opt-in, applied to bravo model only)
+        diffrs_disc, diffrs_cfg = _build_diffrs(cfg, bravo_model, device)
+
         # Validation thresholds for 3D seg masks (per-slice, same as 2D)
         max_white_pct = cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
         max_retries = cfg.get('max_retries', 10)
@@ -572,7 +619,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device,
                                    conditioning=seg_tensor,
                                    cfg_scale=cfg.cfg_scale_bravo,
-                                   cfg_scale_end=cfg.get('cfg_scale_bravo_end', None))
+                                   cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
+                                   diffrs_discriminator=diffrs_disc,
+                                   diffrs_config=diffrs_cfg)
             # Clamp to [0, 1] like working 2D code does
             bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 

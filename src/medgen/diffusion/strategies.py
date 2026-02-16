@@ -563,6 +563,7 @@ class DiffusionStrategy(ABC):
         cfg_scale: float = 1.0,
         cfg_scale_end: float | None = None,
         latent_channels: int = 1,
+        **kwargs: Any,
     ) -> torch.Tensor:
         """Generate samples using the diffusion process.
 

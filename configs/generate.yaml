@@ -80,6 +80,14 @@ bin_edges: [0, 3, 6, 10, 15, 20, 30]  # Feret diameter bin edges (mm)
 num_bins: 7                             # Number of size bins
 max_count: 10                           # Max tumor count per bin (for normalization)
 
+# DiffRS (Diffusion Rejection Sampling) — opt-in, null = disabled
+# Requires a trained DiffRS head checkpoint (see train_diffrs_discriminator.py)
+diffrs_checkpoint: null           # Path to DiffRS head checkpoint
+diffrs_rej_percentile: 0.75      # Quantile for acceptance threshold (official default)
+diffrs_backsteps: 1              # Timesteps to backstep on rejection (official default)
+diffrs_max_iter: 999999          # Max NFE per sample before full re-init
+diffrs_iter_warmup: 10           # Warmup iterations for threshold estimation
+
 # Output settings
 output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")
 verbose: true             # Enable progress bars (false for cluster)

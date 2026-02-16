@@ -1,0 +1,47 @@
+# DiffRS Discriminator Head Training Configuration
+#
+# Train a tiny classification head on top of a frozen diffusion model's encoder
+# to distinguish real vs generated samples at various noise levels.
+#
+# Usage:
+#   python -m medgen.scripts.train_diffrs_discriminator \
+#       diffusion_checkpoint=runs/bravo/checkpoint_best.pt mode=bravo
+#
+#   # Quick test
+#   python -m medgen.scripts.train_diffrs_discriminator \
+#       diffusion_checkpoint=runs/bravo/checkpoint_best.pt \
+#       mode=bravo num_generated_samples=100 num_epochs=5
+
+defaults:
+  - /paths: local
+  - _self_
+
+# Required: path to trained diffusion model checkpoint
+diffusion_checkpoint: null
+
+# Mode (determines which image type to load for real samples)
+mode: bravo
+
+# Spatial dimensions (2 for 2D, 3 for 3D)
+spatial_dims: 2
+image_size: 128
+depth: 160  # Only used for 3D
+
+# Data generation
+num_generated_samples: 5000   # Samples to generate for training pairs
+generation_num_steps: 25      # Steps for sample generation
+
+# Training hyperparameters (matching official DiffRS defaults)
+num_epochs: 60
+batch_size: 32
+learning_rate: 3e-4
+weight_decay: 1e-7
+
+# Output
+output_dir: .
+
+# Hydra configuration
+hydra:
+  run:
+    dir: .
+  output_subdir: null
