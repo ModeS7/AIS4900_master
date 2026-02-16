@@ -38,7 +38,7 @@ learning_rate: 3e-4
 weight_decay: 1e-7
 
 # Output
-output_dir: .
+output_dir: runs/diffrs
 
 # Hydra configuration
 hydra:

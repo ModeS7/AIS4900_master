@@ -7,9 +7,9 @@
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
-#SBATCH --job-name="eval_ode_solvers"
-#SBATCH --output=IDUN/output/eval/eval_ode_solvers_%j.out
-#SBATCH --error=IDUN/output/eval/eval_ode_solvers_%j.err
+#SBATCH --job-name="eval_diffrs"
+#SBATCH --output=IDUN/output/eval/eval_diffrs_%j.out
+#SBATCH --error=IDUN/output/eval/eval_diffrs_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
@@ -41,7 +41,7 @@ trap handle_timeout SIGUSR1
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== ODE Solver Evaluation ==="
+echo "=== DiffRS Evaluation ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -51,19 +51,29 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# Ensure torchdiffeq is installed
-pip install torchdiffeq --quiet
-
 # Memory optimization
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
 BRAVO_CHECKPOINT="runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
+DIFFRS_HEAD="runs/diffrs/diffrs_head.pt"
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_ode_solvers"
+OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/diffrs"
 
-time python -m medgen.scripts.eval_ode_solvers \
+# Check if DiffRS head exists
+DIFFRS_FLAG=""
+if [ -f "${DIFFRS_HEAD}" ]; then
+    echo "DiffRS head found: ${DIFFRS_HEAD}"
+    DIFFRS_FLAG="--diffrs-head ${DIFFRS_HEAD}"
+else
+    echo "WARNING: No DiffRS head found at ${DIFFRS_HEAD}"
+    echo "Running baseline evaluation only."
+fi
+
+# Run evaluation (with --resume for auto-chain support)
+time python -m medgen.scripts.eval_diffrs \
     --bravo-model "${BRAVO_CHECKPOINT}" \
+    ${DIFFRS_FLAG} \
     --data-root "${DATA_ROOT}" \
     --output-dir "${OUTPUT_DIR}" \
     --num-volumes 25 \
@@ -72,5 +82,9 @@ time python -m medgen.scripts.eval_ode_solvers \
 
 PID=$!
 wait $PID
+
+echo "=== Evaluation complete ==="
+echo "Results:"
+cat "${OUTPUT_DIR}/results.csv" 2>/dev/null || echo "No results CSV found"
 
 conda deactivate

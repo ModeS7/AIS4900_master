@@ -32,6 +32,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _build_disc_input(x: Tensor, conditioning_input: Tensor | None) -> Tensor:
+    """Concatenate conditioning channels for model/discriminator input.
+
+    When the diffusion model has conditioning channels (e.g., bravo model
+    with in_channels=2 for [noise, seg]), both the model and discriminator
+    need the full concatenated input to produce correct features.
+    """
+    if conditioning_input is None:
+        return x
+    return torch.cat([x, conditioning_input], dim=1)
+
+
 # ---------------------------------------------------------------------------
 # Feature extraction from frozen UNet encoder
 # ---------------------------------------------------------------------------
@@ -190,6 +202,7 @@ def estimate_adaptive_thresholds(
     iter_warmup: int = 10,
     rej_percentile: float = 0.75,
     conditioning: ConditioningContext | None = None,
+    conditioning_input: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Estimate per-timestep adaptive thresholds via warmup sampling.
 
@@ -264,8 +277,8 @@ def estimate_adaptive_thresholds(
         timesteps_batch = t_cur
 
         # Compute log ratio at current step
-        # Need the noisy sample in the model's input space
-        log_ratio = discriminator.get_log_ratio(x, timesteps_batch).cpu()
+        disc_x = _build_disc_input(x, conditioning_input)
+        log_ratio = discriminator.get_log_ratio(disc_x, timesteps_batch).cpu()
 
         for i in range(x.shape[0]):
             si = step_idx[i].item()
@@ -278,7 +291,8 @@ def estimate_adaptive_thresholds(
         # Euler denoising step (simplified -- no CFG for warmup)
         with torch.no_grad():
             # Simple velocity prediction
-            velocity = model(x=x, timesteps=timesteps_batch)
+            model_x = _build_disc_input(x, conditioning_input)
+            velocity = model(x=model_x, timesteps=timesteps_batch)
             # RFlow Euler step: x_next = x + (t_next - t_cur) / T * v ... but
             # use scheduler.step which handles this correctly
             x_denoised = torch.zeros_like(x)
@@ -295,8 +309,12 @@ def estimate_adaptive_thresholds(
         if done.any():
             # Collect final step log ratio
             final_t = torch.zeros(done.sum(), device=device)
+            disc_final = _build_disc_input(
+                x[done],
+                conditioning_input[done] if conditioning_input is not None else None,
+            )
             log_ratio_final = discriminator.get_log_ratio(
-                x[done], final_t,
+                disc_final, final_t,
             ).cpu()
             for i, lr in enumerate(log_ratio_final):
                 lst_adaptive[n_steps].append(lr)
@@ -338,6 +356,7 @@ def diffrs_sampling_loop(
     adaptive2: Tensor,
     *,
     conditioning: ConditioningContext | None = None,
+    conditioning_input: Tensor | None = None,
     backsteps: int = 1,
     min_backsteps: int = 0,
     max_backsteps: int | None = None,
@@ -406,6 +425,7 @@ def diffrs_sampling_loop(
             _do_marginal_rejection(
                 x, lst_idx, log_ratio_prev, zero_mask,
                 t_steps, adaptive, discriminator, device,
+                conditioning_input=conditioning_input,
             )
             # Refresh active state after rejection may have modified x
             cur_idx = lst_idx[active].clamp(max=num_steps - 1)
@@ -416,7 +436,11 @@ def diffrs_sampling_loop(
         # --- Euler denoising step ---
         timesteps_batch = t_cur
         with torch.no_grad():
-            velocity = model(x=x_active, timesteps=timesteps_batch)
+            model_x = _build_disc_input(
+                x_active,
+                conditioning_input[active] if conditioning_input is not None else None,
+            )
+            velocity = model(x=model_x, timesteps=timesteps_batch)
         per_sample_nfe[active] += 1
 
         x_next = torch.zeros_like(x_active)
@@ -437,6 +461,7 @@ def diffrs_sampling_loop(
                 backsteps=backsteps,
                 min_backsteps=min_backsteps,
                 max_backsteps=max_backsteps,
+                conditioning_input=conditioning_input,
             )
 
         # --- Check for completed samples ---
@@ -468,6 +493,7 @@ def _do_marginal_rejection(
     adaptive: Tensor,
     discriminator: DiffRSDiscriminator,
     device: torch.device,
+    conditioning_input: Tensor | None = None,
 ) -> None:
     """Marginal rejection sampling at step 0 (in-place)."""
     remaining = torch.ones(len(zero_indices), dtype=torch.bool, device=device)
@@ -480,7 +506,11 @@ def _do_marginal_rejection(
         x_check = x[check_idx]
         t_check = t_steps[lst_idx[check_idx]]
 
-        log_ratio = discriminator.get_log_ratio(x_check, t_check)
+        disc_x = _build_disc_input(
+            x_check,
+            conditioning_input[check_idx] if conditioning_input is not None else None,
+        )
+        log_ratio = discriminator.get_log_ratio(disc_x, t_check)
         threshold = adaptive[lst_idx[check_idx]]
         rand_term = torch.log(torch.rand_like(log_ratio) + 1e-7)
 
@@ -516,6 +546,7 @@ def _do_backstep_rejection(
     backsteps: int,
     min_backsteps: int,
     max_backsteps: int,
+    conditioning_input: Tensor | None = None,
 ) -> None:
     """Backstep rejection at intermediate timesteps (in-place)."""
     # Which active samples are eligible for backstep checking
@@ -531,7 +562,11 @@ def _do_backstep_rejection(
         step_check = lst_idx[check_idx]
         t_check = t_steps[step_check.clamp(max=len(t_steps) - 1)]
 
-        log_ratio = discriminator.get_log_ratio(x_check, t_check)
+        disc_x = _build_disc_input(
+            x_check,
+            conditioning_input[check_idx] if conditioning_input is not None else None,
+        )
+        log_ratio = discriminator.get_log_ratio(disc_x, t_check)
         rand_term = torch.log(torch.rand_like(log_ratio) + 1e-7)
 
         if count == 0:

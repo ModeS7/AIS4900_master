@@ -395,6 +395,7 @@ class RFlowStrategy(DiffusionStrategy):
 
         assert parsed.noisy_images is not None
         noise = parsed.noisy_images
+        conditioning_input = parsed.conditioning  # May be None for unconditional
 
         rej_percentile = diffrs_config.get('rej_percentile', 0.75)
         backsteps = diffrs_config.get('backsteps', 1)
@@ -422,6 +423,7 @@ class RFlowStrategy(DiffusionStrategy):
                 iter_warmup=iter_warmup,
                 rej_percentile=rej_percentile,
                 conditioning=conditioning,
+                conditioning_input=conditioning_input,
             )
             self._diffrs_adaptive_cache[cache_key] = (adaptive, adaptive2)
         else:
@@ -444,6 +446,7 @@ class RFlowStrategy(DiffusionStrategy):
             adaptive=adaptive,
             adaptive2=adaptive2,
             conditioning=conditioning,
+            conditioning_input=conditioning_input,
             backsteps=backsteps,
             max_iter=max_iter,
         )
