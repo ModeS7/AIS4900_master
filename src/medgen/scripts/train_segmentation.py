@@ -137,12 +137,31 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Loading pretrained weights from: {pretrained_checkpoint}")
     trainer.setup_model(pretrained_checkpoint=pretrained_checkpoint)
 
+    # Resume from checkpoint if specified
+    start_epoch = 0
+    resume_from = cfg.training.get('resume_from', None)
+    if resume_from:
+        result = trainer.checkpoint_manager.load(resume_from, strict=True, load_optimizer=True)
+        start_epoch = result['epoch'] + 1
+        # Restore best_dice from checkpoint
+        ckpt = result['checkpoint']
+        if 'best_dice' in ckpt:
+            trainer.best_dice = ckpt['best_dice']
+        logger.info(f"Resuming from epoch {start_epoch} (best_dice={trainer.best_dice:.4f})")
+
     # Train
     trainer.train(
         train_loader=train_loader,
         train_dataset=train_dataset,
         val_loader=val_loader,
+        start_epoch=start_epoch,
     )
+
+    # On wall-time signal: skip test eval, let SLURM script handle resubmission
+    if getattr(trainer, '_sigterm_received', False):
+        logger.info("Wall time signal received — skipping test evaluation")
+        trainer.close_writer()
+        return
 
     # Test evaluation
     test_result = create_segmentation_test_dataloader(cfg, spatial_dims)
@@ -168,6 +187,11 @@ def main(cfg: DictConfig) -> None:
         logger.info("No test_new/ directory found - skipping test evaluation")
 
     trainer.close_writer()
+
+    # Mark training complete for SLURM job chaining
+    from pathlib import Path
+    (Path(trainer.save_dir) / '.training_complete').touch()
+
     logger.info("Training complete!")
 
 

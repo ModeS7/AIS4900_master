@@ -9,15 +9,57 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp2_seg_dual_2d"
-#SBATCH --output=IDUN/output/downstream/exp2_seg_dual_2d_%j.out
-#SBATCH --error=IDUN/output/downstream/exp2_seg_dual_2d_%j.err
+#SBATCH --output=IDUN/output/train/downstream/exp2_seg_dual_2d/%j.out
+#SBATCH --error=IDUN/output/train/downstream/exp2_seg_dual_2d/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --signal=B:SIGUSR1@120
+
+# Downstream segmentation dual input 2D (auto-chaining)
+
+CHAIN_MAX=10
+CHAIN_COUNT=${CHAIN_COUNT:-0}
+EXP_NAME="exp2_dual"
+
+if [ -z "${CHAIN_RUN_DIR:-}" ]; then
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/downstream/${EXP_NAME}_2d_${TIMESTAMP}"
+fi
+
+CHAIN_ARGS="hydra.run.dir=${CHAIN_RUN_DIR}"
+CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
+if [ -f "${CKPT}" ] && [ -s "${CKPT}" ]; then
+    CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CKPT}"
+    echo "Resuming from: ${CKPT}"
+fi
+
+handle_timeout() {
+    echo "=== Wall time approaching (SIGUSR1). Saving and resubmitting... ==="
+    kill -USR1 $PID 2>/dev/null
+    wait $PID 2>/dev/null
+
+    if [ -f "${CHAIN_RUN_DIR}/.training_complete" ]; then
+        echo "Training complete. Not resubmitting."
+        exit 0
+    fi
+
+    NEXT_COUNT=$((CHAIN_COUNT + 1))
+    if [ "$NEXT_COUNT" -ge "$CHAIN_MAX" ]; then
+        echo "Chain limit reached (${CHAIN_MAX}). Stopping."
+        exit 1
+    fi
+
+    sbatch --export=ALL,CHAIN_RUN_DIR="${CHAIN_RUN_DIR}",CHAIN_COUNT=${NEXT_COUNT} "$0"
+    echo "Resubmitted chain segment ${NEXT_COUNT}/${CHAIN_MAX}"
+    exit 0
+}
+
+trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
 echo "=== Downstream Segmentation: Dual Input (T1 pre + T1 gd) 2D ==="
-echo "Job ID: $SLURM_JOB_ID"
+echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
 module purge
@@ -32,6 +74,8 @@ time python -m medgen.scripts.train_segmentation \
     "data.modality=[t1_pre,t1_gd]" \
     training.epochs=500 \
     training.batch_size=16 \
-    training.name=exp2_dual_
+    training.name=${EXP_NAME}_ \
+    ${CHAIN_ARGS} &
 
-conda deactivate
+PID=$!
+wait $PID

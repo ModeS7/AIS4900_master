@@ -629,6 +629,10 @@ class SegmentationTrainer(BaseTrainer):
         from medgen.pipeline.utils import _safe_torch_save
         _safe_torch_save(checkpoint, path)
 
+    def _get_checkpoint_extra_state(self) -> dict | None:
+        """Include best_dice in checkpoint for resume."""
+        return {'best_dice': self.best_dice}
+
     def _get_model_config(self) -> dict[str, Any]:
         """Get model configuration for checkpoint."""
         return {
