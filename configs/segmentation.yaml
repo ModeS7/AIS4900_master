@@ -109,6 +109,9 @@ training:
   save_best: true
   save_last: true
 
+  # Resume from checkpoint (used by auto-chain SLURM scripts)
+  resume_from: null
+
   # DataLoader settings
   dataloader:
     num_workers: 8
