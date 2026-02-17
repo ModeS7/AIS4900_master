@@ -19,8 +19,9 @@ defaults:
 # Required: path to trained diffusion model checkpoint
 diffusion_checkpoint: null
 
-# Mode (determines which image type to load for real samples)
-mode: bravo
+# Data mode (determines which image type to load for real samples)
+# Named 'data_mode' to avoid collision with configs/mode/ Hydra group
+data_mode: bravo
 
 # Spatial dimensions (2 for 2D, 3 for 3D)
 spatial_dims: 2

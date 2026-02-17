@@ -580,7 +580,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Map mode to image type
-    mode = cfg.get('mode', 'bravo')
+    mode = cfg.get('data_mode', 'bravo')
     mode_to_type = {
         'bravo': 'bravo', 'seg': 'seg',
         'seg_conditioned': 'seg', 'dual': 'bravo',
