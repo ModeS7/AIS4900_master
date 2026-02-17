@@ -801,6 +801,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
         """
         self._current_epoch = epoch
         self.model.train()
+
+        # Release cached memory before training to prevent OOM from fragmentation
+        # (3D generation metrics load/unload feature extractors, leaving fragmented pools)
+        if self.spatial_dims == 3:
+            torch.cuda.empty_cache()
+
         epoch_loss = 0
         epoch_mse_loss = 0
         epoch_perceptual_loss = 0

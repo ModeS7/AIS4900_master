@@ -68,7 +68,7 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-export PYTORCH_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
