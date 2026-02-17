@@ -92,7 +92,7 @@ class ResNet50Features(nn.Module):
         else:
             # ImageNet pretrained
             model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-            logger.info("Loaded ImageNet pretrained ResNet50")
+            logger.debug("Loaded ImageNet pretrained ResNet50")
 
         # Remove final FC layer to get 2048-dim features
         model.fc = nn.Identity()
@@ -111,7 +111,7 @@ class ResNet50Features(nn.Module):
             except RuntimeError as e:
                 logger.warning(f"torch.compile failed for ResNet50: {e}")
         else:
-            logger.info("ResNet50 loaded without torch.compile (load/unload mode)")
+            logger.debug("ResNet50 loaded without torch.compile (load/unload mode)")
 
         self._model = model
 
@@ -185,7 +185,7 @@ class ResNet50Features(nn.Module):
             del self._model
             self._model = None
             torch.cuda.empty_cache()
-            logger.info("ResNet50 unloaded from GPU")
+            logger.debug("ResNet50 unloaded from GPU")
 
 
 class BiomedCLIPFeatures(nn.Module):
@@ -227,7 +227,7 @@ class BiomedCLIPFeatures(nn.Module):
 
         model_name = "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
-        logger.info(f"Loading BiomedCLIP from {model_name}...")
+        logger.debug(f"Loading BiomedCLIP from {model_name}...")
 
         # Suppress verbose open_clip/HF Hub logging during model creation
         _open_clip_loggers = ['root', 'open_clip', 'huggingface_hub']
@@ -260,9 +260,9 @@ class BiomedCLIPFeatures(nn.Module):
             except RuntimeError as e:
                 logger.warning(f"torch.compile failed for BiomedCLIP: {e}")
         else:
-            logger.info("BiomedCLIP loaded without torch.compile (load/unload mode)")
+            logger.debug("BiomedCLIP loaded without torch.compile (load/unload mode)")
 
-        logger.info("Loaded BiomedCLIP for feature extraction")
+        logger.debug("Loaded BiomedCLIP for feature extraction")
 
     @torch.no_grad()
     def extract_features(
@@ -324,4 +324,4 @@ class BiomedCLIPFeatures(nn.Module):
             self._model = None
             self._processor = None
             torch.cuda.empty_cache()
-            logger.info("BiomedCLIP unloaded from GPU")
+            logger.debug("BiomedCLIP unloaded from GPU")
