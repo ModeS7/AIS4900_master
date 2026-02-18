@@ -73,7 +73,7 @@ FIXED_STEP_SOLVERS = ['euler', 'midpoint', 'heun2', 'heun3', 'rk4']
 ADAPTIVE_SOLVER_LIST = ['fehlberg2', 'bosh3', 'dopri5', 'dopri8']
 
 FIXED_STEPS = [5, 10, 25, 50, 100]
-ADAPTIVE_TOLS = [1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
+ADAPTIVE_TOLS = [1e-2, 1e-3, 1e-4, 1e-5]
 
 # Quick mode: reduced grid for fast iteration
 QUICK_FIXED_STEPS = [10, 50]
