@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100"
+#SBATCH --constraint="gpu80g"
 #SBATCH --job-name="train_diffrs"
 #SBATCH --output=IDUN/output/eval/train_diffrs_%j.out
 #SBATCH --error=IDUN/output/eval/train_diffrs_%j.err
