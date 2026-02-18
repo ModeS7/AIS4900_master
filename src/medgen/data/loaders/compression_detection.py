@@ -495,8 +495,9 @@ def load_compression_model(
         logger.debug(f"Stripped 'model.' prefix from {len(keys_with_prefix)} state_dict keys")
 
     if compression_type == 'vae':
-        # Infer config from state_dict if checkpoint config is missing
-        if not model_config and 'quant_conv_mu.conv.weight' in state_dict:
+        # Infer config from state_dict if checkpoint config is missing or incomplete
+        # (old checkpoints may have a 'config' key with only disc_config, not VAE arch)
+        if 'channels' not in model_config and 'quant_conv_mu.conv.weight' in state_dict:
             model_config = _infer_vae_config_from_state_dict(state_dict)
 
         from monai.networks.nets import AutoencoderKL
