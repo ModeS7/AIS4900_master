@@ -29,8 +29,9 @@ image_size: 128
 depth: 160  # Only used for 3D
 
 # Data generation
-num_generated_samples: 5000   # Samples to generate for training pairs
+num_generated_samples: 5000   # Max samples per split (uses all available if fewer)
 generation_num_steps: 25      # Steps for sample generation
+val_split: test               # Split for validation (null to disable)
 
 # Training hyperparameters (matching official DiffRS defaults)
 num_epochs: 60

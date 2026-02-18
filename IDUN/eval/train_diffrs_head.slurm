@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
@@ -37,7 +37,7 @@ OUTPUT_DIR="runs/diffrs"
 
 # Train DiffRS head for the 3D bravo model
 # Uses paired (bravo, seg) volumes for conditioned model
-# ~50 training volumes from train split, 60 epochs
+# train split: 105 volumes, test split: 51 volumes, 100 epochs
 time python -m medgen.scripts.train_diffrs_discriminator --config-name=diffrs \
     diffusion_checkpoint="${BRAVO_CHECKPOINT}" \
     paths=cluster \
@@ -45,10 +45,10 @@ time python -m medgen.scripts.train_diffrs_discriminator --config-name=diffrs \
     spatial_dims=3 \
     image_size=256 \
     depth=160 \
-    num_generated_samples=50 \
     generation_num_steps=25 \
-    num_epochs=60 \
+    num_epochs=100 \
     batch_size=1 \
+    val_split=test \
     output_dir="${OUTPUT_DIR}"
 
 echo "=== Head training complete ==="

@@ -63,19 +63,21 @@ def load_paired_volumes_3d(
     image_type: str,
     num_volumes: int,
     depth: int,
+    split: str = "train",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Load paired (image, seg) 3D volumes from NIfTI files.
 
     Args:
-        data_dir: Root data directory containing train/ split.
+        data_dir: Root data directory containing split subdirectories.
         image_type: Image modality to load ('bravo', 'seg', etc.).
         num_volumes: Maximum volumes to load.
         depth: Target depth (pad/crop if needed).
+        split: Data split to load from ('train' or 'test').
 
     Returns:
         (images [N, 1, D, H, W], segs [N, 1, D, H, W]) both in [0, 1].
     """
-    train_dir = Path(data_dir) / "train"
+    train_dir = Path(data_dir) / split
     images, segs = [], []
 
     for patient_dir in sorted(train_dir.iterdir()):
@@ -114,7 +116,7 @@ def load_paired_volumes_3d(
         images.append(torch.from_numpy(img).unsqueeze(0))  # [1, D, H, W]
         segs.append(torch.from_numpy(seg).unsqueeze(0))
 
-    logger.info("Loaded %d paired 3D volumes from %s", len(images), train_dir)
+    logger.info("Loaded %d paired 3D volumes from %s [%s]", len(images), train_dir, split)
     return torch.stack(images), torch.stack(segs)
 
 
@@ -122,20 +124,22 @@ def load_paired_slices_2d(
     data_dir: str,
     image_type: str,
     num_samples: int,
+    split: str = "train",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Load paired (image, seg) 2D slices from NIfTI volumes.
 
     Only keeps slices that have tumor (seg > 0).
 
     Args:
-        data_dir: Root data directory containing train/ split.
+        data_dir: Root data directory containing split subdirectories.
         image_type: Image modality to load.
         num_samples: Maximum slices to return.
+        split: Data split to load from ('train' or 'test').
 
     Returns:
         (images [N, 1, H, W], segs [N, 1, H, W]) both in [0, 1].
     """
-    train_dir = Path(data_dir) / "train"
+    train_dir = Path(data_dir) / split
     all_images, all_segs = [], []
 
     for patient_dir in sorted(train_dir.iterdir()):
@@ -167,7 +171,7 @@ def load_paired_slices_2d(
     indices = torch.randperm(n)[:min(num_samples, n)]
     images = torch.stack([all_images[i] for i in indices])
     segs = torch.stack([all_segs[i] for i in indices])
-    logger.info("Loaded %d paired 2D slices from %s", len(images), train_dir)
+    logger.info("Loaded %d paired 2D slices from %s [%s]", len(images), train_dir, split)
     return images, segs
 
 
@@ -177,6 +181,7 @@ def load_unconditioned_samples(
     image_size: int,
     num_samples: int,
     spatial_dims: int = 2,
+    split: str = "train",
 ) -> torch.Tensor:
     """Load real samples (no conditioning needed) for unconditioned models.
 
@@ -186,6 +191,7 @@ def load_unconditioned_samples(
         image_size: Target image size.
         num_samples: Number of samples to load.
         spatial_dims: 2 for 2D slices, 3 for 3D volumes.
+        split: Data split to load from ('train' or 'test').
 
     Returns:
         Tensor [N, 1, H, W] or [N, 1, D, H, W].
@@ -194,7 +200,7 @@ def load_unconditioned_samples(
 
     from medgen.data.dataset import NiFTIDataset, build_standard_transform
 
-    train_dir = os.path.join(data_dir, "train")
+    train_dir = os.path.join(data_dir, split)
     transform = build_standard_transform(image_size)
     dataset = NiFTIDataset(root_dir=train_dir, modality=image_type, transform=transform)
 
@@ -216,7 +222,7 @@ def load_unconditioned_samples(
     result = torch.stack(all_samples, dim=0)
     if result.dim() == 3:
         result = result.unsqueeze(1)
-    logger.info("Loaded %d unconditioned samples: %s", len(result), result.shape)
+    logger.info("Loaded %d unconditioned samples from %s [%s]: %s", len(result), train_dir, split, result.shape)
     return result
 
 
@@ -355,6 +361,10 @@ def train_head(
     weight_decay: float = 1e-7,
     real_conditioning: torch.Tensor | None = None,
     generated_conditioning: torch.Tensor | None = None,
+    val_real_samples: torch.Tensor | None = None,
+    val_generated_samples: torch.Tensor | None = None,
+    val_real_conditioning: torch.Tensor | None = None,
+    val_generated_conditioning: torch.Tensor | None = None,
     output_dir: Path | None = None,
     checkpoint_metadata: dict | None = None,
 ) -> DiffRSHead:
@@ -379,6 +389,10 @@ def train_head(
         weight_decay: Adam weight decay.
         real_conditioning: Conditioning for real samples [N, C_cond, ...] or None.
         generated_conditioning: Conditioning for generated samples [N, C_cond, ...] or None.
+        val_real_samples: Validation real samples (optional).
+        val_generated_samples: Validation generated samples (optional).
+        val_real_conditioning: Conditioning for val real samples (optional).
+        val_generated_conditioning: Conditioning for val generated samples (optional).
         output_dir: Directory for checkpoints and TensorBoard logs.
         checkpoint_metadata: Extra metadata to include in checkpoint files.
 
@@ -408,6 +422,23 @@ def train_head(
     else:
         all_cond = None
 
+    # Validation data (optional)
+    has_val = (val_real_samples is not None and val_generated_samples is not None)
+    if has_val:
+        num_val_real = len(val_real_samples)
+        num_val_gen = len(val_generated_samples)
+        num_val_total = num_val_real + num_val_gen
+        val_data = torch.cat([val_real_samples, val_generated_samples], dim=0)
+        val_labels = torch.cat([torch.ones(num_val_real), torch.zeros(num_val_gen)])
+        has_val_cond = (val_real_conditioning is not None and val_generated_conditioning is not None)
+        if has_val_cond:
+            val_cond = torch.cat([val_real_conditioning, val_generated_conditioning], dim=0)
+        else:
+            val_cond = None
+    else:
+        val_data = val_labels = val_cond = None
+        num_val_total = 0
+
     # Set up output directory, TensorBoard, and resume support
     if output_dir is not None:
         output_dir = Path(output_dir)
@@ -436,6 +467,8 @@ def train_head(
         "Training DiffRS head: %d real + %d generated, epochs %d-%d, lr=%.1e, conditioning=%s",
         num_real, num_gen, start_epoch + 1, num_epochs, learning_rate, has_cond,
     )
+    if has_val:
+        logger.info("Validation: %d real + %d generated = %d total", num_val_real, num_val_gen, num_val_total)
 
     for epoch in range(start_epoch, num_epochs):
         perm = torch.randperm(num_total)
@@ -490,12 +523,55 @@ def train_head(
             writer.add_scalar('train/accuracy', accuracy, epoch)
             writer.add_scalar('train/learning_rate', optimizer.param_groups[0]['lr'], epoch)
 
+        # Validation loop
+        val_loss = None
+        val_accuracy = None
+        if has_val:
+            head.eval()
+            val_epoch_loss = 0.0
+            val_epoch_correct = 0
+            val_num_batches = 0
+
+            with torch.no_grad():
+                for i in range(0, num_val_total, batch_size):
+                    batch_x = val_data[i:i + batch_size].to(device)
+                    batch_y = val_labels[i:i + batch_size].to(device)
+
+                    timesteps = strategy.sample_timesteps(batch_x)
+                    noise = torch.randn_like(batch_x)
+                    noisy = strategy.scheduler.add_noise(batch_x, noise, timesteps)
+
+                    if val_cond is not None:
+                        batch_cond = val_cond[i:i + batch_size].to(device)
+                        encoder_input = torch.cat([noisy, batch_cond], dim=1)
+                    else:
+                        encoder_input = noisy
+
+                    features = extract_encoder_features(model, encoder_input, timesteps)
+                    logits = head(features.float())
+                    loss = criterion(logits, batch_y)
+
+                    val_epoch_loss += loss.item()
+                    val_epoch_correct += ((logits > 0).float() == batch_y).sum().item()
+                    val_num_batches += 1
+
+            val_loss = val_epoch_loss / max(val_num_batches, 1)
+            val_accuracy = val_epoch_correct / num_val_total * 100
+            head.train()
+
+            if writer is not None:
+                writer.add_scalar('val/loss', val_loss, epoch)
+                writer.add_scalar('val/accuracy', val_accuracy, epoch)
+
+        # Use val_loss for best model selection when available, else train loss
+        selection_loss = val_loss if val_loss is not None else avg_loss
+
         # Console logging
         if (epoch + 1) % 5 == 0 or epoch == start_epoch:
-            logger.info(
-                "Epoch %d/%d: loss=%.4f, accuracy=%.1f%%",
-                epoch + 1, num_epochs, avg_loss, accuracy,
-            )
+            msg = f"Epoch {epoch + 1}/{num_epochs}: loss={avg_loss:.4f}, acc={accuracy:.1f}%"
+            if val_loss is not None:
+                msg += f" | val_loss={val_loss:.4f}, val_acc={val_accuracy:.1f}%"
+            logger.info(msg)
 
         # Checkpointing
         if output_dir is not None:
@@ -506,13 +582,14 @@ def train_head(
             )
 
             # Save best if improved
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            if selection_loss < best_loss:
+                best_loss = selection_loss
                 _save_head_checkpoint(
                     head, optimizer, epoch, best_loss,
                     output_dir / "checkpoint_best.pt", metadata,
                 )
-                logger.info("  New best loss: %.4f (epoch %d)", best_loss, epoch + 1)
+                loss_type = "val_loss" if val_loss is not None else "train_loss"
+                logger.info("  New best %s: %.4f (epoch %d)", loss_type, best_loss, epoch + 1)
 
             # Periodic checkpoint every 20 epochs
             if (epoch + 1) % 20 == 0:
@@ -588,31 +665,34 @@ def main(cfg: DictConfig) -> None:
     image_type = mode_to_type.get(mode, 'bravo')
 
     num_samples = cfg.num_generated_samples
+    val_split = cfg.get('val_split', 'test')
 
     if has_conditioning:
         logger.info(
             "Conditioned model (in=%d, out=%d): using paired data + conditioned generation",
             in_channels, out_channels,
         )
-        # Load paired (image, seg) data
+
+        # --- Training split ---
         if spatial_dims == 3:
             real_images, real_segs = load_paired_volumes_3d(
                 data_dir=cfg.paths.data_dir,
                 image_type=image_type,
                 num_volumes=num_samples,
                 depth=depth,
+                split="train",
             )
         else:
             real_images, real_segs = load_paired_slices_2d(
                 data_dir=cfg.paths.data_dir,
                 image_type=image_type,
                 num_samples=num_samples,
+                split="train",
             )
 
-        num_samples = len(real_images)  # May be limited by available data
-        logger.info("Paired data: %d samples", num_samples)
+        num_train = len(real_images)
+        logger.info("Training paired data: %d samples", num_train)
 
-        # Generate conditioned on the same seg masks
         generated = generate_conditioned_samples(
             model=model,
             strategy=strategy,
@@ -623,9 +703,42 @@ def main(cfg: DictConfig) -> None:
             batch_size=cfg.batch_size,
         )
 
-        # For training: use same seg masks for both real and generated
         real_conditioning = real_segs
         generated_conditioning = real_segs
+
+        # --- Validation split (optional) ---
+        val_real_images = val_generated = val_real_conditioning = val_generated_conditioning = None
+        if val_split:
+            if spatial_dims == 3:
+                val_real_images, val_real_segs = load_paired_volumes_3d(
+                    data_dir=cfg.paths.data_dir,
+                    image_type=image_type,
+                    num_volumes=num_samples,
+                    depth=depth,
+                    split=val_split,
+                )
+            else:
+                val_real_images, val_real_segs = load_paired_slices_2d(
+                    data_dir=cfg.paths.data_dir,
+                    image_type=image_type,
+                    num_samples=num_samples,
+                    split=val_split,
+                )
+
+            logger.info("Validation paired data: %d samples", len(val_real_images))
+
+            val_generated = generate_conditioned_samples(
+                model=model,
+                strategy=strategy,
+                seg_masks=val_real_segs,
+                out_channels=out_channels,
+                num_steps=cfg.generation_num_steps,
+                device=device,
+                batch_size=cfg.batch_size,
+            )
+
+            val_real_conditioning = val_real_segs
+            val_generated_conditioning = val_real_segs
     else:
         logger.info("Unconditioned model (in=%d, out=%d)", in_channels, out_channels)
 
@@ -635,26 +748,55 @@ def main(cfg: DictConfig) -> None:
         else:
             sample_shape = (out_channels, image_size, image_size)
 
-        generated = generate_unconditioned_samples(
-            model=model,
-            strategy=strategy,
-            num_samples=num_samples,
-            sample_shape=sample_shape,
-            num_steps=cfg.generation_num_steps,
-            device=device,
-            batch_size=cfg.batch_size,
-        )
-
+        # --- Training split ---
         real_images = load_unconditioned_samples(
             data_dir=cfg.paths.data_dir,
             image_type=image_type,
             image_size=image_size,
             num_samples=num_samples,
             spatial_dims=spatial_dims,
+            split="train",
+        )
+
+        num_train = len(real_images)
+
+        generated = generate_unconditioned_samples(
+            model=model,
+            strategy=strategy,
+            num_samples=num_train,
+            sample_shape=sample_shape,
+            num_steps=cfg.generation_num_steps,
+            device=device,
+            batch_size=cfg.batch_size,
         )
 
         real_conditioning = None
         generated_conditioning = None
+
+        # --- Validation split (optional) ---
+        val_real_images = val_generated = val_real_conditioning = val_generated_conditioning = None
+        if val_split:
+            val_real_images = load_unconditioned_samples(
+                data_dir=cfg.paths.data_dir,
+                image_type=image_type,
+                image_size=image_size,
+                num_samples=num_samples,
+                spatial_dims=spatial_dims,
+                split=val_split,
+            )
+
+            val_generated = generate_unconditioned_samples(
+                model=model,
+                strategy=strategy,
+                num_samples=len(val_real_images),
+                sample_shape=sample_shape,
+                num_steps=cfg.generation_num_steps,
+                device=device,
+                batch_size=cfg.batch_size,
+            )
+
+            val_real_conditioning = None
+            val_generated_conditioning = None
 
     # Create head
     bottleneck_channels = get_bottleneck_channels(model)
@@ -695,6 +837,10 @@ def main(cfg: DictConfig) -> None:
         weight_decay=cfg.weight_decay,
         real_conditioning=real_conditioning,
         generated_conditioning=generated_conditioning,
+        val_real_samples=val_real_images,
+        val_generated_samples=val_generated,
+        val_real_conditioning=val_real_conditioning,
+        val_generated_conditioning=val_generated_conditioning,
         output_dir=output_dir,
         checkpoint_metadata=checkpoint_metadata,
     )
