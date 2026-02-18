@@ -30,8 +30,8 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # === CHECKPOINTS TO MEASURE ===
 # Edit these paths to point to your VAE checkpoints
 
-EXP14_0="runs/compression_3d/multi_modality/exp14_0_vae3d_4x_20260213-072751/checkpoint_best.pt"
-EXP14_3="runs/compression_3d/multi_modality/exp14_3_vae3d_4x_lowkl_20260215-102459/checkpoint_best.pt"
+EXP14_0="runs/compression_3d/multi_modality/exp14_0_vae3d_4x_20260214-233543/checkpoint_best.pt"
+EXP14_3="runs/compression_3d/multi_modality/exp14_3_vae3d_4x_lowkl_20260217-023208/checkpoint_best.pt"
 
 echo ""
 echo "=========================================="
