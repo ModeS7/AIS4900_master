@@ -5,6 +5,8 @@ Provides diffusion model architectures including UNet and DiT.
 """
 
 from .dit import DiT, create_dit, DiT_S, DiT_B, DiT_L, DiT_XL, DIT_VARIANTS
+from .uvit import UViT, create_uvit, UVIT_VARIANTS
+from .hdit import HDiT, create_hdit
 from .factory import create_diffusion_model, get_model_type, is_transformer_model
 from .embeddings import (
     PatchEmbed2D,
@@ -48,6 +50,13 @@ __all__ = [
     "DiT_L",
     "DiT_XL",
     "DIT_VARIANTS",
+    # U-ViT
+    "UViT",
+    "create_uvit",
+    "UVIT_VARIANTS",
+    # HDiT
+    "HDiT",
+    "create_hdit",
     # Backward compat
     "SiT",
     "create_sit",

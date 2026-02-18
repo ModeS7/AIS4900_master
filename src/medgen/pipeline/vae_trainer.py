@@ -340,6 +340,8 @@ class VAETrainer(BaseCompressionTrainer):
         }
         if self.spatial_dims == 3:
             config['spatial_dims'] = 3
+            config['with_encoder_nonlocal_attn'] = False
+            config['with_decoder_nonlocal_attn'] = False
         else:
             config['with_encoder_nonlocal_attn'] = True
             config['with_decoder_nonlocal_attn'] = True

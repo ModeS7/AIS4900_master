@@ -111,11 +111,17 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             norm_num_groups=getattr(trainer.cfg.model, 'norm_num_groups', 32),
         ).to(trainer.device)
 
-    # Enable gradient checkpointing for 3D UNet (required to fit in GPU memory)
+    # Enable gradient checkpointing (required to fit large models in GPU memory)
     # Must be applied BEFORE torch.compile or DDP wrapping
-    if trainer.use_gradient_checkpointing and not trainer.is_transformer:
-        from .checkpointing import enable_unet_gradient_checkpointing
-        enable_unet_gradient_checkpointing(raw_model)
+    if trainer.use_gradient_checkpointing:
+        if trainer.is_transformer:
+            if hasattr(raw_model, 'enable_gradient_checkpointing'):
+                raw_model.enable_gradient_checkpointing()
+                if trainer.is_main_process:
+                    logger.info("Transformer gradient checkpointing enabled")
+        else:
+            from .checkpointing import enable_unet_gradient_checkpointing
+            enable_unet_gradient_checkpointing(raw_model)
 
     # Determine if DDPOptimizer should be disabled for large models
     disable_ddp_opt = getattr(trainer.cfg.training, 'disable_ddp_optimizer', False)

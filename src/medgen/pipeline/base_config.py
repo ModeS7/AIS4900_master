@@ -64,20 +64,22 @@ class ModelConfig:
     attention_levels: list[bool] = field(default_factory=lambda: [False, True, True])
     num_res_blocks: int = 1
     num_head_channels: int = 256
-    # DiT-specific
+    # DiT/U-ViT/HDiT-specific
     variant: str = "B"
     patch_size: int = 2
     conditioning: str = "concat"
     mlp_ratio: float = 4.0
     drop_rate: float = 0.0
     drop_path_rate: float = 0.0
+    # HDiT-specific
+    level_depths: list[int] | None = None
 
     def __post_init__(self):
         if self.spatial_dims not in (2, 3):
             raise ValueError(f"spatial_dims must be 2 or 3, got {self.spatial_dims}")
         if self.image_size <= 0:
             raise ValueError(f"image_size must be > 0, got {self.image_size}")
-        valid_types = ('unet', 'dit', 'sit')
+        valid_types = ('unet', 'dit', 'sit', 'uvit', 'hdit')
         if self.type not in valid_types:
             raise ValueError(f"model type must be one of {valid_types}, got '{self.type}'")
         if len(self.channels) != len(self.attention_levels):
@@ -104,6 +106,7 @@ class ModelConfig:
             mlp_ratio=model_cfg.get('mlp_ratio', 4.0),
             drop_rate=model_cfg.get('drop_rate', 0.0),
             drop_path_rate=model_cfg.get('drop_path_rate', 0.0),
+            level_depths=list(model_cfg.level_depths) if model_cfg.get('level_depths', None) else None,
         )
 
 

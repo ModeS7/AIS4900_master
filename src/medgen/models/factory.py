@@ -38,8 +38,12 @@ def create_diffusion_model(
         return _create_unet(cfg, mc, device, in_channels, out_channels)
     elif mc.type in ('dit', 'sit'):
         return _create_dit(cfg, mc, device, in_channels, out_channels)
+    elif mc.type == 'uvit':
+        return _create_uvit(cfg, mc, device, in_channels, out_channels)
+    elif mc.type == 'hdit':
+        return _create_hdit(cfg, mc, device, in_channels, out_channels)
     else:
-        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet' or 'dit'")
+        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet', 'dit', 'uvit', or 'hdit'")
 
 
 def _create_unet(
@@ -119,48 +123,7 @@ def _create_dit(
         cond_channels = in_channels - out_channels
         model_in_channels = in_channels
 
-    # Get latent space scale factors
-    # Check both old (vae) and new (latent) config locations
-    latent_cfg = cfg.get('latent', {})
-    is_latent_space = latent_cfg.get('enabled', False) or cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
-
-    if is_latent_space:
-        # Use latent config scale factors
-        spatial_scale = latent_cfg.get('scale_factor') or cfg.get('vae', {}).get('spatial_scale', 8)
-        # For slicewise encoding, depth is not compressed
-        slicewise = latent_cfg.get('slicewise_encoding', False)
-        depth_scale = 1 if slicewise else (latent_cfg.get('depth_scale_factor') or spatial_scale)
-    else:
-        # Check for wavelet or space-to-depth spatial reduction
-        wavelet_cfg = cfg.get('wavelet', {})
-        s2d_cfg = cfg.get('space_to_depth', {})
-        if wavelet_cfg.get('enabled', False):
-            spatial_scale = 2  # Haar wavelet: 2x2x2 decomposition
-            depth_scale = 2
-        elif s2d_cfg.get('enabled', False):
-            spatial_scale = s2d_cfg.get('spatial_factor', 2)
-            depth_scale = s2d_cfg.get('depth_factor', 2)
-        else:
-            spatial_scale = 1
-            depth_scale = 1
-
-    # Get input size - prefer volume config for 3D, fallback to model config
-    # This avoids redundant specification of dimensions
-    if mc.spatial_dims == 3 and 'volume' in cfg:
-        # For 3D: derive from volume config (height/width should match)
-        base_size = cfg.volume.get('height', mc.image_size)
-        base_depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', base_size))
-    else:
-        # For 2D or when volume config not available: use model config
-        base_size = mc.image_size
-        base_depth = getattr(cfg.model, 'depth_size', base_size)
-
-    input_size = base_size // spatial_scale
-
-    # 3D specific settings
-    depth_size = None
-    if mc.spatial_dims == 3:
-        depth_size = base_depth // depth_scale
+    input_size, depth_size = _compute_input_sizes(cfg, mc)
 
     model = create_dit(
         variant=mc.variant,
@@ -192,6 +155,169 @@ def _create_dit(
     return model.to(device)
 
 
+def _create_uvit(
+    cfg: DictConfig,
+    mc: ModelConfig,
+    device: torch.device,
+    in_channels: int,
+    out_channels: int,
+) -> nn.Module:
+    """Create U-ViT (Vision Transformer with Skip Connections)."""
+    from .uvit import UVIT_VARIANTS, create_uvit
+
+    if mc.spatial_dims not in (2, 3):
+        raise ValueError(f"spatial_dims must be 2 or 3, got {mc.spatial_dims}")
+
+    valid_variants = tuple(UVIT_VARIANTS.keys())
+    if mc.variant not in valid_variants:
+        raise ValueError(f"U-ViT variant must be one of {valid_variants}, got '{mc.variant}'")
+
+    # Channel handling (same as DiT)
+    if mc.conditioning == "cross_attn":
+        cond_channels = getattr(cfg.mode, 'cond_channels', 1)
+        model_in_channels = out_channels
+    else:
+        cond_channels = in_channels - out_channels
+        model_in_channels = in_channels
+
+    # Input size calculation (same as DiT)
+    input_size, depth_size = _compute_input_sizes(cfg, mc)
+
+    model = create_uvit(
+        variant=mc.variant,
+        spatial_dims=mc.spatial_dims,
+        input_size=input_size,
+        patch_size=mc.patch_size,
+        in_channels=model_in_channels,
+        out_channels=out_channels,
+        conditioning=mc.conditioning,
+        cond_channels=cond_channels,
+        depth_size=depth_size,
+        mlp_ratio=mc.mlp_ratio,
+        drop_rate=mc.drop_rate,
+    )
+
+    variant_info = UVIT_VARIANTS[mc.variant]
+    num_params = sum(p.numel() for p in model.parameters()) / 1e6
+    logger.info(
+        f"Created U-ViT-{mc.variant}: spatial_dims={mc.spatial_dims}, input_size={input_size}, "
+        f"patch_size={mc.patch_size}, hidden_size={variant_info['hidden_size']}, "
+        f"depth={variant_info['depth']}, heads={variant_info['num_heads']}, "
+        f"conditioning={mc.conditioning}, params={num_params:.1f}M"
+    )
+
+    return model.to(device)
+
+
+def _create_hdit(
+    cfg: DictConfig,
+    mc: ModelConfig,
+    device: torch.device,
+    in_channels: int,
+    out_channels: int,
+) -> nn.Module:
+    """Create HDiT (Hierarchical Diffusion Transformer)."""
+    from .dit import DIT_VARIANTS
+    from .hdit import create_hdit
+
+    if mc.spatial_dims not in (2, 3):
+        raise ValueError(f"spatial_dims must be 2 or 3, got {mc.spatial_dims}")
+
+    valid_variants = tuple(DIT_VARIANTS.keys())
+    if mc.variant not in valid_variants:
+        raise ValueError(f"HDiT variant must be one of {valid_variants}, got '{mc.variant}'")
+
+    # Channel handling (same as DiT)
+    if mc.conditioning == "cross_attn":
+        cond_channels = getattr(cfg.mode, 'cond_channels', 1)
+        model_in_channels = out_channels
+    else:
+        cond_channels = in_channels - out_channels
+        model_in_channels = in_channels
+
+    # Input size calculation (same as DiT)
+    input_size, depth_size = _compute_input_sizes(cfg, mc)
+
+    # Read level_depths from config
+    level_depths = mc.level_depths
+
+    model = create_hdit(
+        variant=mc.variant,
+        spatial_dims=mc.spatial_dims,
+        input_size=input_size,
+        patch_size=mc.patch_size,
+        in_channels=model_in_channels,
+        out_channels=out_channels,
+        conditioning=mc.conditioning,
+        cond_channels=cond_channels,
+        level_depths=level_depths,
+        depth_size=depth_size,
+        mlp_ratio=mc.mlp_ratio,
+        drop_rate=mc.drop_rate,
+        drop_path_rate=mc.drop_path_rate,
+    )
+
+    variant_info = DIT_VARIANTS[mc.variant]
+    num_params = sum(p.numel() for p in model.parameters()) / 1e6
+    level_str = f", levels={level_depths}" if level_depths else ""
+    drop_path_str = f", drop_path={mc.drop_path_rate}" if mc.drop_path_rate > 0 else ""
+    logger.info(
+        f"Created HDiT-{mc.variant}: spatial_dims={mc.spatial_dims}, input_size={input_size}, "
+        f"patch_size={mc.patch_size}, hidden_size={variant_info['hidden_size']}, "
+        f"heads={variant_info['num_heads']}, conditioning={mc.conditioning}, "
+        f"params={num_params:.1f}M{level_str}{drop_path_str}"
+    )
+
+    return model.to(device)
+
+
+def _compute_input_sizes(
+    cfg: DictConfig,
+    mc: ModelConfig,
+) -> tuple[int, int | None]:
+    """Compute input_size and depth_size from config (shared by DiT/U-ViT/HDiT).
+
+    Returns:
+        (input_size, depth_size) where depth_size is None for 2D.
+    """
+    # Get latent space scale factors
+    latent_cfg = cfg.get('latent', {})
+    is_latent_space = latent_cfg.get('enabled', False) or cfg.get('diffusion', {}).get('space', 'pixel') == 'latent'
+
+    if is_latent_space:
+        spatial_scale = latent_cfg.get('scale_factor') or cfg.get('vae', {}).get('spatial_scale', 8)
+        slicewise = latent_cfg.get('slicewise_encoding', False)
+        depth_scale = 1 if slicewise else (latent_cfg.get('depth_scale_factor') or spatial_scale)
+    else:
+        wavelet_cfg = cfg.get('wavelet', {})
+        s2d_cfg = cfg.get('space_to_depth', {})
+        if wavelet_cfg.get('enabled', False):
+            spatial_scale = 2
+            depth_scale = 2
+        elif s2d_cfg.get('enabled', False):
+            spatial_scale = s2d_cfg.get('spatial_factor', 2)
+            depth_scale = s2d_cfg.get('depth_factor', 2)
+        else:
+            spatial_scale = 1
+            depth_scale = 1
+
+    # Get input size
+    if mc.spatial_dims == 3 and 'volume' in cfg:
+        base_size = cfg.volume.get('height', mc.image_size)
+        base_depth = cfg.volume.get('pad_depth_to', cfg.volume.get('depth', base_size))
+    else:
+        base_size = mc.image_size
+        base_depth = getattr(cfg.model, 'depth_size', base_size)
+
+    input_size = base_size // spatial_scale
+
+    depth_size = None
+    if mc.spatial_dims == 3:
+        depth_size = base_depth // depth_scale
+
+    return input_size, depth_size
+
+
 def get_model_type(cfg: DictConfig) -> str:
     """Get model type from config."""
     mc = ModelConfig.from_hydra(cfg)
@@ -201,4 +327,4 @@ def get_model_type(cfg: DictConfig) -> str:
 def is_transformer_model(cfg: DictConfig) -> bool:
     """Check if model is transformer-based (DiT)."""
     model_type = get_model_type(cfg)
-    return model_type in ('dit', 'sit')
+    return model_type in ('dit', 'sit', 'uvit', 'hdit')

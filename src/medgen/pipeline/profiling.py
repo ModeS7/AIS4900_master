@@ -85,6 +85,9 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             'conditioning': mc.conditioning,
             'qk_norm': getattr(trainer.cfg.model, 'qk_norm', True),
         })
+        # HDiT-specific
+        if mc.level_depths is not None:
+            config['level_depths'] = mc.level_depths
     else:
         config.update({
             'channels': list(mc.channels),
