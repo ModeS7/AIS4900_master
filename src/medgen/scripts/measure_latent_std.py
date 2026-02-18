@@ -174,7 +174,7 @@ def measure_latent_stats(cfg: DictConfig) -> None:
     print("=" * 60)
 
 
-@hydra.main(config_path="../../../../configs", config_name="vae_3d", version_base="1.3")
+@hydra.main(config_path="../../../configs", config_name="vae_3d", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     measure_latent_stats(cfg)
