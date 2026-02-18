@@ -78,7 +78,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.width=128 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
-    training.learning_rate=1e-4 \
+    training.learning_rate=5e-5 \
+    training.gradient_clip_norm=0.5 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

@@ -88,6 +88,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=seg_conditioned_3d \
     volume.height=128 \
     volume.width=128 \
+    training.learning_rate=5e-5 \
     training.gradient_clip_norm=0.5 \
     training.warmup_epochs=10 \
     mode.size_bins.embedding_dim=64 \

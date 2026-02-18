@@ -73,6 +73,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     mode=seg_conditioned_3d \
+    training.learning_rate=5e-5 \
     training.gradient_clip_norm=0.5 \
     training.warmup_epochs=10 \
     mode.size_bins.embedding_dim=64 \
