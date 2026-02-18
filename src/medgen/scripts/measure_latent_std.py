@@ -37,41 +37,19 @@ def measure_latent_stats(cfg: DictConfig) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     max_samples = cfg.get('max_samples', 100)
 
-    # Build VAE directly from Hydra config (auto-detection gets architecture wrong)
-    from monai.networks.nets import AutoencoderKL
-
-    channels = list(cfg.get('channels', [32, 64, 128, 128]))
-    attention_levels = list(cfg.get('attention_levels', [False, False, False, False]))
-    latent_channels = cfg.get('latent_channels', 3)
-    num_res_blocks = cfg.get('num_res_blocks', 2)
-    in_channels = cfg.mode.get('in_channels', 1)
-    spatial_dims = 3 if len(channels) == 4 else 2
-
-    model = AutoencoderKL(
-        spatial_dims=spatial_dims,
-        in_channels=in_channels,
-        out_channels=in_channels,
-        channels=tuple(channels),
-        attention_levels=tuple(attention_levels),
-        latent_channels=latent_channels,
-        num_res_blocks=num_res_blocks,
-        norm_num_groups=32,
-    ).to(device)
-
-    # Load weights from checkpoint
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = ckpt.get('model_state_dict', ckpt.get('state_dict', ckpt))
-    # Strip 'model.' prefix if present
-    if any(k.startswith('model.') for k in state_dict):
-        state_dict = {k.replace('model.', '', 1) if k.startswith('model.') else k: v
-                      for k, v in state_dict.items()}
-    model.load_state_dict(state_dict)
+    # Load model via auto-detection (infers architecture from state_dict if needed)
+    from medgen.data.loaders.compression_detection import load_compression_model
+    model, comp_type, spatial_dims, scale_factor, latent_channels = load_compression_model(
+        checkpoint_path, compression_type='auto', device=device,
+    )
     model.eval()
 
-    scale_factor = 2 ** (len(channels) - 1)
-    logger.info(f"Loaded VAE: spatial_dims={spatial_dims}, "
-                f"channels={channels}, scale_factor={scale_factor}x, "
-                f"latent_channels={latent_channels}")
+    if comp_type != 'vae':
+        logger.error(f"Checkpoint is {comp_type}, not a VAE. Only VAEs have KL latent statistics.")
+        sys.exit(1)
+
+    logger.info(f"Loaded {comp_type} model: spatial_dims={spatial_dims}, "
+                f"scale_factor={scale_factor}, latent_channels={latent_channels}")
 
     # Create dataloader
     if spatial_dims == 3:

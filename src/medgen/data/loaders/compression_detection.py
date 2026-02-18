@@ -159,6 +159,19 @@ def _detect_scale_factor_from_dict(checkpoint: dict, compression_type: str) -> i
         num_stages = len(config['channels'])
         return 2 ** num_stages  # Typically 2^3 = 8
 
+    # Fallback: count downsample blocks in encoder state_dict
+    # Downsample blocks are identified by postconv or standalone conv patterns
+    # between ResBlock groups in the encoder
+    state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', {}))
+    downsample_count = sum(
+        1 for k in state_dict
+        if k.startswith(('encoder.blocks.', 'model.encoder.blocks.'))
+        and k.endswith('.postconv.conv.weight')
+    )
+    if downsample_count > 0:
+        # scale = 2^num_downsamples, +1 for the total levels
+        return 2 ** (downsample_count + 1)
+
     # Default for VAE/VQ-VAE
     return 8
 
@@ -203,9 +216,150 @@ def _detect_latent_channels_from_dict(checkpoint: dict, compression_type: str) -
     # VAE quant_conv has shape [2*latent_channels, hidden, k, k] (mu + logvar)
     if 'quant_conv.weight' in state_dict:
         return state_dict['quant_conv.weight'].shape[0] // 2
+    # MONAI AutoencoderKL: separate mu/logvar convs
+    for prefix in ('', 'model.'):
+        key = f'{prefix}quant_conv_mu.conv.weight'
+        if key in state_dict:
+            return state_dict[key].shape[0]
 
     # Default
     return 4
+
+
+def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
+    """Infer VAE architecture from state_dict when checkpoint config is missing.
+
+    Parses MONAI AutoencoderKL weight shapes to reconstruct the constructor args.
+    This handles old checkpoints that don't have an embedded 'config' key.
+
+    MONAI AutoencoderKL encoder structure (flattened into blocks[]):
+      [0]  conv_in
+      For each level (except last):
+        [..] num_res_blocks × ResBlock
+        [..] optional Attention
+        [..] Downsample (conv.conv.weight)
+      Last level:
+        [..] num_res_blocks × ResBlock
+        [..] optional Attention
+      Mid block:
+        [..] ResBlock, Attention, ResBlock  (always present)
+      [..]  GroupNorm
+      [..]  conv_out
+
+    Args:
+        state_dict: Model state dict (already stripped of 'model.' prefix).
+
+    Returns:
+        Dict with keys matching AutoencoderKL constructor args.
+    """
+    # --- latent_channels: from quant_conv_mu [latent_ch, latent_ch, 1, ...] ---
+    latent_channels = state_dict['quant_conv_mu.conv.weight'].shape[0]
+
+    # --- spatial_dims: from conv weight ndim (5D = 3D, 4D = 2D) ---
+    spatial_dims = state_dict['quant_conv_mu.conv.weight'].ndim - 2
+
+    # --- in_channels: from encoder conv_in [first_ch, in_ch, k, ...] ---
+    in_channels = state_dict['encoder.blocks.0.conv.weight'].shape[1]
+
+    # --- Classify each encoder block by its key pattern ---
+    block_types: dict[int, str] = {}  # idx -> 'resblock'|'downsample'|'attention'|'other'
+    resblock_out_ch: dict[int, int] = {}  # idx -> output channels
+
+    encoder_keys: dict[int, list[str]] = {}
+    for key in state_dict:
+        if not key.startswith('encoder.blocks.'):
+            continue
+        parts = key.split('.')
+        idx = int(parts[2])
+        rest = '.'.join(parts[3:])
+        encoder_keys.setdefault(idx, []).append(rest)
+
+    for idx, keys in encoder_keys.items():
+        if any('conv1' in k for k in keys):
+            block_types[idx] = 'resblock'
+            resblock_out_ch[idx] = state_dict[f'encoder.blocks.{idx}.conv2.conv.weight'].shape[0]
+        elif any('attn' in k for k in keys):
+            block_types[idx] = 'attention'
+        elif 'conv.conv.weight' in keys:
+            block_types[idx] = 'downsample'
+        else:
+            block_types[idx] = 'other'  # conv_in, GroupNorm, conv_out
+
+    # --- Split into levels using Downsample blocks as boundaries ---
+    # Collect ResBlock indices between downsample boundaries
+    sorted_indices = sorted(block_types.keys())
+    # Skip block 0 (conv_in)
+    resblock_indices = [i for i in sorted_indices if block_types[i] == 'resblock']
+    downsample_indices = sorted(i for i in sorted_indices if block_types[i] == 'downsample')
+
+    # Number of downsamples = number of levels - 1
+    num_levels = len(downsample_indices) + 1
+
+    # Group ResBlocks into levels (before each downsample = one level)
+    levels: list[list[int]] = []
+    remaining_resblocks = list(resblock_indices)
+
+    for ds_idx in downsample_indices:
+        level_resblocks = [i for i in remaining_resblocks if i < ds_idx]
+        levels.append(level_resblocks)
+        remaining_resblocks = [i for i in remaining_resblocks if i >= ds_idx]
+
+    # Remaining ResBlocks: last level + mid block (2 extra ResBlocks)
+    # The last level has num_res_blocks, mid block has 2
+    # num_res_blocks = count from first level (most reliable)
+    num_res_blocks = len(levels[0]) if levels else 2
+    last_level_resblocks = remaining_resblocks[:num_res_blocks]
+    levels.append(last_level_resblocks)
+    # (remaining after that are mid block ResBlocks)
+
+    # Extract channel per level from the last ResBlock in each level
+    channels = []
+    for level_blocks in levels:
+        if level_blocks:
+            last_rb = level_blocks[-1]
+            channels.append(resblock_out_ch[last_rb])
+
+    # --- Detect attention per level (excluding mid block attention) ---
+    # Mid block always has attention; we only care about per-level attention
+    attention_indices = sorted(i for i in sorted_indices if block_types[i] == 'attention')
+
+    # Find mid block attention: the attention that comes after the last downsample
+    # and after the last level's ResBlocks
+    last_level_end = levels[-1][-1] if levels[-1] else 0
+    mid_attn = {i for i in attention_indices if i > last_level_end}
+
+    # Per-level attention: check if any attention block falls within each level's range
+    attention_levels = []
+    for level_idx, level_blocks in enumerate(levels):
+        if not level_blocks:
+            attention_levels.append(False)
+            continue
+        level_start = level_blocks[0]
+        # Level ends at the downsample (or at end for last level)
+        if level_idx < len(downsample_indices):
+            level_end = downsample_indices[level_idx]
+        else:
+            level_end = last_level_end + 1
+        has_attn = any(
+            level_start < ai < level_end and ai not in mid_attn
+            for ai in attention_indices
+        )
+        attention_levels.append(has_attn)
+
+    config = {
+        'in_channels': in_channels,
+        'out_channels': in_channels,
+        'latent_channels': latent_channels,
+        'channels': channels,
+        'attention_levels': attention_levels,
+        'num_res_blocks': num_res_blocks,
+        'norm_num_groups': 32,
+    }
+    if spatial_dims == 3:
+        config['spatial_dims'] = 3
+    logger.info(f"Inferred VAE config from state_dict: channels={channels}, "
+                f"latent_channels={latent_channels}, attention={attention_levels}")
+    return config
 
 
 # =============================================================================
@@ -330,7 +484,21 @@ def load_compression_model(
 
     model_config = checkpoint.get('config', {})
 
+    # Get state_dict early (needed for both config inference and weight loading)
+    state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+    keys_with_prefix = [k for k in state_dict if k.startswith('model.')]
+    if keys_with_prefix:
+        state_dict = {
+            k.replace('model.', '', 1) if k.startswith('model.') else k: v
+            for k, v in state_dict.items()
+        }
+        logger.debug(f"Stripped 'model.' prefix from {len(keys_with_prefix)} state_dict keys")
+
     if compression_type == 'vae':
+        # Infer config from state_dict if checkpoint config is missing
+        if not model_config and 'quant_conv_mu.conv.weight' in state_dict:
+            model_config = _infer_vae_config_from_state_dict(state_dict)
+
         from monai.networks.nets import AutoencoderKL
 
         model = AutoencoderKL(
@@ -456,18 +624,7 @@ def load_compression_model(
     else:
         raise ValueError(f"Unknown compression type: {compression_type}")
 
-    # Load weights (from already-loaded checkpoint)
-    state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
-
-    # Strip 'model.' prefix if present (trainer saves with this prefix)
-    keys_with_prefix = [k for k in state_dict if k.startswith('model.')]
-    if keys_with_prefix:
-        state_dict = {
-            k.replace('model.', '', 1) if k.startswith('model.') else k: v
-            for k, v in state_dict.items()
-        }
-        logger.debug(f"Stripped 'model.' prefix from {len(keys_with_prefix)} state_dict keys")
-
+    # Load weights (state_dict already extracted and prefix-stripped above)
     model.load_state_dict(state_dict)
 
     model.eval()
