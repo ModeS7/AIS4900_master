@@ -304,13 +304,17 @@ def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
         levels.append(level_resblocks)
         remaining_resblocks = [i for i in remaining_resblocks if i >= ds_idx]
 
-    # Remaining ResBlocks: last level + mid block (2 extra ResBlocks)
-    # The last level has num_res_blocks, mid block has 2
-    # num_res_blocks = count from first level (most reliable)
+    # num_res_blocks = count from first level (most reliable, no mid block ambiguity)
     num_res_blocks = len(levels[0]) if levels else 2
+
+    # Detect mid block: with_encoder_nonlocal_attn=True adds ResBlock+Attn+ResBlock
+    # after the last level. If False (3D case), there's no mid block.
+    # Mid block exists if there are more ResBlocks remaining than num_res_blocks.
+    mid_resblock_count = len(remaining_resblocks) - num_res_blocks
+    has_mid_block = mid_resblock_count > 0
+
     last_level_resblocks = remaining_resblocks[:num_res_blocks]
     levels.append(last_level_resblocks)
-    # (remaining after that are mid block ResBlocks)
 
     # Extract channel per level from the last ResBlock in each level
     channels = []
@@ -320,13 +324,11 @@ def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
             channels.append(resblock_out_ch[last_rb])
 
     # --- Detect attention per level (excluding mid block attention) ---
-    # Mid block always has attention; we only care about per-level attention
     attention_indices = sorted(i for i in sorted_indices if block_types[i] == 'attention')
 
-    # Find mid block attention: the attention that comes after the last downsample
-    # and after the last level's ResBlocks
+    # Mid block attention comes after the last level's ResBlocks
     last_level_end = levels[-1][-1] if levels[-1] else 0
-    mid_attn = {i for i in attention_indices if i > last_level_end}
+    mid_attn = {i for i in attention_indices if i > last_level_end} if has_mid_block else set()
 
     # Per-level attention: check if any attention block falls within each level's range
     attention_levels = []
@@ -335,7 +337,6 @@ def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
             attention_levels.append(False)
             continue
         level_start = level_blocks[0]
-        # Level ends at the downsample (or at end for last level)
         if level_idx < len(downsample_indices):
             level_end = downsample_indices[level_idx]
         else:
@@ -354,11 +355,14 @@ def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
         'attention_levels': attention_levels,
         'num_res_blocks': num_res_blocks,
         'norm_num_groups': 32,
+        'with_encoder_nonlocal_attn': has_mid_block,
+        'with_decoder_nonlocal_attn': has_mid_block,
     }
     if spatial_dims == 3:
         config['spatial_dims'] = 3
     logger.info(f"Inferred VAE config from state_dict: channels={channels}, "
-                f"latent_channels={latent_channels}, attention={attention_levels}")
+                f"latent_channels={latent_channels}, attention={attention_levels}, "
+                f"mid_block={has_mid_block}")
     return config
 
 
@@ -512,6 +516,8 @@ def load_compression_model(
             latent_channels=model_config.get('latent_channels', 4),
             num_res_blocks=model_config.get('num_res_blocks', 2),
             norm_num_groups=model_config.get('norm_num_groups', 32),
+            with_encoder_nonlocal_attn=model_config.get('with_encoder_nonlocal_attn', True),
+            with_decoder_nonlocal_attn=model_config.get('with_decoder_nonlocal_attn', True),
         ).to(device)
 
     elif compression_type == 'vqvae':
