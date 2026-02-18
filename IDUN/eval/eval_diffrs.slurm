@@ -70,6 +70,20 @@ else
     echo "Running baseline evaluation only."
 fi
 
+# Remove old DiffRS results (keep baselines) so they get re-evaluated
+python3 -c "
+import json, os
+p = '${OUTPUT_DIR}/results.json'
+if os.path.exists(p):
+    data = json.load(open(p))
+    kept = [r for r in data if r.get('method') != 'diffrs']
+    removed = len(data) - len(kept)
+    json.dump(kept, open(p, 'w'), indent=2)
+    print(f'Kept {len(kept)} baseline results, removed {removed} DiffRS entries')
+else:
+    print('No existing results.json found, starting fresh')
+"
+
 # Run evaluation (with --resume for auto-chain support)
 time python -m medgen.scripts.eval_diffrs \
     --bravo-model "${BRAVO_CHECKPOINT}" \

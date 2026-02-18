@@ -461,6 +461,7 @@ def diffrs_sampling_loop(
                 backsteps=backsteps,
                 min_backsteps=min_backsteps,
                 max_backsteps=max_backsteps,
+                num_train_timesteps=strategy.scheduler.num_train_timesteps,
                 conditioning_input=conditioning_input,
             )
 
@@ -518,7 +519,7 @@ def _do_marginal_rejection(
 
         if rejected.any():
             reject_global = check_idx[rejected]
-            x[reject_global] = torch.randn_like(x[reject_global]) * t_steps[0]
+            x[reject_global] = torch.randn_like(x[reject_global])
 
         # Accept: update log_ratio_prev
         accepted = ~rejected
@@ -546,6 +547,7 @@ def _do_backstep_rejection(
     backsteps: int,
     min_backsteps: int,
     max_backsteps: int,
+    num_train_timesteps: int = 1000,
     conditioning_input: Tensor | None = None,
 ) -> None:
     """Backstep rejection at intermediate timesteps (in-place)."""
@@ -586,8 +588,10 @@ def _do_backstep_rejection(
             t_cur = t_steps[reject_steps.clamp(max=len(t_steps) - 1)]
 
             # Forward diffuse back: add noise to go from t_cur to t_back
-            # x_back = x + sqrt(t_back^2 - t_cur^2) * eps
-            noise_scale = (t_back ** 2 - t_cur ** 2).clamp(min=0).sqrt()
+            # RFlow: x_t = (1-t/T)*x_0 + (t/T)*ε, noise variance = (t/T)^2
+            # Added variance = (t_back/T)^2 - (t_cur/T)^2
+            T = num_train_timesteps
+            noise_scale = ((t_back ** 2 - t_cur ** 2) / (T * T)).clamp(min=0).sqrt()
             expand_dims = [1] * (x.dim() - 1)
             eps = torch.randn_like(x[reject_global])
             x[reject_global] = x[reject_global] + noise_scale.view(-1, *expand_dims) * eps
