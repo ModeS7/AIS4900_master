@@ -38,20 +38,20 @@ echo "=========================================="
 echo "exp14_0 (kl_weight=1e-6)"
 echo "=========================================="
 python -m medgen.scripts.measure_latent_std \
-    checkpoint="${EXP14_0}" \
+    +checkpoint="${EXP14_0}" \
     paths=cluster \
     mode=multi_modality \
-    max_samples=50
+    +max_samples=50
 
 echo ""
 echo "=========================================="
 echo "exp14_3 (kl_weight=1e-8)"
 echo "=========================================="
 python -m medgen.scripts.measure_latent_std \
-    checkpoint="${EXP14_3}" \
+    +checkpoint="${EXP14_3}" \
     paths=cluster \
     mode=multi_modality \
-    max_samples=50
+    +max_samples=50
 
 echo "=== Done ==="
 conda deactivate

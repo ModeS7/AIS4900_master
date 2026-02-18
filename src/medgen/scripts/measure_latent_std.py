@@ -144,17 +144,17 @@ def measure_latent_stats(cfg: DictConfig) -> None:
     print(f"\nCheckpoint: {checkpoint_path}")
     print(f"Model: {comp_type}, {spatial_dims}D, scale={scale_factor}x, latent_ch={latent_channels}")
 
-    print(f"\n--- Sampled z = mu + std*eps ---")
+    print("\n--- Sampled z = mu + std*eps ---")
     print(f"  z.std()   = {z_stds.mean():.4f}  (target: 0.9-1.1)")
     print(f"  z.mean()  = {z_means.mean():.4f}  (target: ~0.0)")
 
-    print(f"\n--- Encoder posterior q(z|x) ---")
+    print("\n--- Encoder posterior q(z|x) ---")
     print(f"  mu.std()              = {mu_stds.mean():.4f}  (spread of means)")
     print(f"  mu.mean()             = {mu_means.mean():.4f}  (center of means)")
     print(f"  logvar.mean()         = {logvar_means.mean():.4f}  (target: ~0.0 for std~1)")
     print(f"  posterior_std.mean()  = {posterior_stds.mean():.4f}  (exp(0.5*logvar), target: ~1.0)")
 
-    print(f"\n--- Interpretation ---")
+    print("\n--- Interpretation ---")
     z_std_avg = z_stds.mean()
     p_std_avg = posterior_stds.mean()
     if z_std_avg < 0.5:
@@ -170,7 +170,7 @@ def measure_latent_stats(cfg: DictConfig) -> None:
 
     if p_std_avg < 0.01:
         print(f"  posterior_std={p_std_avg:.4f} << 1: Near-deterministic encoder (KL ≈ 0).")
-        print(f"    → Sampling z adds almost no noise. VAE behaves like a regular AE.")
+        print("    → Sampling z adds almost no noise. VAE behaves like a regular AE.")
     print("=" * 60)
 
 
