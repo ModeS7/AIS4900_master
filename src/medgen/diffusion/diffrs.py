@@ -165,9 +165,9 @@ class DiffRSDiscriminator:
 
     @torch.no_grad()
     def get_log_ratio(self, x_t: Tensor, timesteps: Tensor) -> Tensor:
-        """Compute log-likelihood ratio L_t(x_t) = logit. Shape: [B]."""
+        """Compute log-likelihood ratio L_t(x_t) = logit. Shape: [B], fp32."""
         features = extract_encoder_features(self.model, x_t, timesteps)
-        return self.head(features)
+        return self.head(features).float()
 
 
 # ---------------------------------------------------------------------------
