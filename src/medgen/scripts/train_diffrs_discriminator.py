@@ -548,24 +548,12 @@ def main(cfg: DictConfig) -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Infer channel counts from data_mode (for older checkpoints without config)
-    data_mode = cfg.get('data_mode', 'bravo')
-    _mode_channels = {
-        'bravo': (3, 2),   # in=seg+pre+gd, out=pre+gd
-        'dual': (3, 2),
-        'seg': (1, 1),
-        'seg_conditioned': (2, 1),
-    }
-    default_in, default_out = _mode_channels.get(data_mode, (3, 2))
-
-    # Load diffusion model
+    # Load diffusion model (channels inferred from checkpoint weight shapes)
     logger.info("Loading diffusion model from %s", cfg.diffusion_checkpoint)
     result = load_diffusion_model_with_metadata(
         checkpoint_path=cfg.diffusion_checkpoint,
         device=device,
         spatial_dims=cfg.get('spatial_dims', 2),
-        in_channels=default_in,
-        out_channels=default_out,
     )
     model = result.model
     model.eval()

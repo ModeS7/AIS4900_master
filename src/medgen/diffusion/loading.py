@@ -203,12 +203,15 @@ def load_diffusion_model_with_metadata(
     # Merge: model_config > nested_model_config > config (priority order)
     arch_config = {**config, **nested_model_config, **model_config}
 
-    # Resolve architecture parameters (args > checkpoint > defaults)
+    # Infer channels from state dict weight shapes as fallback
+    inferred_in, inferred_out = _infer_channels_from_state_dict(state_dict)
+
+    # Resolve architecture parameters (args > checkpoint config > state dict inference)
     resolved_in_channels = _resolve_channels(
-        'in_channels', in_channels, arch_config, required=True
+        'in_channels', in_channels, arch_config, inferred_in, required=True
     )
     resolved_out_channels = _resolve_channels(
-        'out_channels', out_channels, arch_config, required=True
+        'out_channels', out_channels, arch_config, inferred_out, required=True
     )
 
     channels = arch_config.get('channels', list(DEFAULT_CHANNELS))
@@ -299,18 +302,48 @@ def load_diffusion_model_with_metadata(
     )
 
 
+def _infer_channels_from_state_dict(
+    state_dict: dict[str, Any],
+) -> tuple[int | None, int | None]:
+    """Infer in_channels and out_channels from state dict weight shapes.
+
+    Works for both raw and wrapped models (handles 'model.' prefix).
+
+    Returns:
+        (in_channels, out_channels) tuple, None if not found.
+    """
+    in_channels = None
+    out_channels = None
+
+    for key, tensor in state_dict.items():
+        if not isinstance(tensor, torch.Tensor):
+            continue
+        # conv_in.conv.weight shape: [features, in_channels, *kernel_size]
+        if key.endswith('conv_in.conv.weight'):
+            in_channels = tensor.shape[1]
+        # out.2.conv.weight shape: [out_channels, features, *kernel_size]
+        if key.endswith('out.2.conv.weight'):
+            out_channels = tensor.shape[0]
+
+    return in_channels, out_channels
+
+
 def _resolve_channels(
     name: str,
     arg_value: int | None,
     model_config: dict[str, Any],
+    inferred_value: int | None = None,
     required: bool = False,
 ) -> int:
-    """Resolve channel count from argument, checkpoint, or raise error.
+    """Resolve channel count from argument, checkpoint config, state dict, or raise error.
+
+    Priority: arg_value > checkpoint config > inferred from state dict weights.
 
     Args:
         name: Parameter name for error messages.
         arg_value: Value passed as argument (highest priority).
         model_config: Model config dict from checkpoint.
+        inferred_value: Value inferred from state dict weight shapes.
         required: Whether to raise error if not resolvable.
 
     Returns:
@@ -326,6 +359,11 @@ def _resolve_channels(
     # Check checkpoint config
     if name in model_config:
         return int(model_config[name])
+
+    # Infer from state dict weight shapes
+    if inferred_value is not None:
+        logger.info(f"Inferred {name}={inferred_value} from checkpoint weight shapes")
+        return inferred_value
 
     # Not found
     if required:
