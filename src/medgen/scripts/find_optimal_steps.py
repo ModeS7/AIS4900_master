@@ -95,7 +95,14 @@ def golden_section_search(
     f2 = eval_cached(x2)
 
     iteration = 0
+    prev_ab = None
     while b - a > tol:
+        # Detect infinite loop: if interval hasn't changed, stop
+        if (a, b) == prev_ab:
+            logger.info(f"  Interval unchanged at [{a}, {b}], stopping.")
+            break
+        prev_ab = (a, b)
+
         iteration += 1
         logger.info(f"\n--- Iteration {iteration}: [{a}, {b}] (width={b-a}) ---")
         logger.info(f"  x1={x1} (FID={f1:.2f}), x2={x2} (FID={f2:.2f})")
