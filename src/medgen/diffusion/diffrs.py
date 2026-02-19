@@ -126,24 +126,47 @@ def get_bottleneck_channels(model: nn.Module) -> int:
 # ---------------------------------------------------------------------------
 
 class DiffRSHead(nn.Module):
-    """Tiny classification head for DiffRS.
+    """Convolutional classification head for DiffRS.
 
     Takes bottleneck features from the frozen UNet encoder and outputs
-    a single logit (real vs generated). ~500 trainable parameters.
+    a single logit (real vs generated).
+
+    Architecture matches the paper's shallow discriminator design:
+    channel reduction (1x1 conv) followed by strided convolutions for
+    spatial reasoning, then global pooling and linear classification.
+
+    With default mid_channels=128: ~0.9M params (3D) or ~0.3M params (2D),
+    matching the paper's smallest ablation configuration.
     """
 
-    def __init__(self, in_channels: int, spatial_dims: int = 2):
+    def __init__(
+        self, in_channels: int, spatial_dims: int = 2, mid_channels: int = 128,
+    ):
         super().__init__()
-        self.norm = nn.GroupNorm(min(32, in_channels), in_channels)
-        self.act = nn.SiLU()
-        Pool = nn.AdaptiveAvgPool2d if spatial_dims == 2 else nn.AdaptiveAvgPool3d
+        Conv = nn.Conv3d if spatial_dims == 3 else nn.Conv2d
+        Norm = lambda c: nn.GroupNorm(min(32, c), c)
+        Pool = nn.AdaptiveAvgPool3d if spatial_dims == 3 else nn.AdaptiveAvgPool2d
+
+        self.blocks = nn.Sequential(
+            # 1x1 conv to reduce channels
+            Conv(in_channels, mid_channels, 1),
+            Norm(mid_channels),
+            nn.SiLU(),
+            # Strided convolutions for spatial reasoning
+            Conv(mid_channels, mid_channels, 3, stride=2, padding=1),
+            Norm(mid_channels),
+            nn.SiLU(),
+            Conv(mid_channels, mid_channels, 3, stride=2, padding=1),
+            Norm(mid_channels),
+            nn.SiLU(),
+        )
         self.pool = Pool(1)
-        self.linear = nn.Linear(in_channels, 1)
+        self.linear = nn.Linear(mid_channels, 1)
 
     def forward(self, features: Tensor) -> Tensor:
         """[B, C, ...] -> [B] logits."""
-        h = self.act(self.norm(features))
-        h = self.pool(h).flatten(1)  # [B, C]
+        h = self.blocks(features)
+        h = self.pool(h).flatten(1)  # [B, mid_channels]
         return self.linear(h).squeeze(-1)  # [B]
 
 
@@ -182,6 +205,7 @@ def load_diffrs_head(
     head = DiffRSHead(
         in_channels=ckpt['in_channels'],
         spatial_dims=ckpt['spatial_dims'],
+        mid_channels=ckpt.get('mid_channels', 128),
     )
     head.load_state_dict(ckpt['head_state_dict'])
     head.to(device).eval()

@@ -1,7 +1,7 @@
 """Train DiffRS discriminator head on a trained diffusion model.
 
-Trains a tiny classification head (~500 params) on top of the frozen UNet
-encoder to distinguish real vs generated samples at various noise levels.
+Trains a convolutional classification head (~0.9M params for 3D) on top of the
+frozen UNet encoder to distinguish real vs generated samples at various noise levels.
 
 The trained head is used during generation to reject bad intermediate samples
 (Diffusion Rejection Sampling).
@@ -807,21 +807,24 @@ def main(cfg: DictConfig) -> None:
 
     # Create head
     bottleneck_channels = get_bottleneck_channels(model)
+    mid_channels = cfg.get('mid_channels', 128)
     head = DiffRSHead(
         in_channels=bottleneck_channels,
         spatial_dims=spatial_dims,
+        mid_channels=mid_channels,
     ).to(device)
 
     num_params = sum(p.numel() for p in head.parameters())
     logger.info(
-        "DiffRS head: in_channels=%d, spatial_dims=%d, params=%d",
-        bottleneck_channels, spatial_dims, num_params,
+        "DiffRS head: in_channels=%d, mid_channels=%d, spatial_dims=%d, params=%d",
+        bottleneck_channels, mid_channels, spatial_dims, num_params,
     )
 
     # Train
     output_dir = Path(cfg.get('output_dir', 'runs/diffrs'))
     checkpoint_metadata = {
         'in_channels': bottleneck_channels,
+        'mid_channels': mid_channels,
         'spatial_dims': spatial_dims,
         'model_in_channels': in_channels,
         'model_out_channels': out_channels,
