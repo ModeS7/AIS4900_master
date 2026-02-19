@@ -411,14 +411,17 @@ def train_head(
     num_total = num_real + num_gen
     metadata = checkpoint_metadata or {}
 
-    # Combine data
+    # Combine data and free originals to reduce peak RAM
+    # For 3D: 105 volumes × 42MB = 4.4GB per tensor, so freeing matters
     all_data = torch.cat([real_samples, generated_samples], dim=0)
     labels = torch.cat([torch.ones(num_real), torch.zeros(num_gen)])
+    del real_samples, generated_samples
 
     # Combine conditioning if present
     has_cond = (real_conditioning is not None and generated_conditioning is not None)
     if has_cond:
         all_cond = torch.cat([real_conditioning, generated_conditioning], dim=0)
+        del real_conditioning, generated_conditioning
     else:
         all_cond = None
 
@@ -430,14 +433,19 @@ def train_head(
         num_val_total = num_val_real + num_val_gen
         val_data = torch.cat([val_real_samples, val_generated_samples], dim=0)
         val_labels = torch.cat([torch.ones(num_val_real), torch.zeros(num_val_gen)])
+        del val_real_samples, val_generated_samples
         has_val_cond = (val_real_conditioning is not None and val_generated_conditioning is not None)
         if has_val_cond:
             val_cond = torch.cat([val_real_conditioning, val_generated_conditioning], dim=0)
+            del val_real_conditioning, val_generated_conditioning
         else:
             val_cond = None
     else:
         val_data = val_labels = val_cond = None
         num_val_total = 0
+
+    import gc
+    gc.collect()
 
     # Set up output directory, TensorBoard, and resume support
     if output_dir is not None:
@@ -471,18 +479,17 @@ def train_head(
         logger.info("Validation: %d real + %d generated = %d total", num_val_real, num_val_gen, num_val_total)
 
     for epoch in range(start_epoch, num_epochs):
+        # Shuffle indices only — avoids copying the entire dataset
         perm = torch.randperm(num_total)
-        all_data_shuffled = all_data[perm]
-        labels_shuffled = labels[perm]
-        all_cond_shuffled = all_cond[perm] if all_cond is not None else None
 
         epoch_loss = 0.0
         epoch_correct = 0
         num_batches = 0
 
         for i in range(0, num_total, batch_size):
-            batch_x = all_data_shuffled[i:i + batch_size].to(device)
-            batch_y = labels_shuffled[i:i + batch_size].to(device)
+            batch_idx = perm[i:i + batch_size]
+            batch_x = all_data[batch_idx].to(device)
+            batch_y = labels[batch_idx].to(device)
 
             # Sample random timesteps
             timesteps = strategy.sample_timesteps(batch_x)
@@ -492,8 +499,8 @@ def train_head(
             noisy = strategy.scheduler.add_noise(batch_x, noise, timesteps)
 
             # Build encoder input: [noisy_image, conditioning] for conditioned models
-            if all_cond_shuffled is not None:
-                batch_cond = all_cond_shuffled[i:i + batch_size].to(device)
+            if all_cond is not None:
+                batch_cond = all_cond[batch_idx].to(device)
                 encoder_input = torch.cat([noisy, batch_cond], dim=1)
             else:
                 encoder_input = noisy
@@ -823,6 +830,13 @@ def main(cfg: DictConfig) -> None:
         'num_samples': num_samples,
         'has_conditioning': has_conditioning,
     }
+
+    # Free the diffusion model before training — only the encoder features are
+    # needed, and extract_encoder_features accesses it via the model reference.
+    # But we DO still need the model for feature extraction, so don't delete it.
+    # Instead, free data that gets duplicated inside train_head.
+    import gc
+    gc.collect()
 
     head = train_head(
         model=model,
