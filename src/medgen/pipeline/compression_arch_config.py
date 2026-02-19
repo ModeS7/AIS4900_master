@@ -18,8 +18,8 @@ class VAEArchConfig:
     num_res_blocks: int = 2
 
     def __post_init__(self):
-        if self.kl_weight <= 0:
-            raise ValueError(f"kl_weight must be > 0, got {self.kl_weight}")
+        if self.kl_weight < 0:
+            raise ValueError(f"kl_weight must be >= 0, got {self.kl_weight}")
         if self.latent_channels <= 0:
             raise ValueError(f"latent_channels must be > 0, got {self.latent_channels}")
         if len(self.channels) != len(self.attention_levels):
