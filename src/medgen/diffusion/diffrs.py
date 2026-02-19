@@ -144,7 +144,7 @@ class DiffRSHead(nn.Module):
     ):
         super().__init__()
         Conv = nn.Conv3d if spatial_dims == 3 else nn.Conv2d
-        Norm = lambda c: nn.GroupNorm(min(32, c), c)
+        def Norm(c): return nn.GroupNorm(min(32, c), c)
         Pool = nn.AdaptiveAvgPool3d if spatial_dims == 3 else nn.AdaptiveAvgPool2d
 
         self.blocks = nn.Sequential(

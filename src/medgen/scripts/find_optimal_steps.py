@@ -32,7 +32,6 @@ import math
 import time
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from medgen.scripts.eval_ode_solvers import (
@@ -88,8 +87,8 @@ def golden_section_search(
 
     a, b = lo, hi
     # Initial interior points
-    x1 = int(round(b - GR * (b - a)))
-    x2 = int(round(a + GR * (b - a)))
+    x1 = round(b - GR * (b - a))
+    x2 = round(a + GR * (b - a))
 
     f1 = eval_cached(x1)
     f2 = eval_cached(x2)
@@ -111,7 +110,7 @@ def golden_section_search(
             b = x2
             x2 = x1
             f2 = f1
-            x1 = int(round(b - GR * (b - a)))
+            x1 = round(b - GR * (b - a))
             # Handle degenerate case where rounding makes x1 == x2
             if x1 == x2:
                 x1 = max(a, x1 - 1)
@@ -122,7 +121,7 @@ def golden_section_search(
             a = x1
             x1 = x2
             f1 = f2
-            x2 = int(round(a + GR * (b - a)))
+            x2 = round(a + GR * (b - a))
             if x2 == x1:
                 x2 = min(b, x2 + 1)
             if x2 == x1:
