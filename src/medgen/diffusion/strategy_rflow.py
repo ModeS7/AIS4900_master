@@ -393,6 +393,14 @@ class RFlowStrategy(DiffusionStrategy):
         if parsed.is_dual:
             raise NotImplementedError("DiffRS does not support dual-image mode yet")
 
+        if cfg_ctx.get('cfg_scale', 1.0) > 1.0:
+            raise NotImplementedError(
+                "DiffRS does not support CFG (cfg_scale > 1.0) yet. "
+                "The sampling loop calls model() directly, bypassing "
+                "_compute_cfg_prediction(). Set cfg_scale=1.0 or implement "
+                "CFG support in diffrs.diffrs_sampling_loop()."
+            )
+
         assert parsed.noisy_images is not None
         noise = parsed.noisy_images
         conditioning_input = parsed.conditioning  # May be None for unconditional

@@ -13,7 +13,7 @@ Reference:
 
 Architecture:
     - Feature extractor: Frozen UNet encoder (already trained diffusion model)
-    - Classification head: Tiny ~500 param head (GroupNorm -> SiLU -> Pool -> Linear)
+    - Classification head: Convolutional head (~0.9M params for 3D, ~0.3M for 2D)
     - The diffusion model is never modified
 """
 from __future__ import annotations
@@ -255,15 +255,19 @@ def estimate_adaptive_thresholds(
 
     batch_size = sample_shape[0] if len(sample_shape) > 3 else 1
 
-    # Compute input_img_size_numel for scheduler
-    if len(sample_shape) == 4:
-        input_numel = sample_shape[1] * sample_shape[2] * sample_shape[3]
+    # Compute input_img_size_numel for scheduler (spatial dims only, no channels)
+    # Must match strategy_rflow.py generate() computation
+    if len(sample_shape) == 5:
+        # 3D with batch: [B, C, D, H, W] → D*H*W
+        input_numel = sample_shape[2] * sample_shape[3] * sample_shape[4]
+    elif len(sample_shape) == 4:
+        # 2D with batch: [B, C, H, W] → H*W
+        input_numel = sample_shape[2] * sample_shape[3]
     elif len(sample_shape) == 3:
+        # 2D without batch: [C, H, W] → H*W
         input_numel = sample_shape[1] * sample_shape[2]
     else:
         input_numel = 1
-    for _d in sample_shape[1:]:
-        pass  # already computed above
 
     # Set up scheduler timesteps
     strategy.scheduler.set_timesteps(
@@ -290,8 +294,6 @@ def estimate_adaptive_thresholds(
     step_idx = torch.zeros(x.shape[0], dtype=torch.long, device=device)
     log_ratio_prev = torch.zeros(x.shape[0], device=device)
 
-    latent_channels = conditioning.latent_channels
-
     while warmup_done < iter_warmup:
         # Get current and next timesteps for each sample
         cur_t_idx = step_idx.clamp(max=n_steps - 1)
@@ -302,7 +304,7 @@ def estimate_adaptive_thresholds(
 
         # Compute log ratio at current step
         disc_x = _build_disc_input(x, conditioning_input)
-        log_ratio = discriminator.get_log_ratio(disc_x, timesteps_batch).cpu()
+        log_ratio = discriminator.get_log_ratio(disc_x, timesteps_batch)
 
         for i in range(x.shape[0]):
             si = step_idx[i].item()
@@ -339,7 +341,7 @@ def estimate_adaptive_thresholds(
             )
             log_ratio_final = discriminator.get_log_ratio(
                 disc_final, final_t,
-            ).cpu()
+            )
             for lr in log_ratio_final:
                 lst_adaptive[n_steps].append(lr)
 
@@ -347,7 +349,7 @@ def estimate_adaptive_thresholds(
             x[done] = torch.randn_like(x[done])
             step_idx[done] = 0
             log_ratio_prev[done] = 0.0
-            warmup_done += 1
+            warmup_done += done.sum().item()
 
     # Compute thresholds as quantiles
     adaptive = torch.zeros(n_steps + 1)
@@ -356,10 +358,10 @@ def estimate_adaptive_thresholds(
     for k in range(n_steps + 1):
         if lst_adaptive[k]:
             vals = torch.stack(lst_adaptive[k])
-            adaptive[k] = max(0.0, torch.quantile(vals.float(), rej_percentile).item())
+            adaptive[k] = torch.quantile(vals.float(), rej_percentile).item()
         if lst_adaptive2[k]:
             vals = torch.stack(lst_adaptive2[k])
-            adaptive2[k] = max(0.0, torch.quantile(vals.float(), rej_percentile).item())
+            adaptive2[k] = torch.quantile(vals.float(), rej_percentile).item()
 
     logger.info("DiffRS adaptive thresholds estimated from %d warmup runs", iter_warmup)
     return adaptive.to(device), adaptive2.to(device)
@@ -427,6 +429,7 @@ def diffrs_sampling_loop(
     lst_idx = torch.zeros(batch_size, dtype=torch.long, device=device)
     log_ratio_prev = torch.zeros(batch_size, device=device)
     per_sample_nfe = torch.zeros(batch_size, dtype=torch.long, device=device)
+    last_velocity = torch.zeros_like(x)  # Stored for RFlow backstep x_0 estimation
     results = torch.zeros_like(x)
     finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
     total_finished = 0
@@ -466,6 +469,7 @@ def diffrs_sampling_loop(
             )
             velocity = model(x=model_x, timesteps=timesteps_batch)
         per_sample_nfe[active] += 1
+        last_velocity[active] = velocity.to(last_velocity.dtype)  # Store for RFlow backstep x_0 estimation
 
         x_next = torch.zeros_like(x_active)
         for i in range(x_active.shape[0]):
@@ -480,6 +484,7 @@ def diffrs_sampling_loop(
         if backsteps > 0:
             _do_backstep_rejection(
                 x, lst_idx, log_ratio_prev, per_sample_nfe,
+                last_velocity,
                 active, t_steps, adaptive, adaptive2,
                 discriminator, device,
                 backsteps=backsteps,
@@ -562,6 +567,7 @@ def _do_backstep_rejection(
     lst_idx: Tensor,
     log_ratio_prev: Tensor,
     per_sample_nfe: Tensor,
+    last_velocity: Tensor,
     active: Tensor,
     t_steps: Tensor,
     adaptive: Tensor,
@@ -574,7 +580,16 @@ def _do_backstep_rejection(
     num_train_timesteps: int = 1000,
     conditioning_input: Tensor | None = None,
 ) -> None:
-    """Backstep rejection at intermediate timesteps (in-place)."""
+    """Backstep rejection at intermediate timesteps (in-place).
+
+    On rejection, uses proper RFlow re-noising: estimate x_0 from the
+    current state and stored velocity, then re-interpolate at the target
+    (noisier) timestep with fresh noise.
+
+    RFlow: x_t = (1 - t/T)*x_0 + (t/T)*ε, v = x_0 - ε
+    => x_0 = x_t + (t/T)*v
+    => x_{t_back} = (1 - t_back/T)*x_0_hat + (t_back/T)*ε_new
+    """
     # Which active samples are eligible for backstep checking
     eligible = active & (lst_idx > min_backsteps) & (lst_idx <= max_backsteps)
 
@@ -603,7 +618,7 @@ def _do_backstep_rejection(
             threshold = adaptive[step_check]
             rejected = log_ratio < threshold + rand_term
 
-        # Handle rejections: backstep
+        # Handle rejections: backstep with proper RFlow re-noising
         if rejected.any():
             reject_global = check_idx[rejected]
             reject_steps = lst_idx[reject_global]
@@ -611,15 +626,26 @@ def _do_backstep_rejection(
             t_back = t_steps[back_steps.clamp(max=len(t_steps) - 1)]
             t_cur = t_steps[reject_steps.clamp(max=len(t_steps) - 1)]
 
-            # Forward diffuse back: add noise to go from t_cur to t_back
-            # RFlow: x_t = (1-t/T)*x_0 + (t/T)*ε, noise variance = (t/T)^2
-            # Added variance = (t_back/T)^2 - (t_cur/T)^2
-            T = num_train_timesteps
-            noise_scale = ((t_back ** 2 - t_cur ** 2) / (T * T)).clamp(min=0).sqrt()
+            T = float(num_train_timesteps)
             expand_dims = [1] * (x.dim() - 1)
-            eps = torch.randn_like(x[reject_global])
-            x[reject_global] = x[reject_global] + noise_scale.view(-1, *expand_dims) * eps
+            t_cur_ratio = (t_cur.float() / T).view(-1, *expand_dims)
+            t_back_ratio = (t_back.float() / T).view(-1, *expand_dims)
+
+            # Estimate x_0 from current state and stored velocity
+            # RFlow: x_0 = x_t + (t/T) * v
+            x_0_hat = x[reject_global] + t_cur_ratio * last_velocity[reject_global]
+
+            # Re-interpolate at backstep target with fresh noise
+            # x_{t_back} = (1 - t_back/T)*x_0 + (t_back/T)*ε_new
+            eps_new = torch.randn_like(x[reject_global])
+            x[reject_global] = (
+                (1.0 - t_back_ratio) * x_0_hat
+                + t_back_ratio * eps_new
+            )
             lst_idx[reject_global] = back_steps
+            # Reset stale log_ratio_prev — the backstep'd sample is at a
+            # new noise realization, so the old value is meaningless.
+            log_ratio_prev[reject_global] = 0.0
 
         # Handle accepts: update log_ratio_prev
         accepted = ~rejected
