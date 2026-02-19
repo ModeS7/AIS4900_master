@@ -177,6 +177,8 @@ def profile_architecture(
     mid_block = arch['mid_block']
     n_levels = len(channels)
     attn = tuple(False for _ in channels)
+    # norm_num_groups must divide all channel counts
+    norm_groups = 32 if channels[0] % 32 == 0 else 16
 
     try:
         # Create VAE
@@ -190,7 +192,7 @@ def profile_architecture(
             attention_levels=attn,
             with_encoder_nonlocal_attn=mid_block,
             with_decoder_nonlocal_attn=mid_block,
-            norm_num_groups=32,
+            norm_num_groups=norm_groups,
         ).to(device)
 
         if use_checkpointing:
@@ -263,8 +265,9 @@ def profile_architecture(
             reset_gpu()
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 recon_det = recon.detach()
-                d_real = disc(x)
-                d_fake = disc(recon_det)
+                # PatchDiscriminator returns a list of feature maps; last is the output
+                d_real = disc(x)[-1]
+                d_fake = disc(recon_det)[-1]
                 loss_d = (nn.functional.relu(1 - d_real).mean() +
                           nn.functional.relu(1 + d_fake).mean())
 
@@ -309,7 +312,9 @@ def profile_architecture(
             'oom': True,
         }
     except Exception as e:
+        import traceback
         print(f"    Unexpected error: {e}")
+        traceback.print_exc()
         reset_gpu()
         return {
             'name': name,
