@@ -677,3 +677,221 @@ model.attention_levels: [false, false, false, true, true]
 model.num_res_blocks: 2
 model.num_head_channels: 32
 ```
+
+---
+---
+
+# HDiT / U-ViT 3D VRAM Profiling
+
+Profiled on IDUN cluster, February 19, 2026.
+
+## Hardware
+- **GPU**: NVIDIA A100 80GB PCIe (79.3 GB usable)
+- **Driver**: 575.57.08
+- **CUDA**: 12.9
+
+## Test Configuration
+- **Batch size**: 1
+- **Precision**: AMP bfloat16
+- **Gradient checkpointing**: Enabled
+- **Input channels**: 2 (bravo mode)
+- **Resolution**: 256x256x160 (full pixel space)
+
+## Architecture Overview
+
+### U-ViT (Bao et al., CVPR 2023)
+- **Flat attention**: every block attends over ALL tokens (no hierarchy)
+- Skip connections between encoder/decoder halves (like UNet but in token space)
+- Token-based conditioning (timestep as prepended token, no adaLN)
+- Variants use paper-defined sizes (different from DiT variants)
+
+### HDiT (Hierarchical DiT)
+- **Multi-resolution**: TokenMerge (2x2x2) reduces tokens at each level
+- U-shaped structure: encoder merges, decoder splits, skip connections between levels
+- Uses DiT blocks with adaLN-Zero (reuses standard DiT code)
+- Variants use DiT sizes (S=384, B=768, L=1024, XL=1152)
+
+## Variant Sizes
+
+| Arch | Variant | Hidden | Heads | Depth/Levels |
+|------|---------|--------|-------|-------------|
+| U-ViT | S | 512 | 8 | 13 blocks |
+| U-ViT | S-Deep | 512 | 8 | 17 blocks |
+| U-ViT | M | 768 | 12 | 17 blocks |
+| U-ViT | L | 1024 | 16 | 21 blocks |
+| HDiT | S | 384 | 6 | configurable level_depths |
+| HDiT | B | 768 | 12 | configurable level_depths |
+| HDiT | L | 1024 | 16 | configurable level_depths |
+| HDiT | XL | 1152 | 16 | configurable level_depths |
+
+## Token Counts at 256x256x160
+
+| Patch | Grid | Total tokens |
+|-------|------|-------------|
+| 1 | 256x256x160 | 10,485,760 |
+| 2 | 128x128x80 | 1,310,720 |
+| 4 | 64x64x40 | 163,840 |
+| 8 | 32x32x20 | 20,480 |
+
+For HDiT, token merging (2x2x2 = 8x reduction per level) reduces count at deeper levels:
+- patch=4, 2 merge levels: 163K -> 20K -> 2.5K
+- patch=4, 3 merge levels: 163K -> 20K -> 2.5K -> 320
+- patch=2, 2 merge levels: 1.3M -> 163K -> 20K
+- patch=2, 3 merge levels: 1.3M -> 163K -> 20K -> 2.5K
+
+---
+
+## U-ViT Results
+
+### U-ViT-S (hidden=512, depth=13, heads=8)
+
+| Patch | Tokens | Params | Peak VRAM | Status |
+|-------|--------|--------|-----------|--------|
+| 1 | 10.5M | - | - | Skipped (too many tokens) |
+| 2 | 1.3M | 715.6M | - | **OOM** |
+| **4** | **164K** | **128.5M** | **10.3 GB** | **OK (69.7 GB free)** |
+| **8** | **20K** | **56.0M** | **2.1 GB** | **OK (77.9 GB free)** |
+
+### U-ViT-S-Deep (hidden=512, depth=17, heads=8)
+
+| Patch | Tokens | Params | Peak VRAM | Status |
+|-------|--------|--------|-----------|--------|
+| 1 | 10.5M | - | - | Skipped |
+| 2 | 1.3M | 729.3M | - | **OOM** |
+| **4** | **164K** | **142.2M** | **12.3 GB** | **OK (67.7 GB free)** |
+| **8** | **20K** | **69.7M** | **2.3 GB** | **OK (77.7 GB free)** |
+
+### U-ViT-M (hidden=768, depth=17, heads=12)
+
+| Patch | Tokens | Params | Peak VRAM | Status |
+|-------|--------|--------|-----------|--------|
+| 1 | 10.5M | - | - | Skipped |
+| 2 | 1.3M | 1137.3M | - | **OOM** |
+| **4** | **164K** | **256.7M** | **18.5 GB** | **OK (61.5 GB free)** |
+| **8** | **20K** | **148.0M** | **3.2 GB** | **OK (76.8 GB free)** |
+
+### U-ViT-L (hidden=1024, depth=21, heads=16)
+
+| Patch | Tokens | Params | Peak VRAM | Status |
+|-------|--------|--------|-----------|--------|
+| 1 | 10.5M | - | - | Skipped |
+| 2 | 1.3M | 1629.0M | - | **OOM** |
+| **4** | **164K** | **454.8M** | **29.0 GB** | **OK (51.0 GB free)** |
+| **8** | **20K** | **309.8M** | **6.0 GB** | **OK (74.0 GB free)** |
+
+### U-ViT Summary
+
+U-ViT at patch=2 (1.3M tokens) OOMs for all variants due to flat O(n^2) attention. Viable options are patch=4 and patch=8 only.
+
+| Variant | patch=4 VRAM | patch=8 VRAM |
+|---------|-------------|-------------|
+| S | 10.3 GB | 2.1 GB |
+| S-Deep | 12.3 GB | 2.3 GB |
+| M | 18.5 GB | 3.2 GB |
+| L | 29.0 GB | 6.0 GB |
+
+All variants fit comfortably at both patch=4 and patch=8. U-ViT-L at patch=4 is the largest viable config (455M params, 29 GB).
+
+---
+
+## HDiT Results
+
+### HDiT-S (hidden=384, heads=6)
+
+| Patch | level_depths | Tok L0 | Tok BN | Params | Peak VRAM | Status |
+|-------|-------------|--------|--------|--------|-----------|--------|
+| 1 | [1,1,1,4,1,1,1] | 10.5M | 20K | - | - | Skipped |
+| **2** | **[1,2,6,2,1]** | **1.3M** | **20K** | **611.9M** | **43.4 GB** | **OK (36.6 GB free)** |
+| **2** | **[2,4,6,4,2]** | **1.3M** | **20K** | **627.9M** | **47.0 GB** | **OK (33.0 GB free)** |
+| **2** | **[2,4,8,4,2]** | **1.3M** | **20K** | **633.2M** | **47.1 GB** | **OK (32.9 GB free)** |
+| **2** | **[1,1,2,6,2,1,1]** | **1.3M** | **3K** | **620.9M** | **43.1 GB** | **OK (36.9 GB free)** |
+| **2** | **[1,2,4,6,4,2,1]** | **1.3M** | **3K** | **636.8M** | **43.6 GB** | **OK (36.4 GB free)** |
+| 4 | [1,2,6,2,1] | 164K | 3K | 109.6M | 5.8 GB | OK (74.2 GB free) |
+| 4 | [2,4,6,4,2] | 164K | 3K | 125.6M | 6.3 GB | OK (73.7 GB free) |
+| 4 | [2,6,8,6,2] | 164K | 3K | 141.6M | 6.4 GB | OK (73.6 GB free) |
+| 4 | [4,6,8,6,4] | 164K | 3K | 152.2M | 7.2 GB | OK (72.8 GB free) |
+| 4 | [1,2,4,6,4,2,1] | 164K | 320 | 133.7M | 5.9 GB | OK (74.1 GB free) |
+| 4 | [2,4,4,6,4,4,2] | 164K | 320 | 149.7M | 6.4 GB | OK (73.6 GB free) |
+
+### HDiT-B (hidden=768, heads=12)
+
+| Patch | level_depths | Tok L0 | Tok BN | Params | Peak VRAM | Status |
+|-------|-------------|--------|--------|--------|-----------|--------|
+| 1 | all | 10.5M | 20K | - | - | Skipped |
+| 2 | [1,2,6,2,1] | 1.3M | 20K | 1299.0M | - | **OOM** |
+| 2 | [2,4,6,4,2] | 1.3M | 20K | 1362.7M | - | **OOM** |
+| 2 | [2,4,8,4,2] | 1.3M | 20K | 1384.0M | - | **OOM** |
+| 2 | [1,1,2,6,2,1,1] | 1.3M | 3K | 1332.8M | - | **OOM** |
+| 2 | [1,2,4,6,4,2,1] | 1.3M | 3K | 1396.6M | - | **OOM** |
+| **4** | **[1,2,6,2,1]** | **164K** | **3K** | **294.5M** | **11.6 GB** | **OK (68.4 GB free)** |
+| **4** | **[2,4,6,4,2]** | **164K** | **3K** | **358.3M** | **12.7 GB** | **OK (67.3 GB free)** |
+| **4** | **[2,6,8,6,2]** | **164K** | **3K** | **422.0M** | **13.2 GB** | **OK (66.8 GB free)** |
+| **4** | **[4,6,8,6,4]** | **164K** | **3K** | **464.5M** | **14.7 GB** | **OK (65.3 GB free)** |
+| **4** | **[1,2,4,6,4,2,1]** | **164K** | **320** | **390.4M** | **12.0 GB** | **OK (68.0 GB free)** |
+| **4** | **[2,4,4,6,4,4,2]** | **164K** | **320** | **454.2M** | **13.1 GB** | **OK (66.9 GB free)** |
+
+### HDiT-L (hidden=1024, heads=16)
+
+| Patch | level_depths | Tok L0 | Tok BN | Params | Peak VRAM | Status |
+|-------|-------------|--------|--------|--------|-----------|--------|
+| 1 | all | 10.5M | 20K | - | - | Skipped |
+| 2 | all configs | 1.3M | - | 1.8-2.0B | - | **OOM** |
+| **4** | **[1,2,6,2,1]** | **164K** | **3K** | **459.5M** | **15.7 GB** | **OK (64.3 GB free)** |
+| **4** | **[2,4,6,4,2]** | **164K** | **3K** | **572.8M** | **17.3 GB** | **OK (62.7 GB free)** |
+| **4** | **[2,6,8,6,2]** | **164K** | **3K** | **686.2M** | **18.0 GB** | **OK (62.0 GB free)** |
+| **4** | **[4,6,8,6,4]** | **164K** | **3K** | **761.7M** | **20.1 GB** | **OK (59.9 GB free)** |
+| **4** | **[1,2,4,6,4,2,1]** | **164K** | **320** | **629.8M** | **16.4 GB** | **OK (63.6 GB free)** |
+| **4** | **[2,4,4,6,4,4,2]** | **164K** | **320** | **743.2M** | **18.0 GB** | **OK (62.0 GB free)** |
+
+### HDiT-XL (hidden=1152, heads=16)
+
+| Patch | level_depths | Tok L0 | Tok BN | Params | Peak VRAM | Status |
+|-------|-------------|--------|--------|--------|-----------|--------|
+| 1 | all | 10.5M | 20K | - | - | Skipped |
+| 2 | all configs | 1.3M | - | 2.1-2.3B | - | **OOM** |
+| **4** | **[1,2,6,2,1]** | **164K** | **3K** | **554.5M** | **17.8 GB** | **OK (62.2 GB free)** |
+| **4** | **[2,4,6,4,2]** | **164K** | **3K** | **698.0M** | **19.6 GB** | **OK (60.4 GB free)** |
+| **4** | **[2,6,8,6,2]** | **164K** | **3K** | **841.4M** | **20.4 GB** | **OK (59.6 GB free)** |
+| **4** | **[4,6,8,6,4]** | **164K** | **3K** | **937.0M** | **22.9 GB** | **OK (57.1 GB free)** |
+| **4** | **[1,2,4,6,4,2,1]** | **164K** | **320** | **770.0M** | **18.6 GB** | **OK (61.4 GB free)** |
+| **4** | **[2,4,4,6,4,4,2]** | **164K** | **320** | **913.5M** | **20.5 GB** | **OK (59.5 GB free)** |
+
+---
+
+## Best Viable Config Per (Arch, Variant)
+
+| Arch | Variant | Patch | Config | Params | Peak VRAM | Free |
+|------|---------|-------|--------|--------|-----------|------|
+| U-ViT | S | 4 | depth=13 | 128.5M | 10.3 GB | 69.7 GB |
+| U-ViT | S-Deep | 4 | depth=17 | 142.2M | 12.3 GB | 67.7 GB |
+| U-ViT | M | 4 | depth=17 | 256.7M | 18.5 GB | 61.5 GB |
+| U-ViT | L | 4 | depth=21 | 454.8M | 29.0 GB | 51.0 GB |
+| HDiT | S | 2 | [1,2,4,6,4,2,1] | 636.8M | 43.6 GB | 36.4 GB |
+| HDiT | B | 4 | [4,6,8,6,4] | 464.5M | 14.7 GB | 65.3 GB |
+| HDiT | L | 4 | [4,6,8,6,4] | 761.7M | 20.1 GB | 59.9 GB |
+| HDiT | XL | 4 | [4,6,8,6,4] | 937.0M | 22.9 GB | 57.1 GB |
+
+---
+
+## Key Insights
+
+1. **HDiT unlocks patch=2 at 256x256x160**: HDiT-S with patch=2 fits at 43-47 GB thanks to token merging. Flat DiT/U-ViT OOM at patch=2 (1.3M tokens with quadratic attention). This is HDiT's primary advantage.
+
+2. **patch=2 is expensive even with HDiT**: Only HDiT-S fits at patch=2 (43-47 GB). HDiT-B and above OOM — the level-0 blocks at 1.3M tokens dominate VRAM even with just 1-2 blocks there.
+
+3. **At patch=4, HDiT offers massive scaling headroom**: HDiT-XL [4,6,8,6,4] = 937M params at only 22.9 GB. This is 4x more parameters than the current exp16 (HDiT-S [2,4,6,4,2] = 126M) while still leaving 57 GB free.
+
+4. **U-ViT is competitive at patch=4 and patch=8**: U-ViT-L at patch=4 = 455M params at 29 GB. Similar parameter count to HDiT-L [1,2,6,2,1] at 16 GB but more VRAM (flat attention over 164K tokens vs hierarchical). U-ViT's skip connections may provide quality benefits despite the efficiency gap.
+
+5. **More merge levels barely save VRAM at patch=4**: HDiT-S p4 [2,4,6,4,2] (2 levels) = 6.3 GB vs [2,4,4,6,4,4,2] (3 levels) = 6.4 GB. The third merge level adds complexity but tokens are already low enough at level 1 that the extra merging doesn't help.
+
+6. **3 merge levels matter at patch=2**: HDiT-S p2 [2,4,6,4,2] = 47.0 GB vs [1,1,2,6,2,1,1] = 43.1 GB. The extra level reduces the token count at level 1 from 20K to 3K, saving ~4 GB.
+
+7. **VRAM is dominated by level-0 blocks**: For HDiT-S patch=2, going from [1,2,6,2,1] (1 L0 block) to [2,4,6,4,2] (2 L0 blocks) jumps from 43.4 GB to 47.0 GB (+3.6 GB). Adding 2 more bottleneck blocks (8 vs 6) only adds 0.1 GB.
+
+8. **Comparison with flat DiT at 256x256x160**:
+   - DiT-B patch=8: 146M params, 12.3 GB (20K tokens)
+   - HDiT-B patch=4 [2,4,6,4,2]: 358M params, 12.7 GB (164K L0, but only 2 blocks there)
+   - HDiT gets 2.5x more parameters at the same VRAM by doing most compute at reduced token counts
+
+9. **Comparison with 3D UNet at 256x256x160**: The pixel-space UNet profiling showed that only a crippled [16,32,64,256,512,512] config fits (36.5 GB). HDiT-XL [4,6,8,6,4] has 937M params at 22.9 GB — more capable and cheaper.
