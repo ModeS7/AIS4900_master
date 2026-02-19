@@ -1,0 +1,31 @@
+# HDiT 3D (Hierarchical Diffusion Transformer for 3D Volumes)
+#
+# U-shaped transformer with token merging/splitting. Uses adaLN-Zero DiTBlocks
+# (same as standard DiT) with hierarchical multi-resolution processing.
+# Enables patch_size=4 at manageable cost for 3D volumes.
+#
+# Override via CLI: python -m medgen.scripts.train model=hdit_3d model.variant=S
+#
+# Uses DiT variant sizes:
+#   S:  hidden_size=384,  heads=6
+#   B:  hidden_size=768,  heads=12
+#   L:  hidden_size=1024, heads=16
+#   XL: hidden_size=1152, heads=16
+#
+# level_depths must be odd-length (symmetric encoder + bottleneck + decoder):
+#   [2, 4, 6, 4, 2] = 2 enc levels + 6 bottleneck + 2 dec levels
+#   Level 0: 40,960 tokens (4 blocks total)
+#   Level 1:  5,120 tokens (8 blocks total)
+#   Bottleneck: 640 tokens (6 blocks)
+
+type: hdit                           # Model type
+spatial_dims: 3                      # 3D volumes
+image_size: 128                      # Spatial size (H, W)
+depth_size: 160                      # Depth size (D)
+patch_size: 4                        # Fine patches (vs 8 for DiT/U-ViT)
+variant: S                           # DiT-S hidden_size=384, heads=6
+mlp_ratio: 4.0                       # MLP expansion ratio
+conditioning: concat                 # Conditioning mode: concat or cross_attn
+level_depths: [2, 4, 6, 4, 2]       # Blocks per level
+qk_norm: true                        # QK-normalization (DiT default)
+drop_path_rate: 0.0                  # Stochastic depth rate

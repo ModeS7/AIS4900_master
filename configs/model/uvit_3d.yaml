@@ -1,0 +1,26 @@
+# U-ViT 3D (Vision Transformer with Skip Connections for 3D Diffusion)
+#
+# Token-based conditioning: timestep is prepended as a token (no adaLN).
+# Standard Pre-LN ViT blocks with long skip connections between encoder/decoder.
+#
+# Override via CLI: python -m medgen.scripts.train model=uvit_3d model.variant=S
+#
+# Variants (from paper):
+#   S:      hidden_size=512,  depth=13, heads=8
+#   S-Deep: hidden_size=512,  depth=17, heads=8
+#   M:      hidden_size=768,  depth=17, heads=12
+#   L:      hidden_size=1024, depth=21, heads=16
+#
+# Reference: https://arxiv.org/abs/2209.12152
+
+type: uvit                           # Model type
+spatial_dims: 3                      # 3D volumes
+image_size: 128                      # Spatial size (H, W)
+depth_size: 160                      # Depth size (D)
+patch_size: 8                        # Patch size (same as DiT-3D baseline)
+variant: S                           # Model variant: S, S-Deep, M, L
+mlp_ratio: 4.0                       # MLP expansion ratio
+conditioning: concat                 # Conditioning mode: concat or cross_attn
+
+# U-ViT uses qkv_bias=False and no QK-norm (paper defaults)
+qk_norm: false
