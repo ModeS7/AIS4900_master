@@ -289,11 +289,7 @@ class UViT(nn.Module):
         - Positional embedding initialized from sincos then made learnable
         """
         def _trunc_normal_init(module):
-            if isinstance(module, nn.Linear):
-                nn.init.trunc_normal_(module.weight, std=0.02)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, (nn.Conv2d, nn.Conv3d)):
+            if isinstance(module, (nn.Linear, nn.Conv2d, nn.Conv3d)):
                 nn.init.trunc_normal_(module.weight, std=0.02)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)

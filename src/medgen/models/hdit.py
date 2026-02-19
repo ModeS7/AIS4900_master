@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 
+from .dit import DIT_VARIANTS
 from .dit_blocks import DiTBlock, FinalLayer
 from .embeddings import (
     PatchEmbed2D,
@@ -30,7 +31,6 @@ from .embeddings import (
     get_2d_sincos_pos_embed,
     get_3d_sincos_pos_embed,
 )
-from .dit import DIT_VARIANTS
 
 
 class TokenMerge(nn.Module):
@@ -296,7 +296,7 @@ class HDiT(nn.Module):
 
         # Positional embeddings per level (sincos initialized, learnable like DiT)
         self.pos_embeds = nn.ParameterList()
-        for i, grid in enumerate(self.grid_dims_per_level):
+        for _i, grid in enumerate(self.grid_dims_per_level):
             if spatial_dims == 2:
                 gh, gw = grid
                 num_tokens = gh * gw
@@ -315,7 +315,7 @@ class HDiT(nn.Module):
 
         # Encoder levels
         self.encoder_levels = nn.ModuleList()
-        for level_idx, num_blocks in enumerate(enc_depths):
+        for _level_idx, num_blocks in enumerate(enc_depths):
             level_blocks = nn.ModuleList([
                 DiTBlock(
                     hidden_size, num_heads,
@@ -364,7 +364,7 @@ class HDiT(nn.Module):
 
         # Decoder levels
         self.decoder_levels = nn.ModuleList()
-        for level_idx, num_blocks in enumerate(dec_depths):
+        for _level_idx, num_blocks in enumerate(dec_depths):
             level_blocks = nn.ModuleList([
                 DiTBlock(
                     hidden_size, num_heads,
