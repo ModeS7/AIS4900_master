@@ -29,11 +29,15 @@ Before marking ANY task complete, STOP and verify:
 
 | Term | Meaning |
 |------|---------|
-| **Mode** | WHAT to generate: seg, bravo, dual, multi, seg_conditioned |
+| **Mode** | WHAT to generate: seg, bravo, dual, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond |
 | **Strategy** | HOW to denoise: ddpm, rflow (continuous timesteps by default) |
+| **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT) |
 | **VAE dual** | 2 channels (t1_pre, t1_gd) - NO seg |
 | **Diffusion dual** | 3 channels (t1_pre, t1_gd, seg) - HAS seg |
-| **seg_conditioned** | Generate seg masks conditioned on tumor sizes |
+| **seg_conditioned** | Generate seg masks conditioned on tumor sizes (FiLM embedding) |
+| **seg_conditioned_input** | Generate seg masks with size bins as channel-concat input |
+| **bravo_seg_cond** | Latent diffusion: generate BRAVO latents conditioned on VQ-VAE seg latents |
+| **DiffRS** | Diffusion Rejection Sampling - post-hoc discriminator for quality filtering |
 | `train.py` | Diffusion (2D default, use `model.spatial_dims=3` for 3D) |
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
@@ -53,9 +57,14 @@ Stop and ask if unclear:
 ## Quick Commands
 
 ```bash
-# === DIFFUSION ===
+# === DIFFUSION (UNet) ===
 python -m medgen.scripts.train mode=bravo strategy=rflow                    # 2D
 python -m medgen.scripts.train mode=bravo strategy=rflow model.spatial_dims=3  # 3D
+
+# === DIFFUSION (DiT/HDiT/UViT) ===
+python -m medgen.scripts.train model=dit model.variant=S mode=bravo strategy=rflow   # DiT
+python -m medgen.scripts.train model=hdit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # HDiT
+python -m medgen.scripts.train model=uvit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # UViT
 
 # === VAE ===
 python -m medgen.scripts.train_compression --config-name=vae mode=multi_modality
@@ -106,8 +115,11 @@ This catches:
 | Doc | Contents |
 |-----|----------|
 | `@docs/architecture.md` | File locations, trainer hierarchy, config structure, TensorBoard metrics |
-| `@docs/common-pitfalls.md` | 63 known issues, bug fixes, and gotchas |
+| `@docs/common-pitfalls.md` | 74 known issues, bug fixes, and gotchas |
 | `@docs/commands.md` | Full command reference with all options |
+| `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
+| `@docs/experiment_results.md` | Comprehensive 2D + 3D experiment results and metrics |
+| `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
 | `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
 
 ---
@@ -119,10 +131,11 @@ This catches:
 BaseTrainer
 ├── DiffusionTrainerBase (abstract)
 │   └── DiffusionTrainer (unified 2D/3D via spatial_dims parameter)
-└── BaseCompressionTrainer
-    ├── VAETrainer (unified 2D/3D via .create_3d() factory)
-    ├── VQVAETrainer (unified 2D/3D via .create_3d() factory)
-    └── DCAETrainer (unified 2D/3D via .create_3d() factory)
+├── BaseCompressionTrainer
+│   ├── VAETrainer (unified 2D/3D via .create_3d() factory)
+│   ├── VQVAETrainer (unified 2D/3D via .create_3d() factory)
+│   └── DCAETrainer (unified 2D/3D via .create_3d() factory)
+└── SegmentationTrainer (downstream, unified 2D/3D)
 ```
 
 **Key rules:**

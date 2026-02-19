@@ -42,9 +42,10 @@ python -m medgen.scripts.lr_finder mode=dual strategy=rflow
 
 ### Diffusion Training
 - **Two strategies**: DDPM (noise prediction) and Rectified Flow (velocity prediction, continuous timesteps)
-- **Multiple modes**: seg, bravo, dual, multi, seg_conditioned (tumor-size-conditioned mask generation)
-- **Two architectures**: UNet (MONAI) and DiT/SiT (Scalable Interpolant Transformer, S/B/L/XL variants)
+- **Multiple modes**: seg, bravo, dual, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond
+- **Four architectures**: UNet (MONAI), DiT/SiT (Transformer), HDiT (Hierarchical Transformer), UViT (Skip-Connection ViT)
 - **Pixel and latent space**: Direct pixel diffusion or compressed latent diffusion
+- **DiffRS**: Diffusion Rejection Sampling for post-hoc quality filtering
 - **2D and 3D**: Unified trainer via `model.spatial_dims` parameter
 - **ControlNet**: Pixel-resolution conditioning for latent diffusion (two-stage training)
 - **3D pixel transforms**: Space-to-depth rearrangement and Haar wavelet decomposition
@@ -149,7 +150,7 @@ AIS4900_master/
 │   ├── space_to_depth/              # 3D space-to-depth transform
 │   ├── wavelet/                     # 3D Haar wavelet transform
 │   ├── dcae/{f32,f64,f128}.yaml     # DC-AE compression variants
-│   ├── model/{default,dit,wdm_3d,...}.yaml  # Model architectures
+│   ├── model/{default,dit,hdit_3d,uvit_3d,wdm_3d,...}.yaml  # Model architectures
 │   ├── strategy/{ddpm,rflow}.yaml   # Diffusion strategies
 │   ├── mode/{seg,bravo,...}.yaml    # Generation modes
 │   ├── training/                    # Training hyperparameters
@@ -159,7 +160,7 @@ AIS4900_master/
 │   ├── augmentation/                # ScoreAug, SDA, standard transforms
 │   ├── core/                        # Constants, enums, schedulers, utilities
 │   ├── data/                        # NiFTI dataset, loaders, mask codec
-│   │   └── loaders/                 # Dataloader factories (17 modules)
+│   │   └── loaders/                 # Dataloader factories
 │   ├── diffusion/                   # Strategies (DDPM/RFlow), modes, spaces
 │   ├── downstream/                  # Downstream segmentation evaluation
 │   ├── evaluation/                  # Test evaluation, validation runners
@@ -167,7 +168,7 @@ AIS4900_master/
 │   ├── metrics/                     # Unified metrics, quality, generation, regional
 │   │   ├── regional/               # Per-tumor metrics by size
 │   │   └── tracking/               # Gradient, FLOPs, codebook, worst batch
-│   ├── models/                      # UNet, DiT, DC-AE 3D, ControlNet, wavelets
+│   ├── models/                      # UNet, DiT, HDiT, UViT, DC-AE 3D, ControlNet, wavelets
 │   │   └── wrappers/               # Conditioning wrappers (mode, omega, size bin)
 │   ├── pipeline/                    # Trainers, configs, checkpoint management
 │   │   └── optimizers/             # SAM/ASAM optimizer
@@ -175,8 +176,12 @@ AIS4900_master/
 │       ├── train.py                 # Diffusion training (2D/3D)
 │       ├── train_compression.py     # Compression (VAE/VQ-VAE/DC-AE, 2D/3D)
 │       ├── train_segmentation.py    # Downstream segmentation
+│       ├── train_diffrs_discriminator.py  # DiffRS discriminator training
 │       ├── generate.py              # Image generation
 │       ├── encode_latents.py        # Pre-encode for latent diffusion
+│       ├── eval_ode_solvers.py      # ODE solver evaluation
+│       ├── find_optimal_steps.py    # Optimal Euler step search
+│       ├── measure_latent_std.py    # Latent statistics
 │       ├── lr_finder.py             # Learning rate finder
 │       └── visualize_augmentations.py
 │
@@ -192,7 +197,7 @@ AIS4900_master/
 ├── misc/                            # Utilities
 │   ├── data_processing/             # Preprocessing (resize, align, trim, split)
 │   ├── analysis/                    # Dataset and tumor analysis
-│   ├── profiling/                   # Memory profiling (UNet, VAE, DiT)
+│   ├── profiling/                   # Memory profiling (UNet, VAE, DiT, HDiT, UViT)
 │   ├── visualization/               # NIfTI viewer, scheduler plots
 │   ├── tensorboard/                 # TensorBoard utilities
 │   ├── profile_dit_memory.py        # 3D DiT VRAM profiling across variants
@@ -208,7 +213,10 @@ AIS4900_master/
 ├── docs/                            # Documentation
 │   ├── architecture.md              # Architecture reference, TensorBoard metrics
 │   ├── commands.md                  # Full command reference
-│   └── common-pitfalls.md           # 71 known issues and solutions
+│   ├── common-pitfalls.md           # 74 known issues and solutions
+│   ├── eval-ode-solvers.md          # ODE solver evaluation results
+│   ├── experiment_results.md        # Comprehensive experiment results
+│   └── profiling_results.md         # VRAM profiling (DiT, UNet, HDiT, UViT)
 │
 └── papers/                          # Reference papers + PAPERS.md catalog
 ```
@@ -220,8 +228,11 @@ AIS4900_master/
 | `train.py` | Diffusion (2D/3D) | `diffusion.yaml` | `model.spatial_dims=3` for 3D |
 | `train_compression.py` | Compression (VAE/VQ-VAE/DC-AE, 2D/3D) | `--config-name=vae/vqvae/dcae` | Append `_3d` for 3D configs |
 | `train_segmentation.py` | Downstream segmentation | `segmentation.yaml` | `scenario=baseline/synthetic/mixed` |
+| `train_diffrs_discriminator.py` | DiffRS rejection sampling | `diffrs.yaml` | Post-hoc quality filtering |
 | `generate.py` | Image generation | `generate.yaml` | |
 | `encode_latents.py` | Pre-encode dataset to latent space | N/A | |
+| `eval_ode_solvers.py` | ODE solver evaluation | N/A | Compare solvers for RFlow |
+| `find_optimal_steps.py` | Optimal Euler step count | N/A | Golden-section search |
 | `lr_finder.py` | Learning rate finder | `lr_finder.yaml` | |
 | `visualize_augmentations.py` | Debug augmentation pipelines | `visualize_augmentations.yaml` | |
 
@@ -367,6 +378,9 @@ logging:
 |-----|----------|
 | `docs/architecture.md` | Architecture reference, TensorBoard metrics, config details |
 | `docs/commands.md` | Full command reference with all options |
-| `docs/common-pitfalls.md` | 70+ known issues, bug fixes, and gotchas |
+| `docs/common-pitfalls.md` | 74 known issues, bug fixes, and gotchas |
+| `docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal) |
+| `docs/experiment_results.md` | Comprehensive 2D + 3D experiment results |
+| `docs/profiling_results.md` | VRAM profiling (DiT, UNet, HDiT, UViT) |
 | `papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
 | `CLAUDE.md` | Claude Code context file |

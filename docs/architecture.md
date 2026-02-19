@@ -48,6 +48,7 @@ src/medgen/
 ├── diffusion/                   # Diffusion strategies, modes, spaces
 │   ├── batch_data.py            # BatchData standardized unpacking
 │   ├── conditioning.py          # ConditioningContext (frozen dataclass)
+│   ├── diffrs.py                # DiffRS (Diffusion Rejection Sampling)
 │   ├── loading.py               # Model checkpoint loading utilities
 │   ├── modes.py                 # Seg, Bravo, Dual, Multi, SegConditioned modes
 │   ├── protocols.py             # Strategy/Mode protocols
@@ -99,9 +100,11 @@ src/medgen/
 │       ├── gradient.py         # Gradient norm tracking
 │       └── worst_batch.py      # Worst batch capture
 ├── models/                      # Model architectures
-│   ├── factory.py               # Model factory (UNet vs DiT)
+│   ├── factory.py               # Model factory (UNet, DiT, HDiT, UViT)
 │   ├── dit.py                   # DiT (Scalable Interpolant Transformer)
 │   ├── dit_blocks.py            # Transformer blocks with adaLN-Zero
+│   ├── hdit.py                  # HDiT (Hierarchical Diffusion Transformer)
+│   ├── uvit.py                  # UViT (ViT with Skip Connections)
 │   ├── embeddings.py            # Patch/timestep/conditioning embeddings
 │   ├── controlnet.py            # ControlNet for latent diffusion
 │   ├── autoencoder_dc_3d.py     # 3D DC-AE architecture
@@ -152,8 +155,12 @@ src/medgen/
     ├── train.py                 # Unified diffusion training (2D/3D via model.spatial_dims)
     ├── train_compression.py     # Unified compression training (VAE/VQ-VAE/DC-AE, 2D/3D)
     ├── train_segmentation.py    # Downstream segmentation training
+    ├── train_diffrs_discriminator.py  # DiffRS rejection sampling discriminator training
     ├── generate.py              # Generation/inference script
     ├── encode_latents.py        # Pre-encode datasets for latent diffusion
+    ├── eval_ode_solvers.py      # Evaluate ODE solvers for RFlow generation
+    ├── find_optimal_steps.py    # Golden-section search for optimal Euler step count
+    ├── measure_latent_std.py    # Measure latent space statistics
     ├── lr_finder.py             # Learning rate finder
     ├── common.py                # Shared utilities
     └── visualize_augmentations.py  # Debug augmentation pipelines
@@ -180,6 +187,8 @@ configs/
 ├── model/default_3d_5lvl.yaml   # UNet 3D (5-level variant)
 ├── model/dit.yaml               # DiT architecture (2D)
 ├── model/dit_3d.yaml            # DiT architecture (3D, S/B/L/XL variants)
+├── model/hdit_3d.yaml           # HDiT architecture (3D, hierarchical transformer)
+├── model/uvit_3d.yaml           # UViT architecture (3D, skip-connection ViT)
 ├── model/wdm_3d.yaml            # WDM UNet (3D wavelet diffusion)
 ├── model/smoke_test.yaml        # Minimal model for fast testing
 ├── vae/default.yaml             # VAE architecture
@@ -210,8 +219,12 @@ configs/
 | `train.py` | Train diffusion model (2D/3D) | `diffusion.yaml` | `model.spatial_dims=3` for 3D |
 | `train_compression.py` | Train compression model (VAE/VQ-VAE/DC-AE, 2D/3D) | Varies | `--config-name=vae`, `vae_3d`, `dcae`, etc. |
 | `train_segmentation.py` | Train downstream segmentation model | `segmentation.yaml` | `scenario=baseline/synthetic/mixed` |
+| `train_diffrs_discriminator.py` | Train DiffRS rejection sampling discriminator | `diffrs.yaml` | Post-hoc quality filtering |
 | `generate.py` | Generate synthetic images | `generate.yaml` | |
 | `encode_latents.py` | Pre-encode dataset to latent space | N/A | |
+| `eval_ode_solvers.py` | Evaluate ODE solvers for RFlow generation | N/A | Compare solver quality/speed |
+| `find_optimal_steps.py` | Find optimal Euler step count | N/A | Golden-section search |
+| `measure_latent_std.py` | Measure latent space statistics | N/A | For scale_factor calibration |
 | `lr_finder.py` | Find optimal learning rate | `lr_finder.yaml` | |
 | `common.py` | Shared utilities (get_image_keys, run_test_evaluation, etc.) | N/A | Not a script |
 | `visualize_augmentations.py` | Debug augmentation pipelines | `visualize_augmentations.yaml` | |
@@ -233,7 +246,7 @@ configs/
 
 | Trainer | Model | Loss | Purpose |
 |---------|-------|------|---------|
-| `DiffusionTrainer` | UNet or DiT | MSE + Perceptual | 2D/3D image generation (via spatial_dims) |
+| `DiffusionTrainer` | UNet, DiT, HDiT, or UViT | MSE + Perceptual | 2D/3D image generation (via spatial_dims) |
 | `VAETrainer` | AutoencoderKL + PatchDiscriminator | L1 + Perceptual + KL + Adversarial | 2D/3D compression (via .create_3d()) |
 | `VQVAETrainer` | VQVAE + PatchDiscriminator | L1 + Perceptual + VQ + Adversarial | 2D/3D discrete latent compression |
 | `DCAETrainer` | AutoencoderDC | L1 + Perceptual + optional GAN | High-compression 2D/3D (32×/64×) |
@@ -249,10 +262,11 @@ configs/
 BaseTrainer (base_trainer.py)
 ├── DiffusionTrainerBase (diffusion_trainer_base.py) - abstract diffusion base
 │   └── DiffusionTrainer (trainer.py) - unified 2D/3D via spatial_dims
-└── BaseCompressionTrainer (compression_trainer.py)
-    ├── VAETrainer (vae_trainer.py) - unified 2D/3D via .create_3d() factory
-    ├── VQVAETrainer (vqvae_trainer.py) - unified 2D/3D via .create_3d() factory
-    └── DCAETrainer (dcae_trainer.py) - unified 2D/3D via .create_3d() factory
+├── BaseCompressionTrainer (compression_trainer.py)
+│   ├── VAETrainer (vae_trainer.py) - unified 2D/3D via .create_3d() factory
+│   ├── VQVAETrainer (vqvae_trainer.py) - unified 2D/3D via .create_3d() factory
+│   └── DCAETrainer (dcae_trainer.py) - unified 2D/3D via .create_3d() factory
+└── SegmentationTrainer (downstream/segmentation_trainer.py) - unified 2D/3D
 ```
 
 ### 2D vs 3D Training
@@ -353,6 +367,75 @@ model:
 **3D DiT VRAM profiling**: Use `misc/profile_dit_memory.py` to sweep all variants × resolutions × patch sizes on GPU.
 
 Reference: [arxiv.org/abs/2401.08740](https://arxiv.org/abs/2401.08740)
+
+### HDiT (Hierarchical Diffusion Transformer)
+
+U-shaped transformer with token merging/splitting for multi-resolution processing. Uses the same adaLN-Zero DiTBlocks as standard DiT but processes tokens hierarchically — most compute happens at reduced sequence lengths.
+
+**Key advantage**: Enables `patch_size=4` for 3D volumes at manageable cost (vs DiT which needs `patch_size=8+` for 3D).
+
+```yaml
+model:
+  type: hdit
+  variant: S          # S/B/L/XL (same DiT variant sizes)
+  patch_size: 4       # Fine patches (HDiT's sweet spot)
+  level_depths: [2, 4, 6, 4, 2]  # Blocks per level (must be odd-length)
+  qk_norm: true
+  conditioning: concat
+```
+
+**Architecture**:
+1. Patchify at `patch_size` → full-resolution tokens
+2. Encoder: Process blocks, then merge tokens (2x2x2 → 8x reduction per level)
+3. Bottleneck: Process at lowest resolution
+4. Decoder: Split tokens back, add skip connections from encoder
+5. Unpatchify to output
+
+**Token count example** (128x128x160, patch=4):
+- Level 0: 40,960 tokens (4 blocks)
+- Level 1: 5,120 tokens (8 blocks)
+- Bottleneck: 640 tokens (6 blocks)
+
+| Variant | Hidden | Heads | Config |
+|---------|--------|-------|--------|
+| S | 384 | 6 | `model=hdit_3d model.variant=S` |
+| B | 768 | 12 | `model=hdit_3d model.variant=B` |
+| L | 1024 | 16 | `model=hdit_3d model.variant=L` |
+| XL | 1152 | 16 | `model=hdit_3d model.variant=XL` |
+
+**VRAM profiling**: Use `misc/profiling/profile_hdit_uvit_memory.py`. See `docs/profiling_results.md` for results.
+
+Inspired by U-DiT (Tian et al., NeurIPS 2024) but adapted for 3D patchified sequences.
+
+### UViT (Vision Transformer with Skip Connections)
+
+Token-based conditioning ViT with skip connections between encoder and decoder halves. Key difference from DiT: no adaLN modulation — timestep is prepended as a token and conditioning flows through self-attention.
+
+```yaml
+model:
+  type: uvit
+  variant: S          # S (512d/13L), S-Deep (512d/17L), M (768d/17L), L (1024d/21L)
+  patch_size: 8
+  conditioning: concat
+  qk_norm: false       # Paper default
+```
+
+**Key differences from DiT**:
+- Token-based conditioning (timestep prepended as token, not adaLN modulation)
+- Standard Pre-LN ViT blocks (no adaLN-Zero)
+- Skip connections between encoder and decoder halves
+- Depth must be odd (encoder + 1 mid + decoder)
+- `qkv_bias=False`, no qk_norm by default
+- Final conv layer to prevent patch-boundary artifacts
+
+| Variant | Params | Hidden | Depth | Heads |
+|---------|--------|--------|-------|-------|
+| S | ~44M | 512 | 13 | 8 |
+| S-Deep | ~58M | 512 | 17 | 8 |
+| M | ~131M | 768 | 17 | 12 |
+| L | ~304M | 1024 | 21 | 16 |
+
+Reference: [arxiv.org/abs/2209.12152](https://arxiv.org/abs/2209.12152) (Bao et al., CVPR 2023)
 
 ### VQ-VAE (Vector Quantized VAE)
 
@@ -631,8 +714,9 @@ def train(
 | `dual` | 3 | 2 | Seg mask | `[B, 3, H, W]` = [t1_pre, t1_gd, seg] |
 | `multi` | 2 | 1 | Seg mask + mode_id | `[B, 2, H, W]` = [image, seg] + mode embedding |
 | `bravo_seg_cond` | 8 | 4 | Latent seg mask | `[B, 8, ...]` = [bravo_latent(4), seg_latent(4)] |
-| `seg_conditioned` | 1 + size_bins | 1 | Size bins | `[B, 1, H, W]` seg + size bin embedding |
-| `seg_conditioned_3d` | 1 + size_bins | 1 | Size bins | `[B, 1, D, H, W]` seg + size bin embedding |
+| `seg_conditioned` | 1 + size_bins | 1 | Size bins (FiLM) | `[B, 1, H, W]` seg + size bin embedding |
+| `seg_conditioned_input` | 1 + 7 bin maps | 1 | Size bins (channel concat) | `[B, 8, H, W]` seg + 7 binary bin maps |
+| `seg_conditioned_3d` | 1 + size_bins | 1 | Size bins (FiLM) | `[B, 1, D, H, W]` seg + size bin embedding |
 
 **Note**: `bravo_seg_cond` is for latent diffusion only — generates BRAVO latents conditioned on VQ-VAE-encoded seg masks. Requires `latent.enabled=true`.
 
@@ -1029,6 +1113,43 @@ The `ModeTimeEmbed` wrapper injects mode-specific conditioning into the UNet's t
 
 ---
 
+## DiffRS (Diffusion Rejection Sampling)
+
+Post-hoc quality improvement for diffusion sampling without retraining the model. A tiny discriminator head (~500 params) is trained on top of the frozen UNet encoder to evaluate intermediate samples during generation.
+
+**How it works**:
+1. At each denoising step, the discriminator checks if the intermediate sample looks realistic for that noise level
+2. Bad trajectories are rejected and retried with new noise
+3. The diffusion model is never modified
+
+**Architecture**:
+- Feature extractor: Frozen UNet encoder (already trained)
+- Classification head: GroupNorm → SiLU → Pool → Linear (~500 params)
+
+**Training**:
+```bash
+python -m medgen.scripts.train_diffrs_discriminator \
+    diffusion_checkpoint=runs/bravo/checkpoint_best.pt \
+    data_mode=bravo
+```
+
+**Config** (`configs/diffrs.yaml`):
+```yaml
+diffusion_checkpoint: null    # Required: path to trained diffusion model
+data_mode: bravo              # Image type for real samples
+num_generated_samples: 5000   # Samples for training
+generation_num_steps: 25      # Steps for sample generation
+num_epochs: 60
+batch_size: 32
+learning_rate: 3e-4
+```
+
+**Files**: `src/medgen/diffusion/diffrs.py`, `src/medgen/scripts/train_diffrs_discriminator.py`
+
+Reference: DiffRS (ICML 2024)
+
+---
+
 ## DataLoader Optimization
 
 CPU augmentation runs in parallel workers. Configure for GPU utilization:
@@ -1152,9 +1273,11 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/core/schedulers.py`: LR schedulers (cosine, warmup, plateau)
 
 ### Models
-- `src/medgen/models/factory.py`: Model factory (UNet vs DiT)
+- `src/medgen/models/factory.py`: Model factory (UNet, DiT, HDiT, UViT)
 - `src/medgen/models/dit.py`: DiT model (Scalable Interpolant Transformer)
 - `src/medgen/models/dit_blocks.py`: Transformer blocks with adaLN-Zero
+- `src/medgen/models/hdit.py`: HDiT (Hierarchical Diffusion Transformer)
+- `src/medgen/models/uvit.py`: UViT (Vision Transformer with Skip Connections)
 - `src/medgen/models/embeddings.py`: Patch, timestep, conditioning embeddings
 - `src/medgen/models/controlnet.py`: ControlNet for latent diffusion
 - `src/medgen/models/autoencoder_dc_3d.py`: 3D DC-AE architecture
@@ -1185,6 +1308,7 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/diffusion/strategy_rflow.py`: RFlow strategy (velocity prediction, continuous timesteps)
 - `src/medgen/diffusion/modes.py`: Seg, Bravo, Dual, Multi, SegConditioned modes
 - `src/medgen/diffusion/spaces.py`: Pixel/Latent/SpaceToDepth/Wavelet space abstraction
+- `src/medgen/diffusion/diffrs.py`: DiffRS rejection sampling discriminator
 - `src/medgen/diffusion/batch_data.py`: BatchData standardized batch unpacking
 - `src/medgen/diffusion/conditioning.py`: ConditioningContext for diffusion conditioning
 - `src/medgen/diffusion/protocols.py`: Protocol interfaces for strategies/modes
@@ -1240,8 +1364,12 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/scripts/train.py`: Unified diffusion training (2D/3D)
 - `src/medgen/scripts/train_compression.py`: Unified compression training (VAE/VQ-VAE/DC-AE)
 - `src/medgen/scripts/train_segmentation.py`: Downstream segmentation training
+- `src/medgen/scripts/train_diffrs_discriminator.py`: DiffRS rejection sampling discriminator training
 - `src/medgen/scripts/generate.py`: Generation/inference
 - `src/medgen/scripts/encode_latents.py`: Pre-encode datasets for latent diffusion
+- `src/medgen/scripts/eval_ode_solvers.py`: Evaluate ODE solvers for RFlow generation
+- `src/medgen/scripts/find_optimal_steps.py`: Golden-section search for optimal Euler step count
+- `src/medgen/scripts/measure_latent_std.py`: Measure latent space statistics
 - `src/medgen/scripts/lr_finder.py`: Learning rate finder
 - `src/medgen/scripts/common.py`: Shared utilities
 

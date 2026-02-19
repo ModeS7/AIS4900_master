@@ -104,6 +104,16 @@ python -m medgen.scripts.train model=dit model.variant=B mode=bravo strategy=rfl
 python -m medgen.scripts.train model=dit model.variant=L mode=bravo strategy=rflow   # 458M params
 python -m medgen.scripts.train model=dit model.variant=XL mode=bravo strategy=rflow  # 675M params
 
+# Diffusion with HDiT (Hierarchical Transformer, 3D)
+python -m medgen.scripts.train model=hdit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3
+python -m medgen.scripts.train model=hdit_3d model.variant=B mode=bravo strategy=rflow model.spatial_dims=3
+python -m medgen.scripts.train model=hdit_3d model.variant=XL \
+    'model.level_depths=[4,6,8,6,4]' mode=bravo strategy=rflow model.spatial_dims=3
+
+# Diffusion with UViT (ViT with skip connections, 3D)
+python -m medgen.scripts.train model=uvit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3
+python -m medgen.scripts.train model=uvit_3d model.variant=M mode=bravo strategy=rflow model.spatial_dims=3
+
 # Seg-conditioned diffusion (generate seg masks conditioned on tumor sizes)
 python -m medgen.scripts.train mode=seg_conditioned strategy=rflow
 ```
@@ -357,6 +367,69 @@ python -m medgen.scripts.train_compression --config-name=vae mode=dual \
 
 ---
 
+## DiffRS (Rejection Sampling)
+
+```bash
+# Train DiffRS discriminator head on a trained diffusion model
+python -m medgen.scripts.train_diffrs_discriminator \
+    diffusion_checkpoint=runs/bravo/checkpoint_best.pt \
+    data_mode=bravo
+
+# Quick test run
+python -m medgen.scripts.train_diffrs_discriminator \
+    diffusion_checkpoint=runs/bravo/checkpoint_best.pt \
+    data_mode=bravo num_generated_samples=100 num_epochs=5
+
+# 3D DiffRS
+python -m medgen.scripts.train_diffrs_discriminator \
+    diffusion_checkpoint=runs/diffusion_3d/.../checkpoint_best.pt \
+    data_mode=bravo spatial_dims=3
+```
+
+---
+
+## ODE Solver Evaluation
+
+```bash
+# Evaluate multiple solvers on a trained RFlow model
+python -m medgen.scripts.eval_ode_solvers \
+    checkpoint_path=runs/.../checkpoint_best.pt \
+    mode=bravo strategy=rflow
+
+# Find optimal Euler step count (golden-section search)
+python -m medgen.scripts.find_optimal_steps \
+    checkpoint_path=runs/.../checkpoint_best.pt \
+    mode=bravo strategy=rflow
+```
+
+See `docs/eval-ode-solvers.md` for results (Euler/25 is optimal for RFlow).
+
+---
+
+## Measure Latent Statistics
+
+```bash
+# Measure latent space std for scale_factor calibration
+python -m medgen.scripts.measure_latent_std \
+    compression_checkpoint=runs/compression_3d/.../checkpoint_best.pt
+```
+
+---
+
+## torch.compile
+
+```bash
+# Enable torch.compile for diffusion training (fused forward pass)
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    training.use_compile=true
+
+# Compression with compile
+python -m medgen.scripts.train_compression --config-name=vae mode=multi_modality \
+    training.use_compile=true
+```
+
+---
+
 ## IDUN Cluster
 
 ```bash
@@ -406,6 +479,9 @@ python misc/preprocessing/preprocess.py split --data_dir /path/to/data
 
 # DiT memory profiling (sweep variants × resolutions × patch sizes)
 python misc/profile_dit_memory.py
+
+# HDiT/UViT memory profiling
+python misc/profiling/profile_hdit_uvit_memory.py
 ```
 
 ---
