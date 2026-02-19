@@ -18,7 +18,7 @@
 # === Auto-chain configuration ===
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp7_2_sit_l_256_patch8"
+EXP_NAME="exp7_2_sit_xl_256_patch8"
 
 # First run: create unique run directory. Subsequent: reuse from env var.
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
@@ -65,7 +65,7 @@ trap handle_timeout SIGUSR1
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp7_2: 3D-DiT-B @ 160x256x256, patch=8 (20,480 tokens) ==="
+echo "=== Exp7_2: 3D-DiT-XL @ 160x256x256, patch=8 (20,480 tokens) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -76,10 +76,10 @@ conda activate AIS4900
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
-# 3D-DiT-B: Bravo mode @ 160x256x256, patch_size=8
+# 3D-DiT-XL: Bravo mode @ 160x256x256, patch_size=8
 # ============================================================================
-# Architecture: DiT-B (146M params)
-#   - hidden_size: 768, depth: 12, heads: 12
+# Architecture: DiT-XL (675M params)
+#   - hidden_size: 1152, depth: 28, heads: 16
 #   - patch_size: 8 -> 20,480 tokens
 #   - Profiled: ~12.3 GB on A100 80GB (67.7 GB headroom)
 #
@@ -103,6 +103,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.epochs=500 \
     training.learning_rate=1e-4 \
     training.use_compile=true \
+    training.gradient_checkpointing=false \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

@@ -65,7 +65,7 @@ trap handle_timeout SIGUSR1
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp7_2: 3D-DiT-B @ 160x256x256, patch=8 (20,480 tokens) ==="
+echo "=== Exp7_2: 3D-DiT-L @ 160x256x256, patch=8 (20,480 tokens) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -76,10 +76,10 @@ conda activate AIS4900
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
-# 3D-DiT-B: Bravo mode @ 160x256x256, patch_size=8
+# 3D-DiT-L: Bravo mode @ 160x256x256, patch_size=8
 # ============================================================================
-# Architecture: DiT-B (146M params)
-#   - hidden_size: 768, depth: 12, heads: 12
+# Architecture: DiT-L (458M params)
+#   - hidden_size: 1024, depth: 24, heads: 16
 #   - patch_size: 8 -> 20,480 tokens
 #   - Profiled: ~12.3 GB on A100 80GB (67.7 GB headroom)
 #
@@ -103,6 +103,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.epochs=500 \
     training.learning_rate=1e-4 \
     training.use_compile=true \
+    training.gradient_checkpointing=false \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
