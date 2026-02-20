@@ -70,6 +70,13 @@ def measure_latent_stats(cfg: DictConfig) -> None:
     all_mu_mean = []
     all_logvar_mean = []
     all_posterior_std = []  # exp(0.5 * logvar) = learned std
+    # Per-channel: list of [n_samples] per channel, built after first batch
+    ch_z_mean: list[list[float]] = []
+    ch_z_std: list[list[float]] = []
+    ch_mu_mean: list[list[float]] = []
+    ch_mu_std: list[list[float]] = []
+    ch_logvar_mean: list[list[float]] = []
+    ch_posterior_std: list[list[float]] = []
     n_processed = 0
 
     logger.info(f"Encoding up to {max_samples} samples...")
@@ -103,6 +110,16 @@ def measure_latent_stats(cfg: DictConfig) -> None:
             # Posterior std = exp(0.5 * logvar)
             posterior_std = torch.exp(0.5 * z_logvar)
 
+            # Initialize per-channel lists on first batch
+            if not ch_z_mean:
+                n_ch = z.shape[1]
+                ch_z_mean = [[] for _ in range(n_ch)]
+                ch_z_std = [[] for _ in range(n_ch)]
+                ch_mu_mean = [[] for _ in range(n_ch)]
+                ch_mu_std = [[] for _ in range(n_ch)]
+                ch_logvar_mean = [[] for _ in range(n_ch)]
+                ch_posterior_std = [[] for _ in range(n_ch)]
+
             # Per-sample stats (flatten spatial dims, keep batch)
             for i in range(images.shape[0]):
                 if n_processed >= max_samples:
@@ -119,6 +136,16 @@ def measure_latent_stats(cfg: DictConfig) -> None:
                 all_mu_mean.append(mui.mean().item())
                 all_logvar_mean.append(logvari.mean().item())
                 all_posterior_std.append(pstdi.mean().item())
+
+                # Per-channel stats (flatten spatial dims per channel)
+                for c in range(zi.shape[0]):
+                    ch_z_mean[c].append(zi[c].mean().item())
+                    ch_z_std[c].append(zi[c].std().item())
+                    ch_mu_mean[c].append(mui[c].mean().item())
+                    ch_mu_std[c].append(mui[c].std().item())
+                    ch_logvar_mean[c].append(logvari[c].mean().item())
+                    ch_posterior_std[c].append(pstdi[c].mean().item())
+
                 n_processed += 1
 
             if n_processed % 10 == 0:
@@ -153,6 +180,36 @@ def measure_latent_stats(cfg: DictConfig) -> None:
     print(f"  logvar.mean()         = {logvar_means.mean():.4f}  (target: ~0.0 for std~1)")
     print(f"  posterior_std.mean()  = {posterior_stds.mean():.4f}  (exp(0.5*logvar), target: ~1.0)")
 
+    # Per-channel statistics
+    n_ch = len(ch_z_mean)
+    ch_stats = []
+    for c in range(n_ch):
+        ch_stats.append({
+            'z_mean': np.mean(ch_z_mean[c]),
+            'z_std': np.mean(ch_z_std[c]),
+            'mu_mean': np.mean(ch_mu_mean[c]),
+            'mu_std': np.mean(ch_mu_std[c]),
+            'logvar': np.mean(ch_logvar_mean[c]),
+            'post_std': np.mean(ch_posterior_std[c]),
+        })
+
+    print(f"\n--- Per-channel statistics ({n_ch} channels) ---")
+    print(f"  {'Ch':>3}  {'z.mean':>8}  {'z.std':>8}  {'mu.mean':>8}  {'mu.std':>8}  {'logvar':>8}  {'post_std':>8}")
+    print(f"  {'-' * 59}")
+    for c, s in enumerate(ch_stats):
+        print(f"  {c:>3}  {s['z_mean']:>8.4f}  {s['z_std']:>8.4f}  "
+              f"{s['mu_mean']:>8.4f}  {s['mu_std']:>8.4f}  "
+              f"{s['logvar']:>8.4f}  {s['post_std']:>8.4f}")
+
+    # Scale factors for LDM normalization
+    print("\n--- LDM normalization (per-channel scale factors) ---")
+    print("  To normalize latents to ~N(0,1) for diffusion training:")
+    print("  z_norm = (z - shift) / scale")
+    print(f"  {'Ch':>3}  {'shift':>8}  {'scale':>8}")
+    print(f"  {'-' * 23}")
+    for c, s in enumerate(ch_stats):
+        print(f"  {c:>3}  {s['z_mean']:>8.4f}  {s['z_std']:>8.4f}")
+
     print("\n--- Interpretation ---")
     z_std_avg = z_stds.mean()
     p_std_avg = posterior_stds.mean()
@@ -166,6 +223,18 @@ def measure_latent_stats(cfg: DictConfig) -> None:
         print(f"  z.std={z_std_avg:.3f} > 1.1: KL slightly weak. Consider raising kl_weight.")
     else:
         print(f"  z.std={z_std_avg:.3f} >> 1: KL very weak, latents not regularized. Raise kl_weight.")
+
+    # Check per-channel variance spread
+    ch_stds = [s['z_std'] for s in ch_stats]
+    ch_std_ratio = max(ch_stds) / max(min(ch_stds), 1e-8)
+    if ch_std_ratio > 3.0:
+        print(f"  Channel std ratio = {ch_std_ratio:.1f}x: Channels have very different scales.")
+        print("    → Per-channel normalization recommended for LDM.")
+    elif ch_std_ratio > 1.5:
+        print(f"  Channel std ratio = {ch_std_ratio:.1f}x: Moderate channel imbalance.")
+        print("    → Per-channel normalization may help LDM quality.")
+    else:
+        print(f"  Channel std ratio = {ch_std_ratio:.1f}x: Channels are balanced.")
 
     if p_std_avg < 0.01:
         print(f"  posterior_std={p_std_avg:.4f} << 1: Near-deterministic encoder (KL ≈ 0).")
