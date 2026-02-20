@@ -92,6 +92,7 @@ time python -m medgen.scripts.eval_diffrs \
     --output-dir "${OUTPUT_DIR}" \
     --num-volumes 25 \
     --seed 42 \
+    --backsteps 0 \
     --resume &
 
 PID=$!
