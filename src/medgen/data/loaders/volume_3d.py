@@ -1107,17 +1107,19 @@ def create_segmentation_dataloader(
 def create_segmentation_validation_dataloader(
     cfg,
     vol_cfg: VolumeConfig,
+    split: str = 'val',
 ) -> tuple[DataLoader, Dataset] | None:
-    """Create 3D validation dataloader for unconditional segmentation.
+    """Create 3D validation/test dataloader for unconditional segmentation.
 
     Args:
         cfg: Hydra configuration object.
         vol_cfg: Volume configuration.
+        split: Data split ('val' or 'test_new').
 
     Returns:
-        Tuple of (DataLoader, Dataset) or None if val/ doesn't exist.
+        Tuple of (DataLoader, Dataset) or None if split directory doesn't exist.
     """
-    val_dir = get_validated_split_dir(cfg.paths.data_dir, 'val')
+    val_dir = get_validated_split_dir(cfg.paths.data_dir, split)
     if val_dir is None:
         return None
 

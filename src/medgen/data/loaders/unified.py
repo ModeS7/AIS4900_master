@@ -484,13 +484,16 @@ def _create_3d_seg_loader(
 
     if split == 'train':
         return create_segmentation_dataloader(cfg, vol_cfg, augment=augment)
-    elif split == 'val':
-        result = create_segmentation_validation_dataloader(cfg, vol_cfg)
+    elif split in ('val', 'test'):
+        result = create_segmentation_validation_dataloader(
+            cfg, vol_cfg,
+            split='test_new' if split == 'test' else 'val',
+        )
         if result is None:
-            raise ValueError("No 3D validation data found")
+            raise ValueError(f"No 3D {split} data found")
         return result
     else:
-        raise ValueError("3D seg test loader not yet supported")
+        raise ValueError(f"Unknown split: {split}")
 
 
 def _create_3d_bravo_loader(
@@ -548,8 +551,14 @@ def _create_3d_seg_conditioned_loader(
         if result is None:
             raise ValueError("No 3D validation data found")
         return result
+    elif split == 'test':
+        from medgen.data.loaders.seg import create_seg_test_dataloader
+        result = create_seg_test_dataloader(cfg)
+        if result is None:
+            raise ValueError("No 3D test data found")
+        return result
     else:
-        raise ValueError("3D seg_conditioned test loader not yet supported")
+        raise ValueError(f"Unknown split: {split}")
 
 
 def _create_3d_seg_conditioned_input_loader(
