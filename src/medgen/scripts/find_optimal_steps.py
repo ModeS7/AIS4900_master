@@ -213,6 +213,9 @@ def main():
     in_channels = ckpt_cfg.get('in_channels')
     out_channels = ckpt_cfg.get('out_channels')
     mode = args.mode or ckpt_cfg.get('mode')
+    # Hydra stores mode as a config group (dict with 'name' key), not a string
+    if isinstance(mode, dict):
+        mode = mode.get('name', None)
     spatial_dims = ckpt_cfg.get('spatial_dims', 3)
     image_size = args.image_size or ckpt_cfg.get('image_size', 256)
     depth = args.depth or ckpt_cfg.get('depth_size', 160)
