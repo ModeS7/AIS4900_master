@@ -196,8 +196,8 @@ def build_solver_configs(quick: bool = False) -> list[SolverConfig]:
 # Data loading
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def discover_splits(data_root: Path) -> dict[str, Path]:
-    """Auto-discover dataset splits (directories containing */bravo.nii.gz).
+def discover_splits(data_root: Path, modality: str = 'bravo') -> dict[str, Path]:
+    """Auto-discover dataset splits (directories containing */{modality}.nii.gz).
 
     Returns:
         Dict of split_name -> split_path, e.g. {'train': Path(...), 'val': Path(...)}.
@@ -206,12 +206,12 @@ def discover_splits(data_root: Path) -> dict[str, Path]:
     for subdir in sorted(data_root.iterdir()):
         if not subdir.is_dir():
             continue
-        bravo_files = list(subdir.glob("*/bravo.nii.gz"))
-        if bravo_files:
+        files = list(subdir.glob(f"*/{modality}.nii.gz"))
+        if files:
             splits[subdir.name] = subdir
-            logger.info(f"  Found split '{subdir.name}': {len(bravo_files)} volumes")
+            logger.info(f"  Found split '{subdir.name}': {len(files)} volumes")
     if not splits:
-        raise FileNotFoundError(f"No splits with bravo.nii.gz found in {data_root}")
+        raise FileNotFoundError(f"No splits with {modality}.nii.gz found in {data_root}")
     return splits
 
 
@@ -293,6 +293,7 @@ def extract_split_features(
     depth: int,
     trim_slices: int,
     image_size: int,
+    modality: str = 'bravo',
     chunk_size: int = 32,
 ) -> torch.Tensor:
     """Extract features from all volumes in a split, one volume at a time.
@@ -300,17 +301,18 @@ def extract_split_features(
     Memory-efficient: loads one volume, extracts slice features, frees volume.
 
     Args:
-        split_dir: Directory with patient_id/bravo.nii.gz.
+        split_dir: Directory with patient_id/{modality}.nii.gz.
         extractor: Feature extractor (ResNet50Features or BiomedCLIPFeatures).
         depth: Generation depth (for padding).
         trim_slices: Number of end slices to exclude (padding slices).
         image_size: Expected H/W dimension.
+        modality: Reference modality filename stem (default: 'bravo').
         chunk_size: Slices per feature extraction batch.
 
     Returns:
         Feature tensor [total_slices, feat_dim].
     """
-    bravo_files = sorted(split_dir.glob("*/bravo.nii.gz"))
+    bravo_files = sorted(split_dir.glob(f"*/{modality}.nii.gz"))
     all_features = []
     effective_depth = depth - trim_slices
 
@@ -355,6 +357,7 @@ def get_or_cache_reference_features(
     depth: int,
     trim_slices: int,
     image_size: int,
+    modality: str = 'bravo',
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Extract and cache reference features for all splits.
 
@@ -370,8 +373,8 @@ def get_or_cache_reference_features(
     # Check if all features are cached
     all_cached = True
     for split_name in splits:
-        resnet_path = cache_dir / f"{split_name}_resnet.pt"
-        clip_path = cache_dir / f"{split_name}_clip.pt"
+        resnet_path = cache_dir / f"{split_name}_{modality}_resnet.pt"
+        clip_path = cache_dir / f"{split_name}_{modality}_clip.pt"
         if not resnet_path.exists() or not clip_path.exists():
             all_cached = False
             break
@@ -380,8 +383,8 @@ def get_or_cache_reference_features(
         logger.info("Loading cached reference features...")
         for split_name in splits:
             ref_features[split_name] = {
-                'resnet': torch.load(cache_dir / f"{split_name}_resnet.pt", weights_only=True),
-                'clip': torch.load(cache_dir / f"{split_name}_clip.pt", weights_only=True),
+                'resnet': torch.load(cache_dir / f"{split_name}_{modality}_resnet.pt", weights_only=True),
+                'clip': torch.load(cache_dir / f"{split_name}_{modality}_clip.pt", weights_only=True),
             }
             logger.info(f"  {split_name}: resnet={ref_features[split_name]['resnet'].shape}, "
                          f"clip={ref_features[split_name]['clip'].shape}")
@@ -395,8 +398,9 @@ def get_or_cache_reference_features(
             logger.info(f"  Extracting ResNet50 features for '{split_name}'...")
             features = extract_split_features(
                 split_dir, resnet, depth, trim_slices, image_size,
+                modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_resnet.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet.pt")
             ref_features.setdefault(split_name, {})['resnet'] = features
             logger.info(f"    {split_name}: {features.shape}")
         resnet.unload()
@@ -408,8 +412,9 @@ def get_or_cache_reference_features(
             logger.info(f"  Extracting BiomedCLIP features for '{split_name}'...")
             features = extract_split_features(
                 split_dir, clip, depth, trim_slices, image_size,
+                modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_clip.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_clip.pt")
             ref_features[split_name]['clip'] = features
             logger.info(f"    {split_name}: {features.shape}")
         clip.unload()
@@ -433,19 +438,20 @@ def generate_noise_tensors(
     image_size: int,
     device: torch.device,
     seed: int,
+    out_channels: int = 1,
 ) -> list[torch.Tensor]:
     """Pre-generate deterministic noise tensors (shared across all configs).
 
     Each noise tensor is generated with a unique sub-seed for reproducibility.
 
     Returns:
-        List of [1, 1, D, H, W] tensors on the given device.
+        List of [1, out_channels, D, H, W] tensors on the given device.
     """
     noise_list = []
     for i in range(num):
         gen = torch.Generator(device=device)
         gen.manual_seed(seed + i)
-        noise = torch.randn(1, 1, depth, image_size, image_size,
+        noise = torch.randn(1, out_channels, depth, image_size, image_size,
                              device=device, generator=gen)
         noise_list.append(noise)
     return noise_list
@@ -459,19 +465,21 @@ def generate_volumes(
     model: nn.Module,
     strategy,
     noise_list: list[torch.Tensor],
-    cond_list: list[tuple[str, torch.Tensor]],
+    cond_list: list[tuple[str, torch.Tensor]] | None,
     solver_cfg: SolverConfig,
     device: torch.device,
+    postprocess: str = 'clamp',
 ) -> tuple[list[np.ndarray], int, float]:
-    """Generate BRAVO volumes for one solver configuration.
+    """Generate volumes for one solver configuration.
 
     Args:
-        model: BRAVO model (will be wrapped with NFECounter).
+        model: Diffusion model (will be wrapped with NFECounter).
         strategy: RFlowStrategy instance (ode_solver will be set).
         noise_list: Pre-generated noise tensors.
-        cond_list: (patient_id, seg_tensor) pairs.
+        cond_list: (patient_id, seg_tensor) pairs, or None for unconditional.
         solver_cfg: Solver configuration.
         device: CUDA device.
+        postprocess: 'clamp' for torch.clamp(0,1), 'sigmoid' for torch.sigmoid.
 
     Returns:
         (volumes_list, total_nfe, wall_time_seconds)
@@ -492,15 +500,21 @@ def generate_volumes(
     volumes = []
     start_time = time.time()
 
-    for i, (noise, (_patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
-        seg_on_device = seg_tensor.to(device)
-        model_input = torch.cat([noise, seg_on_device], dim=1)  # [1, 2, D, H, W]
+    for i, noise in enumerate(noise_list):
+        if cond_list is not None:
+            seg_on_device = cond_list[i][1].to(device)
+            model_input = torch.cat([noise, seg_on_device], dim=1)
+        else:
+            model_input = noise
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
                 result = strategy.generate(counter, model_input, num_steps, device)
 
-        vol_np = torch.clamp(result[0, 0], 0, 1).cpu().float().numpy()  # [D, H, W]
+        if postprocess == 'sigmoid':
+            vol_np = torch.sigmoid(result[0, 0]).cpu().float().numpy()
+        else:
+            vol_np = torch.clamp(result[0, 0], 0, 1).cpu().float().numpy()
         volumes.append(vol_np)
 
         if (i + 1) % 5 == 0 or i == 0:
@@ -514,23 +528,29 @@ def generate_volumes(
 
 def save_volumes(
     volumes: list[np.ndarray],
-    cond_list: list[tuple[str, torch.Tensor]],
+    cond_list: list[tuple[str, torch.Tensor]] | None,
     output_dir: Path,
     voxel_size: tuple[float, float, float],
     trim_slices: int,
+    modality: str = 'bravo',
 ) -> None:
     """Save generated volumes as NIfTI files."""
     output_dir.mkdir(parents=True, exist_ok=True)
     affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
 
-    for i, (vol_np, (patient_id, _)) in enumerate(zip(volumes, cond_list)):
+    for i, vol_np in enumerate(volumes):
         # Trim padded slices
         if trim_slices > 0:
             vol_np = vol_np[:-trim_slices]
         # [D, H, W] -> [H, W, D] for NIfTI
         vol_nifti = np.transpose(vol_np, (1, 2, 0))
         nifti = nib.Nifti1Image(vol_nifti.astype(np.float32), affine)
-        nib.save(nifti, str(output_dir / f"{i:02d}_{patient_id}_bravo.nii.gz"))
+        if cond_list is not None:
+            patient_id = cond_list[i][0]
+            filename = f"{i:02d}_{patient_id}_{modality}.nii.gz"
+        else:
+            filename = f"vol{i:03d}_{modality}.nii.gz"
+        nib.save(nifti, str(output_dir / filename))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

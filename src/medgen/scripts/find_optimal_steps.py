@@ -9,18 +9,27 @@ Golden section search: at each iteration, evaluates one new point and
 narrows the interval by factor ~0.618. Requires the objective to be
 unimodal (single minimum) in the search range.
 
+Supports all modes (seg, bravo, dual, multi, seg_conditioned, etc.)
+with auto-detection from checkpoint config. Currently limited to UNet
+checkpoints (transformer model loading requires full Hydra config).
+
 Usage:
-    # Find optimal steps in [10, 50] using 25 volumes
+    # Auto-detect mode from checkpoint
     python -m medgen.scripts.find_optimal_steps \
-        --bravo-model runs/checkpoint_latest.pt \
+        --checkpoint runs/checkpoint_latest.pt \
         --data-root ~/MedicalDataSets/brainmetshare-3 \
         --num-volumes 25 --output-dir eval_optimal_steps
 
-    # Narrower range, more volumes for precision
+    # Explicit mode override
     python -m medgen.scripts.find_optimal_steps \
-        --bravo-model runs/checkpoint_latest.pt \
+        --checkpoint runs/checkpoint_seg.pt \
         --data-root ~/MedicalDataSets/brainmetshare-3 \
-        --num-volumes 50 --lo 15 --hi 35 --output-dir eval_optimal_steps
+        --mode seg --num-volumes 25
+
+    # Legacy --bravo-model still works
+    python -m medgen.scripts.find_optimal_steps \
+        --bravo-model runs/checkpoint_bravo.pt \
+        --data-root ~/MedicalDataSets/brainmetshare-3
 
     # Smoke test (no checkpoint needed)
     python -m medgen.scripts.find_optimal_steps --smoke-test
@@ -137,14 +146,22 @@ def golden_section_search(
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
+SEG_MODES = frozenset({'seg', 'seg_conditioned', 'seg_conditioned_input'})
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Find optimal Euler step count via golden section search",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument('--bravo-model', default=None,
-                        help='Path to trained bravo model checkpoint')
+    parser.add_argument('--checkpoint', '--bravo-model', default=None, dest='checkpoint',
+                        help='Path to trained model checkpoint')
+    parser.add_argument('--mode', default=None,
+                        help='Generation mode (auto-detected from checkpoint if omitted)')
+    parser.add_argument('--ref-modality', default=None,
+                        help='Reference file modality, e.g. bravo or seg '
+                             '(auto: bravo for image modes, seg for seg modes)')
     parser.add_argument('--data-root', default=None,
                         help='Root of dataset')
     parser.add_argument('--output-dir', default='eval_optimal_steps',
@@ -176,8 +193,8 @@ def main():
         _run_smoke_test(args)
         return
 
-    if not args.bravo_model:
-        parser.error("--bravo-model is required (unless --smoke-test)")
+    if not args.checkpoint:
+        parser.error("--checkpoint is required (unless --smoke-test)")
     if not args.data_root:
         parser.error("--data-root is required (unless --smoke-test)")
 
@@ -185,68 +202,102 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Auto-detect dimensions from checkpoint
+    # ── Auto-detect config from checkpoint ────────────────────────────────
     logger.info("Loading checkpoint metadata...")
-    ckpt = torch.load(args.bravo_model, map_location='cpu', weights_only=False)
+    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     ckpt_cfg = ckpt.get('config', {})
-    if hasattr(ckpt_cfg, 'model'):
+
+    # New-style plain dict config (from profiling.py:get_model_config)
+    in_channels = ckpt_cfg.get('in_channels')
+    out_channels = ckpt_cfg.get('out_channels')
+    mode = args.mode or ckpt_cfg.get('mode')
+    spatial_dims = ckpt_cfg.get('spatial_dims', 3)
+    image_size = args.image_size or ckpt_cfg.get('image_size', 256)
+    depth = args.depth or ckpt_cfg.get('depth_size', 160)
+
+    # Legacy Hydra config fallback
+    if in_channels is None and hasattr(ckpt_cfg, 'model'):
         model_cfg = ckpt_cfg.model
+        in_channels = getattr(model_cfg, 'in_channels', 2)
+        out_channels = getattr(model_cfg, 'out_channels', 1)
         image_size = args.image_size or getattr(model_cfg, 'image_size', 256)
         depth = args.depth or getattr(model_cfg, 'depth_size', 160)
-    else:
-        image_size = args.image_size or 256
-        depth = args.depth or 160
+
+    # Defaults when nothing is available
+    if in_channels is None:
+        in_channels = 2
+    if out_channels is None:
+        out_channels = 1
     del ckpt
+
+    # ── Derive mode-specific config ───────────────────────────────────────
+    is_seg = mode in SEG_MODES if mode else False
+    ref_modality = args.ref_modality or ('seg' if is_seg else 'bravo')
+    postprocess = 'sigmoid' if is_seg else 'clamp'
+    cond_channels = in_channels - out_channels  # >0 means conditioning needed
 
     voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
 
     logger.info("=" * 70)
     logger.info("Optimal Euler Step Search (Golden Section)")
     logger.info("=" * 70)
-    logger.info(f"Model: {args.bravo_model}")
-    logger.info(f"Volume: {image_size}x{image_size}x{depth}")
+    logger.info(f"Checkpoint: {args.checkpoint}")
+    logger.info(f"Mode: {mode or 'unknown'} (in_ch={in_channels}, out_ch={out_channels}, "
+                f"cond_ch={cond_channels})")
+    logger.info(f"Reference modality: {ref_modality}")
+    logger.info(f"Post-processing: {postprocess}")
+    logger.info(f"Volume: {image_size}x{image_size}x{depth} (spatial_dims={spatial_dims})")
     logger.info(f"Search range: [{args.lo}, {args.hi}]")
     logger.info(f"Volumes per eval: {args.num_volumes}")
     logger.info(f"Metric: {args.metric} (vs '{args.ref_split}')")
     logger.info(f"Expected evaluations: ~{int(math.log(args.hi - args.lo) / math.log(1/GR)) + 1}")
     logger.info("=" * 70)
 
-    # ── Data setup
+    # ── Data setup ────────────────────────────────────────────────────────
     data_root = Path(args.data_root)
-    splits = discover_splits(data_root)
+    splits = discover_splits(data_root, modality=ref_modality)
 
-    if args.cond_split not in splits:
-        raise ValueError(f"Split '{args.cond_split}' not found. Available: {list(splits.keys())}")
-
-    logger.info(f"Loading {args.num_volumes} conditioning masks...")
-    cond_list = load_conditioning(splits[args.cond_split], args.num_volumes, depth)
+    # ── Load conditioning (only if model expects it) ──────────────────────
+    cond_list = None
+    if cond_channels > 0:
+        if args.cond_split not in splits:
+            raise ValueError(
+                f"Split '{args.cond_split}' not found. Available: {list(splits.keys())}"
+            )
+        logger.info(f"Loading {args.num_volumes} conditioning masks...")
+        cond_list = load_conditioning(splits[args.cond_split], args.num_volumes, depth)
 
     logger.info("Preparing reference features...")
     cache_dir = output_dir / "reference_features"
     ref_features = get_or_cache_reference_features(
         splits, cache_dir, device, depth, args.trim_slices, image_size,
+        modality=ref_modality,
     )
 
-    # ── Load model
+    # ── Load model ────────────────────────────────────────────────────────
     from medgen.diffusion import RFlowStrategy, load_diffusion_model
 
-    logger.info("Loading bravo model...")
-    bravo_model = load_diffusion_model(
-        args.bravo_model, device=device,
-        in_channels=2, out_channels=1, compile_model=False, spatial_dims=3,
+    logger.info("Loading model...")
+    model = load_diffusion_model(
+        args.checkpoint, device=device,
+        in_channels=in_channels, out_channels=out_channels,
+        compile_model=False, spatial_dims=spatial_dims,
     )
 
     strategy = RFlowStrategy()
     strategy.setup_scheduler(
         num_timesteps=1000, image_size=image_size,
-        depth_size=depth, spatial_dims=3,
+        depth_size=depth, spatial_dims=spatial_dims,
     )
 
-    # ── Pre-generate noise (shared across all evaluations)
+    # ── Pre-generate noise (shared across all evaluations) ────────────────
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
-    noise_list = generate_noise_tensors(args.num_volumes, depth, image_size, device, args.seed)
+    noise_list = generate_noise_tensors(
+        args.num_volumes, depth, image_size, device, args.seed,
+        out_channels=out_channels,
+    )
 
-    # ── Search history for logging
+    # ── Search history for logging ────────────────────────────────────────
     history = []
 
     def evaluate_steps(num_steps: int) -> float:
@@ -256,14 +307,18 @@ def main():
 
         t0 = time.time()
         volumes, total_nfe, wall_time = generate_volumes(
-            bravo_model, strategy, noise_list, cond_list, solver_cfg, device,
+            model, strategy, noise_list, cond_list, solver_cfg, device,
+            postprocess=postprocess,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
 
         # Save volumes
         vol_dir = output_dir / "generated" / f"euler_steps{num_steps:03d}"
-        save_volumes(volumes, cond_list, vol_dir, voxel_size, args.trim_slices)
+        save_volumes(
+            volumes, cond_list, vol_dir, voxel_size, args.trim_slices,
+            modality=ref_modality,
+        )
 
         # Compute metrics
         split_metrics = compute_all_metrics(volumes, ref_features, device, args.trim_slices)
@@ -302,7 +357,7 @@ def main():
 
         return target
 
-    # ── Run golden section search
+    # ── Run golden section search ─────────────────────────────────────────
     total_start = time.time()
 
     best_steps, best_val, all_evals = golden_section_search(
@@ -311,7 +366,7 @@ def main():
 
     total_time = time.time() - total_start
 
-    # ── Final report
+    # ── Final report ──────────────────────────────────────────────────────
     logger.info(f"\n{'=' * 70}")
     logger.info(f"RESULT: Optimal step count = {best_steps}")
     logger.info(f"  {args.metric.upper()} = {best_val:.4f}")
@@ -347,6 +402,8 @@ def _save_history(
 ) -> None:
     """Save search history to JSON."""
     data = {
+        'checkpoint': getattr(args, 'checkpoint', None),
+        'mode': getattr(args, 'mode', None),
         'search_range': [args.lo, args.hi],
         'metric': args.metric,
         'ref_split': args.ref_split,
