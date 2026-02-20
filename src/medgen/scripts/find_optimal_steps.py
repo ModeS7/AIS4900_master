@@ -185,6 +185,8 @@ def main():
                         help='Metric to minimize (default: fid)')
     parser.add_argument('--ref-split', default='all',
                         help='Reference split for metric computation (default: all)')
+    parser.add_argument('--save-volumes', action='store_true',
+                        help='Save generated volumes as NIfTI (off by default to save disk)')
     parser.add_argument('--smoke-test', action='store_true',
                         help='Smoke test with tiny dummy model')
     args = parser.parse_args()
@@ -313,12 +315,13 @@ def main():
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
 
-        # Save volumes
-        vol_dir = output_dir / "generated" / f"euler_steps{num_steps:03d}"
-        save_volumes(
-            volumes, cond_list, vol_dir, voxel_size, args.trim_slices,
-            modality=ref_modality,
-        )
+        # Save volumes (optional — skipped by default to save disk)
+        if args.save_volumes:
+            vol_dir = output_dir / "generated" / f"euler_steps{num_steps:03d}"
+            save_volumes(
+                volumes, cond_list, vol_dir, voxel_size, args.trim_slices,
+                modality=ref_modality,
+            )
 
         # Compute metrics
         split_metrics = compute_all_metrics(volumes, ref_features, device, args.trim_slices)
