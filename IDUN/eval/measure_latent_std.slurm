@@ -30,8 +30,9 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # === CHECKPOINTS TO MEASURE ===
 # Edit these paths to point to your VAE checkpoints
 
-EXP14_0="runs/compression_3d/multi_modality/exp14_0_vae3d_4x_20260214-233543/checkpoint_best.pt"
-EXP14_3="runs/compression_3d/multi_modality/exp14_3_vae3d_4x_lowkl_20260217-023208/checkpoint_best.pt"
+EXP14_0="runs/compression_3d/multi_modality/exp14_0_vae3d_4x_20260214-233543/checkpoint_latest.pt"
+EXP14_3="runs/compression_3d/multi_modality/exp14_3_vae3d_4x_lowkl_20260217-023208/checkpoint_latest.pt"
+EXP14_4="runs/compression_3d/multi_modality/exp14_4_vae3d_4x_nokl_20260219-134723/checkpoint_latest.pt"
 
 echo ""
 echo "=========================================="
@@ -49,6 +50,16 @@ echo "exp14_3 (kl_weight=1e-8)"
 echo "=========================================="
 python -m medgen.scripts.measure_latent_std \
     +checkpoint="${EXP14_3}" \
+    paths=cluster \
+    mode=multi_modality \
+    +max_samples=50
+
+echo ""
+echo "=========================================="
+echo "exp14_4 (kl_weight=0.0)"
+echo "=========================================="
+python -m medgen.scripts.measure_latent_std \
+    +checkpoint="${EXP14_4}" \
     paths=cluster \
     mode=multi_modality \
     +max_samples=50
