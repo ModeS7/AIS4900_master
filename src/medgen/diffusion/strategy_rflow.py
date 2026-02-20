@@ -594,7 +594,7 @@ class RFlowStrategy(DiffusionStrategy):
         current_t = all_next_timesteps[restart_trigger_idx].item()
 
         # ── Restart iterations ──
-        for k in range(K):
+        for _k in range(K):
             # Forward noise: current_t → tmax (add noise back up)
             alpha = (1.0 - tmax / T) / (1.0 - current_t / T)
             sigma_cond_sq = (tmax / T) ** 2 - alpha ** 2 * (current_t / T) ** 2
