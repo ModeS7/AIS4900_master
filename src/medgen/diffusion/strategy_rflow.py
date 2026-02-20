@@ -459,6 +459,166 @@ class RFlowStrategy(DiffusionStrategy):
             max_iter=max_iter,
         )
 
+    def _generate_restart(
+        self,
+        model: nn.Module,
+        parsed: Any,  # ParsedModelInput
+        cfg_ctx: dict[str, Any],
+        conditioning: ConditioningContext,
+        num_steps: int,
+        device: torch.device,
+        restart_config: dict[str, Any],
+    ) -> torch.Tensor:
+        """Generate samples using Restart Sampling.
+
+        Alternates between forward noise injection and backward ODE within a
+        restart interval [tmin, tmax] to contract accumulated discretization
+        errors. No auxiliary model needed — purely algorithmic improvement.
+
+        Paper: "Restart Sampling for Improving Generative Processes" (NeurIPS 2023)
+
+        Args:
+            model: Trained diffusion model.
+            parsed: ParsedModelInput from _parse_model_input().
+            cfg_ctx: CFG context from _prepare_cfg_context().
+            conditioning: ConditioningContext with all generation params.
+            num_steps: Number of main sampling steps.
+            device: Computation device.
+            restart_config: Dict with restart hyperparameters:
+                tmin: float — restart interval start (fraction of T, e.g. 0.1)
+                tmax: float — restart interval end (fraction of T, e.g. 0.33)
+                K: int — number of restart iterations
+                n_restart: int — Euler steps per restart backward pass
+
+        Returns:
+            Generated image tensor.
+        """
+        if parsed.is_dual:
+            raise NotImplementedError("Restart sampling does not support dual-image mode")
+
+        assert parsed.noisy_images is not None
+        noisy_images = parsed.noisy_images
+        image_conditioning = parsed.conditioning
+
+        # Extract restart hyperparameters
+        T = float(self.scheduler.num_train_timesteps)
+        tmin_frac = restart_config.get('tmin', 0.1)
+        tmax_frac = restart_config.get('tmax', 0.33)
+        K = restart_config.get('K', 2)
+        n_restart = restart_config.get('n_restart', 5)
+
+        tmin = tmin_frac * T  # e.g. 100.0
+        tmax = tmax_frac * T  # e.g. 330.0
+
+        # Extract conditioning params
+        omega = conditioning.omega
+        mode_id = conditioning.mode_id
+        size_bins = conditioning.size_bins
+        bin_maps = conditioning.bin_maps
+        cfg_scale = conditioning.cfg_scale
+        batch_size = noisy_images.shape[0]
+
+        # Compute numel for scheduler
+        if noisy_images.dim() == 5:
+            input_img_size_numel = noisy_images.shape[2] * noisy_images.shape[3] * noisy_images.shape[4]
+        else:
+            input_img_size_numel = noisy_images.shape[2] * noisy_images.shape[3]
+
+        # Setup main scheduler timesteps
+        self.scheduler.set_timesteps(
+            num_inference_steps=num_steps, device=device,
+            input_img_size_numel=input_img_size_numel,
+        )
+
+        all_next_timesteps = torch.cat((
+            self.scheduler.timesteps[1:],
+            torch.tensor([0], dtype=self.scheduler.timesteps.dtype, device=device),
+        ))
+
+        # Snap tmin to nearest main timestep
+        main_timesteps = self.scheduler.timesteps.float()
+        # Snap tmin to nearest main timestep that is BELOW tmax
+        # (With coarse grids, the nearest timestep could exceed tmax, which is invalid)
+        valid_mask = main_timesteps < tmax
+        if not valid_mask.any():
+            logger.warning(
+                "No main timestep below tmax=%.1f — skipping restart, running plain Euler",
+                tmax,
+            )
+            # Fall through to plain Euler (restart_trigger_idx = len-1 means no restart)
+            tmin_idx = len(main_timesteps) - 1
+            tmin_snapped = main_timesteps[tmin_idx].item()
+            K = 0  # Disable restart iterations
+        else:
+            candidates = main_timesteps.clone()
+            candidates[~valid_mask] = float('inf')
+            tmin_idx = (candidates - tmin).abs().argmin().item()
+            tmin_snapped = main_timesteps[tmin_idx].item()
+
+        logger.info(
+            "Restart sampling: tmin=%.1f (snapped from %.1f), tmax=%.1f, K=%d, n_restart=%d",
+            tmin_snapped, tmin, tmax, K, n_restart,
+        )
+
+        def _euler_step(x: torch.Tensor, t_val: torch.Tensor, next_t_val: torch.Tensor) -> torch.Tensor:
+            """Single Euler step with CFG support."""
+            timesteps_batch = t_val.unsqueeze(0).repeat(batch_size).to(device)
+            next_timestep = next_t_val.to(device)
+
+            if image_conditioning is not None:
+                current_model_input = torch.cat([x, image_conditioning], dim=1)
+            else:
+                current_model_input = x
+
+            velocity_pred = self._compute_cfg_prediction(
+                model, cfg_ctx, cfg_scale, current_model_input, x,
+                bin_maps, size_bins, timesteps_batch, omega, mode_id,
+            )
+
+            x, _ = self.scheduler.step(velocity_pred, t_val, x, next_timestep)
+            return x
+
+        # ── Main backward: T → tmin ──
+        timestep_pairs = list(zip(self.scheduler.timesteps, all_next_timesteps))
+        restart_trigger_idx = tmin_idx
+
+        # Phase 1: Steps from T down to tmin (inclusive — we stop AFTER reaching tmin)
+        for step_idx, (t, next_t) in enumerate(timestep_pairs):
+            noisy_images = _euler_step(noisy_images, t, next_t)
+
+            # Check if we've reached the restart trigger point
+            if step_idx == restart_trigger_idx:
+                break
+
+        # Current timestep after Phase 1 is the next_t of the trigger step
+        current_t = all_next_timesteps[restart_trigger_idx].item()
+
+        # ── Restart iterations ──
+        for k in range(K):
+            # Forward noise: current_t → tmax (add noise back up)
+            alpha = (1.0 - tmax / T) / (1.0 - current_t / T)
+            sigma_cond_sq = (tmax / T) ** 2 - alpha ** 2 * (current_t / T) ** 2
+            sigma_cond = sigma_cond_sq ** 0.5
+
+            z_new = torch.randn_like(noisy_images)
+            noisy_images = alpha * noisy_images + sigma_cond * z_new
+
+            # Backward ODE: tmax → current_t using n_restart evenly-spaced steps
+            restart_timesteps = torch.linspace(tmax, current_t, n_restart + 1, device=device)
+            for j in range(n_restart):
+                noisy_images = _euler_step(
+                    noisy_images,
+                    restart_timesteps[j],
+                    restart_timesteps[j + 1],
+                )
+
+        # ── Phase 2: Continue main backward tmin → 0 ──
+        remaining_pairs = timestep_pairs[restart_trigger_idx + 1:]
+        for t, next_t in remaining_pairs:
+            noisy_images = _euler_step(noisy_images, t, next_t)
+
+        return noisy_images
+
     def generate(
         self,
         model: nn.Module,
@@ -479,6 +639,8 @@ class RFlowStrategy(DiffusionStrategy):
         # DiffRS (opt-in)
         diffrs_discriminator: Any | None = None,
         diffrs_config: dict[str, Any] | None = None,
+        # Restart Sampling (opt-in)
+        restart_config: dict[str, Any] | None = None,
     ) -> torch.Tensor:
         """
         Generate using RFlow sampling
@@ -567,6 +729,13 @@ class RFlowStrategy(DiffusionStrategy):
 
         # Prepare CFG context (flags and unconditional tensors)
         cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
+
+        # Branch: Restart Sampling (opt-in)
+        if restart_config is not None:
+            return self._generate_restart(
+                model, parsed, cfg_ctx, conditioning, num_steps, device,
+                restart_config,
+            )
 
         # Branch: DiffRS rejection sampling (opt-in)
         if diffrs_discriminator is not None:
