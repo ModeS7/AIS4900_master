@@ -1,6 +1,6 @@
 # 3D Diffusion Experiment Results
 
-Last updated: February 15, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: February 20, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
@@ -50,6 +50,7 @@ Last updated: February 15, 2026. Data extracted from IDUN logs and TensorBoard r
 | exp12_3 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | rflow | bravo |
 | exp12_4 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | ddpm x0 | bravo |
 | exp13 | LDM DiT 4x | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
+| exp14_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg (unconditional) |
 
 ---
 
@@ -409,6 +410,68 @@ Used by LDM experiments. Key checkpoints in runs_tb/compression_3d/multi_modalit
 
 ---
 
+---
+
+## Part 8: Sampling Improvement Evaluations (Feb 19-20, 2026)
+
+All evaluations use **exp1_1 bravo pixel 256x256x160** (best 3D bravo model).
+25 volumes generated per config, evaluated against all reference splits.
+
+### Baseline Euler Step Sweep
+
+| Steps | FID (all) | KID | CMMD | Time/vol |
+|-------|-----------|-----|------|----------|
+| 10 | 34.20 | 0.031 | 0.149 | 7.3s |
+| **25** | **27.50** | **0.024** | 0.113 | 18.1s |
+| 50 | 30.25 | 0.027 | **0.109** | 36.1s |
+
+25 steps is the FID sweet spot. Beyond 25, FID degrades (error accumulation).
+
+### DiffRS (Discriminator-Guided Reflow)
+
+DiffRS head trained on 105 train + 105 generated volumes, 952K params. Massively overfitting (train 98% acc, val 82%).
+
+**Full correction**: Catastrophic. FID +10 at 25 steps, FID +23 at 50 steps. NFE explosion (3.2x).
+**Lightweight correction**: No improvement. FID +0.4 at 25 steps, 1.4x NFE overhead.
+
+**Verdict**: DiffRS fails for small datasets (~200 volumes). Discriminator memorizes instead of learning density ratios.
+
+### Restart Sampling
+
+| Config | NFE | FID (all) | vs Euler/25 |
+|--------|-----|-----------|-------------|
+| Euler/25 (baseline) | 25 | 27.50 | -- |
+| Restart K=1, n=3 | 28 | 32.83 | +5.3 (worse) |
+| Restart K=1, n=5 | 30 | 27.50 | +0.0 (same) |
+
+**Verdict**: No improvement. Best restart matches baseline at higher cost.
+
+### Sampling Summary
+
+Plain Euler at 25 steps is optimal. Neither DiffRS nor Restart Sampling helps.
+
+---
+
+## Part 9: Seg Generation Evaluation (exp14_1)
+
+### Bug: Sigmoid Without Threshold
+
+`find_optimal_steps` for exp14_1 (pixel seg 256x256x160) showed FID ~98 flat across all step counts. Training had CMMD 0.02, KID 6e-4 — massive discrepancy.
+
+**Root cause**: Eval script applied `torch.sigmoid()` without thresholding to binary. Training does `(sigmoid > 0.5).float()`. Comparing soft probabilities vs binary masks = meaningless metrics.
+
+**Fix applied**: Added `> 0.5` threshold in `eval_ode_solvers.py`. Results need re-evaluation.
+
+---
+
+## Part 10: DC-AE 1.5 Structured Latent (Feb 20, 2026)
+
+Implementation verified correct: adaptive weight slicing, gradient isolation, shortcut handling all pass functional tests. 1110 existing tests pass.
+
+Three 2D SLURM jobs ready for submission (exp9_1/2/3 with structured latent enabled, 12h auto-chaining).
+
+---
+
 ## Key Takeaways
 
 1. **Pixel-space works reliably**: All pixel UNet runs converge. Best results at 256x256 (val loss 0.0021 bravo, 0.000337 seg).
@@ -426,3 +489,7 @@ Used by LDM experiments. Key checkpoints in runs_tb/compression_3d/multi_modalit
 7. **EMA helps**: exp8 (EMA) achieved the best 128x128 bravo result (val loss 0.00227).
 
 8. **Infrastructure is a bigger problem than algorithms**: Checkpoint corruption, OOM kills, disk quota exhaustion, and torch.load bugs have wasted more GPU hours than bad hyperparameters.
+
+9. **25 Euler steps is optimal**: FID 27.50. Beyond 25, quality degrades from error accumulation.
+
+10. **Sampling improvements don't help for small datasets**: DiffRS (discriminator-based) and Restart Sampling (stochastic) both fail to improve over plain Euler. The quality ceiling is model-limited, not solver-limited.

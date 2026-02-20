@@ -1,6 +1,6 @@
 # Complete Experiment Results
 
-Last updated: February 15, 2026. Data extracted from IDUN logs (`IDUN/output/`) and TensorBoard runs (`runs_tb/`).
+Last updated: February 20, 2026. Data extracted from IDUN logs (`IDUN/output/`) and TensorBoard runs (`runs_tb/`).
 
 ---
 
@@ -702,6 +702,138 @@ Dual slightly worse overall but better HD95 (24.0 vs 29.2) and large tumor Dice.
 
 ---
 
+# 3D Sampling Improvement Evaluations (Feb 19-20, 2026)
+
+All evaluations use the **exp1_1 bravo pixel 256x256x160** model (best 3D bravo).
+Generated 25 volumes per configuration, evaluated against all reference splits.
+Metrics: FID (ResNet50), KID (ResNet50), CMMD (BiomedCLIP).
+
+## Baseline Euler Step Sweep
+
+| Steps | FID (all) | KID (all) | CMMD (all) | FID (train) | Time/vol |
+|-------|-----------|-----------|------------|-------------|----------|
+| 10 | 34.20 | 0.0307 | 0.149 | 34.33 | 7.3s |
+| **25** | **27.50** | **0.0238** | 0.113 | **26.77** | 18.1s |
+| 50 | 30.25 | 0.0265 | **0.109** | 29.04 | 36.1s |
+
+**Key finding**: 25 steps is optimal for FID/KID. Beyond 25, FID *degrades* due to ODE discretization error accumulation. CMMD marginally improves at 50 steps but FID gets 10% worse.
+
+## DiffRS (Discriminator-Guided Reflow)
+
+**Paper**: DiffRS trains a discriminator to estimate density ratios between real and generated distributions, then uses these ratios to correct ODE trajectories during inference.
+
+**DiffRS head training (job 24059814)**: Trained on 105 train volumes + 105 generated. 952K param discriminator, 100 epochs.
+- Train accuracy converged to ~98% but val accuracy plateaued at ~82-85%
+- Best val loss: 0.3634 (epoch 12), heavily overfitting by epoch 20
+- **Root cause**: Dataset too small (~200 total volumes). Discriminator memorizes rather than learning meaningful density ratios.
+
+### DiffRS Run 1: Full Correction
+
+| Config | NFE/vol | FID (all) | CMMD (all) | vs Baseline |
+|--------|---------|-----------|------------|-------------|
+| DiffRS/10 | 17 (1.7x) | 36.56 | 0.157 | FID +2.4 (worse) |
+| DiffRS/25 | 81 (3.2x) | 37.67 | 0.118 | FID +10.2 (much worse) |
+| DiffRS/50 | 134 (2.7x) | 53.61 | 0.116 | FID +23.4 (catastrophic) |
+
+Full correction is catastrophically worse. NFE explosion (3.2x at 25 steps) and FID degradation. The discriminator over-corrects.
+
+### DiffRS Run 2: Lightweight Correction (Reduced Strength)
+
+| Config | NFE/vol | FID (all) | KID (all) | CMMD (all) | vs Baseline |
+|--------|---------|-----------|-----------|------------|-------------|
+| DiffRS/10 | 14 (1.4x) | 34.31 | 0.0305 | 0.149 | FID +0.1 |
+| DiffRS/25 | 35 (1.4x) | 27.88 | 0.0240 | 0.113 | FID +0.4 |
+| DiffRS/50 | 70 (1.4x) | 31.54 | 0.0278 | 0.109 | FID +1.3 |
+
+Lightweight correction: marginally worse FID everywhere. CMMD essentially unchanged. **No improvement at any operating point.** 1.4x NFE overhead for nothing.
+
+### DiffRS Conclusion
+
+**DiffRS failed for our dataset.** The discriminator cannot learn meaningful density ratios from ~200 training volumes. This is a fundamental dataset size limitation, not an implementation issue. DiffRS is designed for large-scale datasets (ImageNet, CIFAR) where the discriminator can learn general distributional differences.
+
+## Restart Sampling (Xu et al., NeurIPS 2023)
+
+**Paper**: Purely algorithmic ODE improvement. Alternates between adding forward noise and running backward ODE within a restart interval [tmin, tmax]. Contracts accumulated errors via stochasticity while maintaining ODE-level accuracy. No auxiliary model needed.
+
+**Why we tried it**: Our model shows the classic error accumulation pattern (FID degrades beyond 25 steps), which is exactly what Restart fixes in the paper.
+
+### Results (vs 'all' reference, 25 main Euler steps)
+
+| Config | NFE/vol | FID | KID | CMMD | vs Euler/25 |
+|--------|---------|-----|-----|------|-------------|
+| Euler/25 (baseline) | 25 | 27.50 | 0.0234 | 0.113 | -- |
+| Restart K=1, n=3, [0.1, 0.3] | 28 | 32.83 | 0.0311 | 0.113 | FID +5.3 (worse) |
+| Restart K=1, n=5, [0.1, 0.3] | 30 | 27.50 | 0.0244 | 0.112 | FID +0.0 (same) |
+| Restart K=2, n=3, [0.1, 0.3] | 31 | -- | -- | -- | (job timed out) |
+
+### Results (vs 'train' reference — most favorable split)
+
+| Config | NFE/vol | FID | KID | CMMD |
+|--------|---------|-----|-----|------|
+| Euler/25 | 25 | 26.77 | 0.0216 | 0.109 |
+| Restart K=1, n=5 | 30 | 26.73 | 0.0214 | 0.109 |
+
+### Restart Conclusion
+
+**No meaningful improvement.** Best restart config (K=1, n=5 at 30 NFE) matches baseline Euler/25 FID to within noise (27.50 vs 27.50 on 'all', 26.73 vs 26.77 on 'train'). The K=1, n=3 config with fewer restart steps is significantly worse (FID 32.83), suggesting the restart backward ODE needs enough steps to be useful. But adding those steps just matches the baseline at higher cost.
+
+**Hypothesis**: Our model's error accumulation pattern differs from what Restart targets. Restart fixes *discretization error* in the ODE solver, but our model's quality degradation beyond 25 steps may be due to the model itself (imperfect velocity field) rather than solver discretization.
+
+## Sampling Improvement Summary
+
+| Method | Best FID | NFE | vs Baseline 25-step | Verdict |
+|--------|----------|-----|---------------------|---------|
+| Euler (baseline) | **27.50** | 25 | -- | **Best** |
+| DiffRS (lightweight) | 27.88 | 35 | +0.38 FID, 1.4x cost | No improvement |
+| DiffRS (full) | 37.67 | 81 | +10.17 FID, 3.2x cost | Catastrophic |
+| Restart K=1, n=5 | 27.50 | 30 | +0.00 FID, 1.2x cost | No improvement |
+| Restart K=1, n=3 | 32.83 | 28 | +5.33 FID, 1.1x cost | Worse |
+
+**Conclusion**: For our small-dataset 3D medical imaging setting, plain Euler at 25 steps is optimal. Neither discriminator-based correction (DiffRS) nor stochastic restart (Restart Sampling) provides any benefit. This is likely because: (1) dataset is too small for DiffRS discriminator training, and (2) the error pattern is model-quality-limited rather than solver-limited.
+
+---
+
+## 3D Seg Generation Evaluation (exp14_1)
+
+### Bug: Sigmoid Without Thresholding
+
+The `find_optimal_steps` evaluation for exp14_1 (3D pixel seg model) produced FID ~98 flat across all step counts (25-40 steps), which contradicted training metrics (CMMD 0.02, KID 6e-4).
+
+**Root cause**: The evaluation script applied `torch.sigmoid(result)` but never thresholded to binary masks. Training metrics apply `(sample > 0.5).float()` after sigmoid. This meant evaluation compared soft probability maps (continuous 0-1 values) against binary reference masks, producing meaningless FID scores.
+
+**Fix**: Added `> 0.5` threshold after sigmoid in `eval_ode_solvers.py` (line 514). Results before fix are invalid.
+
+| Steps | FID (all) | KID | CMMD | Notes |
+|-------|-----------|-----|------|-------|
+| 25-40 | ~98 | ~0.151 | ~0.74 | **INVALID** (no threshold) |
+
+Needs re-evaluation after fix.
+
+---
+
+## DC-AE 1.5 Structured Latent Space (Feb 20, 2026)
+
+### Implementation Verification
+
+DC-AE 1.5 (structured latent space) implementation verified correct:
+- `StructuredAutoencoderDC` wrapper replaces encoder.conv_out and decoder.conv_in with adaptive weight-slicing layers
+- `AdaptiveOutputConv2d` / `AdaptiveInputConv2d` slice weight tensors for variable channel counts
+- Gradient isolation confirmed: inactive channels receive zero gradient
+- Shortcut path handling verified for both encoder and decoder
+- All 1110 existing tests pass, plus dedicated functional tests
+
+### 2D DC-AE 1.5 SLURM Jobs (Ready for Submission)
+
+| Experiment | Compression | Latent Shape | Notes |
+|-----------|-------------|-------------|-------|
+| exp9_1 f32 1.5 | 32x | 8x8x32 | Paper says NOT recommended for c=32 (comparison) |
+| exp9_2 f64 1.5 | 64x | 4x4x128 | Paper recommends for c>=64 |
+| exp9_3 f128 1.5 | 128x | 2x2x512 | Paper recommends for large channels |
+
+All three SLURM files have auto-chaining enabled (12h segments, max 20 chains).
+
+---
+
 # Infrastructure Issues
 
 ### Checkpoint Corruption (Feb 10 runs, 24031xxx)
@@ -732,6 +864,7 @@ Early 3D compression runs (exp7, exp8 run1/run2) had broken MS-SSIM (0.0 or N/A)
 3. **VQ-VAE 3D 4x (exp8_1)** is production-ready compression (PSNR 39.88, SSIM 0.995)
 4. **2D seg compression is solved** (Dice 1.0 with DC-AE)
 5. **EMA helps** for both 2D and 3D training
+6. **25 Euler steps** is optimal for 3D bravo generation (FID 27.50)
 
 ## What Doesn't Work
 1. **S2D and wavelet 3D**: All collapsed to mean prediction
@@ -739,9 +872,13 @@ Early 3D compression runs (exp7, exp8 run1/run2) had broken MS-SSIM (0.0 or N/A)
 3. **Large LDM UNets (3.48B)**: Collapse or gradient catastrophe
 4. **128x128 seg_conditioned at LR=1e-4**: 3/4 runs diverge
 5. **1.5x learning rate schedule for DC-AE**: Consistently worse
+6. **DiffRS**: Discriminator overfits on small dataset (~200 volumes), no quality improvement
+7. **Restart Sampling**: Matches baseline at best, no improvement on our error pattern
 
 ## Open Questions
 1. Can exp9_1 LDM (666M, val 0.076 at ep354) reach pixel-space quality with more epochs?
 2. Can WDM-style wavelet (exp12_2/12_3/12_4) avoid mean collapse with smaller model?
 3. Can DiT-S + VQ-VAE 4x (exp13) achieve good quality with fast compile?
 4. Should downstream segmentation use generated data augmentation?
+5. Does DC-AE 1.5 structured latent improve reconstruction quality for 2D?
+6. What does the seg generation evaluation look like with the fixed threshold?
