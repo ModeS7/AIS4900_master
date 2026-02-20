@@ -16,6 +16,8 @@ import os
 import random
 from typing import Any
 
+from torch.utils.data import DataLoader
+
 import matplotlib
 
 matplotlib.use('Agg')
@@ -741,14 +743,20 @@ class DCAETrainer(BaseCompressionTrainer):
             latent = model.encode(images, return_dict=False)[0]
             return model.decode(latent, return_dict=False)[0]
 
-    def _measure_model_flops(
-        self,
-        sample_images: torch.Tensor,
-        steps_per_epoch: int,
-    ) -> None:
+    def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure FLOPs for DC-AE."""
-        if not self.log_flops:
+        if not self.is_main_process or not self.log_flops:
             return
+
+        try:
+            sample_batch = next(iter(train_loader))
+            sample_images, _ = self._prepare_batch(sample_batch)
+            sample_images = sample_images.to(self.device)
+        except (StopIteration, RuntimeError) as e:
+            logger.warning(f"FLOPs measurement failed: {e}")
+            return
+
+        steps_per_epoch = len(train_loader)
 
         if self.spatial_dims == 2:
             # DC-AE 2D needs wrapper for encode-decode cycle measurement
