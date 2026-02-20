@@ -512,7 +512,7 @@ def generate_volumes(
                 result = strategy.generate(counter, model_input, num_steps, device)
 
         if postprocess == 'sigmoid':
-            vol_np = torch.sigmoid(result[0, 0]).cpu().float().numpy()
+            vol_np = (torch.sigmoid(result[0, 0]) > 0.5).cpu().float().numpy()
         else:
             vol_np = torch.clamp(result[0, 0], 0, 1).cpu().float().numpy()
         volumes.append(vol_np)
