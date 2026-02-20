@@ -427,6 +427,10 @@ All evaluations use **exp1_1 bravo pixel 256x256x160** (best 3D bravo model).
 
 25 steps is the FID sweet spot. Beyond 25, FID degrades (error accumulation).
 
+### Full ODE Solver Comparison (Not Yet Run)
+
+`eval_ode_solvers.py` tests 33 configs: 5 fixed-step solvers (euler, midpoint, heun2, heun3, rk4) x 5 step counts + 4 adaptive solvers (fehlberg2, bosh3, dopri5, dopri8) x 2 tolerances. SLURM job crashed before producing results. Needs resubmission.
+
 ### DiffRS (Discriminator-Guided Reflow)
 
 DiffRS head trained on 105 train + 105 generated volumes, 952K params. Massively overfitting (train 98% acc, val 82%).

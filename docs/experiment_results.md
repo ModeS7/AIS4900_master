@@ -718,6 +718,15 @@ Metrics: FID (ResNet50), KID (ResNet50), CMMD (BiomedCLIP).
 
 **Key finding**: 25 steps is optimal for FID/KID. Beyond 25, FID *degrades* due to ODE discretization error accumulation. CMMD marginally improves at 50 steps but FID gets 10% worse.
 
+## Full ODE Solver Comparison (Not Yet Run)
+
+`eval_ode_solvers.py` tests a comprehensive solver grid (33 configs total):
+- **Fixed-step**: euler, midpoint, heun2, heun3, rk4 at [5, 10, 25, 50, 100] steps
+- **Adaptive**: fehlberg2, bosh3, dopri5, dopri8 at tol=[1e-2, 1e-3]
+
+SLURM job (24057196) crashed before producing results. Needs resubmission.
+Script: `IDUN/eval/eval_ode_solvers.slurm`
+
 ## DiffRS (Discriminator-Guided Reflow)
 
 **Paper**: DiffRS trains a discriminator to estimate density ratios between real and generated distributions, then uses these ratios to correct ODE trajectories during inference.
