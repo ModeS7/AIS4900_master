@@ -30,7 +30,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
-CHECKPOINT="runs/diffusion_3d/seg/exp14_1_pixel_seg_20260217-040309/checkpoint_best.pt"
+CHECKPOINT="runs/diffusion_3d/seg/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp14_1"
 
