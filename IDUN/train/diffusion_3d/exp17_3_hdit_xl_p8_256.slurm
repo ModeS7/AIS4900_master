@@ -4,12 +4,12 @@
 #SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp17_3_hdit_xl"
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp17_3_hdit_xl_p4_256/%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp17_3_hdit_xl_p4_256/%j.err
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp17_3_hdit_xl_p8_256/%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp17_3_hdit_xl_p8_256/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
@@ -18,7 +18,7 @@
 # === Auto-chain configuration ===
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp17_3_hdit_xl_p4_256"
+EXP_NAME="exp17_3_hdit_xl_p8_256"
 
 # First run: create unique run directory. Subsequent: reuse from env var.
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
@@ -62,7 +62,7 @@ trap handle_timeout SIGUSR1
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp17_3: HDiT-XL patch=4 @ 256x256x160, [2,4,6,4,2] ==="
+echo "=== Exp17_3: HDiT-XL patch=8 @ 256x256x160, [2,4,6,4,2] ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -73,14 +73,14 @@ conda activate AIS4900
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ============================================================================
-# HDiT-XL: Bravo mode @ 256x256x160, patch_size=4
+# HDiT-XL: Bravo mode @ 256x256x160, patch_size=8
 # ============================================================================
 # Architecture: HDiT-XL (hidden=1152, heads=16)
 #   - level_depths: [2,4,6,4,2] (2 merge levels)
-#   - Level 0: 163,840 tokens (2 enc + 2 dec blocks)
-#   - Level 1: 20,480 tokens (4 enc + 4 dec blocks)
-#   - Bottleneck: 2,560 tokens (6 blocks)
-#   - ~698M params, profiled: 19.6 GB on A100 80GB
+#   - Level 0: 20,480 tokens (32x32x20, 2 enc + 2 dec blocks)
+#   - Level 1: 2,560 tokens (4 enc + 4 dec blocks)
+#   - Bottleneck: 320 tokens (6 blocks)
+#   - ~698M params
 #
 # Mode: bravo (in_channels=2, out_channels=1)
 # Resolution: 256x256x160 (pixel space, full resolution)
@@ -92,7 +92,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo \
     model=hdit_3d \
     model.variant=XL \
-    model.patch_size=4 \
+    model.patch_size=8 \
     "model.level_depths=[2,4,6,4,2]" \
     volume.height=256 \
     volume.width=256 \
