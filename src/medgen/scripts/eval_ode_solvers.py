@@ -468,9 +468,12 @@ def generate_volumes(
     cond_list: list[tuple[str, torch.Tensor]] | None,
     solver_cfg: SolverConfig,
     device: torch.device,
-    postprocess: str = 'clamp',
+    is_seg: bool = False,
 ) -> tuple[list[np.ndarray], int, float]:
     """Generate volumes for one solver configuration.
+
+    Post-processing matches the training pipeline (generation_sampling.py):
+    clamp(0,1), then threshold at 0.5 for seg mode.
 
     Args:
         model: Diffusion model (will be wrapped with NFECounter).
@@ -479,7 +482,7 @@ def generate_volumes(
         cond_list: (patient_id, seg_tensor) pairs, or None for unconditional.
         solver_cfg: Solver configuration.
         device: CUDA device.
-        postprocess: 'clamp' for torch.clamp(0,1), 'sigmoid' for torch.sigmoid.
+        is_seg: If True, threshold output at 0.5 to produce binary masks.
 
     Returns:
         (volumes_list, total_nfe, wall_time_seconds)
@@ -511,11 +514,10 @@ def generate_volumes(
             with torch.no_grad():
                 result = strategy.generate(counter, model_input, num_steps, device)
 
-        if postprocess == 'sigmoid':
-            vol_np = (torch.sigmoid(result[0, 0]) > 0.5).cpu().float().numpy()
-        else:
-            vol_np = torch.clamp(result[0, 0], 0, 1).cpu().float().numpy()
-        volumes.append(vol_np)
+        vol = torch.clamp(result[0, 0], 0, 1)
+        if is_seg:
+            vol = (vol > 0.5).float()
+        volumes.append(vol.cpu().numpy())
 
         if (i + 1) % 5 == 0 or i == 0:
             elapsed = time.time() - start_time

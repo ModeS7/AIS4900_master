@@ -238,7 +238,6 @@ def main():
     # ── Derive mode-specific config ───────────────────────────────────────
     is_seg = mode in SEG_MODES if mode else False
     ref_modality = args.ref_modality or ('seg' if is_seg else 'bravo')
-    postprocess = 'sigmoid' if is_seg else 'clamp'
     cond_channels = in_channels - out_channels  # >0 means conditioning needed
 
     voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
@@ -250,7 +249,7 @@ def main():
     logger.info(f"Mode: {mode or 'unknown'} (in_ch={in_channels}, out_ch={out_channels}, "
                 f"cond_ch={cond_channels})")
     logger.info(f"Reference modality: {ref_modality}")
-    logger.info(f"Post-processing: {postprocess}")
+    logger.info(f"Seg mode: {is_seg}")
     logger.info(f"Volume: {image_size}x{image_size}x{depth} (spatial_dims={spatial_dims})")
     logger.info(f"Search range: [{args.lo}, {args.hi}]")
     logger.info(f"Volumes per eval: {args.num_volumes}")
@@ -313,7 +312,7 @@ def main():
         t0 = time.time()
         volumes, total_nfe, wall_time = generate_volumes(
             model, strategy, noise_list, cond_list, solver_cfg, device,
-            postprocess=postprocess,
+            is_seg=is_seg,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
