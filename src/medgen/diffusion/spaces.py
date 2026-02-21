@@ -226,13 +226,30 @@ class WaveletSpace(DiffusionSpace):
     Difference: produces frequency subbands instead of raw pixel rearrangement.
 
     Lossless (orthogonal transform), fully differentiable, parameter-free.
+
+    Args:
+        shift: Per-subband mean (list of 8 floats). If provided with scale,
+            encode normalizes: (z - shift) / scale, decode denormalizes.
+        scale: Per-subband std (list of 8 floats). Must be provided with shift.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        shift: list[float] | None = None,
+        scale: list[float] | None = None,
+    ) -> None:
         from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
 
         self._forward = HaarForward3D()
         self._inverse = HaarInverse3D()
+
+        if shift is not None and scale is not None:
+            # Shape: [1, 8, 1, 1, 1] for broadcasting over [B, C, D, H, W]
+            self._shift = torch.tensor(shift, dtype=torch.float32).reshape(1, -1, 1, 1, 1)
+            self._scale = torch.tensor(scale, dtype=torch.float32).reshape(1, -1, 1, 1, 1)
+        else:
+            self._shift = None
+            self._scale = None
 
     def encode(self, x: Tensor) -> Tensor:
         """Apply Haar wavelet decomposition.
@@ -252,6 +269,11 @@ class WaveletSpace(DiffusionSpace):
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
         result: Tensor = self._forward(x)
+        if self._shift is not None:
+            if self._shift.device != result.device:
+                self._shift = self._shift.to(result.device)
+                self._scale = self._scale.to(result.device)  # type: ignore[union-attr]
+            result = (result - self._shift) / self._scale  # type: ignore[operator]
         return result
 
     def decode(self, z: Tensor) -> Tensor:
@@ -271,6 +293,11 @@ class WaveletSpace(DiffusionSpace):
                 f"WaveletSpace requires 5D input [B, C*8, D/2, H/2, W/2], "
                 f"got {z.dim()}D tensor with shape {z.shape}"
             )
+        if self._shift is not None:
+            if self._shift.device != z.device:
+                self._shift = self._shift.to(z.device)
+                self._scale = self._scale.to(z.device)  # type: ignore[union-attr]
+            z = z * self._scale + self._shift  # type: ignore[operator]
         result: Tensor = self._inverse(z)
         return result
 
@@ -299,6 +326,72 @@ class WaveletSpace(DiffusionSpace):
     def latent_channels(self) -> int:
         """Channel multiplier per input channel."""
         return 8
+
+    @staticmethod
+    def compute_subband_stats(
+        dataloader: 'torch.utils.data.DataLoader',  # type: ignore[type-arg]
+        max_samples: int = 200,
+    ) -> dict[str, list[float]]:
+        """Compute per-subband mean/std from training data using Welford's algorithm.
+
+        Iterates over the training dataloader, applies Haar forward transform,
+        and computes per-channel (subband) mean and std.
+
+        Args:
+            dataloader: Training dataloader.
+            max_samples: Maximum number of samples to process. Haar is deterministic
+                so stats stabilize quickly. Default 200.
+
+        Returns:
+            Dict with 'wavelet_shift' (list of 8 means) and
+            'wavelet_scale' (list of 8 stds).
+        """
+        from medgen.diffusion.batch_data import BatchData
+        from medgen.models.haar_wavelet_3d import haar_forward_3d
+
+        n = 0
+        mean: Tensor | None = None
+        m2: Tensor | None = None
+
+        for batch in dataloader:
+            bd = BatchData.from_raw(batch)
+            images = bd.images
+
+            # Apply Haar wavelet to get subbands
+            coeffs = haar_forward_3d(images)
+            n_ch = coeffs.shape[1]
+
+            # Per-sample Welford: treat each sample in the batch independently
+            for i in range(coeffs.shape[0]):
+                sample = coeffs[i]  # [C, D/2, H/2, W/2]
+                flat = sample.reshape(n_ch, -1).float()
+                sample_mean = flat.mean(dim=1)
+
+                n += 1
+                if mean is None:
+                    mean = sample_mean.clone()
+                    m2 = torch.zeros_like(mean)
+                else:
+                    delta = sample_mean - mean
+                    mean += delta / n
+                    delta2 = sample_mean - mean
+                    m2 += delta * delta2  # type: ignore[operator]
+
+                if n >= max_samples:
+                    break
+            if n >= max_samples:
+                break
+
+        if mean is None or n < 2:
+            return {}
+
+        variance = m2 / (n - 1)  # type: ignore[operator]
+        std = torch.sqrt(variance).clamp(min=1e-6)
+
+        return {
+            'wavelet_shift': mean.tolist(),
+            'wavelet_scale': std.tolist(),
+        }
 
 
 class LatentSpace(DiffusionSpace):

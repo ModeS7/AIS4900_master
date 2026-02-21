@@ -714,8 +714,16 @@ def _train_3d(cfg: DictConfig) -> None:
                 f"spatial {spatial_factor}x, depth {depth_factor}x"
             )
         elif wavelet_cfg.get('enabled', False):
-            space = WaveletSpace()
-            logger.info("Wavelet space: Haar 3D 2x2x2, 8x channels")
+            stats = WaveletSpace.compute_subband_stats(train_loader)
+            wavelet_shift = stats.get('wavelet_shift')
+            wavelet_scale = stats.get('wavelet_scale')
+            if wavelet_shift:
+                names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
+                for i, name in enumerate(names):
+                    if i < len(wavelet_shift):
+                        logger.info(f"  {name}: shift={wavelet_shift[i]:.4f}, scale={wavelet_scale[i]:.4f}")
+            space = WaveletSpace(shift=wavelet_shift, scale=wavelet_scale)
+            logger.info("Wavelet space: Haar 3D 2x2x2, 8x channels, per-subband normalized")
         else:
             space = PixelSpace()
 

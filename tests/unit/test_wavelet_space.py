@@ -182,3 +182,122 @@ class TestWaveletSpace:
         reconstructed = space.decode(z)
         assert reconstructed.shape == x.shape
         torch.testing.assert_close(reconstructed, x)
+
+    def test_wavelet_no_args_backward_compat(self):
+        """WaveletSpace() with no args works identically to before."""
+        space = WaveletSpace()
+        assert space._shift is None
+        assert space._scale is None
+
+        x = torch.randn(2, 1, 8, 16, 16)
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        torch.testing.assert_close(reconstructed, x)
+
+    def test_wavelet_normalized_roundtrip(self):
+        """encode(decode(x)) still reconstructs x exactly with normalization."""
+        shift = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        scale = [2.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        space = WaveletSpace(shift=shift, scale=scale)
+
+        x = torch.randn(2, 1, 8, 16, 16)
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        assert reconstructed.shape == x.shape
+        torch.testing.assert_close(reconstructed, x)
+
+    def test_wavelet_normalization_changes_values(self):
+        """Normalization should actually change the encoded values."""
+        x = torch.randn(2, 1, 8, 16, 16)
+
+        space_raw = WaveletSpace()
+        z_raw = space_raw.encode(x)
+
+        shift = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        scale = [2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        space_norm = WaveletSpace(shift=shift, scale=scale)
+        z_norm = space_norm.encode(x)
+
+        # Channel 0 (LLL) should differ due to shift=1, scale=2
+        assert not torch.allclose(z_raw[:, 0], z_norm[:, 0])
+        # Other channels should match (shift=0, scale=1 = identity)
+        torch.testing.assert_close(z_raw[:, 1:], z_norm[:, 1:])
+
+
+class _TensorDataset(torch.utils.data.Dataset):
+    """Dataset that returns raw tensors (not tuples like TensorDataset)."""
+    def __init__(self, data: torch.Tensor):
+        self.data = data
+    def __len__(self):
+        return self.data.shape[0]
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+class TestWaveletSubbandStats:
+    """Test WaveletSpace.compute_subband_stats."""
+
+    def test_compute_subband_stats_returns_8_values(self):
+        """Stats should have 8 entries (one per subband)."""
+        dataset = _TensorDataset(torch.randn(10, 1, 8, 16, 16))
+        loader = torch.utils.data.DataLoader(dataset, batch_size=4)
+
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=10)
+
+        assert 'wavelet_shift' in stats
+        assert 'wavelet_scale' in stats
+        assert len(stats['wavelet_shift']) == 8
+        assert len(stats['wavelet_scale']) == 8
+
+    def test_compute_subband_stats_scales_positive(self):
+        """All scale values must be positive."""
+        dataset = _TensorDataset(torch.randn(10, 1, 8, 16, 16))
+        loader = torch.utils.data.DataLoader(dataset, batch_size=4)
+
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=10)
+
+        for s in stats['wavelet_scale']:
+            assert s > 0
+
+    def test_compute_subband_stats_known_data(self):
+        """Verify stats on constant data (all subbands known analytically)."""
+        # Constant-value volumes: LLL gets all energy, detail subbands are 0
+        x = torch.ones(20, 1, 8, 16, 16) * 3.0
+        dataset = _TensorDataset(x)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=4)
+
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=20)
+
+        # LLL shift should be 3.0 * 2*sqrt(2) (Haar scaling for constant input)
+        expected_lll = 3.0 * 2 * (2 ** 0.5)
+        assert abs(stats['wavelet_shift'][0] - expected_lll) < 0.01
+
+        # Detail subbands should have shift ~0
+        for i in range(1, 8):
+            assert abs(stats['wavelet_shift'][i]) < 0.01
+
+        # With constant data, std should be clamped to 1e-6 (no variance)
+        for i in range(8):
+            assert abs(stats['wavelet_scale'][i] - 1e-6) < 1e-7
+
+    def test_compute_subband_stats_max_samples(self):
+        """max_samples caps the number of processed samples."""
+        dataset = _TensorDataset(torch.randn(100, 1, 8, 16, 16))
+        loader = torch.utils.data.DataLoader(dataset, batch_size=8)
+
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=5)
+        assert len(stats['wavelet_shift']) == 8
+
+    def test_compute_subband_stats_dict_batch(self):
+        """Stats computation works with dict-format batches."""
+        class DictDataset(torch.utils.data.Dataset):
+            def __len__(self):
+                return 10
+            def __getitem__(self, idx):
+                return {'image': torch.randn(1, 8, 16, 16)}
+
+        loader = torch.utils.data.DataLoader(DictDataset(), batch_size=4)
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=10)
+
+        assert len(stats['wavelet_shift']) == 8
+        assert len(stats['wavelet_scale']) == 8
