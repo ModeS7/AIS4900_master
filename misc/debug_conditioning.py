@@ -32,7 +32,8 @@ def main():
     parser.add_argument("--label", default="model", help="Label for printout")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--depth", type=int, default=160)
-    parser.add_argument("--num_steps", type=int, default=40)
+    parser.add_argument("--num_steps", type=str, default="40,100,400",
+                        help="Comma-separated step counts to test")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -68,6 +69,7 @@ def main():
     )
 
     voxel_spacing = compute_voxel_size(args.image_size)
+    step_counts = [int(s) for s in args.num_steps.split(",")]
 
     # Test conditions — from easy to hard
     conditions = {
@@ -84,48 +86,52 @@ def main():
         get_noise_shape(1, 1, 3, args.image_size, args.depth), device=device
     )
 
-    print(f"\n{'Condition':<20} {'Tumor voxels':>14} {'Num tumors':>12} {'Actual bins'}")
-    print("-" * 80)
+    for num_steps in step_counts:
+        print(f"\n{'='*70}")
+        print(f"  Steps: {num_steps}")
+        print(f"{'='*70}")
+        print(f"\n{'Condition':<20} {'Tumor voxels':>14} {'Num tumors':>12} {'Actual bins'}")
+        print("-" * 80)
 
-    results = {}
-    for name, bins in conditions.items():
-        if model_type == 'film':
-            size_bins = torch.tensor([bins], dtype=torch.long, device=device)
-            seg = generate_batch(
-                model, strategy, noise.clone(), args.num_steps, device,
-                size_bins=size_bins, cfg_scale=1.0,
-            )
-        else:  # input
-            bin_map = create_size_bin_maps(
-                torch.tensor(bins, dtype=torch.long, device=device),
-                (args.depth, args.image_size, args.image_size),
-                normalize=True, max_count=10,
-            )
-            bin_maps = bin_map.unsqueeze(0).to(device)
-            seg = generate_batch(
-                model, strategy, noise.clone(), args.num_steps, device,
-                bin_maps=bin_maps, cfg_scale=1.0,
-            )
+        results = {}
+        for name, bins in conditions.items():
+            if model_type == 'film':
+                size_bins = torch.tensor([bins], dtype=torch.long, device=device)
+                seg = generate_batch(
+                    model, strategy, noise.clone(), num_steps, device,
+                    size_bins=size_bins, cfg_scale=1.0,
+                )
+            else:  # input
+                bin_map = create_size_bin_maps(
+                    torch.tensor(bins, dtype=torch.long, device=device),
+                    (args.depth, args.image_size, args.image_size),
+                    normalize=True, max_count=10,
+                )
+                bin_maps = bin_map.unsqueeze(0).to(device)
+                seg = generate_batch(
+                    model, strategy, noise.clone(), num_steps, device,
+                    bin_maps=bin_maps, cfg_scale=1.0,
+                )
 
-        seg_bin = binarize_seg(seg[0, 0]).cpu().numpy()
-        tumor_voxels = int(seg_bin.sum())
-        actual = compute_size_bins_3d(seg_bin, DEFAULT_BIN_EDGES, voxel_spacing, NUM_BINS)
+            seg_bin = binarize_seg(seg[0, 0]).cpu().numpy()
+            tumor_voxels = int(seg_bin.sum())
+            actual = compute_size_bins_3d(seg_bin, DEFAULT_BIN_EDGES, voxel_spacing, NUM_BINS)
 
-        results[name] = {"seg": seg_bin, "voxels": tumor_voxels, "actual_bins": actual.tolist()}
-        print(f"{name:<20} {tumor_voxels:>14,} {int(actual.sum()):>12} {actual.tolist()}")
+            results[name] = {"seg": seg_bin, "voxels": tumor_voxels, "actual_bins": actual.tolist()}
+            print(f"{name:<20} {tumor_voxels:>14,} {int(actual.sum()):>12} {actual.tolist()}")
 
-    # Pairwise comparison
-    print(f"\n{'Pair':<45} {'Diff voxels':>12} {'Dice':>8}")
-    print("-" * 70)
-    names = list(results.keys())
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            a = results[names[i]]["seg"]
-            b = results[names[j]]["seg"]
-            diff = int(np.abs(a - b).sum())
-            dice = 2 * ((a > 0) & (b > 0)).sum() / (a.sum() + b.sum() + 1e-8)
-            pair = f"{names[i]} vs {names[j]}"
-            print(f"{pair:<45} {diff:>12,} {dice:>8.4f}")
+        # Pairwise comparison
+        print(f"\n{'Pair':<45} {'Diff voxels':>12} {'Dice':>8}")
+        print("-" * 70)
+        names = list(results.keys())
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a = results[names[i]]["seg"]
+                b = results[names[j]]["seg"]
+                diff = int(np.abs(a - b).sum())
+                dice = 2 * ((a > 0) & (b > 0)).sum() / (a.sum() + b.sum() + 1e-8)
+                pair = f"{names[i]} vs {names[j]}"
+                print(f"{pair:<45} {diff:>12,} {dice:>8.4f}")
 
 
 if __name__ == "__main__":

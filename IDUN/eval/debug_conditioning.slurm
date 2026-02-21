@@ -31,7 +31,7 @@ CKPT_EXP2C="runs/diffusion_3d/seg/exp2c_1_pixel_seg_improved_20260218-183155/che
 
 echo ""
 echo "=== exp2c_1 (Improved FiLM) ==="
-time python misc/debug_conditioning.py --checkpoint "${CKPT_EXP2C}" --label "exp2c_1 Improved FiLM"
+time python misc/debug_conditioning.py --checkpoint "${CKPT_EXP2C}" --label "exp2c_1 Improved FiLM" --num_steps "40,100,200"
 
 echo ""
 echo "=== Done ==="
