@@ -129,11 +129,15 @@ def measure_model_flops(
         prepared = trainer.mode.prepare_batch(batch, trainer.device)
         images = prepared['images']
         labels = prepared.get('labels')
+        is_latent = prepared.get('is_latent', False)
+        labels_is_latent = prepared.get('labels_is_latent', False)
 
         # Encode to diffusion space (S2D, wavelet, latent, or identity for pixel)
         # Must match what train_epoch does so dummy input has correct channels
-        images = trainer.space.encode_batch(images)
-        if labels is not None:
+        # Skip encoding if data is already in latent space (from latent dataloader)
+        if not is_latent:
+            images = trainer.space.encode_batch(images)
+        if labels is not None and not labels_is_latent:
             labels = trainer.space.encode(labels)
 
         # Slice to batch_size=1 to avoid OOM during torch.compile tracing

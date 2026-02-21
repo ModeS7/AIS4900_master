@@ -108,6 +108,11 @@ def compute_validation_losses(
             # For bravo_seg_cond mode, use seg_mask from prepared batch
             labels_pixel = prepared.get('seg_mask', labels) if is_latent else labels
 
+            # Keep original pixel-space images for quality metrics (MS-SSIM, PSNR, LPIPS)
+            # For latent diffusion, decode(encode(x)) != x due to compression loss,
+            # so quality metrics must compare against original pixels, not decoded latents
+            images_pixel = images if not is_latent else None
+
             # Encode to diffusion space (identity for PixelSpace)
             # Skip encoding if data is already in latent space (from latent dataloader)
             if not is_latent:
@@ -186,12 +191,22 @@ def compute_validation_losses(
                         'loss': loss_val,
                     }
 
-            # Quality metrics (decode to pixel space for latent/wavelet/rescaled diffusion)
+            # Quality metrics (decode prediction to pixel space)
             if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
-                metrics_gt = trainer.space.decode_batch(images)
             else:
                 metrics_pred = predicted_clean
+            # Ground truth: use original pixel-space images when available
+            # For latent diffusion, decode(latent) != original due to compression loss,
+            # so comparing against decoded latents overestimates quality.
+            # images_pixel is set for non-cached paths (wavelet, S2D, rescaled pixel).
+            # For cached latent paths (is_latent=True), pixel originals are unavailable
+            # so we fall back to decoded latents (metrics are still directionally useful).
+            if images_pixel is not None:
+                metrics_gt = images_pixel
+            elif trainer.space.needs_decode:
+                metrics_gt = trainer.space.decode_batch(images)
+            else:
                 metrics_gt = images
 
             if isinstance(metrics_pred, dict):
@@ -490,6 +505,9 @@ def compute_per_modality_validation(
                     size_bins = prepared.get('size_bins')
                     bin_maps = prepared.get('bin_maps')
 
+                    # Keep pixel-space originals for quality metrics
+                    images_pixel = images
+
                     # Encode to diffusion space (identity for PixelSpace)
                     images = trainer.space.encode_batch(images)
                     if labels is not None:
@@ -510,15 +528,14 @@ def compute_per_modality_validation(
                         prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
-                    # Decode to pixel space for metrics (S2D/Wavelet/Latent/Rescaled)
+                    # Decode prediction to pixel space, compare against original pixels
                     if trainer.space.needs_decode:
                         metrics_pred = trainer.space.decode_batch(predicted_clean)
-                        metrics_gt = trainer.space.decode_batch(images)
                         metrics_labels = trainer.space.decode(labels) if labels is not None else None
                     else:
                         metrics_pred = predicted_clean
-                        metrics_gt = images
                         metrics_labels = labels
+                    metrics_gt = images_pixel
 
                     # Compute metrics in pixel space
                     total_psnr += compute_psnr(metrics_pred, metrics_gt)

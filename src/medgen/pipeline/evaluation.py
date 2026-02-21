@@ -117,6 +117,9 @@ def evaluate_test_set(
             labels_is_latent = prepared.get('labels_is_latent', False)
             batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
 
+            # Keep original pixel-space images for quality metrics
+            images_pixel = images if not is_latent else None
+
             # Encode to diffusion space (skip if already latent)
             if not is_latent:
                 images = trainer.space.encode_batch(images)
@@ -170,12 +173,16 @@ def evaluate_test_set(
                 timestep_loss_sum.scatter_add_(0, bin_indices, mse_per_sample)
                 timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
-            # Decode to pixel space for metrics
+            # Decode prediction to pixel space, compare against original pixels
             if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
-                metrics_gt = trainer.space.decode_batch(images)
             else:
                 metrics_pred = predicted_clean
+            if images_pixel is not None:
+                metrics_gt = images_pixel
+            elif trainer.space.needs_decode:
+                metrics_gt = trainer.space.decode_batch(images)
+            else:
                 metrics_gt = images
 
             if isinstance(metrics_pred, dict):
