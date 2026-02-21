@@ -345,7 +345,8 @@ def generate_samples(
             )
 
         # Move to CPU immediately to free GPU memory
-        all_samples.append(torch.clamp(samples.float(), 0, 1).cpu())
+        # Don't clamp here — latent/wavelet coefficients can be outside [0, 1]
+        all_samples.append(samples.float().cpu())
 
         # Clear intermediate tensors
         del samples, model_input, noise, masks
@@ -359,10 +360,13 @@ def generate_samples(
     del all_samples
     torch.cuda.empty_cache()
 
-    # Decode from latent space to pixel space for feature extraction
+    # Decode from latent/wavelet space to pixel space for feature extraction
     result = result.to(self_.device)
     if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
         result = self_.space.decode(result)
+
+    # Clamp to [0, 1] in pixel space (after decoding)
+    result = torch.clamp(result, 0, 1)
 
     # Threshold seg mode output at 0.5 to get binary masks
     if self_.is_seg_mode:
@@ -470,10 +474,11 @@ def generate_and_extract_features_3d_streaming(
                 latent_channels=latent_ch,
             )
 
-        # Process sample: clamp, decode if latent, threshold if seg
-        sample = torch.clamp(sample.float(), 0, 1)
+        # Decode from latent/wavelet space, then clamp in pixel space
+        sample = sample.float()
         if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
             sample = self_.space.decode(sample)
+        sample = torch.clamp(sample, 0, 1)
         if self_.is_seg_mode:
             sample = (sample > 0.5).float()
 

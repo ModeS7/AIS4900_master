@@ -401,9 +401,9 @@ class ConditionalSampler:
                     latent_channels=latent_ch,
                 )
 
-            # Process samples
-            samples = torch.clamp(samples.float(), 0, 1).cpu()
-            all_samples.append(samples)
+            # Move to CPU immediately to free GPU memory
+            # Don't clamp here — latent/wavelet coefficients can be outside [0, 1]
+            all_samples.append(samples.float().cpu())
 
             # Cleanup
             del samples, model_input, noise, masks
@@ -414,10 +414,13 @@ class ConditionalSampler:
         del all_samples
         torch.cuda.empty_cache()
 
-        # Decode from latent space if needed
+        # Decode from latent/wavelet space if needed
         result = result.to(self.device)
         if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
             result = self.space.decode(result)
+
+        # Clamp to [0, 1] in pixel space (after decoding)
+        result = torch.clamp(result, 0, 1)
 
         # Threshold seg mode output
         if self.is_seg_mode:

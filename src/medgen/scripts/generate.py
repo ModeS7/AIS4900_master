@@ -478,9 +478,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize
-                seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
-                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-                seg_binary = make_binary(seg_np, threshold=0.5)
+                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
+                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
 
                 # Validate size bins match conditioning
                 if validate_size_bins:
@@ -583,9 +582,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize seg
-                seg_np = seg[0, 0].cpu().numpy()
-                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-                seg_binary = make_binary(seg_np, threshold=0.5)
+                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
+                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
 
                 # Validate mask (per-slice check for 3D)
                 if not is_valid_mask(seg_binary, max_white_pct):
@@ -720,9 +718,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize
-                seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
-                seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-                seg_binary = make_binary(seg_np, threshold=0.5)
+                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
+                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
 
                 # Validate size bins match conditioning
                 if validate_size_bins:

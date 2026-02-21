@@ -22,7 +22,7 @@ EXP_NAME="exp9_0_ldm_8x_bravo_small"
 # First run: create unique run directory. Subsequent: reuse from env var.
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_seg_cond/${EXP_NAME}_${TIMESTAMP}"
+    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/${EXP_NAME}_${TIMESTAMP}"
 fi
 
 # Build resume arguments

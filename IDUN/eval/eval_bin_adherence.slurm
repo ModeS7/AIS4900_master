@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-12:00:00
+#SBATCH --time=0-6:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -34,6 +34,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # ============================================================================
 # FILL IN CHECKPOINT PATHS BEFORE SUBMISSION
 # ============================================================================
+DATA_DIR="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 CKPT_FILM="runs/diffusion_3d/seg/exp2_1_pixel_seg_sizebin_rflow_256x160_20260201-015003/checkpoint_latest.pt"
 CKPT_INPUT="runs/diffusion_3d/seg/exp2b_1_pixel_seg_input_cond_rflow_256x160_20260201-133413/checkpoint_latest.pt"
 CKPT_EXP2C="runs/diffusion_3d/seg/exp2c_1_pixel_seg_improved_20260218-183155/checkpoint_latest.pt"
@@ -47,9 +48,11 @@ echo ""
 time python misc/eval_bin_adherence.py \
     --checkpoint "${CKPT_FILM}" \
     --model_type film \
+    --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2_1_film \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 5 \
+    --num_repeats 4 \
+    --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
     --depth 160 \
@@ -64,9 +67,11 @@ echo ""
 time python misc/eval_bin_adherence.py \
     --checkpoint "${CKPT_INPUT}" \
     --model_type input \
+    --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2b_1_input \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 5 \
+    --num_repeats 4 \
+    --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
     --depth 160 \
@@ -83,9 +88,11 @@ echo ""
 time python misc/eval_bin_adherence.py \
     --checkpoint "${CKPT_EXP2C}" \
     --model_type film \
+    --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2c_1_film \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 5 \
+    --num_repeats 4 \
+    --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
     --depth 160 \

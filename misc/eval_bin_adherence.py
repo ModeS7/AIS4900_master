@@ -1,41 +1,38 @@
 """
 Bin Adherence Evaluation for 3D Seg-Conditioned Models.
 
-Evaluates whether models learned proper size bin conditioning by generating
-segmentation masks under controlled conditions and measuring how well the
-output matches the requested bin distribution.
+Evaluates whether models learned proper size bin conditioning by loading
+real segmentation volumes from the dataset, extracting their bin vectors,
+and testing if the model can generate volumes matching those real distributions.
 
 Supports two model types:
-- FiLM (exp2_1): Size bins embedded into timestep embedding via SizeBinModelWrapper
-- Input (exp2b_1): Size bins as 7 spatial maps concatenated with noise (8 input channels)
+- FiLM (exp2_1, exp2c_1): Size bins embedded via SizeBinModelWrapper
+- Input (exp2b_1): Size bins as 7 spatial maps concatenated with noise
 
 Usage:
     python misc/eval_bin_adherence.py \
         --checkpoint runs/diffusion_3d/.../checkpoint_best.pt \
         --model_type film \
+        --data_dir /path/to/brainmetshare-3 \
         --output_dir results/bin_adherence/exp2_1
-
-    python misc/eval_bin_adherence.py \
-        --checkpoint runs/diffusion_3d/.../checkpoint_best.pt \
-        --model_type input \
-        --output_dir results/bin_adherence/exp2b_1
 """
 
 import argparse
 import csv
 import json
 import logging
+import os
 import subprocess
-import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+import nibabel as nib
 import numpy as np
 import torch
 
 from medgen.core import setup_cuda_optimizations
-from medgen.data import make_binary
 from medgen.data.loaders.datasets import (
     DEFAULT_BIN_EDGES,
     compute_size_bins_3d,
@@ -52,36 +49,87 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 # ============================================================================
-# Test Conditions
+# Extract Real Conditions from Dataset
 # ============================================================================
 
-# Bins: [0-3mm, 3-6mm, 6-10mm, 10-15mm, 15-20mm, 20-30mm, 30+mm]
-# Conditions based on realistic brain metastases distributions:
-# - Most patients have 1-5 metastases
-# - Small/medium tumors (3-15mm) are most common
-# - Large tumors (20-30mm) often present with smaller satellites
-# - Bin 0 (0-3mm) and bin 6 (30+mm) are rare in 3D volumes
-TEST_CONDITIONS: list[tuple[str, list[int]]] = [
-    # Single tumor at different sizes (5 conditions)
-    ("single_small",      [0, 1, 0, 0, 0, 0, 0]),  # 3-6mm
-    ("single_medium",     [0, 0, 1, 0, 0, 0, 0]),  # 6-10mm
-    ("single_med_large",  [0, 0, 0, 1, 0, 0, 0]),  # 10-15mm
-    ("single_large",      [0, 0, 0, 0, 1, 0, 0]),  # 15-20mm
-    ("single_vlarge",     [0, 0, 0, 0, 0, 1, 0]),  # 20-30mm
-    # Multiple small tumors (2 conditions)
-    ("two_small",         [0, 2, 0, 0, 0, 0, 0]),  # 2x 3-6mm
-    ("three_scattered",   [0, 1, 2, 0, 0, 0, 0]),  # 1x 3-6mm + 2x 6-10mm
-    # Large + satellite(s) — classic brain met pattern (3 conditions)
-    ("large_w_satellite", [0, 1, 0, 0, 0, 1, 0]),  # 20-30mm + 3-6mm satellite
-    ("large_w_two_sat",   [0, 1, 1, 0, 1, 0, 0]),  # 15-20mm + two smaller
-    ("med_w_satellite",   [0, 0, 1, 1, 0, 0, 0]),  # 10-15mm + 6-10mm
-    # Multiple scattered (2 conditions)
-    ("scattered_small",   [0, 2, 1, 1, 0, 0, 0]),  # 4 tumors, small-medium
-    ("scattered_mixed",   [0, 1, 1, 0, 1, 0, 0]),  # 3 tumors, mixed sizes
-    # Empty — no tumors (1 condition)
-    ("empty",             [0, 0, 0, 0, 0, 0, 0]),
-]
+def extract_conditions_from_data(
+    data_dir: str,
+    split: str,
+    bin_edges: list[float],
+    num_bins: int,
+) -> list[tuple[str, list[int]]]:
+    """Extract bin vectors from real 3D segmentation volumes.
+
+    Loads each patient's seg.nii.gz, computes the bin vector using the
+    NIfTI header voxel spacing, and returns unique bin vectors as conditions.
+
+    Args:
+        data_dir: Root dataset directory (e.g. /path/to/brainmetshare-3).
+        split: Dataset split to use ('train', 'val', 'test').
+        bin_edges: Size bin edges in mm.
+        num_bins: Number of bins (including overflow).
+
+    Returns:
+        List of (condition_name, bin_vector) tuples.
+    """
+    split_dir = os.path.join(data_dir, split)
+    if not os.path.isdir(split_dir):
+        raise NotADirectoryError(f"Split directory not found: {split_dir}")
+
+    patients = sorted(
+        p for p in os.listdir(split_dir)
+        if os.path.isdir(os.path.join(split_dir, p))
+    )
+
+    logger.info(f"Scanning {len(patients)} patients in {split_dir}...")
+
+    # Collect bin vectors from all positive volumes
+    all_vectors: list[tuple[int, ...]] = []
+
+    for patient in patients:
+        seg_path = os.path.join(split_dir, patient, "seg.nii.gz")
+        if not os.path.exists(seg_path):
+            continue
+
+        nii_img = nib.load(seg_path)
+        data = nii_img.get_fdata()
+
+        # Skip empty volumes (no tumors)
+        if data.sum() == 0:
+            continue
+
+        # Use voxel spacing from NIfTI header (ground truth physical spacing)
+        zooms = nii_img.header.get_zooms()[:3]
+        voxel_spacing = (float(zooms[0]), float(zooms[1]), float(zooms[2]))
+
+        bins = compute_size_bins_3d(data, bin_edges, voxel_spacing, num_bins)
+        all_vectors.append(tuple(bins.tolist()))
+
+    logger.info(f"Found {len(all_vectors)} positive volumes")
+
+    # Count unique vectors and sort by frequency (most common first)
+    vector_counts = Counter(all_vectors)
+    unique_vectors = vector_counts.most_common()
+
+    logger.info(f"Unique bin vectors: {len(unique_vectors)}")
+    for vec, count in unique_vectors:
+        logger.info(f"  {list(vec)} x{count}")
+
+    # Build conditions: each unique vector is a test condition
+    conditions: list[tuple[str, list[int]]] = []
+    for i, (vec, count) in enumerate(unique_vectors):
+        bins_str = "_".join(str(v) for v in vec)
+        name = f"real_{i:02d}_{bins_str}_x{count}"
+        conditions.append((name, list(vec)))
+
+    # Always include empty condition (model should handle unconditional)
+    empty = [0] * num_bins
+    if tuple(empty) not in vector_counts:
+        conditions.append(("empty", empty))
+
+    return conditions
 
 
 # ============================================================================
@@ -115,7 +163,7 @@ def compute_sample_metrics(
         "per_bin_accuracy": per_bin_accuracy,
         "mae": mae,
         # Individual bin matches for detailed analysis
-        **{f"bin{i}_match": float(per_bin_match[i]) for i in range(7)},
+        **{f"bin{i}_match": float(per_bin_match[i]) for i in range(len(requested))},
     }
 
 
@@ -123,7 +171,7 @@ def compute_sample_metrics(
 # Generation
 # ============================================================================
 
-def generate_single_sample(
+def generate_samples_batched(
     model: torch.nn.Module,
     strategy: RFlowStrategy,
     bins: list[int],
@@ -133,56 +181,71 @@ def generate_single_sample(
     depth: int,
     device: torch.device,
     cfg_scale: float,
-    seed: int,
-) -> np.ndarray:
-    """Generate one segmentation mask with given bin conditioning.
+    seeds: list[int],
+    batch_size: int,
+) -> list[np.ndarray]:
+    """Generate multiple segmentation masks in batches.
+
+    All samples share the same conditioning (bins + cfg_scale),
+    only the noise seed differs. Batching gives ~Nx speedup.
 
     Args:
         model: Loaded diffusion model.
         strategy: RFlow strategy with scheduler set up.
-        bins: Requested size bin counts [7].
+        bins: Requested size bin counts [num_bins].
         model_type: "film" or "input".
         num_steps: Number of denoising steps.
         image_size: H/W resolution.
         depth: Volume depth.
         device: Torch device.
         cfg_scale: Classifier-free guidance scale.
-        seed: Random seed for this sample.
+        seeds: List of seeds, one per sample.
+        batch_size: Max samples per forward pass.
 
     Returns:
-        Binary segmentation mask as numpy array [D, H, W].
+        List of binary segmentation masks as numpy arrays [D, H, W].
     """
-    torch.manual_seed(seed)
+    all_volumes: list[np.ndarray] = []
 
-    noise = torch.randn(
-        get_noise_shape(1, 1, 3, image_size, depth), device=device
-    )
+    for chunk_start in range(0, len(seeds), batch_size):
+        chunk_seeds = seeds[chunk_start:chunk_start + batch_size]
+        B = len(chunk_seeds)
 
-    if model_type == "film":
-        size_bins = torch.tensor([bins], dtype=torch.long, device=device)
-        seg = generate_batch(
-            model, strategy, noise, num_steps, device,
-            size_bins=size_bins, cfg_scale=cfg_scale,
-        )
-    elif model_type == "input":
-        bin_maps = create_size_bin_maps(
-            torch.tensor(bins, dtype=torch.long, device=device),
-            (depth, image_size, image_size),
-            normalize=True, max_count=10,
-        ).unsqueeze(0).to(device)  # [1, 7, D, H, W]
-        seg = generate_batch(
-            model, strategy, noise, num_steps, device,
-            bin_maps=bin_maps, cfg_scale=cfg_scale,
-        )
-    else:
-        raise ValueError(f"Unknown model_type: {model_type}")
+        # Generate noise with per-sample reproducibility
+        noise_list = []
+        for seed in chunk_seeds:
+            torch.manual_seed(seed)
+            noise_list.append(
+                torch.randn(get_noise_shape(1, 1, 3, image_size, depth), device=device)
+            )
+        noise = torch.cat(noise_list, dim=0)  # [B, 1, D, H, W]
 
-    # Post-process: normalize + binarize (matches generate.py)
-    seg_np = seg[0, 0].cpu().numpy()  # [D, H, W]
-    seg_np = (seg_np - seg_np.min()) / (seg_np.max() - seg_np.min() + 1e-8)
-    seg_binary = make_binary(seg_np, threshold=0.5)
+        if model_type == "film":
+            size_bins = torch.tensor([bins] * B, dtype=torch.long, device=device)
+            seg = generate_batch(
+                model, strategy, noise, num_steps, device,
+                size_bins=size_bins, cfg_scale=cfg_scale,
+            )
+        elif model_type == "input":
+            single_map = create_size_bin_maps(
+                torch.tensor(bins, dtype=torch.long, device=device),
+                (depth, image_size, image_size),
+                normalize=True, max_count=10,
+            )  # [7, D, H, W]
+            bin_maps = single_map.unsqueeze(0).expand(B, -1, -1, -1, -1).to(device)
+            seg = generate_batch(
+                model, strategy, noise, num_steps, device,
+                bin_maps=bin_maps, cfg_scale=cfg_scale,
+            )
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}")
 
-    return seg_binary
+        # Post-process each volume: clamp + binarize (matches generation_sampling.py)
+        for j in range(B):
+            vol = torch.clamp(seg[j, 0].float(), 0, 1)
+            all_volumes.append((vol > 0.5).float().cpu().numpy())
+
+    return all_volumes
 
 
 # ============================================================================
@@ -193,23 +256,33 @@ def run_evaluation(args: argparse.Namespace) -> None:
     """Run the full bin adherence evaluation."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg_scales = [float(s) for s in args.cfg_scales.split(",")]
+    num_bins = len(DEFAULT_BIN_EDGES)  # 7 bins (6 bounded + overflow)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Extract real conditions from dataset
+    conditions = extract_conditions_from_data(
+        args.data_dir, args.split, DEFAULT_BIN_EDGES, num_bins,
+    )
+    logger.info(f"Testing {len(conditions)} conditions from real data")
 
     # Save eval config
     git_hash = _get_git_hash()
     eval_config = {
         "checkpoint": args.checkpoint,
         "model_type": args.model_type,
+        "data_dir": args.data_dir,
+        "split": args.split,
         "cfg_scales": cfg_scales,
         "num_repeats": args.num_repeats,
         "num_steps": args.num_steps,
         "image_size": args.image_size,
         "depth": args.depth,
         "seed": args.seed,
-        "num_conditions": len(TEST_CONDITIONS),
-        "total_samples": len(TEST_CONDITIONS) * len(cfg_scales) * args.num_repeats,
+        "num_conditions": len(conditions),
+        "total_samples": len(conditions) * len(cfg_scales) * args.num_repeats,
+        "conditions": [(name, bins) for name, bins in conditions],
         "git_hash": git_hash,
         "timestamp": datetime.now().isoformat(),
         "bin_edges": DEFAULT_BIN_EDGES,
@@ -220,7 +293,7 @@ def run_evaluation(args: argparse.Namespace) -> None:
     logger.info(f"Model type: {args.model_type}")
     logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info(f"CFG scales: {cfg_scales}")
-    logger.info(f"Conditions: {len(TEST_CONDITIONS)}, Repeats: {args.num_repeats}")
+    logger.info(f"Conditions: {len(conditions)}, Repeats: {args.num_repeats}")
     logger.info(f"Total samples: {eval_config['total_samples']}")
 
     # Load model
@@ -245,56 +318,56 @@ def run_evaluation(args: argparse.Namespace) -> None:
         spatial_dims=3,
     )
 
-    # Voxel spacing for bin computation
+    # Voxel spacing for evaluating generated volumes
     voxel_spacing = compute_voxel_size(args.image_size)
 
     # Collect all results
     all_results: list[dict] = []
     sample_idx = 0
+    total_samples = eval_config["total_samples"]
     start_time = time.time()
 
-    for cond_name, bins in TEST_CONDITIONS:
+    for cond_name, bins in conditions:
         requested = np.array(bins)
         for cfg_scale in cfg_scales:
-            for repeat in range(args.num_repeats):
-                seed = args.seed + sample_idx
+            # Generate all repeats in one batched call
+            seeds = [args.seed + sample_idx + r for r in range(args.num_repeats)]
+            volumes = generate_samples_batched(
+                model, strategy, bins, args.model_type,
+                args.num_steps, args.image_size, args.depth,
+                device, cfg_scale, seeds, args.batch_size,
+            )
 
-                seg_binary = generate_single_sample(
-                    model, strategy, bins, args.model_type,
-                    args.num_steps, args.image_size, args.depth,
-                    device, cfg_scale, seed,
-                )
-
+            for repeat, seg_binary in enumerate(volumes):
                 # Compute actual bins from generated mask
                 actual = compute_size_bins_3d(
-                    seg_binary, DEFAULT_BIN_EDGES, voxel_spacing, 7,
+                    seg_binary, DEFAULT_BIN_EDGES, voxel_spacing, num_bins,
                 )
 
-                # Compute metrics
                 metrics = compute_sample_metrics(requested, actual)
 
                 result = {
                     "condition": cond_name,
                     "cfg_scale": cfg_scale,
                     "repeat": repeat,
-                    "seed": seed,
-                    **{f"req_bin{i}": int(bins[i]) for i in range(7)},
-                    **{f"act_bin{i}": int(actual[i]) for i in range(7)},
+                    "seed": seeds[repeat],
+                    **{f"req_bin{i}": int(bins[i]) for i in range(num_bins)},
+                    **{f"act_bin{i}": int(actual[i]) for i in range(num_bins)},
                     **metrics,
                 }
                 all_results.append(result)
 
-                sample_idx += 1
-                if sample_idx % 10 == 0:
-                    elapsed = time.time() - start_time
-                    rate = sample_idx / elapsed
-                    remaining = (eval_config["total_samples"] - sample_idx) / rate
-                    logger.info(
-                        f"Progress: {sample_idx}/{eval_config['total_samples']} "
-                        f"({rate:.1f} samples/min, ~{remaining:.0f}s remaining)"
-                    )
+            sample_idx += args.num_repeats
+            elapsed = time.time() - start_time
+            rate = sample_idx / elapsed * 60  # samples per minute
+            remaining = (total_samples - sample_idx) / max(rate, 0.01) * 60
+            logger.info(
+                f"Progress: {sample_idx}/{total_samples} "
+                f"({rate:.1f} samples/min, ~{remaining:.0f}s remaining) "
+                f"[{cond_name}, cfg={cfg_scale}]"
+            )
 
-                torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
     elapsed = time.time() - start_time
     logger.info(f"Generation complete: {sample_idx} samples in {elapsed:.0f}s")
@@ -420,7 +493,7 @@ def _print_summary(
     # By Condition
     print(f"\nBy Condition:")
     conditions = list(dict.fromkeys(r["condition"] for r in results))
-    header = f"{'Condition':>20} | {'Exact':>8} | {'Presence':>9} | {'Tot.Count':>10} | {'Per-Bin':>8} | {'MAE':>6}"
+    header = f"{'Condition':>40} | {'Exact':>8} | {'Presence':>9} | {'Tot.Count':>10} | {'Per-Bin':>8} | {'MAE':>6}"
     print(header)
     print("-" * len(header))
 
@@ -434,7 +507,7 @@ def _print_summary(
         total_count = sum(r["total_count_match"] for r in subset) / n * 100
         per_bin = sum(r["per_bin_accuracy"] for r in subset) / n * 100
         mae = sum(r["mae"] for r in subset) / n
-        print(f"{cond:>20} | {exact:>7.1f}% | {presence:>8.1f}% | {total_count:>9.1f}% | {per_bin:>7.1f}% | {mae:>6.2f}")
+        print(f"{cond:>40} | {exact:>7.1f}% | {presence:>8.1f}% | {total_count:>9.1f}% | {per_bin:>7.1f}% | {mae:>6.2f}")
 
     print()
 
@@ -466,12 +539,14 @@ Examples:
   python misc/eval_bin_adherence.py \\
       --checkpoint runs/diffusion_3d/.../checkpoint_best.pt \\
       --model_type film \\
+      --data_dir /path/to/brainmetshare-3 \\
       --output_dir results/bin_adherence/exp2_1
 
   # Input conditioning model (exp2b_1)
   python misc/eval_bin_adherence.py \\
       --checkpoint runs/diffusion_3d/.../checkpoint_best.pt \\
       --model_type input \\
+      --data_dir /path/to/brainmetshare-3 \\
       --output_dir results/bin_adherence/exp2b_1
         """,
     )
@@ -484,8 +559,16 @@ Examples:
         help="Model conditioning type: 'film' (SizeBinWrapper) or 'input' (bin maps concat)",
     )
     parser.add_argument(
+        "--data_dir", type=str, required=True,
+        help="Root dataset directory containing train/val splits with seg.nii.gz volumes",
+    )
+    parser.add_argument(
         "--output_dir", type=str, required=True,
         help="Directory to save evaluation results",
+    )
+    parser.add_argument(
+        "--split", type=str, default="train",
+        help="Dataset split to extract conditions from (default: 'train')",
     )
     parser.add_argument(
         "--cfg_scales", type=str, default="1.0,2.0,3.0,5.0",
@@ -496,8 +579,12 @@ Examples:
         help="Number of repeats per condition (default: 5)",
     )
     parser.add_argument(
-        "--num_steps", type=int, default=50,
-        help="Number of denoising steps (default: 50)",
+        "--batch_size", type=int, default=4,
+        help="Volumes per forward pass (default: 4, limited by GPU memory)",
+    )
+    parser.add_argument(
+        "--num_steps", type=int, default=37,
+        help="Number of denoising steps (default: 37)",
     )
     parser.add_argument(
         "--image_size", type=int, default=256,
@@ -518,7 +605,7 @@ def main() -> None:
     """Entry point."""
     args = parse_args()
     logger.info("=" * 60)
-    logger.info("Bin Adherence Evaluation")
+    logger.info("Bin Adherence Evaluation (real data conditions)")
     logger.info("=" * 60)
     run_evaluation(args)
     logger.info("Done!")
