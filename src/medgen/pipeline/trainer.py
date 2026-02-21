@@ -1016,13 +1016,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
             volume_size = (self.volume_height, self.volume_width, self.volume_depth)
 
         # Determine modality for metric suffixes
-        # Only use suffix for multi-output modes where disambiguation is needed
+        # Multi/dual handle per-channel suffixes internally, so no global suffix
         if self.mode_name in ('multi', 'dual'):
             metric_modality = None
         elif self.mode_name == 'bravo_seg_cond':
             metric_modality = 'bravo'
         else:
-            metric_modality = None
+            metric_modality = self.mode_name  # e.g. 'bravo', 'seg'
 
         self._unified_metrics = UnifiedMetrics(
             writer=self.writer,
