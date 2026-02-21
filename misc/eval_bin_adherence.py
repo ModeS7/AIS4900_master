@@ -56,24 +56,31 @@ logger = logging.getLogger(__name__)
 # Test Conditions
 # ============================================================================
 
+# Bins: [0-3mm, 3-6mm, 6-10mm, 10-15mm, 15-20mm, 20-30mm, 30+mm]
+# Conditions based on realistic brain metastases distributions:
+# - Most patients have 1-5 metastases
+# - Small/medium tumors (3-15mm) are most common
+# - Large tumors (20-30mm) often present with smaller satellites
+# - Bin 0 (0-3mm) and bin 6 (30+mm) are rare in 3D volumes
 TEST_CONDITIONS: list[tuple[str, list[int]]] = [
-    # Single tumor per bin (7 conditions)
-    ("single_bin0", [1, 0, 0, 0, 0, 0, 0]),
-    ("single_bin1", [0, 1, 0, 0, 0, 0, 0]),
-    ("single_bin2", [0, 0, 1, 0, 0, 0, 0]),
-    ("single_bin3", [0, 0, 0, 1, 0, 0, 0]),
-    ("single_bin4", [0, 0, 0, 0, 1, 0, 0]),
-    ("single_bin5", [0, 0, 0, 0, 0, 1, 0]),
-    ("single_bin6", [0, 0, 0, 0, 0, 0, 1]),
-    # Multiple tumors in same bin (2 conditions)
-    ("multi_bin2_x2", [0, 0, 2, 0, 0, 0, 0]),
-    ("multi_bin6_x2", [0, 0, 0, 0, 0, 0, 2]),
-    # Clinical combinations (3 conditions)
-    ("combo_small_large", [0, 0, 1, 0, 0, 0, 1]),
-    ("combo_mid_pair", [0, 1, 0, 1, 0, 0, 0]),
-    ("combo_three_mid", [0, 0, 1, 1, 1, 0, 0]),
-    # Empty (1 condition)
-    ("empty", [0, 0, 0, 0, 0, 0, 0]),
+    # Single tumor at different sizes (5 conditions)
+    ("single_small",      [0, 1, 0, 0, 0, 0, 0]),  # 3-6mm
+    ("single_medium",     [0, 0, 1, 0, 0, 0, 0]),  # 6-10mm
+    ("single_med_large",  [0, 0, 0, 1, 0, 0, 0]),  # 10-15mm
+    ("single_large",      [0, 0, 0, 0, 1, 0, 0]),  # 15-20mm
+    ("single_vlarge",     [0, 0, 0, 0, 0, 1, 0]),  # 20-30mm
+    # Multiple small tumors (2 conditions)
+    ("two_small",         [0, 2, 0, 0, 0, 0, 0]),  # 2x 3-6mm
+    ("three_scattered",   [0, 1, 2, 0, 0, 0, 0]),  # 1x 3-6mm + 2x 6-10mm
+    # Large + satellite(s) — classic brain met pattern (3 conditions)
+    ("large_w_satellite", [0, 1, 0, 0, 0, 1, 0]),  # 20-30mm + 3-6mm satellite
+    ("large_w_two_sat",   [0, 1, 1, 0, 1, 0, 0]),  # 15-20mm + two smaller
+    ("med_w_satellite",   [0, 0, 1, 1, 0, 0, 0]),  # 10-15mm + 6-10mm
+    # Multiple scattered (2 conditions)
+    ("scattered_small",   [0, 2, 1, 1, 0, 0, 0]),  # 4 tumors, small-medium
+    ("scattered_mixed",   [0, 1, 1, 0, 1, 0, 0]),  # 3 tumors, mixed sizes
+    # Empty — no tumors (1 condition)
+    ("empty",             [0, 0, 0, 0, 0, 0, 0]),
 ]
 
 

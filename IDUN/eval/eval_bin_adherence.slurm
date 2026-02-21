@@ -16,7 +16,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Bin Adherence Evaluation: exp2_1 (FiLM) + exp2b_1 (Input) ==="
+echo "=== Bin Adherence Evaluation: exp2_1 (FiLM) + exp2b_1 (Input) + exp2c_1 (Improved FiLM) ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo "GPUs:   $CUDA_VISIBLE_DEVICES"
@@ -36,6 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # ============================================================================
 CKPT_FILM="runs/diffusion_3d/seg/exp2_1_pixel_seg_sizebin_rflow_256x160_20260201-015003/checkpoint_latest.pt"
 CKPT_INPUT="runs/diffusion_3d/seg/exp2b_1_pixel_seg_input_cond_rflow_256x160_20260201-133413/checkpoint_latest.pt"
+CKPT_EXP2C="runs/diffusion_3d/seg/exp2c_1_pixel_seg_improved_20260218-183155/checkpoint_latest.pt"
 
 # ============================================================================
 # Evaluation: exp2_1 FiLM conditioning
@@ -49,7 +50,7 @@ time python misc/eval_bin_adherence.py \
     --output_dir results/bin_adherence/exp2_1_film \
     --cfg_scales "1.0,2.0,3.0,5.0" \
     --num_repeats 5 \
-    --num_steps 50 \
+    --num_steps 40 \
     --image_size 256 \
     --depth 160 \
     --seed 42
@@ -66,7 +67,26 @@ time python misc/eval_bin_adherence.py \
     --output_dir results/bin_adherence/exp2b_1_input \
     --cfg_scales "1.0,2.0,3.0,5.0" \
     --num_repeats 5 \
-    --num_steps 50 \
+    --num_steps 40 \
+    --image_size 256 \
+    --depth 160 \
+    --seed 42
+
+# ============================================================================
+# Evaluation: exp2c_1 Improved FiLM conditioning
+# (embedding_dim=64, projection_hidden_dim=512, projection_num_layers=4,
+#  cfg_dropout_prob=0.25, regional_weighting)
+# ============================================================================
+echo ""
+echo "=== Evaluating exp2c_1 (Improved FiLM) ==="
+echo ""
+time python misc/eval_bin_adherence.py \
+    --checkpoint "${CKPT_EXP2C}" \
+    --model_type film \
+    --output_dir results/bin_adherence/exp2c_1_film \
+    --cfg_scales "1.0,2.0,3.0,5.0" \
+    --num_repeats 5 \
+    --num_steps 40 \
     --image_size 256 \
     --depth 160 \
     --seed 42
