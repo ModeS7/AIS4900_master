@@ -6,13 +6,12 @@ is a 9-dimensional vector of tumor counts per size bin.
 """
 import logging
 import os
+from typing import Any
 
 import numpy as np
 import torch
 from monai.data import DataLoader
 from omegaconf import DictConfig
-from typing import Any
-
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
@@ -20,7 +19,6 @@ from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
 from medgen.data.loaders.datasets import (
     DEFAULT_BIN_EDGES,
-    compute_feret_diameter,
     compute_size_bins,
     create_size_bin_maps,
 )

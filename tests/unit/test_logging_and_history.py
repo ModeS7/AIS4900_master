@@ -334,13 +334,13 @@ class TestDDPMComputePredictedClean:
         result = ddpm_strategy.compute_predicted_clean(noisy, pred, timesteps)
         assert result.shape == noisy.shape
 
-    def test_output_clamped(self, ddpm_strategy):
-        noisy = torch.randn(4, 1, 64, 64)
-        pred = torch.randn(4, 1, 64, 64)
+    def test_output_not_clamped(self, ddpm_strategy):
+        """Output is NOT clamped — latent/wavelet values can be outside [0, 1]."""
+        noisy = torch.randn(4, 1, 64, 64) * 10
+        pred = torch.randn(4, 1, 64, 64) * 10
         timesteps = torch.randint(0, 100, (4,))
         result = ddpm_strategy.compute_predicted_clean(noisy, pred, timesteps)
-        assert result.min() >= 0.0
-        assert result.max() <= 1.0
+        assert result.min() < 0.0 or result.max() > 1.0
 
     def test_dict_input(self, ddpm_strategy):
         noisy = {'a': torch.randn(4, 1, 64, 64), 'b': torch.randn(4, 1, 64, 64)}
@@ -361,21 +361,21 @@ class TestRFlowComputePredictedClean:
         result = rflow_strategy_2d.compute_predicted_clean(noisy, pred, timesteps)
         assert result.shape == noisy.shape
 
-    def test_output_clamped(self, rflow_strategy_2d):
-        noisy = torch.randn(4, 1, 64, 64)
-        pred = torch.randn(4, 1, 64, 64)
+    def test_output_not_clamped(self, rflow_strategy_2d):
+        """Output is NOT clamped — latent/wavelet values can be outside [0, 1]."""
+        noisy = torch.randn(4, 1, 64, 64) * 10
+        pred = torch.randn(4, 1, 64, 64) * 10
         timesteps = torch.randint(0, 100, (4,))
         result = rflow_strategy_2d.compute_predicted_clean(noisy, pred, timesteps)
-        assert result.min() >= 0.0
-        assert result.max() <= 1.0
+        assert result.min() < 0.0 or result.max() > 1.0
 
     def test_identity_at_t0(self, rflow_strategy_2d):
-        """At t=0, x_0 = x_t + 0*v = x_t (clamped)."""
+        """At t=0, x_0 = x_t + 0*v = x_t."""
         noisy = torch.rand(4, 1, 64, 64)  # already in [0, 1]
         pred = torch.randn(4, 1, 64, 64)
         timesteps = torch.zeros(4)  # t=0
         result = rflow_strategy_2d.compute_predicted_clean(noisy, pred, timesteps)
-        # At t=0: x_0 = clamp(x_t + 0*v) = clamp(x_t) = x_t (since x_t in [0,1])
+        # At t=0: x_0 = x_t + 0*v = x_t
         assert torch.allclose(result, noisy, atol=1e-6)
 
 
