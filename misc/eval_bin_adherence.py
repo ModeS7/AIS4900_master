@@ -262,10 +262,24 @@ def run_evaluation(args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Extract real conditions from dataset
-    conditions = extract_conditions_from_data(
+    all_conditions = extract_conditions_from_data(
         args.data_dir, args.split, DEFAULT_BIN_EDGES, num_bins,
     )
-    logger.info(f"Testing {len(conditions)} conditions from real data")
+
+    # Subsample conditions deterministically if --max_conditions is set
+    if args.max_conditions > 0 and len(all_conditions) > args.max_conditions:
+        rng = np.random.default_rng(seed=args.seed)
+        indices = rng.choice(len(all_conditions), args.max_conditions, replace=False)
+        indices.sort()  # Keep original ordering for reproducibility
+        conditions = [all_conditions[i] for i in indices]
+        logger.info(
+            f"Subsampled {args.max_conditions}/{len(all_conditions)} conditions "
+            f"(seed={args.seed})"
+        )
+    else:
+        conditions = all_conditions
+
+    logger.info(f"Testing {len(conditions)} conditions")
 
     # Save eval config
     git_hash = _get_git_hash()
@@ -280,7 +294,9 @@ def run_evaluation(args: argparse.Namespace) -> None:
         "image_size": args.image_size,
         "depth": args.depth,
         "seed": args.seed,
-        "num_conditions": len(conditions),
+        "max_conditions": args.max_conditions,
+        "num_conditions_total": len(all_conditions),
+        "num_conditions_tested": len(conditions),
         "total_samples": len(conditions) * len(cfg_scales) * args.num_repeats,
         "conditions": [(name, bins) for name, bins in conditions],
         "git_hash": git_hash,
@@ -575,8 +591,12 @@ Examples:
         help="Comma-separated CFG scales to evaluate (default: '1.0,2.0,3.0,5.0')",
     )
     parser.add_argument(
-        "--num_repeats", type=int, default=5,
-        help="Number of repeats per condition (default: 5)",
+        "--num_repeats", type=int, default=1,
+        help="Number of repeats per condition (default: 1)",
+    )
+    parser.add_argument(
+        "--max_conditions", type=int, default=10,
+        help="Max conditions to test (0=all). Sampled deterministically from seed. (default: 10)",
     )
     parser.add_argument(
         "--batch_size", type=int, default=4,

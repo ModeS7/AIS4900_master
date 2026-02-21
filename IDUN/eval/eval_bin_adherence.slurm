@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-6:00:00
+#SBATCH --time=0-2:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -51,7 +51,7 @@ time python misc/eval_bin_adherence.py \
     --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2_1_film \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 4 \
+    --max_conditions 10 \
     --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
@@ -70,7 +70,7 @@ time python misc/eval_bin_adherence.py \
     --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2b_1_input \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 4 \
+    --max_conditions 10 \
     --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
@@ -91,7 +91,7 @@ time python misc/eval_bin_adherence.py \
     --data_dir "${DATA_DIR}" \
     --output_dir results/bin_adherence/exp2c_1_film \
     --cfg_scales "1.0,2.0,3.0,5.0" \
-    --num_repeats 4 \
+    --max_conditions 10 \
     --batch_size 4 \
     --num_steps 40 \
     --image_size 256 \
