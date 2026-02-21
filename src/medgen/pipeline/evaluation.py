@@ -171,7 +171,7 @@ def evaluate_test_set(
                 timestep_loss_count.scatter_add_(0, bin_indices, torch.ones_like(bin_indices))
 
             # Decode to pixel space for metrics
-            if trainer.space.scale_factor > 1:
+            if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
                 metrics_gt = trainer.space.decode_batch(images)
             else:
@@ -200,7 +200,7 @@ def evaluate_test_set(
             # Regional metrics tracking (tumor vs background)
             if regional_tracker is not None and labels is not None:
                 # Decode labels to pixel space if needed
-                labels_pixel = trainer.space.decode(labels) if trainer.space.scale_factor > 1 else labels
+                labels_pixel = trainer.space.decode(labels) if trainer.space.needs_decode else labels
                 regional_tracker.update(metrics_pred, metrics_gt, labels_pixel)
 
             # Track worst batch
@@ -489,7 +489,7 @@ def compute_volume_3d_msssim(
                     )
 
                 # Decode from diffusion space if needed
-                if trainer.space.scale_factor > 1:
+                if trainer.space.needs_decode:
                     predicted_clean = trainer.space.decode_batch(predicted_clean)
 
                 all_recon[start_idx:end_idx] = predicted_clean
@@ -639,8 +639,8 @@ def compute_volume_3d_msssim_native(
             prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
             _, predicted_clean = trainer.strategy.compute_loss(prediction, volume_latent, noise, noisy_volume, timesteps)
 
-            # Decode back to pixel space if using latent diffusion
-            if trainer.space.scale_factor > 1:
+            # Decode back to pixel space if needed
+            if trainer.space.needs_decode:
                 predicted_clean = trainer.space.decode_batch(predicted_clean)
 
             # Compute 3D MS-SSIM in pixel space

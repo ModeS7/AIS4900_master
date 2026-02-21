@@ -695,7 +695,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     # Compute perceptual loss (decode for latent space)
                     # For 3D: use 2.5D approach (center slice) for efficiency
                     if self.perceptual_weight > 0:
-                        if self.space.scale_factor > 1:
+                        if self.space.needs_decode:
                             # Decode to pixel space for perceptual loss
                             pred_decoded = self.space.decode_batch(predicted_clean)
                             images_decoded = self.space.decode_batch(images)
@@ -1111,7 +1111,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if log_figures and worst_val_data is not None:
             original = worst_val_data['original']
             generated = worst_val_data['generated']
-            if self.space.scale_factor > 1:
+            if self.space.needs_decode:
                 self._unified_metrics.log_latent_samples(
                     generated.to(self.device), epoch, tag='val/worst_batch_latent'
                 )

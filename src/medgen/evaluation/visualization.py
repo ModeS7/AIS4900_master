@@ -113,7 +113,7 @@ class ValidationVisualizer:
         # Decode from latent space to pixel space for visualization
         original = data['original']
         generated = data['generated']
-        if self.space.scale_factor > 1:
+        if self.space.needs_decode:
             original = self.space.decode(original)
             generated = self.space.decode(generated)
 
@@ -526,8 +526,8 @@ class ValidationVisualizer:
                             latent_channels=self.space.latent_channels,
                         )
 
-                # Decode from latent space to pixel space for visualization
-                if self.space.scale_factor > 1:
+                # Decode to pixel space for visualization
+                if self.space.needs_decode:
                     samples = self.space.decode(samples)
                     if intermediates is not None:
                         intermediates = [self.space.decode(inter) for inter in intermediates]

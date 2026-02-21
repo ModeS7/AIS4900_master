@@ -236,6 +236,8 @@ SiT-S wins on all three generation metrics.
 |----|------|-----------|-------------|--------|----------|------|
 | exp1 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp1_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1b | Pixel [-1,1] | 128x128x160 | UNet 5L | 270M | rflow | bravo |
+| exp1b_1 | Pixel [-1,1] | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1_chained | Pixel (chain test) | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp2 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg_conditioned |
@@ -261,6 +263,9 @@ SiT-S wins on all three generation metrics.
 | exp12_2 | Wavelet WDM | 128x128x160 | WDM 5L | ~77M | ddpm x0 | bravo |
 | exp12_3 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | rflow | bravo |
 | exp12_4 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | ddpm x0 | bravo |
+| exp12b_2 | Wavelet WDM [-1,1] | 128x128x160 | WDM 5L | ~77M | ddpm x0 | bravo |
+| exp12b_3 | Wavelet WDM [-1,1] | 128x128x160 | WDM 5L+attn | ~77M | rflow | bravo |
+| exp12b_7 | Wavelet WDM raw [-1,1] | 128x128x160 | WDM 5L | ~77M | ddpm x0 | bravo |
 | exp13 | LDM DiT 4x | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
 
 ## 3D Part 1: Pixel-Space Bravo Experiments
@@ -474,6 +479,26 @@ DiT-S (384 hidden, 12 layers), patch=2, 20,480 tokens, use_compile=true, bravo_s
 
 ### exp12_2/12_3/12_4: WDM-style Wavelet (not yet run)
 Use smaller WDM model (~77M) with attention at L3/L4. Submitted but pending.
+
+### exp12b_2/12b_3/12b_7: WDM-style Wavelet with [-1,1] Rescaling (not yet run)
+Same as exp12_2/12_3/12_7 but with `wavelet.rescale=true`: data is rescaled from [0,1] to [-1,1]
+before DWT. This centers data at zero for symmetric interpolation with Gaussian noise,
+matching WDM paper convention and standard practice (DDPM, Stable Diffusion).
+
+| Experiment | vs Baseline | Change |
+|-----------|-------------|--------|
+| exp12b_2 | exp12_2 | + [-1,1] rescaling (DDPM x0, normalized subbands) |
+| exp12b_3 | exp12_3 | + [-1,1] rescaling (RFlow + attention, normalized subbands) |
+| exp12b_7 | exp12_7 | + [-1,1] rescaling (DDPM x0, raw coefficients) |
+
+### exp1b/exp1b_1: Pixel-Space Bravo with [-1,1] Rescaling (not yet run)
+Same as exp1/exp1_1 but with `training.rescale_data=true`: data rescaled from [0,1] to [-1,1]
+in PixelSpace before diffusion. Tests whether zero-centering helps pixel-space 3D diffusion.
+
+| Experiment | Resolution | vs Baseline |
+|-----------|-----------|-------------|
+| exp1b | 128x128x160 | exp1 + [-1,1] |
+| exp1b_1 | 256x256x160 | exp1_1 + [-1,1] |
 
 ---
 

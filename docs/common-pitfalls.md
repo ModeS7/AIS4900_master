@@ -856,7 +856,25 @@ def _get_2d_feret(self, region) -> float:
 
 **Affected code**: `src/medgen/metrics/generation_sampling.py`, `src/medgen/metrics/sampler.py`
 
-## 78. Seg Binarization Inconsistency (Fixed)
+## 78. scale_factor > 1 Guard Missed PixelSpace with Rescaling (Fixed Feb 2026)
+**Problem**: Many locations guarded `space.decode()` calls with `if space.scale_factor > 1`, but `PixelSpace` has `scale_factor=1` even when rescaling is enabled. This meant perceptual loss, metrics, and visualization code would skip decoding for rescaled pixel-space data, producing [-1,1] values where [0,1] was expected.
+
+**Root cause**: `scale_factor` was only designed for spatial downsampling (latent, wavelet, S2D). When [-1,1] rescaling was added to `PixelSpace`, the guard pattern broke.
+
+**Fix**: Added `needs_decode` property to `DiffusionSpace` base class. Default returns `self.scale_factor > 1`, but `PixelSpace` overrides it to return `self._rescale`. Replaced all 20+ `scale_factor > 1` decode guards with `needs_decode` across trainer, validation, evaluation, sampler, generation_sampling, and visualization code.
+
+**Rule**: Always use `space.needs_decode` to check if `decode()` must be called. Only use `scale_factor > 1` for spatial dimension checks (e.g., noise shape matching).
+
+**Affected code**: `spaces.py`, `trainer.py`, `validation.py`, `evaluation.py`, `sampler.py`, `generation_sampling.py`, `visualization.py`, `evaluation/visualization.py`
+
+## 79. Compiled Forward Paths Had [0,1] Clamps (Fixed Feb 2026)
+**Problem**: `diffusion_model_setup.py`, `compile_manager.py`, and `training_tricks.py` all applied `torch.clamp(0, 1)` to predicted clean images in the compiled forward path. Same class of bug as #75 but in different code paths.
+
+**Fix**: Removed all `torch.clamp(0, 1)` from `_forward_single` and `_forward_dual` in all three files (4 clamps each = 12 total).
+
+**Affected code**: `src/medgen/pipeline/diffusion_model_setup.py`, `src/medgen/pipeline/compile_manager.py`, `src/medgen/pipeline/training_tricks.py`
+
+## 80. Seg Binarization Inconsistency (Fixed)
 
 **Problem**: The 2D generation pipeline (`generate.py`) used min-max normalization + `make_binary(threshold=0.1)` for seg binarization, while the training pipeline (`generation_sampling.py`) used `clamp(0,1) + > 0.5`. This caused inconsistent behavior between training evaluation and standalone generation.
 

@@ -149,6 +149,11 @@ python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo strategy=rflow \
     space_to_depth.enabled=true
 
+# 3D Pixel-Space with [-1,1] rescaling (zero-centered data for diffusion)
+python -m medgen.scripts.train --config-name=diffusion_3d \
+    mode=bravo strategy=rflow \
+    training.rescale_data=true
+
 # 3D Pixel-Space with Haar Wavelet Decomposition
 python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo strategy=rflow \
@@ -159,6 +164,14 @@ python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo strategy=rflow \
     model=wdm_3d \
     wavelet.enabled=true
+
+# 3D Wavelet Diffusion with [-1,1] rescaling before DWT (default: on)
+# wavelet.rescale=true maps [0,1] -> [-1,1] before wavelet decomposition
+python -m medgen.scripts.train --config-name=diffusion_3d \
+    mode=bravo strategy=rflow \
+    model=wdm_3d \
+    wavelet.enabled=true \
+    wavelet.rescale=true
 
 # 3D Diffusion with ControlNet (pixel-resolution conditioning)
 python -m medgen.scripts.train mode=bravo strategy=rflow model.spatial_dims=3 \

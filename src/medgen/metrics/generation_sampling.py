@@ -295,7 +295,7 @@ def generate_samples(
     all_samples = []
 
     # Check if using latent diffusion
-    is_latent = self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1
+    is_latent = self_.space is not None and self_.space.needs_decode
 
     # Generate in batches to avoid OOM with CUDA graphs
     for start_idx in range(0, num_to_use, batch_size):
@@ -363,7 +363,7 @@ def generate_samples(
 
     # Decode from latent/wavelet space to pixel space for feature extraction
     result = result.to(self_.device)
-    if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
+    if self_.space is not None and self_.space.needs_decode:
         result = self_.space.decode(result)
 
     # Binarize seg output or clamp to [0, 1] for image output
@@ -425,7 +425,7 @@ def generate_and_extract_features_3d_streaming(
     max_diversity_samples = 2
 
     # Check if using latent diffusion
-    is_latent = self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1
+    is_latent = self_.space is not None and self_.space.needs_decode
 
     for idx in range(num_to_generate):
         # Get conditioning for this sample (pixel-space from dataset)
@@ -476,7 +476,7 @@ def generate_and_extract_features_3d_streaming(
 
         # Decode from latent/wavelet space, then clamp in pixel space
         sample = sample.float()
-        if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
+        if self_.space is not None and self_.space.needs_decode:
             sample = self_.space.decode(sample)
         if self_.is_seg_mode:
             sample = binarize_seg(sample)

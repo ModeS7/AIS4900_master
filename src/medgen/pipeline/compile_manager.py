@@ -106,9 +106,9 @@ class CompiledForwardManager:
                 spatial_dims = noisy_images.ndim - 2  # 2 for [B,C,H,W], 3 for [B,C,D,H,W]
                 expand_shape = (-1,) + (1,) * (spatial_dims + 1)
                 t_expanded = t_normalized.view(*expand_shape)
-                predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
+                predicted_clean = noisy_images + t_expanded * prediction
             else:
-                predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
+                predicted_clean = noisy_images - prediction
 
             if strategy_name == 'rflow':
                 target = images - noise
@@ -174,8 +174,8 @@ class CompiledForwardManager:
                 spatial_dims = noisy_0.ndim - 2  # 2 for [B,C,H,W], 3 for [B,C,D,H,W]
                 expand_shape = (-1,) + (1,) * (spatial_dims + 1)
                 t_expanded = t_normalized.view(*expand_shape)
-                clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
+                clean_0 = noisy_0 + t_expanded * pred_0
+                clean_1 = noisy_1 + t_expanded * pred_1
                 target_0 = images_0 - noise_0
                 target_1 = images_1 - noise_1
                 if use_fp32:
@@ -185,8 +185,8 @@ class CompiledForwardManager:
                     mse_loss = (((pred_0 - target_0) ** 2).mean() +
                                ((pred_1 - target_1) ** 2).mean()) / 2
             else:
-                clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
-                clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
+                clean_0 = noisy_0 - pred_0
+                clean_1 = noisy_1 - pred_1
                 if use_fp32:
                     mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() +
                                ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2

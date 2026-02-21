@@ -176,6 +176,7 @@ class TestLatentVisualization:
         trainer.device = torch.device('cpu')
         trainer.space = Mock()
         trainer.space.scale_factor = 4  # Latent space
+        trainer.space.needs_decode = True
         trainer.space.latent_channels = 4
         trainer.space.encode = Mock(return_value=torch.randn(2, 4, 8, 8, 8))
         trainer.space.decode = Mock(return_value=torch.randn(2, 1, 32, 32, 32))
@@ -210,6 +211,7 @@ class TestLatentVisualization:
         trainer.device = torch.device('cpu')
         trainer.space = Mock()
         trainer.space.scale_factor = 1  # Pixel space
+        trainer.space.needs_decode = False
         trainer.space.latent_channels = 1
         trainer._gen_metrics_config = None
         trainer._unified_metrics = Mock()

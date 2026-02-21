@@ -740,12 +740,16 @@ def train(
 
 ## Spaces
 
-| Space | scale_factor | Purpose |
-|-------|--------------|---------|
-| `PixelSpace` | 1 | Direct pixel diffusion (default) |
-| `SpaceToDepthSpace` | 2 | 2D pixel rearrangement (no learned transform) |
-| `WaveletSpace` | 2 | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
-| `LatentSpace` | 4-128 | Compressed diffusion via VAE/VQ-VAE/DC-AE (auto-detected from checkpoint) |
+| Space | scale_factor | rescale | Purpose |
+|-------|--------------|---------|---------|
+| `PixelSpace` | 1 | opt-in | Direct pixel diffusion (default) |
+| `SpaceToDepthSpace` | 2 | opt-in | 2D pixel rearrangement (no learned transform) |
+| `WaveletSpace` | 2 | default on | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
+| `LatentSpace` | 4-128 | N/A | Compressed diffusion via VAE/VQ-VAE/DC-AE (auto-detected from checkpoint) |
+
+**[-1,1] Rescaling**: All spaces except `LatentSpace` support an optional `rescale` parameter that maps [0,1] data to [-1,1] inside `encode()` and back in `decode()`. This keeps all downstream code (metrics, viz, saving) at [0,1]. Use `training.rescale_data=true` for pixel/S2D spaces, or `wavelet.rescale=true` (default) for wavelet space.
+
+**`needs_decode` property**: Use `space.needs_decode` (not `space.scale_factor > 1`) to check if `decode()` must be called to get pixel-space output. This correctly handles rescaling in PixelSpace (scale_factor=1 but still needs decode).
 
 **LatentSpace scale factors** depend on the compression model:
 

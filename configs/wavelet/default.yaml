@@ -18,3 +18,7 @@ enabled: false
 # Normalizes each of the 8 wavelet subbands to ~N(0,1).
 # Set false to use raw DWT coefficients (matches WDM paper).
 normalize: true
+
+# Rescale [0,1] data to [-1,1] before DWT (WDM paper convention).
+# Centers data at zero for symmetric interpolation with Gaussian noise.
+rescale: true

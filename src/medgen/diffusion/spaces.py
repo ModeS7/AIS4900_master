@@ -19,6 +19,15 @@ class DiffusionSpace(ABC):
     or VAE-based (latent) transformations.
     """
 
+    @property
+    def needs_decode(self) -> bool:
+        """Whether decode() must be called to get pixel-space output.
+
+        True when encode() transforms data away from pixel space
+        (latent encoding, wavelet transform, rescaling, etc.).
+        """
+        return self.scale_factor > 1
+
     @abstractmethod
     def encode(self, x: Tensor) -> Tensor:
         """Encode images from pixel space to diffusion space.
@@ -101,14 +110,25 @@ class PixelSpace(DiffusionSpace):
 
     This is the default space that maintains backward compatibility
     with existing pixel-space diffusion training.
+
+    Args:
+        rescale: If True, rescale [0,1] data to [-1,1] in encode()
+            and back to [0,1] in decode(). Default False.
     """
 
+    def __init__(self, rescale: bool = False) -> None:
+        self._rescale = rescale
+
     def encode(self, x: Tensor) -> Tensor:
-        """Identity encoding - returns input unchanged."""
+        """Optionally rescale [0,1] -> [-1,1]."""
+        if self._rescale:
+            return 2.0 * x - 1.0
         return x
 
     def decode(self, z: Tensor) -> Tensor:
-        """Identity decoding - returns input unchanged."""
+        """Optionally rescale [-1,1] -> [0,1]."""
+        if self._rescale:
+            return (z + 1.0) / 2.0
         return z
 
     def get_latent_channels(self, input_channels: int) -> int:
@@ -119,6 +139,11 @@ class PixelSpace(DiffusionSpace):
     def scale_factor(self) -> int:
         """No spatial scaling in pixel space."""
         return 1
+
+    @property
+    def needs_decode(self) -> bool:
+        """Needs decode when rescaling is enabled."""
+        return self._rescale
 
     @property
     def latent_channels(self) -> int:
@@ -140,7 +165,7 @@ class SpaceToDepthSpace(DiffusionSpace):
         depth_factor: Downsampling factor for D dimension. Default 2.
     """
 
-    def __init__(self, spatial_factor: int = 2, depth_factor: int = 2) -> None:
+    def __init__(self, spatial_factor: int = 2, depth_factor: int = 2, rescale: bool = False) -> None:
         from medgen.models.dcae_3d_ops import PixelShuffle3D, PixelUnshuffle3D
 
         self._unshuffle = PixelUnshuffle3D(spatial_factor, depth_factor)
@@ -148,6 +173,7 @@ class SpaceToDepthSpace(DiffusionSpace):
         self._channel_multiplier = spatial_factor * spatial_factor * depth_factor
         self._scale_factor = spatial_factor
         self._depth_scale_factor = depth_factor
+        self._rescale = rescale
 
     def encode(self, x: Tensor) -> Tensor:
         """Rearrange spatial dims to channels (lossless).
@@ -166,6 +192,8 @@ class SpaceToDepthSpace(DiffusionSpace):
                 f"SpaceToDepthSpace requires 5D input [B, C, D, H, W], "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
+        if self._rescale:
+            x = 2.0 * x - 1.0
         result: Tensor = self._unshuffle(x)
         return result
 
@@ -187,6 +215,8 @@ class SpaceToDepthSpace(DiffusionSpace):
                 f"got {z.dim()}D tensor with shape {z.shape}"
             )
         result: Tensor = self._shuffle(z)
+        if self._rescale:
+            result = (result + 1.0) / 2.0
         return result
 
     def get_latent_channels(self, input_channels: int) -> int:
@@ -237,11 +267,13 @@ class WaveletSpace(DiffusionSpace):
         self,
         shift: list[float] | None = None,
         scale: list[float] | None = None,
+        rescale: bool = False,
     ) -> None:
         from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
 
         self._forward = HaarForward3D()
         self._inverse = HaarInverse3D()
+        self._rescale = rescale
 
         if shift is not None and scale is not None:
             # Shape: [1, 8, 1, 1, 1] for broadcasting over [B, C, D, H, W]
@@ -268,6 +300,8 @@ class WaveletSpace(DiffusionSpace):
                 f"WaveletSpace requires 5D input [B, C, D, H, W], "
                 f"got {x.dim()}D tensor with shape {x.shape}"
             )
+        if self._rescale:
+            x = 2.0 * x - 1.0
         result: Tensor = self._forward(x)
         if self._shift is not None:
             if self._shift.device != result.device:
@@ -299,6 +333,8 @@ class WaveletSpace(DiffusionSpace):
                 self._scale = self._scale.to(z.device)  # type: ignore[union-attr]
             z = z * self._scale + self._shift  # type: ignore[operator]
         result: Tensor = self._inverse(z)
+        if self._rescale:
+            result = (result + 1.0) / 2.0
         return result
 
     def get_latent_channels(self, input_channels: int) -> int:
@@ -331,6 +367,7 @@ class WaveletSpace(DiffusionSpace):
     def compute_subband_stats(
         dataloader: 'torch.utils.data.DataLoader',  # type: ignore[type-arg]
         max_samples: int = 200,
+        rescale: bool = False,
     ) -> dict[str, list[float]]:
         """Compute per-subband mean/std from training data using Welford's algorithm.
 
@@ -341,6 +378,8 @@ class WaveletSpace(DiffusionSpace):
             dataloader: Training dataloader.
             max_samples: Maximum number of samples to process. Haar is deterministic
                 so stats stabilize quickly. Default 200.
+            rescale: If True, rescale [0,1] data to [-1,1] before DWT,
+                matching the WaveletSpace(rescale=True) encode path.
 
         Returns:
             Dict with 'wavelet_shift' (list of 8 means) and
@@ -356,6 +395,10 @@ class WaveletSpace(DiffusionSpace):
         for batch in dataloader:
             bd = BatchData.from_raw(batch)
             images = bd.images
+
+            # Match WaveletSpace.encode(): rescale before DWT
+            if rescale:
+                images = 2.0 * images - 1.0
 
             # Apply Haar wavelet to get subbands
             coeffs = haar_forward_3d(images)

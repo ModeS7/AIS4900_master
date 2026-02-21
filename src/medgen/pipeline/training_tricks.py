@@ -452,20 +452,20 @@ def _reconstruct_clean(
         if isinstance(aug_noisy, dict):
             keys = list(aug_noisy.keys())
             return {
-                k: torch.clamp(aug_noisy[k] + t_exp * prediction[:, i:i+1], 0, 1)
+                k: aug_noisy[k] + t_exp * prediction[:, i:i+1]
                 for i, k in enumerate(keys)
             }
         else:
-            return torch.clamp(aug_noisy + t_exp * prediction, 0, 1)
+            return aug_noisy + t_exp * prediction
     else:  # ddpm
         if isinstance(aug_noisy, dict):
             keys = list(aug_noisy.keys())
             return {
-                k: torch.clamp(aug_noisy[k] - prediction[:, i:i+1], 0, 1)
+                k: aug_noisy[k] - prediction[:, i:i+1]
                 for i, k in enumerate(keys)
             }
         else:
-            return torch.clamp(aug_noisy - prediction, 0, 1)
+            return aug_noisy - prediction
 
 
 def _compute_perceptual_with_inverse(

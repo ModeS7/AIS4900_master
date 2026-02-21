@@ -132,7 +132,7 @@ def visualize_samples_3d(
             labels = cached_labels[:batch_size]
             # Check if labels are already in latent space (bravo_seg_cond mode)
             labels_is_latent = trainer._cached_train_batch.get('labels_is_latent', False)
-            if trainer.space.scale_factor > 1 and not labels_is_latent:
+            if trainer.space.needs_decode and not labels_is_latent:
                 labels_encoded = trainer.space.encode(labels)
             else:
                 labels_encoded = labels
@@ -163,12 +163,12 @@ def visualize_samples_3d(
             latent_channels=trainer.space.latent_channels,
         )
 
-    # Log latent space visualization before decoding (for latent diffusion)
-    if trainer.space.scale_factor > 1 and trainer._unified_metrics is not None:
+    # Log latent space visualization before decoding
+    if trainer.space.needs_decode and trainer._unified_metrics is not None:
         trainer._unified_metrics.log_latent_samples(samples, epoch, tag='Generated_Samples_Latent')
 
-    # Decode if in latent space
-    if trainer.space.scale_factor > 1:
+    # Decode to pixel space if needed
+    if trainer.space.needs_decode:
         samples = trainer.space.decode(samples)
 
     # Log using unified metrics (handles 3D center slice extraction)
@@ -287,7 +287,7 @@ def visualize_denoising_trajectory_3d(
         labels = cached_labels[:1]
         # Check if labels are already in latent space (bravo_seg_cond mode)
         labels_is_latent = trainer._cached_train_batch.get('labels_is_latent', False)
-        if trainer.space.scale_factor > 1 and not labels_is_latent:
+        if trainer.space.needs_decode and not labels_is_latent:
             labels_encoded = trainer.space.encode(labels)
         else:
             labels_encoded = labels
@@ -306,12 +306,12 @@ def visualize_denoising_trajectory_3d(
             num_steps=25, capture_every=5,
         )
 
-    # Log latent trajectory before decoding (for latent diffusion)
-    if trainer.space.scale_factor > 1 and trainer._unified_metrics is not None:
+    # Log latent trajectory before decoding
+    if trainer.space.needs_decode and trainer._unified_metrics is not None:
         trainer._unified_metrics.log_latent_trajectory(trajectory, epoch, tag='denoising_trajectory')
 
-    # Decode trajectory if in latent space
-    if trainer.space.scale_factor > 1:
+    # Decode trajectory to pixel space if needed
+    if trainer.space.needs_decode:
         trajectory = [trainer.space.decode(t) for t in trajectory]
 
     # Log using unified metrics (handles 3D center slice extraction)

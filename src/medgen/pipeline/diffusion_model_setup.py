@@ -417,9 +417,9 @@ def setup_compiled_forward(trainer: DiffusionTrainer, enabled: bool) -> None:
         if strategy_name == 'rflow':
             t_normalized = timesteps.float() / float(num_train_timesteps)
             t_expanded = t_normalized.view(-1, 1, 1, 1)
-            predicted_clean = torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
+            predicted_clean = noisy_images + t_expanded * prediction
         else:
-            predicted_clean = torch.clamp(noisy_images - prediction, 0, 1)
+            predicted_clean = noisy_images - prediction
 
         if strategy_name == 'rflow':
             target = images - noise
@@ -462,8 +462,8 @@ def setup_compiled_forward(trainer: DiffusionTrainer, enabled: bool) -> None:
         if strategy_name == 'rflow':
             t_normalized = timesteps.float() / float(num_train_timesteps)
             t_expanded = t_normalized.view(-1, 1, 1, 1)
-            clean_0 = torch.clamp(noisy_0 + t_expanded * pred_0, 0, 1)
-            clean_1 = torch.clamp(noisy_1 + t_expanded * pred_1, 0, 1)
+            clean_0 = noisy_0 + t_expanded * pred_0
+            clean_1 = noisy_1 + t_expanded * pred_1
             target_0 = images_0 - noise_0
             target_1 = images_1 - noise_1
             if use_fp32:
@@ -473,8 +473,8 @@ def setup_compiled_forward(trainer: DiffusionTrainer, enabled: bool) -> None:
                 # BF16: reproduces old behavior (suboptimal gradients)
                 mse_loss = (((pred_0 - target_0) ** 2).mean() + ((pred_1 - target_1) ** 2).mean()) / 2
         else:
-            clean_0 = torch.clamp(noisy_0 - pred_0, 0, 1)
-            clean_1 = torch.clamp(noisy_1 - pred_1, 0, 1)
+            clean_0 = noisy_0 - pred_0
+            clean_1 = noisy_1 - pred_1
             if use_fp32:
                 mse_loss = (((pred_0.float() - noise_0.float()) ** 2).mean() + ((pred_1.float() - noise_1.float()) ** 2).mean()) / 2
             else:

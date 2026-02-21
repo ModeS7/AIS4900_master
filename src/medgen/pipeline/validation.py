@@ -147,7 +147,7 @@ def compute_validation_losses(
 
             # Compute perceptual loss
             if trainer.perceptual_weight > 0:
-                if trainer.space.scale_factor > 1:
+                if trainer.space.needs_decode:
                     pred_decoded = trainer.space.decode_batch(predicted_clean)
                     images_decoded = trainer.space.decode_batch(images)
                 else:
@@ -186,8 +186,8 @@ def compute_validation_losses(
                         'loss': loss_val,
                     }
 
-            # Quality metrics (decode to pixel space for latent diffusion)
-            if trainer.space.scale_factor > 1:
+            # Quality metrics (decode to pixel space for latent/wavelet/rescaled diffusion)
+            if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
                 metrics_gt = trainer.space.decode_batch(images)
             else:
@@ -281,7 +281,7 @@ def compute_validation_losses(
                 # Uses decoded predictions and pixel-space labels for masking
                 if trainer.log_timestep_region_losses and labels_pixel is not None:
                     # Compute pixel-space error map for region tracking
-                    if trainer.space.scale_factor > 1:
+                    if trainer.space.needs_decode:
                         # Latent diffusion: decode prediction and compute pixel-space target
                         # For pixel-space region analysis, we compare decoded x0 prediction vs ground truth
                         error_for_region = ((metrics_pred.float() - metrics_gt.float()) ** 2)
@@ -510,8 +510,8 @@ def compute_per_modality_validation(
                         prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
                     _, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
-                    # Decode to pixel space for metrics (S2D/Wavelet/Latent)
-                    if trainer.space.scale_factor > 1:
+                    # Decode to pixel space for metrics (S2D/Wavelet/Latent/Rescaled)
+                    if trainer.space.needs_decode:
                         metrics_pred = trainer.space.decode_batch(predicted_clean)
                         metrics_gt = trainer.space.decode_batch(images)
                         metrics_labels = trainer.space.decode(labels) if labels is not None else None

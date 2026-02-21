@@ -308,7 +308,8 @@ def main(cfg: DictConfig) -> None:
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
     else:
-        space = PixelSpace()
+        rescale = cfg.training.get('rescale_data', False)
+        space = PixelSpace(rescale=rescale)
 
         # Create trainer
         trainer = DiffusionTrainer(cfg, space=space)
@@ -705,17 +706,21 @@ def _train_3d(cfg: DictConfig) -> None:
         if s2d_cfg.get('enabled', False):
             spatial_factor = s2d_cfg.get('spatial_factor', 2)
             depth_factor = s2d_cfg.get('depth_factor', 2)
+            rescale = cfg.training.get('rescale_data', False)
             space = SpaceToDepthSpace(
                 spatial_factor=spatial_factor,
                 depth_factor=depth_factor,
+                rescale=rescale,
             )
             logger.info(
                 f"Space-to-depth: {space.latent_channels}x channels, "
                 f"spatial {spatial_factor}x, depth {depth_factor}x"
+                f"{', rescale [-1,1]' if rescale else ''}"
             )
         elif wavelet_cfg.get('enabled', False):
+            rescale = wavelet_cfg.get('rescale', True)
             if wavelet_cfg.get('normalize', True):
-                stats = WaveletSpace.compute_subband_stats(train_loader)
+                stats = WaveletSpace.compute_subband_stats(train_loader, rescale=rescale)
                 wavelet_shift = stats.get('wavelet_shift')
                 wavelet_scale = stats.get('wavelet_scale')
                 if wavelet_shift:
@@ -723,13 +728,14 @@ def _train_3d(cfg: DictConfig) -> None:
                     for i, name in enumerate(names):
                         if i < len(wavelet_shift):
                             logger.info(f"  {name}: shift={wavelet_shift[i]:.4f}, scale={wavelet_scale[i]:.4f}")
-                space = WaveletSpace(shift=wavelet_shift, scale=wavelet_scale)
-                logger.info("Wavelet space: Haar 3D 2x2x2, 8x channels, per-subband normalized")
+                space = WaveletSpace(shift=wavelet_shift, scale=wavelet_scale, rescale=rescale)
+                logger.info(f"Wavelet space: Haar 3D 2x2x2, 8x channels, per-subband normalized{', rescale [-1,1]' if rescale else ''}")
             else:
-                space = WaveletSpace()
-                logger.info("Wavelet space: Haar 3D 2x2x2, 8x channels, raw coefficients (no normalization)")
+                space = WaveletSpace(rescale=rescale)
+                logger.info(f"Wavelet space: Haar 3D 2x2x2, 8x channels, raw coefficients{', rescale [-1,1]' if rescale else ''}")
         else:
-            space = PixelSpace()
+            rescale = cfg.training.get('rescale_data', False)
+            space = PixelSpace(rescale=rescale)
 
         # Pixel-space training: no separate loaders needed for reference features
         pixel_train_loader = None

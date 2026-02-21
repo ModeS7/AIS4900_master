@@ -417,7 +417,7 @@ class ConditionalSampler:
 
         # Decode from latent/wavelet space if needed
         result = result.to(self.device)
-        if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
+        if self.space is not None and self.space.needs_decode:
             result = self.space.decode(result)
 
         # Binarize seg output or clamp to [0, 1] for image output

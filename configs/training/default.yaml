@@ -27,6 +27,7 @@ warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
 num_figures: 20            # Total figure/extended-metric events during training
 augment: false             # Data augmentation (disabled by default for diffusion)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
+rescale_data: false        # Rescale [0,1] data to [-1,1] for pixel-space diffusion (opt-in)
 
 # Batch-level augmentations (VAE only - mixup/cutmix/mosaic/copy-paste)
 batch_augment:

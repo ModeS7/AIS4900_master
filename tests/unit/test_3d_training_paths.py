@@ -85,6 +85,7 @@ class Test3DVisualization:
         trainer.volume_width = 64
         trainer.space = Mock()
         trainer.space.scale_factor = 1
+        trainer.space.needs_decode = False
         trainer.space.latent_channels = 1
         trainer._gen_metrics_config = None
         trainer._unified_metrics = Mock()

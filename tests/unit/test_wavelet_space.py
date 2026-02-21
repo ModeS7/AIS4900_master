@@ -1,8 +1,8 @@
-"""Tests for WaveletSpace (Haar 3D) diffusion space."""
+"""Tests for WaveletSpace (Haar 3D) diffusion space and rescaling."""
 import pytest
 import torch
 
-from medgen.diffusion.spaces import WaveletSpace
+from medgen.diffusion.spaces import PixelSpace, SpaceToDepthSpace, WaveletSpace
 from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
 
 
@@ -301,3 +301,147 @@ class TestWaveletSubbandStats:
 
         assert len(stats['wavelet_shift']) == 8
         assert len(stats['wavelet_scale']) == 8
+
+    def test_compute_subband_stats_rescale(self):
+        """Stats with rescale=True should differ from rescale=False."""
+        x = torch.rand(20, 1, 8, 16, 16)  # [0,1] data
+        dataset = _TensorDataset(x)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=4)
+
+        stats_no = WaveletSpace.compute_subband_stats(loader, max_samples=20, rescale=False)
+        stats_yes = WaveletSpace.compute_subband_stats(loader, max_samples=20, rescale=True)
+
+        # LLL shift should differ: rescale maps [0,1] -> [-1,1]
+        assert abs(stats_no['wavelet_shift'][0] - stats_yes['wavelet_shift'][0]) > 0.1
+
+
+class TestRescalePixelSpace:
+    """Test PixelSpace rescaling."""
+
+    def test_pixel_space_no_rescale_backward_compat(self):
+        """PixelSpace() with no args works identically to before."""
+        space = PixelSpace()
+        assert not space.needs_decode
+        assert space.scale_factor == 1
+
+        x = torch.rand(2, 1, 64, 64)
+        assert torch.equal(space.encode(x), x)
+        assert torch.equal(space.decode(x), x)
+
+    def test_pixel_space_rescale_roundtrip(self):
+        """decode(encode(x)) recovers original [0,1] data."""
+        space = PixelSpace(rescale=True)
+        x = torch.rand(2, 1, 64, 64)
+
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        torch.testing.assert_close(reconstructed, x)
+
+    def test_pixel_space_rescale_output_range(self):
+        """encode() maps [0,1] to [-1,1]."""
+        space = PixelSpace(rescale=True)
+        x = torch.rand(2, 1, 64, 64)  # [0, 1]
+
+        z = space.encode(x)
+        assert z.min() >= -1.0
+        assert z.max() <= 1.0
+
+        # Boundaries
+        zeros = space.encode(torch.zeros(1, 1, 4, 4))
+        ones = space.encode(torch.ones(1, 1, 4, 4))
+        torch.testing.assert_close(zeros, torch.full_like(zeros, -1.0))
+        torch.testing.assert_close(ones, torch.ones_like(ones))
+
+    def test_pixel_space_rescale_needs_decode(self):
+        """needs_decode is True when rescale is enabled."""
+        assert not PixelSpace().needs_decode
+        assert not PixelSpace(rescale=False).needs_decode
+        assert PixelSpace(rescale=True).needs_decode
+
+    def test_pixel_space_rescale_encode_batch(self):
+        """encode_batch/decode_batch work with rescale (inherited from base)."""
+        space = PixelSpace(rescale=True)
+        batch = {
+            'image': torch.rand(2, 1, 32, 32),
+            'seg': torch.rand(2, 1, 32, 32),
+        }
+
+        encoded = space.encode_batch(batch)
+        assert encoded['image'].min() >= -1.0
+        assert encoded['image'].max() <= 1.0
+
+        decoded = space.decode_batch(encoded)
+        torch.testing.assert_close(decoded['image'], batch['image'])
+        torch.testing.assert_close(decoded['seg'], batch['seg'])
+
+
+class TestRescaleWaveletSpace:
+    """Test WaveletSpace rescaling."""
+
+    def test_wavelet_rescale_roundtrip(self):
+        """decode(encode(x)) recovers original [0,1] data with rescale."""
+        space = WaveletSpace(rescale=True)
+        x = torch.rand(2, 1, 8, 16, 16)
+
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        torch.testing.assert_close(reconstructed, x)
+
+    def test_wavelet_rescale_with_normalization_roundtrip(self):
+        """Roundtrip with both rescale and subband normalization."""
+        shift = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        scale = [2.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        space = WaveletSpace(shift=shift, scale=scale, rescale=True)
+
+        x = torch.rand(2, 1, 8, 16, 16)
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        torch.testing.assert_close(reconstructed, x)
+
+    def test_wavelet_rescale_changes_coefficients(self):
+        """Rescale should change wavelet coefficients vs no rescale."""
+        x = torch.rand(2, 1, 8, 16, 16)
+
+        space_no = WaveletSpace(rescale=False)
+        space_yes = WaveletSpace(rescale=True)
+
+        z_no = space_no.encode(x)
+        z_yes = space_yes.encode(x)
+
+        # Coefficients should differ
+        assert not torch.allclose(z_no, z_yes)
+
+    def test_wavelet_rescale_needs_decode(self):
+        """needs_decode is always True for WaveletSpace (scale_factor=2)."""
+        # WaveletSpace always has scale_factor=2, so needs_decode is True
+        # regardless of rescale
+        assert WaveletSpace().needs_decode
+        assert WaveletSpace(rescale=True).needs_decode
+        assert WaveletSpace(rescale=False).needs_decode
+
+    def test_wavelet_no_rescale_backward_compat(self):
+        """WaveletSpace() without rescale works identically to before."""
+        space = WaveletSpace()
+        # Default rescale is False
+        assert not space._rescale
+
+        x = torch.randn(2, 1, 8, 16, 16)
+        z = space.encode(x)
+        reconstructed = space.decode(z)
+        torch.testing.assert_close(reconstructed, x)
+
+
+class TestNeedsDecode:
+    """Test needs_decode property across all space types."""
+
+    def test_pixel_space_default(self):
+        assert not PixelSpace().needs_decode
+
+    def test_pixel_space_rescale(self):
+        assert PixelSpace(rescale=True).needs_decode
+
+    def test_wavelet_space(self):
+        assert WaveletSpace().needs_decode
+
+    def test_space_to_depth(self):
+        assert SpaceToDepthSpace().needs_decode
