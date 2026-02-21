@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from monai.data import DataLoader
 from omegaconf import DictConfig
+from typing import Any
+
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
@@ -51,7 +53,7 @@ class SegConditionedDataset(TorchDataset):
         image_size: int = 256,
         positive_only: bool = True,
         cfg_dropout_prob: float = 0.0,
-        augmentation: any | None = None,
+        augmentation: Any | None = None,
         return_bin_maps: bool = False,
         max_count: int = 10,
     ):

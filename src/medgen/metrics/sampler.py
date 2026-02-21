@@ -21,6 +21,7 @@ from torch.amp import autocast
 from torch.utils.data import Dataset
 
 from medgen.core.dict_utils import get_with_fallbacks
+from medgen.data.utils import binarize_seg
 
 logger = logging.getLogger(__name__)
 
@@ -419,11 +420,10 @@ class ConditionalSampler:
         if self.space is not None and hasattr(self.space, 'scale_factor') and self.space.scale_factor > 1:
             result = self.space.decode(result)
 
-        # Clamp to [0, 1] in pixel space (after decoding)
-        result = torch.clamp(result, 0, 1)
-
-        # Threshold seg mode output
+        # Binarize seg output or clamp to [0, 1] for image output
         if self.is_seg_mode:
-            result = (result > 0.5).float()
+            result = binarize_seg(result)
+        else:
+            result = torch.clamp(result, 0, 1)
 
         return result
