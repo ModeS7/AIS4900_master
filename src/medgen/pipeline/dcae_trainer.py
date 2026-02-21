@@ -16,8 +16,6 @@ import os
 import random
 from typing import Any
 
-from torch.utils.data import DataLoader
-
 import matplotlib
 
 matplotlib.use('Agg')
@@ -25,6 +23,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 
 from medgen.core.defaults import DCAE_DEFAULTS
 from medgen.core.dict_utils import get_with_fallbacks

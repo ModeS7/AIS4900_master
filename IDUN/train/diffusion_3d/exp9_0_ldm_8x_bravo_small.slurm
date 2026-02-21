@@ -9,7 +9,7 @@
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="exp9_0_ldm_8x"
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp9_0_ldm_8x_bravo_small_%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp9_0_ldm_8x_bravo_small_%j.err
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp9_0_ldm_8x_bravo_small/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
