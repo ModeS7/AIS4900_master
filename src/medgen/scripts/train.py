@@ -723,7 +723,7 @@ def _train_3d(cfg: DictConfig) -> None:
                 f"{', rescale [-1,1]' if rescale else ''}"
             )
         elif wavelet_cfg.get('enabled', False):
-            rescale = wavelet_cfg.get('rescale', True)
+            rescale = wavelet_cfg.get('rescale', False)
             if wavelet_cfg.get('normalize', True):
                 stats = WaveletSpace.compute_subband_stats(train_loader, rescale=rescale)
                 wavelet_shift = stats.get('wavelet_shift')

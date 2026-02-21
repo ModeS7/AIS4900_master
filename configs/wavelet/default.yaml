@@ -21,4 +21,5 @@ normalize: true
 
 # Rescale [0,1] data to [-1,1] before DWT (WDM paper convention).
 # Centers data at zero for symmetric interpolation with Gaussian noise.
-rescale: true
+# Default false for backward compatibility — existing experiments trained on [0,1].
+rescale: false

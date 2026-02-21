@@ -266,15 +266,33 @@ def load_diffusion_model_with_metadata(
         logger.info(f"Applied {wrapper_name} conditioning wrapper")
     elif wrapper_type == 'size_bin':
         # Size bin wrapper for seg_conditioned mode
-        # Get num_bins from checkpoint config if available
+        # Try checkpoint config first, then infer from state_dict shapes
         size_bin_cfg = config.get('size_bin', {})
-        num_bins = size_bin_cfg.get('num_bins', 7)
+        if size_bin_cfg:
+            # New checkpoints: all params saved in config
+            num_bins = size_bin_cfg.get('num_bins', 7)
+            max_count = size_bin_cfg.get('max_count', 10)
+            per_bin_embed_dim = size_bin_cfg.get('embed_dim', 32)
+            projection_hidden_dim = size_bin_cfg.get('projection_hidden_dim', 0)
+            projection_num_layers = size_bin_cfg.get('projection_num_layers', 2)
+        else:
+            # Legacy checkpoints: infer from state_dict weight shapes
+            num_bins, max_count, per_bin_embed_dim, projection_hidden_dim, projection_num_layers = (
+                _infer_size_bin_params(state_dict)
+            )
         model = SizeBinModelWrapper(
             model=base_model,
             embed_dim=embed_dim,
             num_bins=num_bins,
+            max_count=max_count,
+            per_bin_embed_dim=per_bin_embed_dim,
+            projection_hidden_dim=projection_hidden_dim,
+            projection_num_layers=projection_num_layers,
         )
-        logger.info(f"Applied SizeBinModelWrapper (num_bins={num_bins})")
+        logger.info(
+            f"Applied SizeBinModelWrapper (num_bins={num_bins}, embed_dim={per_bin_embed_dim}, "
+            f"projection_hidden_dim={projection_hidden_dim}, projection_num_layers={projection_num_layers})"
+        )
     else:
         raise ValueError(f"Unknown wrapper type: {wrapper_type}")
 
@@ -326,6 +344,71 @@ def _infer_channels_from_state_dict(
             out_channels = tensor.shape[0]
 
     return in_channels, out_channels
+
+
+def _infer_size_bin_params(
+    state_dict: dict[str, Any],
+) -> tuple[int, int, int, int, int]:
+    """Infer SizeBinModelWrapper hyperparameters from state dict shapes.
+
+    For legacy checkpoints that don't store size_bin config explicitly.
+
+    Returns:
+        (num_bins, max_count, per_bin_embed_dim, projection_hidden_dim, projection_num_layers)
+    """
+    # Defaults
+    num_bins = 7
+    max_count = 10
+    per_bin_embed_dim = 32
+    projection_hidden_dim = 0
+    projection_num_layers = 2
+
+    # Infer from bin_embeddings: shape [max_count+1, per_bin_embed_dim]
+    bin_embed_keys = sorted(
+        k for k in state_dict if 'bin_embeddings' in k and k.endswith('.weight')
+    )
+    if bin_embed_keys:
+        # Count unique bin indices to get num_bins
+        # Keys like: model.time_embed.bin_embeddings.0.weight
+        bin_indices = set()
+        for k in bin_embed_keys:
+            parts = k.split('bin_embeddings.')[-1].split('.')
+            bin_indices.add(int(parts[0]))
+        # Each SizeBinTimeEmbed has num_bins embeddings, but there are two copies
+        # (model.time_embed and size_bin_time_embed), so divide by 2
+        num_bins = len(bin_indices)
+
+        # Get per_bin_embed_dim and max_count from first embedding weight
+        first_weight = state_dict[bin_embed_keys[0]]
+        max_count = first_weight.shape[0] - 1  # vocab_size = max_count + 1
+        per_bin_embed_dim = first_weight.shape[1]
+
+    # Infer projection architecture from projection layer keys
+    # Keys like: model.time_embed.projection.0.weight, .2.weight, .4.weight, etc.
+    # Linear layers in Sequential are at even indices (odd = SiLU activations)
+    proj_keys = sorted(
+        k for k in state_dict
+        if 'model.time_embed.projection.' in k and k.endswith('.weight')
+    )
+    if len(proj_keys) > 2:
+        # More than 2 linear layers = deep MLP (create_deep_zero_init_mlp)
+        # Total linear layers = num_hidden_layers + 1 (output layer)
+        # So: num_hidden_layers = total_linear_layers - 1
+        projection_num_layers = len(proj_keys) - 1
+        # Hidden dim from first layer output
+        projection_hidden_dim = state_dict[proj_keys[0]].shape[0]
+    elif len(proj_keys) == 2:
+        # Legacy 2-layer MLP (create_zero_init_mlp)
+        projection_hidden_dim = 0
+        projection_num_layers = 2
+
+    logger.info(
+        f"Inferred size_bin params from state_dict: num_bins={num_bins}, "
+        f"max_count={max_count}, embed_dim={per_bin_embed_dim}, "
+        f"projection_hidden_dim={projection_hidden_dim}, "
+        f"projection_num_layers={projection_num_layers}"
+    )
+    return num_bins, max_count, per_bin_embed_dim, projection_hidden_dim, projection_num_layers
 
 
 def _resolve_channels(

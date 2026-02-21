@@ -96,6 +96,16 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             'num_head_channels': mc.num_head_channels,
         })
 
+    # Size bin config (for seg_conditioned mode)
+    if getattr(trainer, 'use_size_bin_embedding', False):
+        config['size_bin'] = {
+            'num_bins': trainer.size_bin_num_bins,
+            'max_count': trainer.size_bin_max_count,
+            'embed_dim': trainer.size_bin_embed_dim,
+            'projection_hidden_dim': trainer.size_bin_projection_hidden_dim,
+            'projection_num_layers': trainer.size_bin_projection_num_layers,
+        }
+
     return config
 
 

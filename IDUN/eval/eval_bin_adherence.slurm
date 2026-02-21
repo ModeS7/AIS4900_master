@@ -40,6 +40,27 @@ CKPT_INPUT="runs/diffusion_3d/seg/exp2b_1_pixel_seg_input_cond_rflow_256x160_202
 CKPT_EXP2C="runs/diffusion_3d/seg/exp2c_1_pixel_seg_improved_20260218-183155/checkpoint_latest.pt"
 
 # ============================================================================
+# Evaluation: exp2c_1 Improved FiLM conditioning
+# (embedding_dim=64, projection_hidden_dim=512, projection_num_layers=4,
+#  cfg_dropout_prob=0.25, regional_weighting)
+# ============================================================================
+echo ""
+echo "=== Evaluating exp2c_1 (Improved FiLM) ==="
+echo ""
+time python misc/eval_bin_adherence.py \
+    --checkpoint "${CKPT_EXP2C}" \
+    --model_type film \
+    --data_dir "${DATA_DIR}" \
+    --output_dir results/bin_adherence/exp2c_1_film \
+    --cfg_scales "1.0,2.0,3.0,5.0" \
+    --max_conditions 10 \
+    --batch_size 4 \
+    --num_steps 40 \
+    --image_size 256 \
+    --depth 160 \
+    --seed 42
+
+# ============================================================================
 # Evaluation: exp2_1 FiLM conditioning
 # ============================================================================
 echo ""
@@ -77,26 +98,6 @@ time python misc/eval_bin_adherence.py \
     --depth 160 \
     --seed 42
 
-# ============================================================================
-# Evaluation: exp2c_1 Improved FiLM conditioning
-# (embedding_dim=64, projection_hidden_dim=512, projection_num_layers=4,
-#  cfg_dropout_prob=0.25, regional_weighting)
-# ============================================================================
-echo ""
-echo "=== Evaluating exp2c_1 (Improved FiLM) ==="
-echo ""
-time python misc/eval_bin_adherence.py \
-    --checkpoint "${CKPT_EXP2C}" \
-    --model_type film \
-    --data_dir "${DATA_DIR}" \
-    --output_dir results/bin_adherence/exp2c_1_film \
-    --cfg_scales "1.0,2.0,3.0,5.0" \
-    --max_conditions 10 \
-    --batch_size 4 \
-    --num_steps 40 \
-    --image_size 256 \
-    --depth 160 \
-    --seed 42
 
 echo ""
 echo "=== Evaluation Complete ==="
