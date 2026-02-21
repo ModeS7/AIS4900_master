@@ -117,7 +117,7 @@ def evaluate_test_set(
             labels_is_latent = prepared.get('labels_is_latent', False)
             batch_size = images[list(images.keys())[0]].shape[0] if isinstance(images, dict) else images.shape[0]
 
-            # Keep original pixel-space images for quality metrics
+            # Keep pixel-space originals for quality metrics
             images_pixel = images if not is_latent else None
 
             # Encode to diffusion space (skip if already latent)
@@ -552,9 +552,16 @@ def compute_volume_3d_msssim_native(
     if mode_name == 'multi_modality':
         return None
 
-    # Use existing val_loader for validation split
-    if data_split == 'val' and trainer.val_loader is not None:
-        loader = trainer.val_loader
+    # Use pixel_val_loader if available (latent diffusion), else val_loader.
+    # Exception: bravo_seg_cond uses dual encoders — can't encode pixel seg correctly.
+    if data_split == 'val':
+        use_pixel = (
+            getattr(trainer, 'pixel_val_loader', None) is not None
+            and mode_name != 'bravo_seg_cond'
+        )
+        loader = trainer.pixel_val_loader if use_pixel else trainer.val_loader
+        if loader is None:
+            return None
     else:
         # For other splits (test), create loader if needed
         if modality_override is not None:

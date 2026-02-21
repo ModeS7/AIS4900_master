@@ -387,7 +387,12 @@ def main(cfg: DictConfig) -> None:
         return
 
     # Create test dataloader and evaluate (if test_new/ directory exists)
-    if use_latent:
+    # For latent diffusion (non bravo_seg_cond): use pixel test loader so quality
+    # metrics compare against original pixels, not decoded latents.
+    # bravo_seg_cond uses dual encoders so must keep latent test loader.
+    if use_latent and mode != 'bravo_seg_cond':
+        test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
+    elif use_latent:
         test_result = create_latent_test_dataloader(
             cfg=cfg,
             cache_dir=cache_dir,
@@ -782,20 +787,22 @@ def _train_3d(cfg: DictConfig) -> None:
     if run_test and os.path.exists(test_dir):
         logger.info("=== Test Evaluation ===")
 
-        # Create test dataloader based on mode and latent/pixel space
+        # Create test dataloader based on mode and latent/pixel space.
+        # For latent diffusion (non bravo_seg_cond): use pixel test loader so quality
+        # metrics compare against original pixels, not decoded latents.
         test_result = None
         try:
-            if use_latent:
-                # Latent diffusion: use latent test dataloader
-                # Note: cache_dir is the local variable set earlier during latent training setup
+            if use_latent and mode == 'bravo_seg_cond':
+                # bravo_seg_cond: dual encoders, must use latent test data
                 from medgen.data.loaders.latent import create_latent_test_dataloader
                 test_result = create_latent_test_dataloader(cfg, cache_dir, mode)
                 if test_result is None:
                     logger.warning("No test cache found for latent diffusion")
             else:
-                # Pixel-space test dataloader using ModeFactory
-                # Note: mode_config was set in the pixel-space training branch
-                test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
+                # Pixel test loader: for pixel-space training and LDM (encode on-the-fly)
+                from medgen.data.loaders.volume_3d import create_vae_3d_test_dataloader
+                modality = get_modality_for_mode(mode)
+                test_result = create_vae_3d_test_dataloader(cfg, modality)
         except (RuntimeError, ValueError, FileNotFoundError) as e:
             logger.warning(f"Could not create test dataloader: {e}")
 

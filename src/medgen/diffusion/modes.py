@@ -917,51 +917,67 @@ class LatentSegConditionedMode(TrainingMode):
     ) -> dict[str, Any]:
         """Prepare batch with latent seg conditioning.
 
-        Expects batch from LatentDataset with:
-        - 'latent': Pre-encoded bravo latent [B, C_lat, ...]
-        - 'latent_seg': Pre-encoded seg latent [B, C_lat, ...]
-        - 'seg_mask': Optional pixel-space seg for regional metrics
+        Accepts two formats:
+        1. Latent batch (training): {'latent': bravo_lat, 'latent_seg': seg_lat}
+        2. Pixel batch (validation with pixel_val_loader): {'image': bravo, 'seg': seg}
+
+        For pixel batches, returns is_latent=False so the caller encodes on-the-fly.
+        This enables validation quality metrics to compare against original pixels.
 
         Args:
-            batch: Dict from LatentDataset.
+            batch: Dict from LatentDataset or pixel dataloader.
             device: Target device.
 
         Returns:
-            Dictionary with images (bravo latent), labels (seg latent),
-            and optional seg_mask for regional metrics.
+            Dictionary with images, labels, and latent flags.
 
         Raises:
-            ValueError: If batch is not from latent dataloader or missing latent_seg.
+            ValueError: If batch format is invalid or missing required keys.
         """
-        if not _is_latent_batch(batch):
+        if _is_latent_batch(batch):
+            assert isinstance(batch, dict)
+            latent = batch['latent'].to(device, non_blocking=True)
+            latent_seg = batch.get('latent_seg')
+
+            if latent_seg is None:
+                raise ValueError(
+                    "bravo_seg_cond mode requires 'latent_seg' in batch. "
+                    "Rebuild latent cache with seg encoding enabled."
+                )
+
+            latent_seg = latent_seg.to(device, non_blocking=True)
+
+            # Keep pixel-space seg for regional metrics (optional)
+            seg_mask = batch.get('seg_mask')
+            if seg_mask is not None:
+                seg_mask = seg_mask.to(device, non_blocking=True)
+
+            return {
+                'images': latent,       # Bravo latent [B, C_lat, ...]
+                'labels': latent_seg,   # Seg latent [B, C_lat, ...] - already encoded
+                'seg_mask': seg_mask,   # Pixel seg for regional metrics
+                'is_latent': True,      # Flag: skip encoding in trainer
+                'labels_is_latent': True,  # Flag: labels are already in latent space
+            }
+
+        # Pixel batch format: {'image': bravo_pixel, 'seg': seg_pixel}
+        # Used by pixel_val_loader for validation quality metrics
+        if not isinstance(batch, dict) or 'image' not in batch:
             raise ValueError(
-                "bravo_seg_cond mode requires latent dataloader. "
-                "Ensure latent.enabled=true and cache includes latent_seg."
+                "bravo_seg_cond mode requires either latent batch "
+                "({'latent': ...}) or pixel batch ({'image': ..., 'seg': ...})."
             )
 
-        assert isinstance(batch, dict)
-        latent = batch['latent'].to(device, non_blocking=True)
-        latent_seg = batch.get('latent_seg')
-
-        if latent_seg is None:
-            raise ValueError(
-                "bravo_seg_cond mode requires 'latent_seg' in batch. "
-                "Rebuild latent cache with seg encoding enabled."
-            )
-
-        latent_seg = latent_seg.to(device, non_blocking=True)
-
-        # Keep pixel-space seg for regional metrics (optional)
-        seg_mask = batch.get('seg_mask')
-        if seg_mask is not None:
-            seg_mask = seg_mask.to(device, non_blocking=True)
+        images = batch['image'].to(device, non_blocking=True)
+        seg = batch.get('seg')
+        if seg is not None:
+            seg = seg.to(device, non_blocking=True)
 
         return {
-            'images': latent,       # Bravo latent [B, C_lat, ...]
-            'labels': latent_seg,   # Seg latent [B, C_lat, ...] - already encoded
-            'seg_mask': seg_mask,   # Pixel seg for regional metrics
-            'is_latent': True,      # Flag: skip encoding in trainer
-            'labels_is_latent': True,  # Flag: labels are already in latent space
+            'images': images,       # Bravo pixel [B, C, H, W] or [B, C, D, H, W]
+            'labels': seg,          # Seg pixel - will be encoded by caller
+            'is_latent': False,
+            'labels_is_latent': False,
         }
 
     def get_model_config(self) -> dict[str, int]:

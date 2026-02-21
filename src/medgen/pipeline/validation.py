@@ -82,19 +82,35 @@ def compute_validation_losses(
     timestep_loss_sum = torch.zeros(num_timestep_bins, device=trainer.device)
     timestep_loss_count = torch.zeros(num_timestep_bins, device=trainer.device, dtype=torch.long)
 
+    # For latent diffusion: use pixel_val_loader if available so we have original
+    # pixel images for quality metrics. Comparing decode(pred) vs decode(latent_gt)
+    # is misleading — shared decoder artifacts cancel out, giving fake-perfect metrics.
+    # Encoding on-the-fly in validation (no_grad, once per epoch) is negligible cost.
+    #
+    # Exception: bravo_seg_cond uses dual encoders (bravo VQ-VAE + seg VQ-VAE).
+    # space.encode() only wraps the bravo VQ-VAE, so encoding pixel seg through it
+    # produces wrong latents. bravo_seg_cond must use the latent val_loader.
+    val_loader = trainer.val_loader
+    use_pixel_loader = (
+        getattr(trainer, 'pixel_val_loader', None) is not None
+        and trainer.mode_name != 'bravo_seg_cond'
+    )
+    if use_pixel_loader:
+        val_loader = trainer.pixel_val_loader
+
     # Mark CUDA graph step boundary to prevent tensor caching issues
     torch.compiler.cudagraph_mark_step_begin()
 
     with torch.no_grad():
-        for batch in trainer.val_loader:
+        for batch in val_loader:
             prepared = trainer.mode.prepare_batch(batch, trainer.device)
             images = prepared['images']
             labels = prepared.get('labels')
             mode_id = prepared.get('mode_id')  # For multi-modality mode
             size_bins = prepared.get('size_bins')  # For seg_conditioned mode
             bin_maps = prepared.get('bin_maps')  # For seg_conditioned_input mode
-            is_latent = prepared.get('is_latent', False)  # Latent dataloader flag
-            labels_is_latent = prepared.get('labels_is_latent', False)  # Labels already encoded
+            is_latent = prepared.get('is_latent', False)
+            labels_is_latent = prepared.get('labels_is_latent', False)
 
             # Get current batch size
             if isinstance(images, dict):
@@ -103,18 +119,12 @@ def compute_validation_losses(
             else:
                 current_batch_size = images.shape[0]
 
-            # Keep original pixel-space labels for regional metrics (before encoding)
-            # Regional metrics need pixel-space masks to identify tumor/background regions
-            # For bravo_seg_cond mode, use seg_mask from prepared batch
-            labels_pixel = prepared.get('seg_mask', labels) if is_latent else labels
-
-            # Keep original pixel-space images for quality metrics (MS-SSIM, PSNR, LPIPS)
-            # For latent diffusion, decode(encode(x)) != x due to compression loss,
-            # so quality metrics must compare against original pixels, not decoded latents
+            # Keep pixel-space originals for quality metrics and regional tracking.
+            # When data is already latent (bravo_seg_cond), we don't have pixel originals.
             images_pixel = images if not is_latent else None
+            labels_pixel = labels if not labels_is_latent else None
 
-            # Encode to diffusion space (identity for PixelSpace)
-            # Skip encoding if data is already in latent space (from latent dataloader)
+            # Encode to diffusion space (skip if already latent from cache)
             if not is_latent:
                 images = trainer.space.encode_batch(images)
             if labels is not None and not labels_is_latent:
@@ -191,17 +201,13 @@ def compute_validation_losses(
                         'loss': loss_val,
                     }
 
-            # Quality metrics (decode prediction to pixel space)
+            # Quality metrics: decode prediction to pixel space, compare against originals.
+            # When pixel originals are available (pixel_val_loader), use them directly.
+            # When not (bravo_seg_cond with latent data), fall back to decoded latent GT.
             if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
             else:
                 metrics_pred = predicted_clean
-            # Ground truth: use original pixel-space images when available
-            # For latent diffusion, decode(latent) != original due to compression loss,
-            # so comparing against decoded latents overestimates quality.
-            # images_pixel is set for non-cached paths (wavelet, S2D, rescaled pixel).
-            # For cached latent paths (is_latent=True), pixel originals are unavailable
-            # so we fall back to decoded latents (metrics are still directionally useful).
             if images_pixel is not None:
                 metrics_gt = images_pixel
             elif trainer.space.needs_decode:
