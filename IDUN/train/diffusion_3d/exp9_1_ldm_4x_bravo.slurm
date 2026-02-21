@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-14:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -12,13 +12,61 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp9_1_ldm_4x_bravo_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
+#SBATCH --signal=B:SIGUSR1@120
 
+# === Auto-chain configuration ===
+CHAIN_MAX=20
+CHAIN_COUNT=${CHAIN_COUNT:-0}
+EXP_NAME="exp9_1_ldm_4x_bravo"
+
+# First run: create unique run directory. Subsequent: reuse from env var.
+if [ -z "${CHAIN_RUN_DIR:-}" ]; then
+    TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_seg_cond/${EXP_NAME}_${TIMESTAMP}"
+fi
+
+# Build resume arguments
+CHAIN_ARGS="hydra.run.dir=${CHAIN_RUN_DIR}"
+CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
+if [ -f "${CKPT}" ] && [ -s "${CKPT}" ]; then
+    CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CKPT}"
+    echo "Resuming from: ${CKPT}"
+fi
+
+# === Signal handler for auto-chaining ===
+handle_timeout() {
+    echo "=== Wall time approaching (SIGUSR1). Saving and resubmitting... ==="
+    kill -USR1 $PID 2>/dev/null
+    wait $PID 2>/dev/null
+
+    # Don't resubmit if training completed
+    if [ -f "${CHAIN_RUN_DIR}/.training_complete" ]; then
+        echo "Training complete. Not resubmitting."
+        exit 0
+    fi
+
+    # Check chain limit
+    NEXT_COUNT=$((CHAIN_COUNT + 1))
+    if [ "$NEXT_COUNT" -ge "$CHAIN_MAX" ]; then
+        echo "Chain limit reached (${CHAIN_MAX}). Stopping."
+        exit 1
+    fi
+
+    # Resubmit
+    sbatch --export=ALL,CHAIN_RUN_DIR="${CHAIN_RUN_DIR}",CHAIN_COUNT=${NEXT_COUNT} \
+           "$0"
+    echo "Resubmitted chain segment ${NEXT_COUNT}/${CHAIN_MAX}"
+    exit 0
+}
+
+trap handle_timeout SIGUSR1
+
+# === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp9.1 LDM_4x BRAVO: Mid-size UNet (500 epochs) ==="
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node:   $SLURM_JOB_NODELIST"
-echo "GPUs:   $CUDA_VISIBLE_DEVICES"
+echo "=== Exp9.1 LDM_4x BRAVO: Mid-size UNet (500 epochs, chained) ==="
+echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
+echo "Run dir: ${CHAIN_RUN_DIR}"
 nvidia-smi
 
 module purge
@@ -46,9 +94,12 @@ echo "  num_res_blocks:   [2, 2, 2, 2]"
 echo "  num_head_channels: 32"
 echo ""
 
+# === Training (backgrounded for signal handling) ===
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
+    strategy=rflow \
     mode=bravo_seg_cond \
+    training.epochs=500 \
     training.gradient_clip_norm=0.5 \
     training.warmup_epochs=10 \
     latent.enabled=true \
@@ -61,6 +112,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     'model.num_res_blocks=[2, 2, 2, 2]' \
     model.num_head_channels=32 \
     model.norm_num_groups=32 \
-    training.name=exp9_1_ldm_4x_bravo_
+    training.name=${EXP_NAME}_ \
+    ${CHAIN_ARGS} &
 
-conda deactivate
+PID=$!
+wait $PID
