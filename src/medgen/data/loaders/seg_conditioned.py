@@ -11,138 +11,23 @@ import numpy as np
 import torch
 from monai.data import DataLoader
 from omegaconf import DictConfig
-from scipy import ndimage
-from scipy.spatial.distance import pdist
 from torch.utils.data import Dataset as TorchDataset
 
 from medgen.augmentation import build_seg_diffusion_augmentation_with_binarize
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.loaders.common import DataLoaderConfig, setup_distributed_sampler
+from medgen.data.loaders.datasets import (
+    DEFAULT_BIN_EDGES,
+    compute_feret_diameter,
+    compute_size_bins,
+    create_size_bin_maps,
+)
 from medgen.data.utils import extract_slices_single
 
 logger = logging.getLogger(__name__)
 
-# Default size bins (mm) - aligned with RANO-BM thresholds (10, 20, 30mm)
-# Last bin is 30+mm (no upper bound needed)
-DEFAULT_BIN_EDGES = [0, 3, 6, 10, 15, 20, 30]
-
 # Default CFG dropout probability for input conditioning
 DEFAULT_CFG_DROPOUT = 0.15
-
-
-def create_size_bin_maps(
-    size_bins: torch.Tensor,
-    spatial_shape: tuple[int, ...],
-    normalize: bool = True,
-    max_count: int = 10,
-) -> torch.Tensor:
-    """Create spatial maps from size bin counts for input conditioning.
-
-    Each size bin count becomes a constant-valued spatial map that gets
-    concatenated with the noise input to the diffusion model.
-
-    Args:
-        size_bins: [num_bins] tensor of counts per bin.
-        spatial_shape: Target spatial dimensions (H, W) or (D, H, W).
-        normalize: If True, divide counts by max_count to get [0, 1] range.
-        max_count: Maximum expected count per bin for normalization.
-
-    Returns:
-        [num_bins, *spatial_shape] tensor where each channel is filled
-        with the (normalized) count for that bin.
-    """
-    num_bins = len(size_bins)
-    bin_maps = torch.zeros(num_bins, *spatial_shape, dtype=torch.float32)
-
-    for i in range(num_bins):
-        count = size_bins[i].float()
-        if normalize:
-            count = count / max_count
-        bin_maps[i].fill_(count.item())
-
-    return bin_maps
-
-
-def compute_feret_diameter(binary_mask: np.ndarray, pixel_spacing_mm: float) -> float:
-    """Compute Feret diameter (longest axis) of a binary region.
-
-    Args:
-        binary_mask: 2D binary mask of a single connected component.
-        pixel_spacing_mm: Size of one pixel in mm.
-
-    Returns:
-        Feret diameter in mm.
-    """
-    coords = np.argwhere(binary_mask)
-    if len(coords) < 2:
-        return pixel_spacing_mm  # Single pixel
-
-    # Subsample for large regions
-    if len(coords) > 1000:
-        idx = np.random.choice(len(coords), 1000, replace=False)
-        coords = coords[idx]
-
-    distances = pdist(coords)
-    max_dist_pixels = distances.max() if len(distances) > 0 else 1
-
-    return max_dist_pixels * pixel_spacing_mm
-
-
-def compute_size_bins(
-    seg_mask: np.ndarray,
-    bin_edges: list[float],
-    pixel_spacing_mm: float,
-    num_bins: int = None,
-) -> np.ndarray:
-    """Compute tumor count per size bin for a segmentation mask.
-
-    Args:
-        seg_mask: 2D binary segmentation mask [H, W].
-        bin_edges: List of bin edges in mm (e.g., [0, 3, 6, 10, 15, 20, 30]).
-        pixel_spacing_mm: Size of one pixel in mm.
-        num_bins: Number of bins. If > len(edges)-1, last bin is overflow (>= last edge).
-                  Default: len(edges)-1 (no separate overflow bin).
-
-    Returns:
-        Array of shape [num_bins] with tumor counts per bin.
-    """
-    n_bounded_bins = len(bin_edges) - 1
-    if num_bins is None:
-        num_bins = n_bounded_bins
-
-    bin_counts = np.zeros(num_bins, dtype=np.int64)
-
-    # Handle tensor input
-    if isinstance(seg_mask, torch.Tensor):
-        seg_mask = seg_mask.numpy()
-
-    # Remove batch/channel dimensions if present
-    seg_mask = np.squeeze(seg_mask)
-
-    # Label connected components
-    labeled, num_features = ndimage.label(seg_mask > 0.5)
-
-    if num_features == 0:
-        return bin_counts
-
-    # Compute diameter for each tumor and bin it
-    for i in range(1, num_features + 1):
-        component_mask = labeled == i
-        diameter = compute_feret_diameter(component_mask, pixel_spacing_mm)
-
-        # Find bin - check bounded bins first
-        binned = False
-        for j in range(n_bounded_bins):
-            if bin_edges[j] <= diameter < bin_edges[j + 1]:
-                bin_counts[j] += 1
-                binned = True
-                break
-
-        # If not binned, goes to overflow bin (last bin)
-        if not binned:
-            bin_counts[num_bins - 1] += 1
-
-    return bin_counts
 
 
 class SegConditionedDataset(TorchDataset):

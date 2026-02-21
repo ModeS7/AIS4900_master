@@ -1,11 +1,12 @@
 """
-Slice extraction and sequence merging utilities.
+Slice extraction, sequence merging, and NIfTI I/O utilities.
 
-This module provides functions for extracting 2D slices from 3D NIfTI volumes
-and merging multiple MR sequences from the same patients.
+This module provides functions for extracting 2D slices from 3D NIfTI volumes,
+merging multiple MR sequences from the same patients, and saving NIfTI files.
 """
 from typing import TYPE_CHECKING
 
+import nibabel as nib
 import numpy as np
 import torch
 from monai.data import Dataset
@@ -21,6 +22,38 @@ try:
     import albumentations as A
 except ImportError:
     A = None  # type: ignore[assignment]
+
+
+def binarize_seg(data: torch.Tensor | np.ndarray, threshold: float = 0.5) -> torch.Tensor | np.ndarray:
+    """Clamp to [0,1] then threshold. Single source of truth for seg binarization.
+
+    Use this for generated/augmented data where values may be outside [0,1].
+    For ground truth data that's already valid, ``make_binary`` is sufficient.
+
+    Args:
+        data: Input tensor or array (any shape).
+        threshold: Binarization threshold (default 0.5).
+
+    Returns:
+        Binary mask with same type and shape as input.
+    """
+    if isinstance(data, torch.Tensor):
+        return (torch.clamp(data.float(), 0, 1) > threshold).float()
+    return np.where(np.clip(data, 0, 1) > threshold, 1.0, 0.0)
+
+
+def save_nifti(data: np.ndarray, output_path: str,
+               voxel_size: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
+    """Save numpy array as NIfTI file with correct voxel spacing.
+
+    Args:
+        data: 3D numpy array [H, W, D].
+        output_path: Path to save the NIfTI file.
+        voxel_size: Voxel dimensions in mm (x, y, z).
+    """
+    affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
+    nifti = nib.Nifti1Image(data.astype(np.float32), affine)
+    nib.save(nifti, output_path)
 
 
 def make_binary(image: np.ndarray, threshold: float = BINARY_THRESHOLD_GT) -> np.ndarray:

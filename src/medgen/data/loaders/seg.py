@@ -28,6 +28,7 @@ from medgen.data.loaders.datasets import (
     compute_size_bins_3d,
     create_size_bin_maps,
 )
+from medgen.data.utils import binarize_seg
 
 from .common import get_validated_split_dir
 from .volume_3d import (
@@ -288,7 +289,7 @@ class SegDataset(TorchDataset):
         seg_volume = self._load_volume(seg_path)
 
         # Binarize
-        seg_volume = (seg_volume > 0.5).float()
+        seg_volume = binarize_seg(seg_volume)
 
         # Apply augmentation if configured
         if self.augmentation is not None:
@@ -296,7 +297,7 @@ class SegDataset(TorchDataset):
             aug_result = self.augmentation({'image': seg_volume})
             seg_volume = aug_result['image'].contiguous()
             # Re-binarize after augmentation (some transforms may interpolate)
-            seg_volume = (seg_volume > 0.5).float()
+            seg_volume = binarize_seg(seg_volume)
 
         # Compute 3D size bins on the full volume
         size_bins = compute_size_bins_3d(

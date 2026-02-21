@@ -115,7 +115,8 @@ class RFlowStrategy(DiffusionStrategy):
             timesteps: Current timesteps (can be continuous or discrete).
 
         Returns:
-            Predicted clean images (x_0), clamped to [0, 1].
+            Predicted clean images (x_0). Not clamped — values may be outside
+            [0, 1] for latent/wavelet space or due to prediction error.
         """
         # Get normalized timestep t in [0, 1]
         t = timesteps.float() / self.scheduler.num_train_timesteps
@@ -128,13 +129,13 @@ class RFlowStrategy(DiffusionStrategy):
             velocity_pred_1 = self._slice_channel(prediction, 1, 2)
             t_expanded = self._expand_to_broadcast(t, prediction)
             return {
-                keys[0]: torch.clamp(noisy_images[keys[0]] + t_expanded * velocity_pred_0, 0, 1),
-                keys[1]: torch.clamp(noisy_images[keys[1]] + t_expanded * velocity_pred_1, 0, 1)
+                keys[0]: noisy_images[keys[0]] + t_expanded * velocity_pred_0,
+                keys[1]: noisy_images[keys[1]] + t_expanded * velocity_pred_1,
             }
         else:
             assert isinstance(prediction, torch.Tensor)
             t_expanded = self._expand_to_broadcast(t, prediction)
-            return torch.clamp(noisy_images + t_expanded * prediction, 0, 1)
+            return noisy_images + t_expanded * prediction
 
     def compute_loss(
         self,

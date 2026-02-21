@@ -38,6 +38,7 @@ from medgen.data.loaders.datasets import (
     compute_size_bins_3d,
     create_size_bin_maps,
 )
+from medgen.data.utils import binarize_seg
 from medgen.diffusion import RFlowStrategy, load_diffusion_model
 from medgen.scripts.generate import compute_voxel_size, generate_batch, get_noise_shape
 
@@ -240,10 +241,9 @@ def generate_samples_batched(
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
-        # Post-process each volume: clamp + binarize (matches generation_sampling.py)
+        # Post-process each volume: clamp + binarize (uses shared binarize_seg)
         for j in range(B):
-            vol = torch.clamp(seg[j, 0].float(), 0, 1)
-            all_volumes.append((vol > 0.5).float().cpu().numpy())
+            all_volumes.append(binarize_seg(seg[j, 0]).cpu().numpy())
 
     return all_volumes
 

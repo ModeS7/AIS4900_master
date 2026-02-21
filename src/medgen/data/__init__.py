@@ -43,7 +43,7 @@ from medgen.models.wrappers import (
     DEFAULT_NUM_BINS as SIZE_NUM_BINS,
     format_size_bins,
 )
-from .utils import extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
+from .utils import binarize_seg, extract_slices_dual, extract_slices_single, extract_slices_single_with_seg, make_binary, merge_sequences
 from .lossless_mask_codec import (
     encode_mask_lossless,
     decode_mask_lossless,
@@ -144,6 +144,7 @@ __all__ = [
     'extract_slices_single_with_seg',
     'extract_slices_dual',
     'merge_sequences',
+    'binarize_seg',
     'make_binary',
     # Diffusion single-image loaders
     'create_dataloader',

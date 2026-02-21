@@ -48,6 +48,8 @@ import torch
 import torch.nn as nn
 from torch.amp import autocast
 
+from medgen.data.utils import binarize_seg, save_nifti
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
@@ -278,9 +280,7 @@ def save_conditioning(
         if trim_slices > 0:
             seg_np = seg_np[:-trim_slices]
         seg_np = np.transpose(seg_np, (1, 2, 0))  # [H, W, D]
-        affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
-        nifti = nib.Nifti1Image(seg_np, affine)
-        nib.save(nifti, str(cond_dir / f"{i:02d}_{patient_id}_seg.nii.gz"))
+        save_nifti(seg_np, str(cond_dir / f"{i:02d}_{patient_id}_seg.nii.gz"), voxel_size)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -514,9 +514,10 @@ def generate_volumes(
             with torch.no_grad():
                 result = strategy.generate(counter, model_input, num_steps, device)
 
-        vol = torch.clamp(result[0, 0], 0, 1)
         if is_seg:
-            vol = (vol > 0.5).float()
+            vol = binarize_seg(result[0, 0])
+        else:
+            vol = torch.clamp(result[0, 0], 0, 1)
         volumes.append(vol.cpu().numpy())
 
         if (i + 1) % 5 == 0 or i == 0:
@@ -538,7 +539,6 @@ def save_volumes(
 ) -> None:
     """Save generated volumes as NIfTI files."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
 
     for i, vol_np in enumerate(volumes):
         # Trim padded slices
@@ -546,13 +546,12 @@ def save_volumes(
             vol_np = vol_np[:-trim_slices]
         # [D, H, W] -> [H, W, D] for NIfTI
         vol_nifti = np.transpose(vol_np, (1, 2, 0))
-        nifti = nib.Nifti1Image(vol_nifti.astype(np.float32), affine)
         if cond_list is not None:
             patient_id = cond_list[i][0]
             filename = f"{i:02d}_{patient_id}_{modality}.nii.gz"
         else:
             filename = f"vol{i:03d}_{modality}.nii.gz"
-        nib.save(nifti, str(output_dir / filename))
+        save_nifti(vol_nifti, str(output_dir / filename), voxel_size)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

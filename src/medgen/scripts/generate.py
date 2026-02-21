@@ -24,18 +24,17 @@ import random
 from pathlib import Path
 
 import hydra
-import nibabel as nib
 import numpy as np
 import torch
 from omegaconf import DictConfig
 from torch.amp import autocast
 
 from medgen.core import (
-    BINARY_THRESHOLD_GEN,
     MAX_WHITE_PERCENTAGE,
     setup_cuda_optimizations,
 )
-from medgen.data import make_binary
+from medgen.data import binarize_seg
+from medgen.data.utils import save_nifti
 from medgen.data.loaders.datasets import create_size_bin_maps
 from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
 from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
@@ -115,6 +114,16 @@ def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
                        z_spacing_mm: float = 1.0) -> tuple[float, float, float]:
     """Compute voxel size based on resolution and field of view.
 
+    Returns (xy_mm, xy_mm, z_mm) — used for NIfTI affine diagonals.
+
+    **Convention note:** This returns (x, y, z) order suitable for NIfTI
+    affine matrices and ``save_nifti()``. For 3D size-bin functions like
+    ``compute_feret_diameter_3d`` which expect (depth, height, width) order,
+    the caller must reorder: ``(z, xy, xy)`` instead of ``(xy, xy, z)``.
+    The training dataloader (``seg.py``) reads voxel_spacing from config in
+    the correct (D, H, W) order; ``generate.py`` currently passes this
+    tuple directly, which works because xy ≈ xy (isotropic in-plane).
+
     Args:
         image_size: Image height/width in pixels.
         fov_mm: Field of view in millimeters (default 240.0).
@@ -125,21 +134,6 @@ def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
     """
     xy_spacing = fov_mm / image_size
     return (xy_spacing, xy_spacing, z_spacing_mm)
-
-
-def save_nifti(data: np.ndarray, output_path: str,
-               voxel_size: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> None:
-    """Save numpy array as NIfTI file with correct voxel spacing.
-
-    Args:
-        data: 3D numpy array [H, W, D]
-        output_path: Path to save the NIfTI file
-        voxel_size: Voxel dimensions in mm (x, y, z)
-    """
-    # Affine with voxel spacing on diagonal
-    affine = np.diag([voxel_size[0], voxel_size[1], voxel_size[2], 1.0])
-    nifti = nib.Nifti1Image(data.astype(np.float32), affine)
-    nib.save(nifti, output_path)
 
 
 def get_noise_shape(batch_size: int, channels: int, spatial_dims: int,
@@ -301,9 +295,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             if current_image >= cfg.num_images:
                 break
 
-            mask = seg_masks[j, 0].cpu().numpy()
-            mask = (mask - mask.min()) / (mask.max() - mask.min() + 1e-8)
-            mask = make_binary(mask, threshold=BINARY_THRESHOLD_GEN)
+            mask = binarize_seg(seg_masks[j, 0]).cpu().numpy()
 
             if is_valid_mask(mask):
                 mask_cache.append((mask, current_image))
@@ -478,8 +470,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize
-                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
-                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
+                seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
 
                 # Validate size bins match conditioning
                 if validate_size_bins:
@@ -582,8 +573,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize seg
-                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
-                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
+                seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
 
                 # Validate mask (per-slice check for 3D)
                 if not is_valid_mask(seg_binary, max_white_pct):
@@ -718,8 +708,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
 
                 # Binarize
-                seg_binary = torch.clamp(seg[0, 0].float(), 0, 1)
-                seg_binary = (seg_binary > 0.5).float().cpu().numpy()
+                seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
 
                 # Validate size bins match conditioning
                 if validate_size_bins:

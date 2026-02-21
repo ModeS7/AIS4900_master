@@ -42,6 +42,8 @@ Before marking ANY task complete, STOP and verify:
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
 | **Discrete timesteps** | DDPM - integers in [0, 999] |
+| **Voxel spacing (NIfTI)** | `compute_voxel_size()` returns `(x, y, z)` = `(0.9375, 0.9375, 1.0)` for affine matrices |
+| **Voxel spacing (3D bins)** | Config `voxel_spacing` is `[D, H, W]` = `[1.0, 0.9375, 0.9375]` for `compute_feret_diameter_3d` |
 
 ---
 

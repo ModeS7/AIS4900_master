@@ -36,6 +36,7 @@ from medgen.diffusion import (
     DiffusionSpace,
     DiffusionStrategy,
     LatentSegConditionedMode,
+    LatentSpace,
     MultiModalityMode,
     RFlowStrategy,
     SegmentationConditionedInputMode,
@@ -584,9 +585,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
 
             # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
-            # Only active for latent diffusion (scale_factor > 1)
+            # Only active for learned latent spaces (VAE/VQ-VAE/DC-AE), not wavelet/S2D
             aug_diff_mask = None
-            if self.augmented_diffusion_enabled and self.space.scale_factor > 1:
+            if self.augmented_diffusion_enabled and isinstance(self.space, LatentSpace):
                 if isinstance(noise, dict):
                     # Dual mode: apply same mask to both modalities
                     keys = list(noise.keys())

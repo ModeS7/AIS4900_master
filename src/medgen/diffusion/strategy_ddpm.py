@@ -106,13 +106,14 @@ class DDPMStrategy(DiffusionStrategy):
             timesteps: Current timesteps (integer indices).
 
         Returns:
-            Predicted clean images (x_0), clamped to [0, 1].
+            Predicted clean images (x_0). Not clamped — values may be outside
+            [0, 1] for latent/wavelet space or due to prediction error.
         """
         if self.prediction_type == "sample":
             # Model directly predicts x₀
             if isinstance(prediction, dict):
-                return {k: torch.clamp(v, 0, 1) for k, v in prediction.items()}
-            return torch.clamp(prediction, 0, 1)
+                return dict(prediction)
+            return prediction
 
         # Epsilon prediction: reconstruct x₀ from noise prediction
         if isinstance(noisy_images, dict):
@@ -127,14 +128,8 @@ class DDPMStrategy(DiffusionStrategy):
             sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
 
             return {
-                keys[0]: torch.clamp(
-                    (noisy_images[keys[0]] - sqrt_one_minus_alpha_t * noise_pred_0) / sqrt_alpha_t,
-                    0, 1
-                ),
-                keys[1]: torch.clamp(
-                    (noisy_images[keys[1]] - sqrt_one_minus_alpha_t * noise_pred_1) / sqrt_alpha_t,
-                    0, 1
-                )
+                keys[0]: (noisy_images[keys[0]] - sqrt_one_minus_alpha_t * noise_pred_0) / sqrt_alpha_t,
+                keys[1]: (noisy_images[keys[1]] - sqrt_one_minus_alpha_t * noise_pred_1) / sqrt_alpha_t,
             }
         else:
             assert isinstance(prediction, torch.Tensor)
@@ -143,10 +138,7 @@ class DDPMStrategy(DiffusionStrategy):
             sqrt_alpha_t = torch.sqrt(alpha_t)
             sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
 
-            return torch.clamp(
-                (noisy_images - sqrt_one_minus_alpha_t * prediction) / sqrt_alpha_t,
-                0, 1
-            )
+            return (noisy_images - sqrt_one_minus_alpha_t * prediction) / sqrt_alpha_t
 
     def compute_loss(
         self,

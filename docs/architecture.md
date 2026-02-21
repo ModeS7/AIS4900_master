@@ -743,7 +743,9 @@ def train(
 | Space | scale_factor | Purpose |
 |-------|--------------|---------|
 | `PixelSpace` | 1 | Direct pixel diffusion (default) |
-| `LatentSpace` | 4-128 | Compressed diffusion (auto-detected from checkpoint) |
+| `SpaceToDepthSpace` | 2 | 2D pixel rearrangement (no learned transform) |
+| `WaveletSpace` | 2 | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
+| `LatentSpace` | 4-128 | Compressed diffusion via VAE/VQ-VAE/DC-AE (auto-detected from checkpoint) |
 
 **LatentSpace scale factors** depend on the compression model:
 

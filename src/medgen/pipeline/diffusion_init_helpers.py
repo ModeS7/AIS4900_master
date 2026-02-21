@@ -208,15 +208,17 @@ def setup_augmented_diffusion(trainer: DiffusionTrainer) -> None:
     trainer._aug_diff_channel_steps = None  # Computed lazily
 
     if trainer.augmented_diffusion_enabled and trainer.is_main_process:
-        if trainer.space.scale_factor > 1:
+        from medgen.diffusion.spaces import LatentSpace
+
+        if isinstance(trainer.space, LatentSpace):
             logger.info(
                 f"DC-AE 1.5 Augmented Diffusion Training enabled: "
                 f"min_channels={trainer.aug_diff_min_channels}, step={trainer.aug_diff_channel_step}"
             )
         else:
             logger.warning(
-                "Augmented Diffusion Training enabled but using pixel space. "
-                "This has no effect - only applies to latent diffusion."
+                "Augmented Diffusion Training enabled but not using learned latent space. "
+                "This has no effect - only applies to VAE/VQ-VAE/DC-AE latent diffusion."
             )
 
 

@@ -18,6 +18,7 @@ from torch.amp import autocast
 from torch.utils.data import Dataset
 
 from medgen.core.dict_utils import get_with_fallbacks
+from medgen.data.utils import binarize_seg
 
 if TYPE_CHECKING:
     from .generation import GenerationMetrics
@@ -365,12 +366,11 @@ def generate_samples(
     if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
         result = self_.space.decode(result)
 
-    # Clamp to [0, 1] in pixel space (after decoding)
-    result = torch.clamp(result, 0, 1)
-
-    # Threshold seg mode output at 0.5 to get binary masks
+    # Binarize seg output or clamp to [0, 1] for image output
     if self_.is_seg_mode:
-        result = (result > 0.5).float()
+        result = binarize_seg(result)
+    else:
+        result = torch.clamp(result, 0, 1)
 
     return result
 
@@ -478,9 +478,10 @@ def generate_and_extract_features_3d_streaming(
         sample = sample.float()
         if self_.space is not None and hasattr(self_.space, 'scale_factor') and self_.space.scale_factor > 1:
             sample = self_.space.decode(sample)
-        sample = torch.clamp(sample, 0, 1)
         if self_.is_seg_mode:
-            sample = (sample > 0.5).float()
+            sample = binarize_seg(sample)
+        else:
+            sample = torch.clamp(sample, 0, 1)
 
         # Keep sample for diversity if requested and within limit
         if samples_for_diversity is not None and len(samples_for_diversity) < max_diversity_samples:

@@ -445,20 +445,25 @@ training.score_aug.enabled: false
 training.sda.enabled: true
 ```
 
-## 55. Augmented Diffusion Only Works in Latent Space
-**Problem**: `training.augmented_diffusion.enabled=true` is silently ignored in pixel-space diffusion.
+## 55. Augmented Diffusion Only Works with Learned Latent Spaces
+**Problem**: `training.augmented_diffusion.enabled=true` only works with VAE/VQ-VAE/DC-AE latent spaces. It is silently ignored for pixel space, wavelet space, and SpaceToDepth.
 
-**Root cause**: Augmented diffusion (DC-AE 1.5) requires channel masking of VAE latents. In pixel space, there are no latent channels to mask.
+**Root cause**: Augmented diffusion (DC-AE 1.5) requires channel masking of **learned** VAE latents where channels encode increasingly fine features. Fixed transforms like Haar wavelets have semantically tied subbands (LLL, LLH, etc.) — randomly masking them destroys the frequency decomposition.
 
-**Symptoms**: Setting `augmented_diffusion.enabled=true` without a `vae_checkpoint` has no effect.
+**Symptoms**: Setting `augmented_diffusion.enabled=true` without a `LatentSpace` has no effect (warning logged).
 
-**Fix**: Always use with latent diffusion:
+**Fix**: Only use with VAE/VQ-VAE/DC-AE latent diffusion:
 ```bash
 # WRONG - pixel space (augmented_diffusion ignored)
 python -m medgen.scripts.train mode=bravo strategy=rflow \
     training.augmented_diffusion.enabled=true
 
-# CORRECT - latent space with VAE checkpoint
+# WRONG - wavelet space (augmented_diffusion ignored, warning logged)
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    wavelet.enabled=true \
+    training.augmented_diffusion.enabled=true
+
+# CORRECT - learned latent space with VAE checkpoint
 python -m medgen.scripts.train mode=bravo strategy=rflow \
     vae_checkpoint=runs/compression_2d/.../checkpoint_best.pt \
     training.augmented_diffusion.enabled=true
@@ -827,3 +832,26 @@ def _get_2d_feret(self, region) -> float:
 ```
 
 **Affected code**: `src/medgen/metrics/regional/tracker.py` — both `_get_2d_feret()` and `_get_3d_feret()` (routes through the 2D method).
+
+## 75. compute_predicted_clean() Was Clamping to [0,1] (Fixed Feb 2026)
+**Problem**: Both `DDPMStrategy.compute_predicted_clean()` and `RFlowStrategy.compute_predicted_clean()` applied `torch.clamp(..., 0, 1)` to the predicted clean images. This destroyed latent codes and wavelet coefficients that are naturally outside [0, 1].
+
+**Root cause**: The clamp was originally correct for pixel-space diffusion but was never updated when latent/wavelet space support was added.
+
+**Impact**: Perceptual loss, validation metrics (PSNR, MS-SSIM, LPIPS), and worst-batch visualization were all computed on wrongly-clamped-then-decoded images. The main MSE training loss was unaffected since it operates on predictions vs targets directly.
+
+**Fix**: Removed all `torch.clamp(0, 1)` from `compute_predicted_clean()` in both strategies. The clamp now happens after decoding to pixel space (in generation sampling and `sampler.py`).
+
+**Affected code**: `src/medgen/diffusion/strategy_rflow.py`, `src/medgen/diffusion/strategy_ddpm.py`
+
+## 76. Generation Sampling Was Clamping Before Decode (Fixed Feb 2026)
+**Problem**: `generation_sampling.py` and `sampler.py` applied `torch.clamp(0, 1)` to generated samples BEFORE decoding from latent/wavelet space. Wavelet detail coefficients (negative values) were zeroed out, and latent codes were truncated.
+
+**Root cause**: Same class of bug as #75 — pixel-space assumption leaked into latent/wavelet paths.
+
+**Fix**: Moved clamp to after `space.decode()` in all 3 locations:
+- `generation_sampling.py` line ~348 (batched 2D)
+- `generation_sampling.py` line ~474 (3D streaming)
+- `sampler.py` line ~405
+
+**Affected code**: `src/medgen/metrics/generation_sampling.py`, `src/medgen/metrics/sampler.py`
