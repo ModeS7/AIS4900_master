@@ -91,12 +91,16 @@ class LatentDataset(Dataset):
         self.spatial_dims = spatial_dims
 
         # Load normalization stats from metadata (or backfill from cache)
-        self._shift, self._scale = self._load_normalization_stats()
+        self._shift, self._scale, self._seg_shift, self._seg_scale = (
+            self._load_normalization_stats()
+        )
 
         name = "LatentDataset" if spatial_dims == 2 else "Latent3DDataset"
         logger.info(f"{name}: Found {len(self.files)} samples in {cache_dir}")
         if self._shift is not None:
             logger.info(f"  Normalization: shift={self._shift.tolist()}, scale={self._scale.tolist()}")
+        if self._seg_shift is not None:
+            logger.info(f"  Seg normalization: shift={self._seg_shift.tolist()}, scale={self._seg_scale.tolist()}")
 
     def _detect_spatial_dims(self) -> int:
         """Detect spatial dimensions from cache metadata or first sample."""
@@ -121,10 +125,12 @@ class LatentDataset(Dataset):
 
         return 2  # Default to 2D
 
-    def _load_normalization_stats(self) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    def _load_normalization_stats(
+        self,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         """Load or backfill per-channel normalization stats.
 
-        Returns shift/scale tensors shaped [C] for use in __getitem__().
+        Returns (shift, scale, seg_shift, seg_scale) tensors shaped [C].
         If metadata lacks stats, computes them from cache and updates metadata.
         """
         metadata_path = os.path.join(self.cache_dir, "metadata.json")
@@ -140,12 +146,19 @@ class LatentDataset(Dataset):
         if metadata is not None and 'latent_shift' in metadata:
             shift = torch.tensor(metadata['latent_shift'], dtype=torch.float32)
             scale = torch.tensor(metadata['latent_scale'], dtype=torch.float32)
-            return shift, scale
+
+            seg_shift = None
+            seg_scale = None
+            if 'latent_seg_shift' in metadata:
+                seg_shift = torch.tensor(metadata['latent_seg_shift'], dtype=torch.float32)
+                seg_scale = torch.tensor(metadata['latent_seg_scale'], dtype=torch.float32)
+
+            return shift, scale, seg_shift, seg_scale
 
         # Backfill: compute stats and update metadata
         stats = LatentCacheBuilder.compute_channel_stats(self.cache_dir)
         if not stats:
-            return None, None
+            return None, None, None, None
 
         # Update metadata file
         if metadata is not None:
@@ -159,7 +172,14 @@ class LatentDataset(Dataset):
 
         shift = torch.tensor(stats['latent_shift'], dtype=torch.float32)
         scale = torch.tensor(stats['latent_scale'], dtype=torch.float32)
-        return shift, scale
+
+        seg_shift = None
+        seg_scale = None
+        if 'latent_seg_shift' in stats:
+            seg_shift = torch.tensor(stats['latent_seg_shift'], dtype=torch.float32)
+            seg_scale = torch.tensor(stats['latent_seg_scale'], dtype=torch.float32)
+
+        return shift, scale, seg_shift, seg_scale
 
     def __len__(self) -> int:
         return len(self.files)
@@ -193,8 +213,14 @@ class LatentDataset(Dataset):
             scale = self._scale.reshape(shape)
 
             data['latent'] = (data['latent'] - shift) / scale
+
+            # Normalize latent_seg with its own stats (different encoder/modality)
             if 'latent_seg' in data and data['latent_seg'] is not None:
-                data['latent_seg'] = (data['latent_seg'] - shift) / scale
+                seg_shift = self._seg_shift if self._seg_shift is not None else self._shift
+                seg_scale = self._seg_scale if self._seg_scale is not None else self._scale
+                n_spatial_seg = data['latent_seg'].dim() - 1
+                seg_shape = (-1,) + (1,) * n_spatial_seg
+                data['latent_seg'] = (data['latent_seg'] - seg_shift.reshape(seg_shape)) / seg_scale.reshape(seg_shape)
 
         return data
 
@@ -257,42 +283,31 @@ class LatentCacheBuilder:
             param.requires_grad = False
 
     @staticmethod
-    def compute_channel_stats(cache_dir: str, max_samples: int = 0) -> dict[str, list[float]]:
-        """Compute per-channel mean/std from cached latents.
-
-        Uses Welford's online algorithm for numerical stability.
+    def _welford_stats(
+        pt_files: list[str], key: str,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Compute per-channel mean/std using Welford's online algorithm.
 
         Args:
-            cache_dir: Directory containing .pt files.
-            max_samples: Max samples to process (0 = all).
+            pt_files: List of .pt file paths.
+            key: Key to read from each .pt file ('latent' or 'latent_seg').
 
         Returns:
-            Dict with 'latent_shift' (per-channel means) and
-            'latent_scale' (per-channel stds).
+            Tuple of (mean, std) tensors shaped [C], or None if no data.
         """
-        pt_files = sorted(glob(os.path.join(cache_dir, "*.pt")))
-        if not pt_files:
-            return {}
-
-        if max_samples > 0:
-            pt_files = pt_files[:max_samples]
-
-        # Welford's online algorithm for per-channel mean/variance
         n = 0
         mean: torch.Tensor | None = None
         m2: torch.Tensor | None = None
 
         for f in pt_files:
             data = torch.load(f, weights_only=False)
-            latent = data.get('latent')
-            if latent is None:
+            tensor = data.get(key)
+            if tensor is None:
                 continue
 
-            # latent shape: [C, ...] — compute per-channel mean over spatial dims
-            n_ch = latent.shape[0]
-            # Flatten spatial dims: [C, N_spatial]
-            flat = latent.reshape(n_ch, -1).float()
-            sample_mean = flat.mean(dim=1)  # [C]
+            n_ch = tensor.shape[0]
+            flat = tensor.reshape(n_ch, -1).float()
+            sample_mean = flat.mean(dim=1)
 
             n += 1
             if mean is None:
@@ -305,15 +320,52 @@ class LatentCacheBuilder:
                 m2 += delta * delta2
 
         if mean is None or n < 2:
-            return {}
+            return None
 
         variance = m2 / (n - 1)
         std = torch.sqrt(variance).clamp(min=1e-6)
+        return mean, std
 
-        return {
+    @staticmethod
+    def compute_channel_stats(cache_dir: str, max_samples: int = 0) -> dict[str, list[float]]:
+        """Compute per-channel mean/std from cached latents.
+
+        Computes separate stats for 'latent' and 'latent_seg' (if present).
+
+        Args:
+            cache_dir: Directory containing .pt files.
+            max_samples: Max samples to process (0 = all).
+
+        Returns:
+            Dict with 'latent_shift', 'latent_scale', and optionally
+            'latent_seg_shift', 'latent_seg_scale'.
+        """
+        pt_files = sorted(glob(os.path.join(cache_dir, "*.pt")))
+        if not pt_files:
+            return {}
+
+        if max_samples > 0:
+            pt_files = pt_files[:max_samples]
+
+        # Compute stats for main latents
+        result = LatentCacheBuilder._welford_stats(pt_files, 'latent')
+        if result is None:
+            return {}
+
+        mean, std = result
+        stats: dict[str, list[float]] = {
             'latent_shift': mean.tolist(),
             'latent_scale': std.tolist(),
         }
+
+        # Compute separate stats for latent_seg if present
+        seg_result = LatentCacheBuilder._welford_stats(pt_files, 'latent_seg')
+        if seg_result is not None:
+            seg_mean, seg_std = seg_result
+            stats['latent_seg_shift'] = seg_mean.tolist()
+            stats['latent_seg_scale'] = seg_std.tolist()
+
+        return stats
 
     @staticmethod
     def compute_checkpoint_hash(checkpoint_path: str) -> str:
