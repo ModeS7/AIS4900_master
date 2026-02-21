@@ -156,6 +156,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if spatial_dims == 3:
             scheduler_kwargs['depth_size'] = self.volume_depth
             scheduler_kwargs['spatial_dims'] = 3
+        # Disable scheduler clipping for wavelet/latent/rescaled space:
+        # MONAI schedulers clip predicted x₀ to [-1, 1] by default, which
+        # destroys wavelet coefficients and latent representations.
+        if self.space.needs_decode:
+            scheduler_kwargs['clip_sample'] = False
         self.scheduler = self.strategy.setup_scheduler(**scheduler_kwargs)
 
         # ODE solver config (RFlow only, used during generation)

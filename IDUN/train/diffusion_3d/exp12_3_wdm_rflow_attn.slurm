@@ -14,7 +14,8 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp12_3/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# WDM + RFlow + attention at L3/L4
+# WDM paper approach: rescale [-1,1] + raw DWT coefficients
+# RFlow + attention at L3/L4
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -73,6 +74,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo \
     model=wdm_3d \
     wavelet.enabled=true \
+    wavelet.rescale=true \
+    wavelet.normalize=false \
     'model.attention_levels=[false,false,false,true,true]' \
     volume.height=128 \
     volume.width=128 \

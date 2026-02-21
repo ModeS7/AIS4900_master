@@ -39,6 +39,7 @@ class DDPMStrategy(DiffusionStrategy):
         image_size: int = 128,
         prediction_type: str = "epsilon",
         schedule: str = "cosine",
+        clip_sample: bool = True,
         **kwargs,
     ) -> DDPMScheduler:
         """Setup DDPM scheduler.
@@ -48,6 +49,9 @@ class DDPMStrategy(DiffusionStrategy):
             image_size: Size of input images (unused but kept for interface).
             prediction_type: What the model predicts — 'epsilon' (noise) or 'sample' (x₀).
             schedule: Noise schedule type ('cosine', 'linear', 'scaled_linear').
+            clip_sample: Whether to clip predicted x₀ to [-1, 1] during sampling.
+                Must be False for wavelet/latent space where values aren't bounded.
+                Default True (standard pixel-space behavior).
             **kwargs: Ignored (for interface compatibility with RFlowStrategy).
 
         Returns:
@@ -60,12 +64,14 @@ class DDPMStrategy(DiffusionStrategy):
             num_train_timesteps=num_timesteps,
             schedule=schedule,
             prediction_type=prediction_type,
+            clip_sample=clip_sample,
         )
         # DDIM scheduler for fast inference (same noise schedule, fewer steps)
         self._inference_scheduler = DDIMScheduler(
             num_train_timesteps=num_timesteps,
             schedule=schedule,
             prediction_type=prediction_type,
+            clip_sample=clip_sample,
         )
         return self.scheduler  # type: ignore[no-any-return]
 

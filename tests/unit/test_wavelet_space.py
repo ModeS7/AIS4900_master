@@ -314,6 +314,56 @@ class TestWaveletSubbandStats:
         # LLL shift should differ: rescale maps [0,1] -> [-1,1]
         assert abs(stats_no['wavelet_shift'][0] - stats_yes['wavelet_shift'][0]) > 0.1
 
+    def test_compute_subband_stats_matches_true_voxel_std(self):
+        """Scale should match the true per-voxel std (law of total variance)."""
+        from medgen.models.haar_wavelet_3d import haar_forward_3d
+
+        torch.manual_seed(123)
+        x = torch.rand(30, 1, 8, 16, 16)
+        dataset = _TensorDataset(x)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=8)
+
+        stats = WaveletSpace.compute_subband_stats(loader, max_samples=30)
+
+        # Compute ground-truth per-voxel stats
+        coeffs = haar_forward_3d(x)
+        for ch in range(8):
+            true_std = coeffs[:, ch].flatten().float().std().item()
+            computed_std = stats['wavelet_scale'][ch]
+            # Should match within 10% (small sample size)
+            assert abs(computed_std - true_std) / true_std < 0.10, (
+                f"Channel {ch}: computed={computed_std:.6f}, true={true_std:.6f}"
+            )
+
+    def test_compute_subband_stats_rescale_invariant_normalization(self):
+        """With proper stats, normalized coefficients should be identical
+        regardless of whether rescaling is enabled."""
+        from medgen.models.haar_wavelet_3d import haar_forward_3d
+
+        torch.manual_seed(456)
+        x = torch.rand(20, 1, 8, 16, 16)
+        dataset = _TensorDataset(x)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=8)
+
+        stats_no = WaveletSpace.compute_subband_stats(loader, max_samples=20, rescale=False)
+        stats_yes = WaveletSpace.compute_subband_stats(loader, max_samples=20, rescale=True)
+
+        space_no = WaveletSpace(
+            shift=stats_no['wavelet_shift'],
+            scale=stats_no['wavelet_scale'],
+            rescale=False,
+        )
+        space_yes = WaveletSpace(
+            shift=stats_yes['wavelet_shift'],
+            scale=stats_yes['wavelet_scale'],
+            rescale=True,
+        )
+
+        # Normalized outputs should be identical
+        z_no = space_no.encode(x)
+        z_yes = space_yes.encode(x)
+        torch.testing.assert_close(z_no, z_yes, atol=1e-5, rtol=1e-5)
+
 
 class TestRescalePixelSpace:
     """Test PixelSpace rescaling."""

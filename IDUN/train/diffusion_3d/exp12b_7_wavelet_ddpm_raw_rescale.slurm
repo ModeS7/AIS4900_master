@@ -14,9 +14,8 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp12b_7/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp12b_7: Same as exp12_7 but with [-1,1] rescaling before DWT
-# WDM-style wavelet diffusion: DDPM x0 prediction, RAW DWT coefficients (no per-subband normalization)
-# Ablation: [-1,1] rescaling without subband normalization
+# DEPRECATED: Now redundant with exp12_2 (both are paper approach: rescale [-1,1] + raw DWT)
+# Consider deleting this file.
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}

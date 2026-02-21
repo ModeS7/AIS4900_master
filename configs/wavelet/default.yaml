@@ -4,7 +4,9 @@
 # [B, 1, 160, 256, 256] -> [B, 8, 80, 128, 128]
 # UNet operates on smaller spatial grid with 8 frequency channels (LLL, LLH, ..., HHH).
 #
-# Same shape as space_to_depth but with frequency separation that may help diffusion.
+# Two approaches:
+#   exp12 (WDM paper):  rescale=true, normalize=false  — raw DWT on [-1,1] data
+#   exp12b (ours):      rescale=false, normalize=true   — per-subband N(0,1) normalization
 #
 # Usage:
 #   python -m medgen.scripts.train --config-name=diffusion_3d \
@@ -16,10 +18,10 @@ enabled: false
 
 # Per-subband normalization (shift/scale computed from training data)
 # Normalizes each of the 8 wavelet subbands to ~N(0,1).
-# Set false to use raw DWT coefficients (matches WDM paper).
-normalize: true
+# With normalization, rescale has no effect (linear rescaling is absorbed by stats).
+normalize: false
 
 # Rescale [0,1] data to [-1,1] before DWT (WDM paper convention).
-# Centers data at zero for symmetric interpolation with Gaussian noise.
-# Default false for backward compatibility — existing experiments trained on [0,1].
+# Only meaningful when normalize=false (raw coefficients).
+# With normalize=true, this is redundant.
 rescale: false

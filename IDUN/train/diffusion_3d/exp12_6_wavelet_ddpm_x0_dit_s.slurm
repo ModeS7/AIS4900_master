@@ -15,6 +15,7 @@
 #SBATCH --signal=B:SIGUSR1@120
 
 # ============================================================================
+# WDM paper approach: rescale [-1,1] + raw DWT coefficients
 # Wavelet DiT-S + DDPM x₀
 # ============================================================================
 # Same as exp12_5 (wavelet + DDPM x₀) but DiT-S instead of WDM UNet.
@@ -88,6 +89,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     model=dit_3d \
     model.variant=S \
     wavelet.enabled=true \
+    wavelet.rescale=true \
+    wavelet.normalize=false \
     volume.height=128 \
     volume.width=128 \
     training.warmup_epochs=10 \

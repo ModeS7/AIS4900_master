@@ -15,7 +15,8 @@
 #SBATCH --signal=B:SIGUSR1@120
 
 # ============================================================================
-# WDM Medium (~250M) + DDPM x₀ + attention at L3/L4
+# WDM paper approach: rescale [-1,1] + raw DWT coefficients
+# Medium (~250M) + DDPM x₀ + attention at L3/L4
 # ============================================================================
 # Scaled up from exp12_4 (~77M) to match pixel baseline channel structure.
 #
@@ -92,6 +93,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo \
     model=wdm_3d \
     wavelet.enabled=true \
+    wavelet.rescale=true \
+    wavelet.normalize=false \
     'model.channels=[64,128,256,512,512]' \
     'model.attention_levels=[false,false,false,true,true]' \
     volume.height=128 \

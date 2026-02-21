@@ -369,10 +369,10 @@ class WaveletSpace(DiffusionSpace):
         max_samples: int = 200,
         rescale: bool = False,
     ) -> dict[str, list[float]]:
-        """Compute per-subband mean/std from training data using Welford's algorithm.
+        """Compute per-subband mean/std from training data.
 
-        Iterates over the training dataloader, applies Haar forward transform,
-        and computes per-channel (subband) mean and std.
+        Uses the law of total variance: Var[X] = E[Var[X|sample]] + Var[E[X|sample]]
+        to compute per-voxel statistics from per-sample spatial statistics.
 
         Args:
             dataloader: Training dataloader.
@@ -389,8 +389,11 @@ class WaveletSpace(DiffusionSpace):
         from medgen.models.haar_wavelet_3d import haar_forward_3d
 
         n = 0
+        # Welford accumulators for per-sample spatial means
         mean: Tensor | None = None
         m2: Tensor | None = None
+        # Running sum of per-sample spatial variances (for E[Var[X|sample]])
+        var_sum: Tensor | None = None
 
         for batch in dataloader:
             bd = BatchData.from_raw(batch)
@@ -404,21 +407,24 @@ class WaveletSpace(DiffusionSpace):
             coeffs = haar_forward_3d(images)
             n_ch = coeffs.shape[1]
 
-            # Per-sample Welford: treat each sample in the batch independently
+            # Per-sample statistics
             for i in range(coeffs.shape[0]):
                 sample = coeffs[i]  # [C, D/2, H/2, W/2]
                 flat = sample.reshape(n_ch, -1).float()
                 sample_mean = flat.mean(dim=1)
+                sample_var = flat.var(dim=1)  # per-voxel variance within this sample
 
                 n += 1
                 if mean is None:
                     mean = sample_mean.clone()
                     m2 = torch.zeros_like(mean)
+                    var_sum = sample_var.clone()
                 else:
                     delta = sample_mean - mean
                     mean += delta / n
                     delta2 = sample_mean - mean
                     m2 += delta * delta2  # type: ignore[operator]
+                    var_sum += sample_var  # type: ignore[operator]
 
                 if n >= max_samples:
                     break
@@ -428,8 +434,11 @@ class WaveletSpace(DiffusionSpace):
         if mean is None or n < 2:
             return {}
 
-        variance = m2 / (n - 1)  # type: ignore[operator]
-        std = torch.sqrt(variance).clamp(min=1e-6)
+        # Law of total variance: Var[X] = E[Var[X|sample]] + Var[E[X|sample]]
+        avg_within_var = var_sum / n  # type: ignore[operator]  # E[Var[X|sample]]
+        between_var = m2 / (n - 1)  # type: ignore[operator]   # Var[E[X|sample]]
+        total_variance = avg_within_var + between_var
+        std = torch.sqrt(total_variance).clamp(min=1e-6)
 
         return {
             'wavelet_shift': mean.tolist(),

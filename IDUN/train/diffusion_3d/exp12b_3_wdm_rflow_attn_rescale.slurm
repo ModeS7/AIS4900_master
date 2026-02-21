@@ -14,9 +14,9 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp12b_3/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp12b_3: Same as exp12_3 but with [-1,1] rescaling before DWT
-# WDM + RFlow + attention at L3/L4
-# Ablation: does zero-centering data improve wavelet diffusion?
+# exp12b_3: Per-subband N(0,1) normalization (our approach)
+# vs exp12_3 which uses WDM paper approach (rescale [-1,1] + raw DWT)
+# RFlow + attention at L3/L4
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -59,7 +59,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp12b_3 WDM RFlow + Attention [-1,1]: Bravo 128x128x160 ==="
+echo "=== Exp12b_3 WDM RFlow + Attention N(0,1) normalized: Bravo 128x128x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -75,7 +75,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo \
     model=wdm_3d \
     wavelet.enabled=true \
-    wavelet.rescale=true \
+    wavelet.normalize=true \
     'model.attention_levels=[false,false,false,true,true]' \
     volume.height=128 \
     volume.width=128 \

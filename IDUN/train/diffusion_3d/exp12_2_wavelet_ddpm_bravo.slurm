@@ -14,7 +14,8 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp12_2/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# WDM-style wavelet diffusion: DDPM, x₀ prediction, 74M params, batch=8, LR=1e-5
+# WDM paper approach: rescale [-1,1] + raw DWT coefficients (no per-subband normalization)
+# DDPM, x₀ prediction, 74M params, batch=8, LR=1e-5
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -75,6 +76,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo \
     model=wdm_3d \
     wavelet.enabled=true \
+    wavelet.rescale=true \
+    wavelet.normalize=false \
     volume.height=128 \
     volume.width=128 \
     volume.pad_depth_to=160 \
