@@ -13,3 +13,8 @@
 
 # Master switch
 enabled: false
+
+# Per-subband normalization (shift/scale computed from training data)
+# Normalizes each of the 8 wavelet subbands to ~N(0,1).
+# Set false to use raw DWT coefficients (matches WDM paper).
+normalize: true
