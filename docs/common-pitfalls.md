@@ -855,3 +855,43 @@ def _get_2d_feret(self, region) -> float:
 - `sampler.py` line ~405
 
 **Affected code**: `src/medgen/metrics/generation_sampling.py`, `src/medgen/metrics/sampler.py`
+
+## 78. Seg Binarization Inconsistency (Fixed)
+
+**Problem**: The 2D generation pipeline (`generate.py`) used min-max normalization + `make_binary(threshold=0.1)` for seg binarization, while the training pipeline (`generation_sampling.py`) used `clamp(0,1) + > 0.5`. This caused inconsistent behavior between training evaluation and standalone generation.
+
+**Root cause**: 4 different inline patterns for the same operation were scattered across 10+ call sites with no single source of truth.
+
+**Fix**: Created `binarize_seg(data, threshold=0.5)` in `src/medgen/data/utils.py` — clamps to [0,1] then thresholds. Replaced all inline patterns:
+- `generate.py`: 4 sites (including the inconsistent min-max pattern)
+- `eval_ode_solvers.py`: 1 site
+- `eval_bin_adherence.py`: 1 site
+- `generation_sampling.py`: 2 sites (2D batched + 3D streaming)
+- `sampler.py`: 1 site
+- `seg.py`: 2 sites (post-augmentation re-binarization)
+
+**Rule**: Always use `binarize_seg()` for generated or augmented seg data. Use `make_binary()` only for ground-truth data that's already in [0,1].
+
+## 79. Duplicated Functions in seg_conditioned.py (Fixed)
+
+**Problem**: `seg_conditioned.py` had full copies of 4 functions already in `datasets.py`: `compute_feret_diameter()`, `compute_size_bins()`, `create_size_bin_maps()`, `DEFAULT_BIN_EDGES`. The `seg_conditioned.py` copy of `compute_feret_diameter` used non-deterministic `np.random.choice` while `datasets.py` uses `np.random.default_rng(seed=...)`.
+
+**Fix**: Deleted duplicates from `seg_conditioned.py`, now imports from `datasets.py`.
+
+**Rule**: Canonical location for size-bin utilities is `src/medgen/data/loaders/datasets.py`. Never duplicate these functions.
+
+## 80. Inline NIfTI Save Logic (Fixed)
+
+**Problem**: `save_nifti()` existed in `generate.py` but `eval_ode_solvers.py` inlined the same `np.diag + Nifti1Image + nib.save` logic in 2 functions.
+
+**Fix**: Moved `save_nifti()` to `src/medgen/data/utils.py` as shared utility. All callers now import from there.
+
+**Rule**: Use `from medgen.data.utils import save_nifti` for NIfTI output.
+
+## 81. Voxel Spacing Ordering Convention
+
+**Caution**: Two different ordering conventions exist:
+- `compute_voxel_size()` returns `(x, y, z)` = `(0.9375, 0.9375, 1.0)` — for NIfTI affine matrices
+- Config `mode.size_bins.voxel_spacing` stores `[D, H, W]` = `[1.0, 0.9375, 0.9375]` — for `compute_feret_diameter_3d`
+
+The training dataloader (`seg.py`) reads from config in the correct `(D, H, W)` order. `generate.py` passes `compute_voxel_size()` output directly, which works only because in-plane spacing is isotropic (x=y). If FOV or resolution ever differs between axes, this would silently produce wrong Feret diameters.

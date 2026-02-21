@@ -27,7 +27,7 @@ src/medgen/
 ├── data/
 │   ├── dataset.py               # NiFTIDataset class
 │   ├── lossless_mask_codec.py   # Lossless binary mask encoding to DC-AE latent shape
-│   ├── utils.py                 # Slice extraction, merge utilities
+│   ├── utils.py                 # Slice extraction, merge, binarize_seg, save_nifti
 │   └── loaders/                 # Dataloader factory functions
 │       ├── base.py              # Base loader abstractions
 │       ├── builder_2d.py        # LoaderSpec pattern for 2D
@@ -40,7 +40,7 @@ src/medgen/
 │       ├── multi_modality.py    # Multi-modality compression loaders
 │       ├── seg.py               # Segmentation-only loaders
 │       ├── seg_compression.py   # Seg mask compression loaders
-│       ├── seg_conditioned.py   # Seg conditioned on tumor sizes (2D/3D)
+│       ├── seg_conditioned.py   # Seg conditioned on tumor sizes (2D, imports from datasets.py)
 │       ├── single.py            # Single modality loaders (seg, bravo)
 │       ├── unified.py           # Unified loader dispatch
 │       ├── vae.py               # VAE dataloaders
@@ -1289,11 +1289,18 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 
 ### Data
 - `src/medgen/data/dataset.py`: NiFTIDataset class
+- `src/medgen/data/utils.py`: Shared utilities
+  - `binarize_seg(data, threshold=0.5)`: Single source of truth for seg binarization (clamp + threshold). Use for generated/augmented data.
+  - `save_nifti(data, path, voxel_size)`: Save numpy array as NIfTI with voxel spacing.
+  - `make_binary(image, threshold)`: Simple threshold for ground-truth data (no clamp needed).
+  - Slice extraction: `extract_slices_single`, `extract_slices_dual`, `extract_slices_single_with_seg`
+  - `merge_sequences()`: Merge multiple MR sequences into single dataset
 - `src/medgen/data/loaders/`: Dataloader factory functions
 - `src/medgen/data/loaders/common.py`: Shared DataLoader utilities (config, distributed, modality helpers)
   - `MODALITY_KEYS`: Centralized mapping (`'dual' → ['t1_pre', 't1_gd']`, etc.)
   - `get_modality_keys(modality)`: Expand composite modalities to keys
   - `GroupedBatchSampler`: Ensures homogeneous batches for mode embedding
+- `src/medgen/data/loaders/datasets.py`: Canonical location for size-bin utilities (`compute_size_bins`, `compute_feret_diameter`, `create_size_bin_maps`, `DEFAULT_BIN_EDGES`)
 - `src/medgen/data/loaders/builder_2d.py`: LoaderSpec pattern for standardized 2D dataloader construction
 - `src/medgen/data/loaders/unified.py`: Unified dataloader dispatch (routes mode → correct factory)
 - `src/medgen/data/loaders/compression_detection.py`: Auto-detect compression model type from checkpoint
