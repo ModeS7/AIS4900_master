@@ -15,7 +15,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Measure VAE Latent Statistics ==="
+echo "=== Measure Compression Latent Statistics ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -60,6 +60,17 @@ echo "exp14_4 (kl_weight=0.0)"
 echo "=========================================="
 python -m medgen.scripts.measure_latent_std \
     +checkpoint="${EXP14_4}" \
+    paths=cluster \
+    mode=multi_modality \
+    +max_samples=50
+
+echo ""
+echo "=========================================="
+echo "exp8_1 (VQ-VAE 8x)"
+echo "=========================================="
+EXP8_1="runs/compression_3d/multi_modality/exp8_1_vqvae3d_8x_20260202-002436/checkpoint_best.pt"
+python -m medgen.scripts.measure_latent_std \
+    +checkpoint="${EXP8_1}" \
     paths=cluster \
     mode=multi_modality \
     +max_samples=50

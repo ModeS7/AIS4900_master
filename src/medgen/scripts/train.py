@@ -158,14 +158,6 @@ def main(cfg: DictConfig) -> None:
             cfg.latent.scale_factor = scale_factor
             cfg.latent.latent_channels = latent_channels
 
-        # Create LatentSpace wrapper with detected/configured parameters
-        space = LatentSpace(
-            compression_model, device,
-            deterministic=True,
-            compression_type=compression_type,
-            scale_factor=scale_factor,
-            latent_channels=latent_channels,
-        )
         space_name = f"latent ({compression_type}, {scale_factor}x)"
 
         # Determine cache directory - include checkpoint hash to avoid conflicts
@@ -179,7 +171,6 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Scale factor: {scale_factor}x, Latent channels: {latent_channels}")
         logger.info(f"Latent cache directory: {cache_dir}")
     else:
-        space = PixelSpace()
         space_name = "pixel"
 
     logger.info(
@@ -188,15 +179,11 @@ def main(cfg: DictConfig) -> None:
         f"Epochs: {cfg.training.epochs} | EMA: {cfg.training.use_ema}"
     )
 
-    # Create trainer
-    trainer = DiffusionTrainer(cfg, space=space)
-    logger.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
-
     # Get mode configuration using ModeFactory
     mode_config = ModeFactory.get_mode_config(cfg)
     augment = cfg.training.get('augment', True)
 
-    # Latent diffusion: build cache and use latent dataloaders
+    # Latent diffusion: build cache, create space with normalization stats, then dataloaders
     if use_latent:
         # Build cache if needed
         cache_builder = LatentCacheBuilder(
@@ -260,6 +247,31 @@ def main(cfg: DictConfig) -> None:
                 else:
                     logger.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
 
+        # Read normalization stats from train cache metadata
+        import json
+        latent_shift = None
+        latent_scale = None
+        train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
+        if os.path.exists(train_meta_path):
+            with open(train_meta_path) as f:
+                train_metadata = json.load(f)
+            latent_shift = train_metadata.get('latent_shift')
+            latent_scale = train_metadata.get('latent_scale')
+
+        # Create LatentSpace with normalization stats (after cache ensures stats exist)
+        space = LatentSpace(
+            compression_model, device,
+            deterministic=True,
+            compression_type=compression_type,
+            scale_factor=scale_factor,
+            latent_channels=latent_channels,
+            latent_shift=latent_shift,
+            latent_scale=latent_scale,
+        )
+
+        # Create trainer (needs space)
+        trainer = DiffusionTrainer(cfg, space=space)
+
         # Create latent dataloaders (for training)
         dataloader, train_dataset = create_latent_dataloader(
             cfg=cfg,
@@ -284,6 +296,11 @@ def main(cfg: DictConfig) -> None:
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
     else:
+        space = PixelSpace()
+
+        # Create trainer
+        trainer = DiffusionTrainer(cfg, space=space)
+
         # Standard pixel-space dataloaders using ModeFactory
         dataloader, train_dataset = ModeFactory.create_train_dataloader(
             cfg=cfg,
@@ -298,6 +315,8 @@ def main(cfg: DictConfig) -> None:
         # Pixel-space training: no separate loaders needed for reference features
         pixel_train_loader = None
         pixel_val_loader = None
+
+    logger.info(f"Validation: every epoch, figures at interval {trainer.figure_interval}")
 
     # Create validation dataloader (if val/ directory exists)
     # Pass world_size to reduce batch size for DDP (avoids OOM on single GPU)
@@ -611,6 +630,18 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
+        # Read normalization stats from train cache metadata
+        import json
+        latent_shift = None
+        latent_scale = None
+        train_cache_dir = os.path.join(cache_dir, 'train')
+        train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
+        if os.path.exists(train_meta_path):
+            with open(train_meta_path) as f:
+                train_metadata = json.load(f)
+            latent_shift = train_metadata.get('latent_shift')
+            latent_scale = train_metadata.get('latent_scale')
+
         # Create LatentSpace with detected/configured parameters
         space = LatentSpace(
             compression_model,
@@ -622,6 +653,8 @@ def _train_3d(cfg: DictConfig) -> None:
             depth_scale_factor=depth_scale_factor,
             latent_channels=latent_channels,
             slicewise_encoding=slicewise_encoding,
+            latent_shift=latent_shift,
+            latent_scale=latent_scale,
         )
 
     else:

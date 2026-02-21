@@ -90,8 +90,13 @@ class LatentDataset(Dataset):
             spatial_dims = self._detect_spatial_dims()
         self.spatial_dims = spatial_dims
 
+        # Load normalization stats from metadata (or backfill from cache)
+        self._shift, self._scale = self._load_normalization_stats()
+
         name = "LatentDataset" if spatial_dims == 2 else "Latent3DDataset"
         logger.info(f"{name}: Found {len(self.files)} samples in {cache_dir}")
+        if self._shift is not None:
+            logger.info(f"  Normalization: shift={self._shift.tolist()}, scale={self._scale.tolist()}")
 
     def _detect_spatial_dims(self) -> int:
         """Detect spatial dimensions from cache metadata or first sample."""
@@ -116,6 +121,46 @@ class LatentDataset(Dataset):
 
         return 2  # Default to 2D
 
+    def _load_normalization_stats(self) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Load or backfill per-channel normalization stats.
+
+        Returns shift/scale tensors shaped [C] for use in __getitem__().
+        If metadata lacks stats, computes them from cache and updates metadata.
+        """
+        metadata_path = os.path.join(self.cache_dir, "metadata.json")
+        metadata = None
+
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path) as f:
+                    metadata = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if metadata is not None and 'latent_shift' in metadata:
+            shift = torch.tensor(metadata['latent_shift'], dtype=torch.float32)
+            scale = torch.tensor(metadata['latent_scale'], dtype=torch.float32)
+            return shift, scale
+
+        # Backfill: compute stats and update metadata
+        stats = LatentCacheBuilder.compute_channel_stats(self.cache_dir)
+        if not stats:
+            return None, None
+
+        # Update metadata file
+        if metadata is not None:
+            metadata.update(stats)
+            try:
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                logger.info(f"Backfilled normalization stats into {metadata_path}")
+            except OSError as e:
+                logger.warning(f"Could not update metadata with stats: {e}")
+
+        shift = torch.tensor(stats['latent_shift'], dtype=torch.float32)
+        scale = torch.tensor(stats['latent_scale'], dtype=torch.float32)
+        return shift, scale
+
     def __len__(self) -> int:
         return len(self.files)
 
@@ -138,6 +183,18 @@ class LatentDataset(Dataset):
         # Ensure seg_mask is float32 if present (pixel-space for regional metrics)
         if 'seg_mask' in data and data['seg_mask'] is not None:
             data['seg_mask'] = data['seg_mask'].float()
+
+        # Per-channel normalization: z_norm = (z - shift) / scale
+        if self._shift is not None:
+            # Reshape [C] -> [C, 1, 1] or [C, 1, 1, 1] to broadcast over spatial dims
+            n_spatial = data['latent'].dim() - 1  # exclude channel dim
+            shape = (-1,) + (1,) * n_spatial
+            shift = self._shift.reshape(shape)
+            scale = self._scale.reshape(shape)
+
+            data['latent'] = (data['latent'] - shift) / scale
+            if 'latent_seg' in data and data['latent_seg'] is not None:
+                data['latent_seg'] = (data['latent_seg'] - shift) / scale
 
         return data
 
@@ -198,6 +255,65 @@ class LatentCacheBuilder:
         # Freeze model parameters
         for param in self.model.parameters():
             param.requires_grad = False
+
+    @staticmethod
+    def compute_channel_stats(cache_dir: str, max_samples: int = 0) -> dict[str, list[float]]:
+        """Compute per-channel mean/std from cached latents.
+
+        Uses Welford's online algorithm for numerical stability.
+
+        Args:
+            cache_dir: Directory containing .pt files.
+            max_samples: Max samples to process (0 = all).
+
+        Returns:
+            Dict with 'latent_shift' (per-channel means) and
+            'latent_scale' (per-channel stds).
+        """
+        pt_files = sorted(glob(os.path.join(cache_dir, "*.pt")))
+        if not pt_files:
+            return {}
+
+        if max_samples > 0:
+            pt_files = pt_files[:max_samples]
+
+        # Welford's online algorithm for per-channel mean/variance
+        n = 0
+        mean: torch.Tensor | None = None
+        m2: torch.Tensor | None = None
+
+        for f in pt_files:
+            data = torch.load(f, weights_only=False)
+            latent = data.get('latent')
+            if latent is None:
+                continue
+
+            # latent shape: [C, ...] — compute per-channel mean over spatial dims
+            n_ch = latent.shape[0]
+            # Flatten spatial dims: [C, N_spatial]
+            flat = latent.reshape(n_ch, -1).float()
+            sample_mean = flat.mean(dim=1)  # [C]
+
+            n += 1
+            if mean is None:
+                mean = sample_mean.clone()
+                m2 = torch.zeros_like(mean)
+            else:
+                delta = sample_mean - mean
+                mean += delta / n
+                delta2 = sample_mean - mean
+                m2 += delta * delta2
+
+        if mean is None or n < 2:
+            return {}
+
+        variance = m2 / (n - 1)
+        std = torch.sqrt(variance).clamp(min=1e-6)
+
+        return {
+            'latent_shift': mean.tolist(),
+            'latent_scale': std.tolist(),
+        }
 
     @staticmethod
     def compute_checkpoint_hash(checkpoint_path: str) -> str:
@@ -422,6 +538,12 @@ class LatentCacheBuilder:
             metadata['seg_compression_checkpoint'] = seg_checkpoint_path
             metadata['seg_checkpoint_hash'] = self.compute_checkpoint_hash(seg_checkpoint_path)
 
+        # Compute per-channel normalization stats
+        stats = self.compute_channel_stats(cache_dir)
+        if stats:
+            metadata.update(stats)
+            logger.info(f"Latent stats: shift={stats['latent_shift']}, scale={stats['latent_scale']}")
+
         with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)
 
@@ -499,6 +621,12 @@ class LatentCacheBuilder:
         if seg_checkpoint_path is not None:
             metadata['seg_compression_checkpoint'] = seg_checkpoint_path
             metadata['seg_checkpoint_hash'] = self.compute_checkpoint_hash(seg_checkpoint_path)
+
+        # Compute per-channel normalization stats
+        stats = self.compute_channel_stats(cache_dir)
+        if stats:
+            metadata.update(stats)
+            logger.info(f"Latent stats: shift={stats['latent_shift']}, scale={stats['latent_scale']}")
 
         with open(os.path.join(cache_dir, "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -601,7 +729,7 @@ class LatentCacheBuilder:
             z_mu, _ = model.encode(images)
             return z_mu
         elif self.compression_type == 'vqvae':
-            # VQ-VAE returns quantized directly
+            # VQ-VAE: pre-quantization encoder features (per LDM paper)
             return model.encode(images)
         elif self.compression_type == 'dcae':
             # DC-AE is deterministic - diffusers returns EncoderOutput object

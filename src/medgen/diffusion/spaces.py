@@ -333,6 +333,8 @@ class LatentSpace(DiffusionSpace):
         depth_scale_factor: int | None = None,
         latent_channels: int | None = None,
         slicewise_encoding: bool = False,
+        latent_shift: list[float] | None = None,
+        latent_scale: list[float] | None = None,
     ) -> None:
         # Store as 'vae' for backward compatibility with existing code
         self.vae = compression_model.eval()
@@ -341,6 +343,17 @@ class LatentSpace(DiffusionSpace):
         self.spatial_dims = spatial_dims
         self.compression_type = compression_type
         self.slicewise_encoding = slicewise_encoding
+
+        # Latent normalization: denormalize generated samples before decoding
+        # Shape: [1, C, 1, 1] for 2D or [1, C, 1, 1, 1] for 3D
+        if latent_shift is not None and latent_scale is not None:
+            spatial_ones = (1,) * max(spatial_dims, 2 if not slicewise_encoding else 3)
+            shape = (1, len(latent_shift)) + spatial_ones
+            self._shift = torch.tensor(latent_shift, dtype=torch.float32).reshape(shape).to(device)
+            self._scale = torch.tensor(latent_scale, dtype=torch.float32).reshape(shape).to(device)
+        else:
+            self._shift = None
+            self._scale = None
 
         # Freeze model parameters
         for param in self.vae.parameters():
@@ -485,7 +498,7 @@ class LatentSpace(DiffusionSpace):
             return z
 
         elif self.compression_type == 'vqvae':
-            # VQ-VAE returns quantized directly
+            # VQ-VAE: pre-quantization encoder features (per LDM paper)
             return self.vae.encode(x)  # type: ignore[operator, no-any-return]
 
         elif self.compression_type == 'dcae':
@@ -539,9 +552,17 @@ class LatentSpace(DiffusionSpace):
         Returns:
             Decoded images [B, C, H, W] (2D) or [B, C, D, H, W] (3D) in pixel space.
         """
+        # Denormalize: undo z_norm = (z - shift) / scale
+        if self._shift is not None:
+            z = z * self._scale + self._shift
+
         # Slicewise decoding: apply 2D decoder to each depth slice
         if self.slicewise_encoding and z.dim() == 5:
             return self._decode_slicewise(z)
+
+        # VQ-VAE: quantize (snap to codebook) then decode
+        if self.compression_type == 'vqvae':
+            return self.vae.decode_stage_2_outputs(z)  # type: ignore[operator, no-any-return]
 
         result = self.vae.decode(z)  # type: ignore[operator]
         # Handle diffusers DecoderOutput (has .sample attribute)
@@ -564,13 +585,16 @@ class LatentSpace(DiffusionSpace):
         for d in range(D):
             # Extract latent slice [B, C_lat, H_lat, W_lat]
             latent_slice = z[:, :, d, :, :]
-            # Decode slice
-            result = self.vae.decode(latent_slice)  # type: ignore[operator]
-            # Handle diffusers DecoderOutput
-            if hasattr(result, 'sample'):
-                decoded_slice = result.sample
+            # Decode slice (VQ-VAE: quantize then decode)
+            if self.compression_type == 'vqvae':
+                decoded_slice = self.vae.decode_stage_2_outputs(latent_slice)  # type: ignore[operator]
             else:
-                decoded_slice = result
+                result = self.vae.decode(latent_slice)  # type: ignore[operator]
+                # Handle diffusers DecoderOutput
+                if hasattr(result, 'sample'):
+                    decoded_slice = result.sample
+                else:
+                    decoded_slice = result
             decoded_slices.append(decoded_slice)
 
         # Stack along depth dimension: [B, C, D, H, W]
