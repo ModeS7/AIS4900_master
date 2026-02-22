@@ -104,6 +104,7 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             'embed_dim': trainer.size_bin_embed_dim,
             'projection_hidden_dim': trainer.size_bin_projection_hidden_dim,
             'projection_num_layers': trainer.size_bin_projection_num_layers,
+            'aux_loss_weight': getattr(trainer, 'size_bin_aux_loss_weight', 0.0),
         }
 
     return config

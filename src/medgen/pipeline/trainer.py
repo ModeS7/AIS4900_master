@@ -729,6 +729,22 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         )
                         total_loss = total_loss + tt.self_cond.consistency_weight * consistency_loss
 
+            # Auxiliary bin prediction loss (forces bottleneck to encode bin info)
+            aux_bin_loss = torch.tensor(0.0, device=self.device)
+            if self.use_size_bin_embedding and getattr(self, 'size_bin_aux_loss_weight', 0) > 0:
+                bin_pred_head = getattr(self, '_bin_prediction_head', None)
+                if bin_pred_head is not None and size_bins is not None:
+                    # Skip CFG-dropped samples (all-zeros = unconditional)
+                    mask = size_bins.sum(dim=1) > 0  # [B] — True for conditioned samples
+                    if mask.any():
+                        bin_pred = bin_pred_head.predict()  # [B, num_bins]
+                        if bin_pred is not None:
+                            target = size_bins[mask].float()
+                            pred = bin_pred[mask]
+                            aux_bin_loss = nn.functional.mse_loss(pred, target)
+                            total_loss = total_loss + self.size_bin_aux_loss_weight * aux_bin_loss
+                    bin_pred_head.clear_cache()
+
             # SDA (Shifted Data Augmentation) path
             # Unlike ScoreAug, SDA transforms CLEAN data before noise addition
             # and uses shifted timesteps to prevent leakage
@@ -793,6 +809,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             reconstruction_loss=0.0,  # Not applicable for diffusion
             perceptual_loss=p_loss.item(),
             mse_loss=mse_loss.item(),
+            aux_bin_loss=aux_bin_loss.item(),
         )
 
     def train_epoch(self, data_loader: DataLoader, epoch: int) -> dict[str, float]:
@@ -816,6 +833,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         epoch_loss = 0
         epoch_mse_loss = 0
         epoch_perceptual_loss = 0
+        epoch_aux_bin_loss = 0
 
         epoch_iter = create_epoch_iterator(
             data_loader, epoch, not self.verbose, self.is_main_process,
@@ -843,6 +861,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             epoch_loss += result.total_loss
             epoch_mse_loss += result.mse_loss
             epoch_perceptual_loss += result.perceptual_loss
+            epoch_aux_bin_loss += result.aux_bin_loss
 
             if hasattr(epoch_iter, 'set_postfix'):
                 epoch_iter.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
@@ -884,6 +903,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         avg_loss = epoch_loss / n_batches
         avg_mse = epoch_mse_loss / n_batches
         avg_perceptual = epoch_perceptual_loss / n_batches
+        avg_aux_bin = epoch_aux_bin_loss / n_batches
 
         # Sync losses across DDP ranks before logging
         if self.use_multi_gpu:
@@ -898,6 +918,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self.perceptual_weight > 0:
                 self._unified_metrics.update_loss('Total', avg_loss)
                 self._unified_metrics.update_loss('Perceptual', avg_perceptual)
+            if avg_aux_bin > 0:
+                self._unified_metrics.update_loss('AuxBin', avg_aux_bin)
             self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
             self._unified_metrics.update_vram()
             self._unified_metrics.log_training(epoch)

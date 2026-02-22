@@ -186,6 +186,42 @@ class SizeBinTimeEmbed(nn.Module):
         return out
 
 
+class BinPredictionHead(nn.Module):
+    """Predicts size bin counts from UNet bottleneck features.
+
+    Attaches via forward hook on mid_block — no model architecture changes.
+    Used as auxiliary loss to force the bottleneck to encode bin information.
+    """
+
+    def __init__(self, bottleneck_channels: int, num_bins: int = DEFAULT_NUM_BINS, hidden_dim: int = 128):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool3d(1)  # works for 2D too (trivial depth dim)
+        self.head = nn.Sequential(
+            nn.Linear(bottleneck_channels, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, num_bins),
+        )
+        self._cached_features: torch.Tensor | None = None
+
+    def hook_fn(self, module, input, output):
+        """Forward hook — cache bottleneck features."""
+        self._cached_features = output
+
+    def predict(self) -> torch.Tensor | None:
+        """Predict bins from cached features. Returns None if no features cached."""
+        if self._cached_features is None:
+            return None
+        feat = self._cached_features
+        # Handle both 2D [B,C,H,W] and 3D [B,C,D,H,W]
+        if feat.dim() == 4:
+            feat = feat.unsqueeze(2)  # [B,C,1,H,W] for AdaptiveAvgPool3d
+        pooled = self.pool(feat).flatten(1)  # [B, C]
+        return self.head(pooled)  # [B, num_bins]
+
+    def clear_cache(self):
+        self._cached_features = None
+
+
 class SizeBinModelWrapper(nn.Module):
     """Wrapper to inject size bin conditioning into MONAI UNet.
 

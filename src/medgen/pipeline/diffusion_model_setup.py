@@ -223,6 +223,26 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
                 "Use single GPU for seg_conditioned mode."
             )
 
+        # Setup auxiliary bin prediction head (forces bottleneck to encode bin info)
+        if getattr(trainer, 'size_bin_aux_loss_weight', 0) > 0:
+            from medgen.models.wrappers.size_bin_embed import BinPredictionHead
+
+            bottleneck_channels = mc.channels[-1]
+            trainer._bin_prediction_head = BinPredictionHead(
+                bottleneck_channels=bottleneck_channels,
+                num_bins=trainer.size_bin_num_bins,
+            ).to(trainer.device)
+            # Hook on inner UNet's mid_block (wrapper.model is the raw UNet)
+            inner_model = trainer.model_raw.model
+            trainer._bin_pred_hook = inner_model.mid_block.register_forward_hook(
+                trainer._bin_prediction_head.hook_fn
+            )
+            if trainer.is_main_process:
+                logger.info(
+                    f"Auxiliary bin prediction head: bottleneck_channels={bottleneck_channels}, "
+                    f"weight={trainer.size_bin_aux_loss_weight}"
+                )
+
     # Setup ControlNet for pixel-resolution conditioning in latent diffusion
     if trainer.use_controlnet:
         if trainer.is_transformer:
@@ -305,7 +325,11 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
                 trainable = sum(p.numel() for p in train_params if p.requires_grad)
                 logger.info(f"Joint training: UNet + ControlNet ({trainable:,} trainable params)")
     else:
-        train_params = trainer.model_raw.parameters()
+        train_params = list(trainer.model_raw.parameters())
+        # Add auxiliary bin prediction head parameters (separate module, not in model_raw)
+        bin_pred_head = getattr(trainer, '_bin_prediction_head', None)
+        if bin_pred_head is not None:
+            train_params += list(bin_pred_head.parameters())
 
     trainer.optimizer = AdamW(
         train_params,
