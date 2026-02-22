@@ -460,6 +460,16 @@ class ReferenceFeatureCache:
             if isinstance(batch, dict):
                 images = get_with_fallbacks(batch, 'image', 'images')
                 masks = get_with_fallbacks(batch, 'seg', 'mask', 'labels')
+                # Latent dataloaders have 'latent' key, not 'image' — can't extract
+                # pixel-space features from latent tensors (wrong channels for ResNet)
+                if images is None:
+                    if 'latent' in batch:
+                        logger.warning(
+                            f"Skipping feature extraction for '{name}': "
+                            "test loader provides latent tensors, not pixel images"
+                        )
+                        return torch.empty(0)
+                    continue
             elif isinstance(batch, (tuple, list)):
                 if len(batch) == 2:
                     images, masks = batch

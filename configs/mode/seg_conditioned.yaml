@@ -32,6 +32,7 @@ size_bins:
   projection_hidden_dim: 0   # 0 = legacy 2-layer MLP; >0 = deeper MLP with this hidden width
   projection_num_layers: 2   # Number of hidden layers in deep projection MLP
   fov_mm: 240.0  # Field of view for pixel-to-mm conversion
+  aux_loss_weight: 0.0  # Auxiliary bin prediction loss weight (0 = disabled)
 
 # Classifier-free guidance (CFG) training
 cfg_dropout_prob: 0.15  # Probability of dropping conditioning (15% = unconditional)
