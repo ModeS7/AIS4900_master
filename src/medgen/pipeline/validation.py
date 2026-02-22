@@ -87,16 +87,26 @@ def compute_validation_losses(
     # is misleading — shared decoder artifacts cancel out, giving fake-perfect metrics.
     # Encoding on-the-fly in validation (no_grad, once per epoch) is negligible cost.
     #
-    # Exception: bravo_seg_cond uses dual encoders (bravo VQ-VAE + seg VQ-VAE).
+    # bravo_seg_cond special case: uses dual encoders (bravo VQ-VAE + seg VQ-VAE).
     # space.encode() only wraps the bravo VQ-VAE, so encoding pixel seg through it
-    # produces wrong latents. bravo_seg_cond must use the latent val_loader.
+    # produces wrong latents. We use the latent val_loader for diffusion (correct
+    # seg conditioning) but iterate pixel_val_loader in parallel just for metrics_gt.
     val_loader = trainer.val_loader
+    pixel_val_loader = getattr(trainer, 'pixel_val_loader', None)
     use_pixel_loader = (
-        getattr(trainer, 'pixel_val_loader', None) is not None
+        pixel_val_loader is not None
         and trainer.mode_name != 'bravo_seg_cond'
     )
     if use_pixel_loader:
-        val_loader = trainer.pixel_val_loader
+        val_loader = pixel_val_loader
+
+    # For bravo_seg_cond: parallel pixel loader for honest quality metrics.
+    # Latent loader provides correct seg conditioning for diffusion computation,
+    # pixel loader provides original bravo images for metrics_gt.
+    pixel_metrics_iter: Any = None
+    if trainer.mode_name == 'bravo_seg_cond' and pixel_val_loader is not None:
+        pixel_metrics_iter = iter(pixel_val_loader)
+        logger.debug("bravo_seg_cond: using parallel pixel loader for quality metrics")
 
     # Mark CUDA graph step boundary to prevent tensor caching issues
     torch.compiler.cudagraph_mark_step_begin()
@@ -120,9 +130,22 @@ def compute_validation_losses(
                 current_batch_size = images.shape[0]
 
             # Keep pixel-space originals for quality metrics and regional tracking.
-            # When data is already latent (bravo_seg_cond), we don't have pixel originals.
+            # When data is already latent (bravo_seg_cond), we don't have pixel originals
+            # from this loader — but we may have them from the parallel pixel loader.
             images_pixel = images if not is_latent else None
             labels_pixel = labels if not labels_is_latent else None
+
+            # bravo_seg_cond: grab pixel bravo images from parallel pixel loader
+            # for honest quality metrics (avoids shared decoder artifact cancellation).
+            if pixel_metrics_iter is not None and images_pixel is None:
+                try:
+                    pixel_batch = next(pixel_metrics_iter)
+                    pixel_images = pixel_batch['image'].to(trainer.device, non_blocking=True)
+                    # Verify batch sizes match (both loaders iterate same val split)
+                    if pixel_images.shape[0] == current_batch_size:
+                        images_pixel = pixel_images
+                except StopIteration:
+                    pixel_metrics_iter = None  # Exhausted, fall back to shared decoder
 
             # Encode to diffusion space (skip if already latent from cache)
             if not is_latent:
@@ -202,8 +225,9 @@ def compute_validation_losses(
                     }
 
             # Quality metrics: decode prediction to pixel space, compare against originals.
-            # When pixel originals are available (pixel_val_loader), use them directly.
-            # When not (bravo_seg_cond with latent data), fall back to decoded latent GT.
+            # When pixel originals are available (pixel_val_loader or parallel pixel
+            # loader for bravo_seg_cond), use them directly.
+            # Fallback: decoded latent GT (shared decoder — metrics are relative only).
             if trainer.space.needs_decode:
                 metrics_pred = trainer.space.decode_batch(predicted_clean)
             else:
