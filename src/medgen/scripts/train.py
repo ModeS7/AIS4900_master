@@ -249,6 +249,7 @@ def main(cfg: DictConfig) -> None:
 
         # Read normalization stats from train cache metadata (recompute if stale)
         import json
+
         from medgen.data.loaders.latent import LATENT_STATS_VERSION
         latent_shift = None
         latent_scale = None
@@ -671,6 +672,7 @@ def _train_3d(cfg: DictConfig) -> None:
 
         # Read normalization stats from train cache metadata (recompute if stale)
         import json
+
         from medgen.data.loaders.latent import LATENT_STATS_VERSION
         latent_shift = None
         latent_scale = None
