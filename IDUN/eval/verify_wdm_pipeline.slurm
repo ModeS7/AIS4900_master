@@ -14,8 +14,8 @@
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
 
-# Verify WDM pipeline consistency after normalization persistence fix
-# Must PASS all checks before retraining
+# Verify WDM pipeline consistency
+# Only needs: diffusion checkpoint + data root
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -37,27 +37,22 @@ DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 # Auto-find WDM checkpoint (exp12b_2)
 CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp12b_2_*/checkpoint_latest.pt 2>/dev/null | head -1)
 
-echo "Data root: $DATA_ROOT"
-if [ -n "$CHECKPOINT" ]; then
-    echo "Checkpoint: $CHECKPOINT"
-else
-    echo "No WDM checkpoint found — running data-only checks"
+if [ -z "$CHECKPOINT" ]; then
+    echo "ERROR: No WDM checkpoint found for exp12b_2_*"
+    exit 1
 fi
+
+echo "Checkpoint: $CHECKPOINT"
+echo "Data root: $DATA_ROOT"
 echo ""
 
-# exp12b_2 trains at 128x128x160 with wavelet normalize (no rescale)
-# Use --max-volumes 100 for good stats estimate while keeping runtime short
-CMD="python -m medgen.scripts.verify_wdm_pipeline \
-    --data-root ${DATA_ROOT} \
+# exp12b_2 trains at 128x128x160
+python -m medgen.scripts.verify_wdm_pipeline \
+    --checkpoint "${CHECKPOINT}" \
+    --data-root "${DATA_ROOT}" \
     --image-size 128 \
     --depth 160 \
-    --max-volumes 100"
-
-if [ -n "$CHECKPOINT" ]; then
-    CMD="${CMD} --checkpoint ${CHECKPOINT}"
-fi
-
-eval $CMD
+    --max-volumes 100
 
 EXIT_CODE=$?
 echo ""

@@ -14,8 +14,8 @@
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
 
-# Verify LDM pipeline consistency after normalization fix
-# Must PASS all checks before retraining
+# Verify LDM pipeline consistency
+# Only needs: diffusion checkpoint + compression checkpoint + data root
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -35,23 +35,23 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 
-# Auto-find latent cache
-LATENT_CACHE_DIR=$(ls -d ${DATA_ROOT}-latents-vqvae-3d-*/train 2>/dev/null | head -1)
+# Auto-find LDM diffusion checkpoint (exp9_1)
+DIFFUSION_CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_seg_cond/exp9_1_*/checkpoint_latest.pt 2>/dev/null | head -1)
 
-if [ -z "$LATENT_CACHE_DIR" ]; then
-    echo "ERROR: No latent cache found"
+if [ -z "$DIFFUSION_CHECKPOINT" ]; then
+    echo "ERROR: No LDM diffusion checkpoint found for exp9_1_*"
     exit 1
 fi
 
+echo "Diffusion: $DIFFUSION_CHECKPOINT"
 echo "Compression: $COMPRESSION_CHECKPOINT"
-echo "Latent cache: $LATENT_CACHE_DIR"
 echo "Data root: $DATA_ROOT"
 echo ""
 
 python -m medgen.scripts.verify_ldm_pipeline \
+    --diffusion-checkpoint "${DIFFUSION_CHECKPOINT}" \
     --compression-checkpoint "${COMPRESSION_CHECKPOINT}" \
     --compression-type vqvae \
-    --latent-cache-dir "${LATENT_CACHE_DIR}" \
     --data-root "${DATA_ROOT}"
 
 EXIT_CODE=$?

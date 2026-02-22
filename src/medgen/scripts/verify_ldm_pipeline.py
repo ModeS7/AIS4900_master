@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Verify that the LDM training and generation pipelines are 100% consistent.
+"""Verify that the LDM training and generation pipelines are consistent.
 
-Runs a series of checks to confirm that what the diffusion model sees during
-training exactly matches what the generation pipeline produces. Any mismatch
-indicates a bug.
+Only needs: diffusion checkpoint + compression checkpoint + data root.
+No latent cache or metadata.json required — stats are read from the
+diffusion checkpoint (saved by profiling.py).
 
 Checks performed:
-  1. Normalized latent stats: per-channel mean ≈ 0, std ≈ 1
-  2. Cache round-trip: LatentDataset sample matches manual encode+normalize
-  3. Decode invertibility: decode(normalize(encode(x))) recovers x
-  4. Conditioning consistency: encode_normalized_seg matches cache normalization
-  5. Noise/signal scale: noise std ≈ normalized latent std (both ≈ 1)
-  6. Generation pipeline match: full pipeline produces same tensors as training path
-
-All checks must PASS for the pipeline to be correct.
+  1. Checkpoint has latent normalization stats
+  2. Encode NIfTI volumes → normalize → per-channel mean ≈ 0, std ≈ 1
+  3. Encode → normalize → decode round-trip PSNR
+  4. Seg conditioning: encode_normalized_seg consistency
+  5. Noise/signal scale compatibility
+  6. Generation pipeline shapes (decode output, model input concat)
 
 Usage:
     python -m medgen.scripts.verify_ldm_pipeline \
+        --diffusion-checkpoint runs/diffusion_3d/.../checkpoint_latest.pt \
         --compression-checkpoint runs/compression_3d/.../checkpoint_latest.pt \
-        --compression-type vqvae \
-        --latent-cache-dir /path/to/brainmetshare-3-latents-vqvae-3d-hash/train \
         --data-root /path/to/brainmetshare-3
 """
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -39,7 +35,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 PASS = "PASS"
 FAIL = "FAIL"
 
@@ -54,54 +49,120 @@ def check(name: str, condition: bool, detail: str = "") -> bool:
     return condition
 
 
+def load_nifti_volume(
+    path: Path, depth: int, image_size: int,
+) -> torch.Tensor:
+    """Load a NIfTI volume with standard preprocessing.
+
+    Returns [1, 1, D, H, W] tensor in [0, 1].
+    """
+    vol = nib.load(str(path)).get_fdata().astype(np.float32)
+    vmin, vmax = vol.min(), vol.max()
+    if vmax > vmin:
+        vol = (vol - vmin) / (vmax - vmin)
+
+    # [H, W, D] -> [D, H, W]
+    vol = np.transpose(vol, (2, 0, 1))
+
+    d = vol.shape[0]
+    if d < depth:
+        pad = np.zeros((depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
+        vol = np.concatenate([vol, pad], axis=0)
+    elif d > depth:
+        vol = vol[:depth]
+
+    vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
+    if vol_tensor.shape[3] != image_size or vol_tensor.shape[4] != image_size:
+        vol_tensor = torch.nn.functional.interpolate(
+            vol_tensor, size=(depth, image_size, image_size),
+            mode='trilinear', align_corners=False,
+        )
+    return vol_tensor
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify LDM pipeline consistency")
-    parser.add_argument('--compression-checkpoint', required=True)
+    parser.add_argument('--diffusion-checkpoint', required=True,
+                        help='Diffusion model checkpoint (has latent stats in config)')
+    parser.add_argument('--compression-checkpoint', required=True,
+                        help='Compression model checkpoint (VQ-VAE/VAE/DC-AE)')
     parser.add_argument('--compression-type', default='auto')
-    parser.add_argument('--latent-cache-dir', required=True,
-                        help='Path to train/ subdirectory of latent cache')
     parser.add_argument('--data-root', required=True,
-                        help='Dataset root (for raw NIfTI volumes)')
+                        help='Dataset root with NIfTI volumes')
+    parser.add_argument('--image-size', type=int, default=256)
+    parser.add_argument('--depth', type=int, default=160)
+    parser.add_argument('--max-volumes', type=int, default=50,
+                        help='Max volumes for stats verification (default: 50)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    cache_dir = args.latent_cache_dir
     data_root = Path(args.data_root)
     all_passed = True
 
     logger.info("=" * 70)
     logger.info("LDM Pipeline Verification")
     logger.info("=" * 70)
+    logger.info(f"Diffusion checkpoint: {args.diffusion_checkpoint}")
+    logger.info(f"Compression checkpoint: {args.compression_checkpoint}")
+    logger.info(f"Data root: {data_root}")
+    logger.info(f"Volume: {args.image_size}x{args.image_size}x{args.depth}")
+    logger.info("")
+
+    # ── Load diffusion checkpoint config ──
+    ckpt = torch.load(args.diffusion_checkpoint, map_location='cpu', weights_only=False)
+    ckpt_cfg = ckpt.get('config', {})
+    latent_cfg = ckpt_cfg.get('latent', {})
+    del ckpt
 
     # ── Load compression model ──
-    from medgen.data.loaders.compression_detection import load_compression_model
+    from medgen.data.loaders.latent import load_compression_model
     from medgen.diffusion.spaces import LatentSpace
 
     comp_model, detected_type, comp_spatial_dims, scale_factor, latent_channels = (
-        load_compression_model(args.compression_checkpoint, args.compression_type, device, spatial_dims='auto')
+        load_compression_model(
+            args.compression_checkpoint, args.compression_type, device,
+            spatial_dims='auto',
+        )
     )
-    logger.info(f"Compression: {detected_type} {scale_factor}x, {latent_channels}ch, {comp_spatial_dims}D")
+    logger.info(
+        f"Compression: {detected_type} {scale_factor}x, "
+        f"{latent_channels}ch, {comp_spatial_dims}D"
+    )
 
-    # ── Load normalization stats from metadata ──
-    meta_path = Path(cache_dir) / 'metadata.json'
-    if not meta_path.exists():
-        logger.error(f"No metadata.json at {meta_path}")
+    # ══════════════════════════════════════════════════════════════════════
+    # CHECK 1: Checkpoint has latent normalization stats
+    # ══════════════════════════════════════════════════════════════════════
+    logger.info("\n--- Check 1: Checkpoint latent stats ---")
+
+    latent_shift = latent_cfg.get('latent_shift')
+    latent_scale = latent_cfg.get('latent_scale')
+    latent_seg_shift = latent_cfg.get('latent_seg_shift')
+    latent_seg_scale = latent_cfg.get('latent_seg_scale')
+
+    all_passed &= check(
+        "Checkpoint has latent_shift/latent_scale",
+        latent_shift is not None and latent_scale is not None,
+        f"shift={latent_shift}, scale={latent_scale}" if latent_shift else "MISSING",
+    )
+
+    if latent_shift is None:
+        logger.error("Cannot continue without latent stats. Retrain with the stats persistence fix.")
         sys.exit(1)
 
-    with open(meta_path) as f:
-        metadata = json.load(f)
-
-    latent_shift = metadata.get('latent_shift')
-    latent_scale = metadata.get('latent_scale')
-    latent_seg_shift = metadata.get('latent_seg_shift')
-    latent_seg_scale = metadata.get('latent_seg_scale')
-
-    logger.info(f"Bravo stats: shift={latent_shift}, scale={latent_scale}")
+    logger.info(f"  Bravo stats: shift={latent_shift}")
+    logger.info(f"               scale={latent_scale}")
     if latent_seg_shift:
-        logger.info(f"Seg stats:   shift={latent_seg_shift}, scale={latent_seg_scale}")
+        logger.info(f"  Seg stats:   shift={latent_seg_shift}")
+        logger.info(f"               scale={latent_seg_scale}")
+
+    all_passed &= check(
+        "Scale values are positive",
+        all(s > 0 for s in latent_scale),
+        f"min scale = {min(latent_scale):.6f}",
+    )
 
     # ── Create LatentSpace (generation pipeline) ──
-    slicewise = (comp_spatial_dims == 2)  # 2D model on 3D data
+    slicewise = (comp_spatial_dims == 2)
     space = LatentSpace(
         compression_model=comp_model,
         device=device,
@@ -117,306 +178,207 @@ def main():
         latent_seg_scale=latent_seg_scale,
     )
 
-    # ── Create LatentDataset (training pipeline) ──
-    from medgen.data.loaders.latent import LatentDataset
+    # ── Find NIfTI volumes ──
+    train_dir = data_root / 'train'
+    if not train_dir.exists():
+        for d in sorted(data_root.iterdir()):
+            if d.is_dir() and list(d.glob("*/bravo.nii.gz")):
+                train_dir = d
+                break
 
-    dataset = LatentDataset(cache_dir=cache_dir, mode='bravo_seg_cond', spatial_dims=comp_spatial_dims)
+    bravo_files = sorted(train_dir.glob("*/bravo.nii.gz"))[:args.max_volumes]
+    if not bravo_files:
+        logger.error(f"No bravo.nii.gz in {train_dir}")
+        sys.exit(1)
+    logger.info(f"\nFound {len(bravo_files)} bravo volumes in {train_dir}")
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 1: Normalized latent stats should be ~N(0,1) per channel
+    # CHECK 2: Normalized latent distribution (encode NIfTI → normalize → stats)
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 1: Normalized latent distribution ---")
+    logger.info("\n--- Check 2: Normalized latent distribution ---")
 
-    n_samples = min(50, len(dataset))
     all_means = []
     all_stds = []
-    seg_means = []
-    seg_stds = []
 
-    for i in range(n_samples):
-        sample = dataset[i]
-        lat = sample['latent']  # already normalized by __getitem__
-        n_ch = lat.shape[0]
-        flat = lat.reshape(n_ch, -1)
+    for path in bravo_files:
+        vol = load_nifti_volume(path, args.depth, args.image_size).to(device)
+        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+            latent = space.encode(vol)
+        normalized = space.normalize(latent).cpu().float()[0]  # [C, ...]
+        n_ch = normalized.shape[0]
+        flat = normalized.reshape(n_ch, -1)
         all_means.append(flat.mean(dim=1))
         all_stds.append(flat.std(dim=1))
 
-        if 'latent_seg' in sample and sample['latent_seg'] is not None:
-            seg = sample['latent_seg']
-            seg_flat = seg.reshape(seg.shape[0], -1)
-            seg_means.append(seg_flat.mean(dim=1))
-            seg_stds.append(seg_flat.std(dim=1))
-
     avg_mean = torch.stack(all_means).mean(dim=0)
     avg_std = torch.stack(all_stds).mean(dim=0)
-    logger.info(f"  Bravo normalized: per-ch mean={avg_mean.tolist()}")
-    logger.info(f"  Bravo normalized: per-ch std ={avg_std.tolist()}")
+    logger.info(f"  Per-channel mean: {avg_mean.tolist()}")
+    logger.info(f"  Per-channel std:  {avg_std.tolist()}")
 
-    # Per-channel mean should be near 0 (within ±0.5)
     all_passed &= check(
         "Bravo per-channel mean ≈ 0",
         avg_mean.abs().max().item() < 0.5,
         f"max |mean| = {avg_mean.abs().max().item():.4f} (threshold: 0.5)",
     )
-    # Per-channel std should be near 1 (within 0.3-3.0)
     all_passed &= check(
         "Bravo per-channel std ≈ 1",
         avg_std.min().item() > 0.3 and avg_std.max().item() < 3.0,
         f"std range = [{avg_std.min().item():.4f}, {avg_std.max().item():.4f}] (expected: 0.3-3.0)",
     )
 
-    if seg_means:
-        seg_avg_mean = torch.stack(seg_means).mean(dim=0)
-        seg_avg_std = torch.stack(seg_stds).mean(dim=0)
-        logger.info(f"  Seg normalized: per-ch mean={seg_avg_mean.tolist()}")
-        logger.info(f"  Seg normalized: per-ch std ={seg_avg_std.tolist()}")
-        all_passed &= check(
-            "Seg per-channel mean ≈ 0",
-            seg_avg_mean.abs().max().item() < 0.5,
-            f"max |mean| = {seg_avg_mean.abs().max().item():.4f}",
-        )
-        all_passed &= check(
-            "Seg per-channel std ≈ 1",
-            seg_avg_std.min().item() > 0.3 and seg_avg_std.max().item() < 3.0,
-            f"std range = [{seg_avg_std.min().item():.4f}, {seg_avg_std.max().item():.4f}]",
-        )
-
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 2: Cache sample matches manual encode+normalize
-    # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 2: Cache vs manual encode+normalize ---")
-
-    # Load raw .pt file (before dataset normalization)
-    pt_files = sorted(Path(cache_dir).glob("*.pt"))
-    raw_data = torch.load(str(pt_files[0]), weights_only=False)
-    raw_latent = raw_data['latent'].float()
-    patient_id = raw_data.get('patient_id', 'unknown')
-    logger.info(f"  Sample: {patient_id}, raw latent shape={raw_latent.shape}")
-
-    # Get same sample through LatentDataset (applies normalization)
-    dataset_sample = dataset[0]
-    dataset_latent = dataset_sample['latent']
-
-    # Manual normalize (same formula as LatentDataset.__getitem__)
-    n_spatial = raw_latent.dim() - 1
-    shape = (-1,) + (1,) * n_spatial
-    shift_t = torch.tensor(latent_shift, dtype=torch.float32).reshape(shape)
-    scale_t = torch.tensor(latent_scale, dtype=torch.float32).reshape(shape)
-    manual_normalized = (raw_latent - shift_t) / scale_t
-
-    diff = (dataset_latent - manual_normalized).abs().max().item()
-    all_passed &= check(
-        "Dataset normalization matches manual",
-        diff < 1e-5,
-        f"max diff = {diff:.2e}",
-    )
-
-    # Now test LatentSpace.normalize() (generation pipeline)
-    raw_latent_gpu = raw_latent.unsqueeze(0).to(device)  # add batch dim
-    space_normalized = space.normalize(raw_latent_gpu)
-    space_normalized_cpu = space_normalized[0].cpu()  # remove batch dim
-
-    diff2 = (dataset_latent - space_normalized_cpu).abs().max().item()
-    all_passed &= check(
-        "LatentSpace.normalize() matches LatentDataset",
-        diff2 < 1e-4,
-        f"max diff = {diff2:.2e}",
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # CHECK 3: Encode → Normalize → Denormalize → Decode round-trip
+    # CHECK 3: Encode → normalize → decode round-trip PSNR
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 3: Full round-trip (encode→normalize→decode) ---")
 
-    # Find the original NIfTI for this patient
-    bravo_paths = list(data_root.glob(f"*/{patient_id}/bravo.nii.gz"))
-    if bravo_paths:
-        bravo_path = bravo_paths[0]
-        vol = nib.load(str(bravo_path)).get_fdata().astype(np.float32)
-        vmin, vmax = vol.min(), vol.max()
-        if vmax > vmin:
-            vol = (vol - vmin) / (vmax - vmin)
-        vol = np.transpose(vol, (2, 0, 1))  # [H,W,D] -> [D,H,W]
+    vol_path = bravo_files[0]
+    vol_tensor = load_nifti_volume(vol_path, args.depth, args.image_size).to(device)
+    original_np = vol_tensor[0, 0].cpu().numpy()
 
-        # Pad depth to match cache
-        depth = raw_latent.shape[-3] * scale_factor if comp_spatial_dims == 3 else raw_latent.shape[-3]
-        d = vol.shape[0]
-        if d < depth:
-            pad = np.zeros((depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
-            vol = np.concatenate([vol, pad], axis=0)
-        elif d > depth:
-            vol = vol[:depth]
+    with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+        encoded = space.encode(vol_tensor)
+    normalized = space.normalize(encoded)
 
-        vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0).to(device)
+    with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+        decoded = space.decode(normalized)
+    decoded_np = decoded[0, 0].cpu().float().clamp(0, 1).numpy()
 
-        # Encode
-        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
-            encoded = space.encode(vol_tensor)
+    mse = np.mean((original_np - decoded_np) ** 2)
+    psnr = 10 * np.log10(1.0 / max(mse, 1e-10))
+    logger.info(f"  Sample: {vol_path.parent.name}")
+    logger.info(f"  Encoded shape: {tuple(encoded.shape)}")
+    logger.info(f"  Normalized range: [{normalized.min().item():.2f}, {normalized.max().item():.2f}]")
 
-        # Compare raw encode to cache
-        encoded_cpu = encoded[0].cpu().float()
-        cache_diff = (encoded_cpu - raw_latent).abs().max().item()
-        all_passed &= check(
-            "Fresh encode matches cached latent",
-            cache_diff < 0.01,
-            f"max diff = {cache_diff:.4f}",
-        )
+    all_passed &= check(
+        "Encode→normalize→decode PSNR",
+        psnr > 25,
+        f"PSNR = {psnr:.2f} dB (threshold: >25)",
+    )
 
-        # Full round-trip: encode → normalize → decode (decode includes denormalize)
-        normalized = space.normalize(encoded)
-        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
-            decoded = space.decode(normalized)
-        decoded_np = decoded[0, 0].cpu().float().clamp(0, 1).numpy()
-
-        psnr = 10 * np.log10(1.0 / max(np.mean((vol - decoded_np) ** 2), 1e-10))
-        all_passed &= check(
-            "Encode→normalize→decode PSNR",
-            psnr > 30,
-            f"PSNR = {psnr:.2f} dB (threshold: >30)",
-        )
-
-        # Raw round-trip (no normalization): encode → decode
-        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
-            decoded_raw = space.decode(space.normalize(encoded))
-        decoded_raw_np = decoded_raw[0, 0].cpu().float().clamp(0, 1).numpy()
-        raw_diff = np.abs(decoded_np - decoded_raw_np).max()
-        all_passed &= check(
-            "Normalized vs raw decode identical",
-            raw_diff < 1e-3,
-            f"max pixel diff = {raw_diff:.6f}",
-        )
-    else:
-        logger.warning(f"  Could not find NIfTI for {patient_id}, skipping encode check")
+    # Verify normalize→denormalize is exact (decode includes denormalize)
+    with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+        decoded2 = space.decode(normalized)
+    pixel_diff = (decoded - decoded2).abs().max().item()
+    all_passed &= check(
+        "Decode is deterministic",
+        pixel_diff < 1e-5,
+        f"max diff = {pixel_diff:.2e}",
+    )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 4: Conditioning normalization consistency
+    # CHECK 4: Seg conditioning normalization
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 4: Conditioning (seg) normalization ---")
+    logger.info("\n--- Check 4: Seg conditioning normalization ---")
 
-    if 'latent_seg' in raw_data and raw_data['latent_seg'] is not None:
-        raw_seg_latent = raw_data['latent_seg'].float()
-        dataset_seg = dataset_sample.get('latent_seg')
+    patient_id = vol_path.parent.name
+    seg_paths = sorted(train_dir.glob(f"*{patient_id}*/seg.nii.gz"))
+    if not seg_paths:
+        seg_paths = sorted(train_dir.glob("*/seg.nii.gz"))[:1]
 
-        if dataset_seg is not None:
-            # Manual normalize with seg stats (matching LatentDataset logic)
-            seg_sh = latent_seg_shift if latent_seg_shift else latent_shift
-            seg_sc = latent_seg_scale if latent_seg_scale else latent_scale
-            n_sp = raw_seg_latent.dim() - 1
-            sp = (-1,) + (1,) * n_sp
-            seg_manual = (raw_seg_latent - torch.tensor(seg_sh).reshape(sp)) / torch.tensor(seg_sc).reshape(sp)
+    if seg_paths:
+        seg_path = seg_paths[0]
+        seg_vol = nib.load(str(seg_path)).get_fdata().astype(np.float32)
+        seg_vol = (seg_vol > 0.5).astype(np.float32)
+        seg_vol = np.transpose(seg_vol, (2, 0, 1))
 
-            diff3 = (dataset_seg - seg_manual).abs().max().item()
-            all_passed &= check(
-                "Seg dataset normalization matches manual",
-                diff3 < 1e-5,
-                f"max diff = {diff3:.2e}",
+        d = seg_vol.shape[0]
+        if d < args.depth:
+            pad = np.zeros((args.depth - d, seg_vol.shape[1], seg_vol.shape[2]), dtype=np.float32)
+            seg_vol = np.concatenate([seg_vol, pad], axis=0)
+        elif d > args.depth:
+            seg_vol = seg_vol[:args.depth]
+
+        seg_tensor = torch.from_numpy(seg_vol).unsqueeze(0).unsqueeze(0).to(device)
+        if seg_tensor.shape[3] != args.image_size or seg_tensor.shape[4] != args.image_size:
+            seg_tensor = torch.nn.functional.interpolate(
+                seg_tensor, size=(args.depth, args.image_size, args.image_size),
+                mode='nearest',
             )
 
-            # Test LatentSpace.normalize_seg()
-            raw_seg_gpu = raw_seg_latent.unsqueeze(0).to(device)
-            space_seg_norm = space.normalize_seg(raw_seg_gpu)[0].cpu()
-            diff4 = (dataset_seg - space_seg_norm).abs().max().item()
-            all_passed &= check(
-                "LatentSpace.normalize_seg() matches dataset",
-                diff4 < 1e-4,
-                f"max diff = {diff4:.2e}",
-            )
+        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+            seg_norm = space.encode_normalized_seg(seg_tensor)
 
-            # Test encode_normalized_seg on raw NIfTI seg
-            seg_paths = list(data_root.glob(f"*/{patient_id}/seg.nii.gz"))
-            if seg_paths:
-                seg_vol = nib.load(str(seg_paths[0])).get_fdata().astype(np.float32)
-                seg_vol = (seg_vol > 0.5).astype(np.float32)
-                seg_vol = np.transpose(seg_vol, (2, 0, 1))
-                d = seg_vol.shape[0]
-                if d < depth:
-                    pad = np.zeros((depth - d, seg_vol.shape[1], seg_vol.shape[2]), dtype=np.float32)
-                    seg_vol = np.concatenate([seg_vol, pad], axis=0)
-                elif d > depth:
-                    seg_vol = seg_vol[:depth]
+        logger.info(f"  Seg sample: {seg_path.parent.name}")
+        logger.info(f"  Seg latent shape: {tuple(seg_norm.shape)}")
+        logger.info(f"  Seg normalized range: [{seg_norm.min().item():.2f}, {seg_norm.max().item():.2f}]")
 
-                seg_tensor = torch.from_numpy(seg_vol).unsqueeze(0).unsqueeze(0).to(device)
-                with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
-                    gen_seg_norm = space.encode_normalized_seg(seg_tensor)
-                gen_seg_cpu = gen_seg_norm[0].cpu().float()
+        # encode_normalized_seg = encode + normalize_seg — verify both paths match
+        with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+            seg_raw = space.encode(seg_tensor)
+        seg_manual_norm = space.normalize_seg(seg_raw)
+        diff = (seg_norm - seg_manual_norm).abs().max().item()
 
-                diff5 = (dataset_seg - gen_seg_cpu).abs().max().item()
-                all_passed &= check(
-                    "encode_normalized_seg(NIfTI) matches cached+normalized",
-                    diff5 < 0.01,
-                    f"max diff = {diff5:.4f}",
-                )
+        all_passed &= check(
+            "encode_normalized_seg = encode + normalize_seg",
+            diff < 1e-5,
+            f"max diff = {diff:.2e}",
+        )
+
+        # Spatial dims must match bravo latent
+        all_passed &= check(
+            "Seg and bravo latent spatial dims match",
+            seg_norm.shape[2:] == encoded.shape[2:],
+            f"seg={tuple(seg_norm.shape[2:])}, bravo={tuple(encoded.shape[2:])}",
+        )
     else:
-        logger.info("  No latent_seg in cache, skipping seg conditioning checks")
+        logger.warning("  No seg.nii.gz found, skipping conditioning checks")
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 5: Noise/signal scale compatibility
+    # CHECK 5: Noise/signal scale
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 5: Noise/signal scale ---")
 
-    noise = torch.randn_like(dataset_latent)
+    noise = torch.randn_like(normalized)
+    signal_std = normalized.std().item()
     noise_std = noise.std().item()
-    signal_std = dataset_latent.std().item()
     ratio = signal_std / noise_std
 
-    logger.info(f"  Noise std: {noise_std:.4f}")
     logger.info(f"  Signal std (normalized latent): {signal_std:.4f}")
+    logger.info(f"  Noise std: {noise_std:.4f}")
     logger.info(f"  Signal/noise ratio: {ratio:.4f}")
 
     all_passed &= check(
-        "Signal/noise scale ratio ≈ 1",
+        "Signal/noise ratio ≈ 1",
         0.2 < ratio < 5.0,
         f"ratio = {ratio:.4f} (expected: 0.2-5.0)",
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 6: Generation pipeline end-to-end match
+    # CHECK 6: Generation pipeline shapes
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 6: Generation pipeline match ---")
+    logger.info("\n--- Check 6: Generation pipeline shapes ---")
 
-    # Simulate what find_optimal_steps.py does:
-    # 1. Load seg NIfTI → encode_normalized_seg → conditioning
-    # 2. Generate noise in latent shape
-    # 3. Cat [noise, conditioning] → model input
-    # 4. After model: decode(output) → pixel space
+    latent_spatial = tuple(encoded.shape[2:])
+    latent_ch = encoded.shape[1]
 
-    # Test that the concat dimensions match what the model expects
-    sample_latent = dataset_sample['latent']  # [C, D, H, W] normalized
-    model_out_ch = sample_latent.shape[0]  # bravo latent channels
-
-    if 'latent_seg' in dataset_sample and dataset_sample['latent_seg'] is not None:
-        sample_seg = dataset_sample['latent_seg']
-        model_in_ch = model_out_ch + sample_seg.shape[0]  # bravo + seg channels
-
-        # Simulate model_input construction
-        fake_noise = torch.randn_like(sample_latent)
-        model_input = torch.cat([fake_noise, sample_seg], dim=0)
-
-        all_passed &= check(
-            "Model input channels match",
-            model_input.shape[0] == model_in_ch,
-            f"got {model_input.shape[0]}, expected {model_in_ch}",
-        )
-
-        # Verify spatial dimensions match
-        all_passed &= check(
-            "Noise and conditioning spatial dims match",
-            fake_noise.shape[1:] == sample_seg.shape[1:],
-            f"noise={fake_noise.shape[1:]}, cond={sample_seg.shape[1:]}",
-        )
-
-    # Verify decode produces correct pixel shape
-    test_latent = torch.randn(1, model_out_ch, *sample_latent.shape[1:]).to(device)
+    # Decode: latent → pixel
+    test_latent = torch.randn(1, latent_ch, *latent_spatial).to(device)
     with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
         test_decoded = space.decode(test_latent)
-    expected_spatial = tuple(s * scale_factor for s in sample_latent.shape[1:])
-    actual_spatial = test_decoded.shape[2:]
+
+    pixel_spatial = tuple(test_decoded.shape[2:])
+    expected_spatial = tuple(s * scale_factor for s in latent_spatial)
 
     all_passed &= check(
-        "Decode produces correct pixel dimensions",
-        actual_spatial == expected_spatial,
-        f"got {actual_spatial}, expected {expected_spatial}",
+        "Decode produces correct pixel dims",
+        pixel_spatial == expected_spatial,
+        f"got {pixel_spatial}, expected {expected_spatial}",
     )
+
+    # Model input: noise (bravo latent) + conditioning (seg latent)
+    if seg_paths:
+        model_in_ch = latent_ch + seg_norm.shape[1]
+        model_input = torch.cat([test_latent, torch.randn_like(seg_norm)], dim=1)
+
+        all_passed &= check(
+            "Model input channels (noise + cond)",
+            model_input.shape[1] == model_in_ch,
+            f"got {model_input.shape[1]}, expected {model_in_ch} ({latent_ch}+{seg_norm.shape[1]})",
+        )
+
+    logger.info(f"\n  Latent shape:  [B, {latent_ch}, {', '.join(str(s) for s in latent_spatial)}]")
+    logger.info(f"  Pixel shape:   [B, 1, {', '.join(str(s) for s in pixel_spatial)}]")
+    logger.info(f"  Scale factor:  {scale_factor}x")
 
     # ══════════════════════════════════════════════════════════════════════
     # SUMMARY

@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Verify that the WDM training and generation pipelines are 100% consistent.
+"""Verify that the WDM training and generation pipelines are consistent.
 
-Runs a series of checks to confirm that:
-  - Haar wavelet transform is lossless (forward→inverse = identity)
-  - Per-subband normalization produces mean≈0, std≈1
-  - Checkpoint-saved wavelet stats match recomputed stats
-  - Noise and signal scales are compatible
-  - Full encode→decode round-trip preserves data
-  - Generation pipeline shapes are correct
+Only needs: diffusion checkpoint + data root.
+No extra files — wavelet stats are read from the checkpoint (saved by profiling.py).
 
-All checks must PASS for the pipeline to be correct.
+Checks performed:
+  1. Haar wavelet losslessness + energy preservation
+  2. WaveletSpace encode→decode round-trip (no normalization)
+  3. Checkpoint has wavelet stats, normalization produces mean ≈ 0, std ≈ 1
+  4. Checkpoint stats match freshly computed stats from data
+  5. Noise/signal scale compatibility
+  6. Normalized encode→decode round-trip (lossless)
+  7. Generation pipeline shapes (encode, decode, model input)
+  8. Subband distribution characteristics (LLL dominance)
 
 Usage:
-    # Verify with checkpoint (reads saved wavelet stats)
     python -m medgen.scripts.verify_wdm_pipeline \
         --checkpoint runs/diffusion_3d/.../checkpoint_latest.pt \
-        --data-root /path/to/brainmetshare-3
-
-    # Verify without checkpoint (computes stats from data only)
-    python -m medgen.scripts.verify_wdm_pipeline \
         --data-root /path/to/brainmetshare-3
 """
 import argparse
@@ -35,7 +33,6 @@ logging.basicConfig(
     format='[%(asctime)s][%(levelname)s] %(message)s',
 )
 logger = logging.getLogger(__name__)
-
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -59,17 +56,9 @@ def load_bravo_volumes(
     max_volumes: int = 200,
     rescale: bool = False,
 ) -> list[torch.Tensor]:
-    """Load BRAVO NIfTI volumes with the same preprocessing as training.
+    """Load BRAVO NIfTI volumes with standard preprocessing.
 
-    Preprocessing chain (matches volume_3d.py):
-      1. Load NIfTI → [H, W, D]
-      2. Min-max normalize to [0, 1]
-      3. Transpose to [D, H, W]
-      4. Pad/crop depth to target
-      5. Resize H/W if needed
-      6. Optionally rescale [0,1] → [-1,1]
-
-    Returns list of [1, 1, D, H, W] tensors.
+    Returns list of [1, 1, D, H, W] tensors in [0, 1].
     """
     train_dir = data_root / 'train'
     if not train_dir.exists():
@@ -89,10 +78,8 @@ def load_bravo_volumes(
         if vmax > vmin:
             vol = (vol - vmin) / (vmax - vmin)
 
-        # [H, W, D] -> [D, H, W]
-        vol = np.transpose(vol, (2, 0, 1))
+        vol = np.transpose(vol, (2, 0, 1))  # [H, W, D] -> [D, H, W]
 
-        # Pad/crop depth
         d = vol.shape[0]
         if d < depth:
             pad = np.zeros((depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
@@ -100,8 +87,7 @@ def load_bravo_volumes(
         elif d > depth:
             vol = vol[:depth]
 
-        # Resize H/W if needed
-        vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
+        vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
         if vol_tensor.shape[3] != image_size or vol_tensor.shape[4] != image_size:
             vol_tensor = torch.nn.functional.interpolate(
                 vol_tensor, size=(depth, image_size, image_size),
@@ -113,16 +99,14 @@ def load_bravo_volumes(
 
         volumes.append(vol_tensor)
 
+    logger.info(f"  Loaded {len(volumes)} volumes from {train_dir}")
     return volumes
 
 
-def compute_wavelet_stats_from_volumes(
+def compute_wavelet_stats(
     volumes: list[torch.Tensor],
 ) -> tuple[list[float], list[float]]:
-    """Compute per-subband mean/std using law of total variance.
-
-    Same algorithm as WaveletSpace.compute_subband_stats() and _welford_stats().
-    """
+    """Compute per-subband mean/std using law of total variance."""
     from medgen.models.haar_wavelet_3d import haar_forward_3d
 
     n = 0
@@ -130,11 +114,10 @@ def compute_wavelet_stats_from_volumes(
     m2 = None
     var_sum = None
 
-    for vol_tensor in volumes:
-        coeffs = haar_forward_3d(vol_tensor)  # [1, 8, D/2, H/2, W/2]
+    for vol in volumes:
+        coeffs = haar_forward_3d(vol)
         n_ch = coeffs.shape[1]
-        sample = coeffs[0]  # [8, D/2, H/2, W/2]
-        flat = sample.reshape(n_ch, -1).float()
+        flat = coeffs[0].reshape(n_ch, -1).float()
         sample_mean = flat.mean(dim=1)
         sample_var = flat.var(dim=1)
 
@@ -151,28 +134,25 @@ def compute_wavelet_stats_from_volumes(
             var_sum += sample_var
 
     if mean is None or n < 2:
-        raise ValueError("Not enough volumes to compute stats")
+        raise ValueError("Not enough volumes")
 
     avg_within_var = var_sum / n
     between_var = m2 / (n - 1)
     total_variance = avg_within_var + between_var
     std = torch.sqrt(total_variance).clamp(min=1e-6)
-
     return mean.tolist(), std.tolist()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Verify WDM pipeline consistency")
-    parser.add_argument('--checkpoint', default=None,
-                        help='Diffusion model checkpoint (to verify saved wavelet stats)')
+    parser.add_argument('--checkpoint', required=True,
+                        help='Diffusion model checkpoint (has wavelet stats in config)')
     parser.add_argument('--data-root', required=True,
-                        help='Dataset root (for raw NIfTI volumes)')
-    parser.add_argument('--image-size', type=int, default=256)
+                        help='Dataset root with NIfTI volumes')
+    parser.add_argument('--image-size', type=int, default=128)
     parser.add_argument('--depth', type=int, default=160)
-    parser.add_argument('--rescale', action='store_true',
-                        help='Rescale [0,1] → [-1,1] before DWT (must match training)')
     parser.add_argument('--max-volumes', type=int, default=100,
-                        help='Max volumes to load for stats computation (default: 100)')
+                        help='Max volumes for stats verification (default: 100)')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -181,41 +161,41 @@ def main():
     logger.info("=" * 70)
     logger.info("WDM Pipeline Verification")
     logger.info("=" * 70)
+    logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info(f"Data root: {data_root}")
     logger.info(f"Volume: {args.image_size}x{args.image_size}x{args.depth}")
-    logger.info(f"Rescale: {args.rescale}")
-    if args.checkpoint:
-        logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info("")
 
     from medgen.diffusion.spaces import WaveletSpace
     from medgen.models.haar_wavelet_3d import haar_forward_3d, haar_inverse_3d
 
+    # ── Load checkpoint config ──
+    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    ckpt_cfg = ckpt.get('config', {})
+    wavelet_cfg = ckpt_cfg.get('wavelet', {})
+    del ckpt
+
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 1: Haar wavelet transform is lossless
+    # CHECK 1: Haar wavelet losslessness + energy preservation
     # ══════════════════════════════════════════════════════════════════════
     logger.info("--- Check 1: Haar wavelet losslessness ---")
 
-    # Test with random data
-    test_vol = torch.randn(2, 1, 8, 16, 16)  # batch=2, small volume
+    test_vol = torch.randn(2, 1, 8, 16, 16)
     fwd = haar_forward_3d(test_vol)
     inv = haar_inverse_3d(fwd)
     max_err = (test_vol - inv).abs().max().item()
 
     all_passed &= check(
-        "Haar forward→inverse = identity (random)",
+        "Haar forward→inverse = identity",
         max_err < 1e-5,
         f"max error = {max_err:.2e}",
     )
-
-    # Verify shape
     all_passed &= check(
         "Haar forward shape",
         fwd.shape == (2, 8, 4, 8, 8),
         f"got {tuple(fwd.shape)}, expected (2, 8, 4, 8, 8)",
     )
 
-    # Energy preservation (orthogonality): ||forward(x)||^2 == ||x||^2
     energy_in = (test_vol ** 2).sum().item()
     energy_out = (fwd ** 2).sum().item()
     energy_ratio = energy_out / energy_in
@@ -226,15 +206,14 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 2: WaveletSpace encode/decode round-trip (no normalization)
+    # CHECK 2: WaveletSpace encode→decode round-trip (no normalization)
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 2: WaveletSpace encode→decode round-trip ---")
+    logger.info("\n--- Check 2: Raw WaveletSpace round-trip ---")
 
-    space_raw = WaveletSpace(rescale=args.rescale)
-    test_pixel = torch.rand(1, 1, 8, 16, 16)  # [0, 1] range
-    encoded = space_raw.encode(test_pixel)
-    decoded = space_raw.decode(encoded)
-    rt_err = (test_pixel - decoded).abs().max().item()
+    ckpt_rescale = wavelet_cfg.get('rescale', False)
+    space_raw = WaveletSpace(rescale=ckpt_rescale)
+    test_pixel = torch.rand(1, 1, 8, 16, 16)
+    rt_err = (test_pixel - space_raw.decode(space_raw.encode(test_pixel))).abs().max().item()
 
     all_passed &= check(
         "Raw WaveletSpace round-trip",
@@ -243,38 +222,46 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 3: Compute wavelet stats from data, verify normalization
+    # CHECK 3: Checkpoint has wavelet stats, normalization → mean≈0, std≈1
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 3: Wavelet stats from data ---")
+    logger.info("\n--- Check 3: Checkpoint wavelet stats + normalization ---")
 
-    logger.info(f"Loading up to {args.max_volumes} BRAVO volumes...")
+    ckpt_shift = wavelet_cfg.get('wavelet_shift')
+    ckpt_scale = wavelet_cfg.get('wavelet_scale')
+
+    all_passed &= check(
+        "Checkpoint has wavelet_shift/wavelet_scale",
+        ckpt_shift is not None and ckpt_scale is not None,
+        "present" if ckpt_shift else "MISSING — retrain with stats persistence fix",
+    )
+
+    if ckpt_shift is None:
+        logger.error("Cannot continue without wavelet stats. Retrain with the stats persistence fix.")
+        sys.exit(1)
+
+    logger.info(f"  rescale: {ckpt_rescale}")
+    for i, name in enumerate(SUBBAND_NAMES):
+        logger.info(f"  {name}: shift={ckpt_shift[i]:.6f}, scale={ckpt_scale[i]:.6f}")
+
+    all_passed &= check(
+        "Scale values are positive",
+        all(s > 0 for s in ckpt_scale),
+        f"min scale = {min(ckpt_scale):.6f}",
+    )
+
+    # Create normalized space and verify on data
+    space_norm = WaveletSpace(shift=ckpt_shift, scale=ckpt_scale, rescale=ckpt_rescale)
+
+    logger.info(f"\n  Loading volumes for normalization check...")
     volumes = load_bravo_volumes(
         data_root, args.depth, args.image_size,
-        max_volumes=args.max_volumes, rescale=args.rescale,
-    )
-    logger.info(f"  Loaded {len(volumes)} volumes")
-
-    shift, scale = compute_wavelet_stats_from_volumes(volumes)
-
-    logger.info("  Per-subband stats:")
-    for i, name in enumerate(SUBBAND_NAMES):
-        logger.info(f"    {name}: shift={shift[i]:.6f}, scale={scale[i]:.6f}")
-
-    # Verify stats are reasonable
-    all_passed &= check(
-        "Scale values are positive and finite",
-        all(0 < s < 100 for s in scale),
-        f"scale range = [{min(scale):.6f}, {max(scale):.6f}]",
+        max_volumes=args.max_volumes, rescale=ckpt_rescale,
     )
 
-    # Create normalized WaveletSpace and verify normalization
-    space_norm = WaveletSpace(shift=shift, scale=scale, rescale=args.rescale)
-
-    # Apply to all volumes and check per-subband stats
     all_ch_means = []
     all_ch_stds = []
-    for vol in volumes[:50]:  # Use subset for quick check
-        coeffs = space_norm.encode(vol)  # normalized wavelet coefficients
+    for vol in volumes[:50]:
+        coeffs = space_norm.encode(vol)
         n_ch = coeffs.shape[1]
         flat = coeffs[0].reshape(n_ch, -1)
         all_ch_means.append(flat.mean(dim=1))
@@ -299,75 +286,45 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 4: Checkpoint stats match computed stats
+    # CHECK 4: Checkpoint stats match freshly computed stats
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 4: Checkpoint wavelet stats ---")
+    logger.info("\n--- Check 4: Checkpoint stats vs recomputed ---")
 
-    if args.checkpoint:
-        ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-        ckpt_cfg = ckpt.get('config', {})
-        wavelet_cfg = ckpt_cfg.get('wavelet', {})
-        del ckpt
+    fresh_shift, fresh_scale = compute_wavelet_stats(volumes)
 
-        ckpt_shift = wavelet_cfg.get('wavelet_shift')
-        ckpt_scale = wavelet_cfg.get('wavelet_scale')
-        ckpt_rescale = wavelet_cfg.get('rescale')
+    shift_diff = max(abs(a - b) for a, b in zip(fresh_shift, ckpt_shift))
+    scale_diff = max(abs(a - b) for a, b in zip(fresh_scale, ckpt_scale))
 
-        if ckpt_shift is not None:
-            logger.info("  Checkpoint wavelet stats found:")
-            for i, name in enumerate(SUBBAND_NAMES):
-                logger.info(f"    {name}: shift={ckpt_shift[i]:.6f}, scale={ckpt_scale[i]:.6f}")
-            logger.info(f"    rescale: {ckpt_rescale}")
+    logger.info(f"  Max shift diff: {shift_diff:.6f}")
+    logger.info(f"  Max scale diff: {scale_diff:.6f}")
 
-            # Compare to freshly computed stats
-            shift_diff = max(abs(a - b) for a, b in zip(shift, ckpt_shift))
-            scale_diff = max(abs(a - b) for a, b in zip(scale, ckpt_scale))
-
-            all_passed &= check(
-                "Checkpoint shift matches computed",
-                shift_diff < 0.01,
-                f"max diff = {shift_diff:.6f} (threshold: 0.01)",
-            )
-            all_passed &= check(
-                "Checkpoint scale matches computed",
-                scale_diff < 0.01,
-                f"max diff = {scale_diff:.6f} (threshold: 0.01)",
-            )
-
-            if ckpt_rescale is not None:
-                all_passed &= check(
-                    "Checkpoint rescale matches arg",
-                    ckpt_rescale == args.rescale,
-                    f"checkpoint={ckpt_rescale}, arg={args.rescale}",
-                )
-        else:
-            logger.warning("  No wavelet stats in checkpoint config!")
-            logger.warning("  This checkpoint was saved before the persistence fix.")
-            logger.warning("  Generation must use --wavelet-normalize (recompute from data).")
-            all_passed &= check(
-                "Checkpoint has wavelet stats",
-                False,
-                "missing — retrain or re-save checkpoint to persist stats",
-            )
-    else:
-        logger.info("  No checkpoint provided, skipping checkpoint comparison")
+    # Tolerance is loose because training uses DataLoader transforms
+    # while we load NIfTI directly — slight preprocessing differences expected
+    all_passed &= check(
+        "Checkpoint shift ≈ recomputed",
+        shift_diff < 0.05,
+        f"max diff = {shift_diff:.6f} (threshold: 0.05)",
+    )
+    all_passed &= check(
+        "Checkpoint scale ≈ recomputed",
+        scale_diff < 0.05,
+        f"max diff = {scale_diff:.6f} (threshold: 0.05)",
+    )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 5: Noise/signal scale compatibility
+    # CHECK 5: Noise/signal scale
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 5: Noise/signal scale ---")
 
-    # Get a normalized sample
-    sample_norm = space_norm.encode(volumes[0])  # [1, 8, D/2, H/2, W/2]
+    sample_norm = space_norm.encode(volumes[0])
     noise = torch.randn_like(sample_norm)
-
     signal_std = sample_norm.std().item()
     noise_std = noise.std().item()
     ratio = signal_std / noise_std
 
-    logger.info(f"  Normalized signal std: {signal_std:.4f}")
+    logger.info(f"  Signal std (normalized): {signal_std:.4f}")
     logger.info(f"  Noise std: {noise_std:.4f}")
-    logger.info(f"  Signal/noise ratio: {ratio:.4f}")
+    logger.info(f"  Ratio: {ratio:.4f}")
 
     all_passed &= check(
         "Signal/noise ratio ≈ 1",
@@ -376,30 +333,25 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 6: Normalized encode→decode round-trip
+    # CHECK 6: Normalized encode→decode round-trip (lossless)
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 6: Normalized encode→decode round-trip ---")
 
-    # Full round-trip: encode (forward DWT + normalize) → decode (denormalize + inverse DWT)
     original = volumes[0].clone()
-    encoded_norm = space_norm.encode(original)
-    decoded = space_norm.decode(encoded_norm)
-    psnr_err = (original - decoded).abs().max().item()
+    decoded = space_norm.decode(space_norm.encode(original))
+    rt_err = (original - decoded).abs().max().item()
 
     all_passed &= check(
-        "Normalized WaveletSpace round-trip (lossless)",
-        psnr_err < 1e-5,
-        f"max error = {psnr_err:.2e}",
+        "Normalized round-trip (lossless)",
+        rt_err < 1e-5,
+        f"max error = {rt_err:.2e}",
     )
 
-    # Also test with real data PSNR
-    original_np = original[0, 0].numpy()
-    decoded_np = decoded[0, 0].numpy()
-    mse = np.mean((original_np - decoded_np) ** 2)
+    mse = ((original - decoded) ** 2).mean().item()
     psnr = 10 * np.log10(1.0 / max(mse, 1e-10))
     all_passed &= check(
         "Round-trip PSNR",
-        psnr > 60,  # Should be very high since wavelet is lossless
+        psnr > 60,
         f"PSNR = {psnr:.1f} dB (expected: >60, wavelet is lossless)",
     )
 
@@ -411,49 +363,40 @@ def main():
     wavelet_depth = args.depth // 2
     wavelet_hw = args.image_size // 2
 
-    # Verify encode produces correct wavelet shape
     encoded = space_norm.encode(volumes[0])
-    expected_shape = (1, 8, wavelet_depth, wavelet_hw, wavelet_hw)
+    expected_enc = (1, 8, wavelet_depth, wavelet_hw, wavelet_hw)
     all_passed &= check(
         "Encode shape",
-        tuple(encoded.shape) == expected_shape,
-        f"got {tuple(encoded.shape)}, expected {expected_shape}",
+        tuple(encoded.shape) == expected_enc,
+        f"got {tuple(encoded.shape)}, expected {expected_enc}",
     )
 
-    # Simulate generation: noise in wavelet space → decode to pixel space
     gen_noise = torch.randn(1, 8, wavelet_depth, wavelet_hw, wavelet_hw)
     gen_decoded = space_norm.decode(gen_noise)
-    expected_pixel_shape = (1, 1, args.depth, args.image_size, args.image_size)
+    expected_pixel = (1, 1, args.depth, args.image_size, args.image_size)
     all_passed &= check(
         "Decode shape (noise → pixel)",
-        tuple(gen_decoded.shape) == expected_pixel_shape,
-        f"got {tuple(gen_decoded.shape)}, expected {expected_pixel_shape}",
+        tuple(gen_decoded.shape) == expected_pixel,
+        f"got {tuple(gen_decoded.shape)}, expected {expected_pixel}",
     )
 
-    # Conditioning (seg) through wavelet space
-    seg_test = torch.zeros(1, 1, args.depth, args.image_size, args.image_size)
-    seg_encoded = space_norm.encode(seg_test)
-    all_passed &= check(
-        "Conditioning encode shape",
-        tuple(seg_encoded.shape) == expected_shape,
-        f"got {tuple(seg_encoded.shape)}, expected {expected_shape}",
-    )
-
-    # Verify model input construction (noise + conditioning concat)
+    # Model input: noise + seg conditioning (8 + 8 = 16 channels)
+    seg_encoded = space_norm.encode(torch.zeros_like(volumes[0]))
     model_input = torch.cat([gen_noise, seg_encoded], dim=1)
-    expected_in_ch = 16  # 8 (bravo wavelet) + 8 (seg wavelet)
     all_passed &= check(
         "Model input channels (noise + cond)",
-        model_input.shape[1] == expected_in_ch,
-        f"got {model_input.shape[1]}, expected {expected_in_ch}",
+        model_input.shape[1] == 16,
+        f"got {model_input.shape[1]}, expected 16 (8+8)",
     )
+
+    logger.info(f"\n  Wavelet shape: [B, 8, {wavelet_depth}, {wavelet_hw}, {wavelet_hw}]")
+    logger.info(f"  Pixel shape:   [B, 1, {args.depth}, {args.image_size}, {args.image_size}]")
 
     # ══════════════════════════════════════════════════════════════════════
     # CHECK 8: Subband distribution characteristics
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 8: Subband distribution characteristics ---")
+    logger.info("\n--- Check 8: Subband distribution ---")
 
-    # LLL (lowpass) should have most energy, high subbands should have less
     raw_coeffs = haar_forward_3d(volumes[0])
     subband_energies = []
     for i in range(8):
@@ -469,12 +412,10 @@ def main():
         lll_energy > high_energy_sum,
         f"LLL={lll_energy:.6f} vs sum(high)={high_energy_sum:.6f}",
     )
-
-    # LLL scale should be largest (most variance in lowpass)
     all_passed &= check(
         "LLL has largest scale",
-        scale[0] == max(scale),
-        f"LLL scale={scale[0]:.6f}, max scale={max(scale):.6f}",
+        ckpt_scale[0] == max(ckpt_scale),
+        f"LLL scale={ckpt_scale[0]:.6f}, max={max(ckpt_scale):.6f}",
     )
 
     # ══════════════════════════════════════════════════════════════════════
