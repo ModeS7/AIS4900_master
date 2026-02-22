@@ -241,24 +241,71 @@ def load_diffusion_model_with_metadata(
         from medgen.models.dit import create_dit
 
         variant = arch_config.get('variant', 'S')
-        # image_size in DiT checkpoint config is the spatial input size (latent size)
-        dit_input_size = arch_config.get('image_size', 32)
         patch_size = arch_config.get('patch_size', 2)
         conditioning = arch_config.get('conditioning', 'concat')
         qk_norm = arch_config.get('qk_norm', True)
 
-        # For 3D, determine depth_size
-        depth_size = arch_config.get('depth_size', None)
-
-        # For concat conditioning, compute cond_channels
+        # For concat conditioning: in_channels is the FULL input (noise + conditioning)
+        # This matches how the factory creates DiT during training (factory.py line 124)
+        if conditioning == 'concat':
+            dit_in_channels = resolved_in_channels
+        else:
+            dit_in_channels = resolved_out_channels
         cond_channels = max(0, resolved_in_channels - resolved_out_channels)
+
+        # Infer input_size and depth_size from pos_embed shape in state dict.
+        # The checkpoint config may store the Hydra default (e.g. 32 for dit_3d)
+        # rather than the actual computed value.
+        # pos_embed shape: [1, num_tokens, hidden_size]
+        # num_tokens = prod(input_dims / patch_size)
+        dit_input_size = arch_config.get('image_size', 32)
+        depth_size = arch_config.get('depth_size', None)
+        if 'pos_embed' in state_dict:
+            num_tokens = state_dict['pos_embed'].shape[1]
+            # For 3D: tokens = (D/p) * (H/p) * (W/p), assume H=W=input_size
+            # For 2D: tokens = (H/p) * (W/p)
+            if resolved_spatial_dims == 3:
+                # Solve: (depth_size/p) * (input_size/p)^2 = num_tokens
+                # Try to find input_size from x_embedder weight shape
+                x_emb_in_ch = state_dict.get('x_embedder.proj.weight', None)
+                if x_emb_in_ch is not None:
+                    # weight shape: [hidden, in_ch, p, p, p]
+                    pass  # in_channels confirmed by weight, not needed for size
+
+                # Brute-force: find (input_size, depth_size) where
+                # (d // p) * (s // p)^2 = num_tokens
+                # Typical input_sizes: 8, 16, 32, 64, 128
+                found = False
+                for candidate_s in [8, 16, 32, 64, 128, 256]:
+                    s_tokens = candidate_s // patch_size
+                    if s_tokens <= 0:
+                        continue
+                    remaining = num_tokens / (s_tokens * s_tokens)
+                    if remaining == int(remaining) and remaining > 0:
+                        candidate_d = int(remaining) * patch_size
+                        if candidate_d > 0:
+                            dit_input_size = candidate_s
+                            depth_size = candidate_d
+                            found = True
+                            break
+                if not found:
+                    logger.warning(
+                        f"Could not infer DiT input_size from pos_embed "
+                        f"(num_tokens={num_tokens}, patch_size={patch_size})"
+                    )
+            else:
+                # 2D: tokens = (H/p) * (W/p), assume square
+                tokens_per_side = int(num_tokens ** 0.5)
+                if tokens_per_side * tokens_per_side == num_tokens:
+                    dit_input_size = tokens_per_side * patch_size
 
         base_model = create_dit(
             variant=variant,
             spatial_dims=resolved_spatial_dims,
             input_size=dit_input_size,
             patch_size=patch_size,
-            in_channels=resolved_out_channels,  # DiT in_channels = output channels
+            in_channels=dit_in_channels,
+            out_channels=resolved_out_channels,
             conditioning=conditioning,
             cond_channels=cond_channels,
             depth_size=depth_size,
@@ -266,7 +313,7 @@ def load_diffusion_model_with_metadata(
         )
         logger.info(
             f"Using DiT-{variant} from checkpoint: input_size={dit_input_size}, "
-            f"patch_size={patch_size}, in_ch={resolved_out_channels}, "
+            f"depth_size={depth_size}, patch_size={patch_size}, in_ch={dit_in_channels}, "
             f"cond_ch={cond_channels}, spatial_dims={resolved_spatial_dims}"
         )
 

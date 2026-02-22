@@ -472,6 +472,7 @@ def generate_volumes(
     is_seg: bool = False,
     encode_cond_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
     decode_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    latent_channels: int = 1,
 ) -> tuple[list[np.ndarray], int, float]:
     """Generate volumes for one solver configuration.
 
@@ -523,7 +524,10 @@ def generate_volumes(
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
-                result = strategy.generate(counter, model_input, num_steps, device)
+                result = strategy.generate(
+                    counter, model_input, num_steps, device,
+                    latent_channels=latent_channels,
+                )
 
         # Decode from latent/wavelet space to pixel space
         if decode_fn is not None:

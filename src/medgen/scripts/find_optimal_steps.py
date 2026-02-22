@@ -464,8 +464,17 @@ def main():
     if isinstance(mode, dict):
         mode = mode.get('name', None)
     spatial_dims = ckpt_cfg.get('spatial_dims', 3)
-    pixel_image_size = args.image_size or ckpt_cfg.get('image_size', 256)
-    pixel_depth = args.depth or ckpt_cfg.get('depth_size', 160)
+
+    # For DiT/transformer models, checkpoint 'image_size' is the model config
+    # default (e.g. 32 for dit_3d), NOT the pixel size. Use 256 as default.
+    model_type = ckpt_cfg.get('model_type', 'unet')
+    is_transformer = model_type in ('dit', 'sit', 'uvit', 'hdit')
+    if is_transformer:
+        pixel_image_size = args.image_size or 256
+        pixel_depth = args.depth or 160
+    else:
+        pixel_image_size = args.image_size or ckpt_cfg.get('image_size', 256)
+        pixel_depth = args.depth or ckpt_cfg.get('depth_size', 160)
 
     # Auto-detect strategy from checkpoint
     strategy_name = args.strategy or ckpt_cfg.get('strategy', 'rflow')
@@ -562,6 +571,20 @@ def main():
         # Load at PIXEL depth — encode_cond_fn handles space conversion
         cond_list = load_conditioning(splits[args.cond_split], args.num_volumes, pixel_depth)
 
+        # Resize conditioning H/W to match pixel_image_size if needed
+        # (NIfTI files may be 256x256 but model trains at smaller resolution, e.g. 128x128)
+        sample_hw = cond_list[0][1].shape[-1]  # [1, 1, D, H, W] -> W
+        if sample_hw != pixel_image_size:
+            from torch.nn.functional import interpolate
+            logger.info(f"Resizing conditioning from {sample_hw}x{sample_hw} to {pixel_image_size}x{pixel_image_size}")
+            cond_list = [
+                (pid, interpolate(
+                    seg, size=(pixel_depth, pixel_image_size, pixel_image_size),
+                    mode='nearest',
+                ))
+                for pid, seg in cond_list
+            ]
+
     logger.info("Preparing reference features...")
     cache_dir = output_dir / "reference_features"
     ref_features = get_or_cache_reference_features(
@@ -630,6 +653,7 @@ def main():
             is_seg=is_seg,
             encode_cond_fn=encode_cond_fn,
             decode_fn=decode_fn,
+            latent_channels=model_out_channels,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
