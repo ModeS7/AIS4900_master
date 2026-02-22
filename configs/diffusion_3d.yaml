@@ -32,6 +32,7 @@ defaults:
   - training: default     # Training hyperparameters
   - volume: default       # 3D volume dimensions
   - paths: local          # local.yaml or cluster.yaml (AFTER training so it can override verbose)
+  - optional pixel_norm: default      # Brain-only pixel normalization
   - optional latent: default          # Latent diffusion settings
   - optional space_to_depth: default # Lossless space-to-depth for pixel diffusion
   - optional wavelet: default        # Haar wavelet decomposition for pixel diffusion

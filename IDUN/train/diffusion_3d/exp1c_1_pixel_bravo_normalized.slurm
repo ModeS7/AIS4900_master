@@ -75,13 +75,14 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     strategy=rflow \
     mode=bravo \
     model=default_3d \
+    pixel_norm=bravo \
     volume.height=256 \
     volume.width=256 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
-    'training.pixel_shift=[0.2033]' \
-    'training.pixel_scale=[0.0832]' \
+    training.gradient_clip_norm=0.5 \
+    training.warmup_epochs=10 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

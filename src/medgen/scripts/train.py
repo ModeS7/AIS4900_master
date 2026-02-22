@@ -331,8 +331,13 @@ def main(cfg: DictConfig) -> None:
 
     else:
         rescale = cfg.training.get('rescale_data', False)
-        pixel_shift = cfg.training.get('pixel_shift', None)
-        pixel_scale = cfg.training.get('pixel_scale', None)
+        pixel_norm = cfg.get('pixel_norm', None)
+        if pixel_norm is not None and pixel_norm.get('enabled', False):
+            pixel_shift = pixel_norm.shift
+            pixel_scale = pixel_norm.scale
+        else:
+            pixel_shift = None
+            pixel_scale = None
         space = PixelSpace(rescale=rescale, shift=pixel_shift, scale=pixel_scale)
         if pixel_shift is not None:
             logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
@@ -788,8 +793,13 @@ def _train_3d(cfg: DictConfig) -> None:
                 logger.info(f"Wavelet space: Haar 3D 2x2x2, 8x channels, raw coefficients{', rescale [-1,1]' if rescale else ''}")
         else:
             rescale = cfg.training.get('rescale_data', False)
-            pixel_shift = cfg.training.get('pixel_shift', None)
-            pixel_scale = cfg.training.get('pixel_scale', None)
+            pixel_norm = cfg.get('pixel_norm', None)
+            if pixel_norm is not None and pixel_norm.get('enabled', False):
+                pixel_shift = pixel_norm.shift
+                pixel_scale = pixel_norm.scale
+            else:
+                pixel_shift = None
+                pixel_scale = None
             space = PixelSpace(rescale=rescale, shift=pixel_shift, scale=pixel_scale)
             if pixel_shift is not None:
                 logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")

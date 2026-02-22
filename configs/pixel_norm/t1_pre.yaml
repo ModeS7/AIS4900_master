@@ -1,0 +1,16 @@
+# Brain-only pixel normalization for t1_pre modality
+#
+# Computed from brainmetshare-3 training set (105 volumes, 256x256xN native).
+# Only brain voxels (threshold > 0.01) used for stats.
+#
+# After normalization:
+#   brain voxels: mean≈0, std≈1
+#   background (0.0): maps to -2.59
+#   max signal (1.0): maps to +5.96
+#
+# Usage:
+#   python -m medgen.scripts.train pixel_norm=t1_pre ...
+
+enabled: true
+shift: [0.3026]
+scale: [0.1170]

@@ -1,0 +1,12 @@
+# Pixel-space normalization: disabled by default
+#
+# When enabled, normalizes pixel data using brain-only statistics:
+#   encode: (x - shift) / scale
+#   decode: z * scale + shift
+#
+# Usage:
+#   python -m medgen.scripts.train pixel_norm=bravo ...
+
+enabled: false
+shift: null
+scale: null

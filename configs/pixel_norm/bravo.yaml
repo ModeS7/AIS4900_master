@@ -1,0 +1,16 @@
+# Brain-only pixel normalization for bravo modality
+#
+# Computed from brainmetshare-3 training set (105 volumes, 256x256xN native).
+# Only brain voxels (threshold > 0.01) used for stats.
+#
+# After normalization:
+#   brain voxels: mean≈0, std≈1
+#   background (0.0): maps to -2.44
+#   max signal (1.0): maps to +9.57
+#
+# Usage:
+#   python -m medgen.scripts.train pixel_norm=bravo ...
+
+enabled: true
+shift: [0.2033]
+scale: [0.0832]
