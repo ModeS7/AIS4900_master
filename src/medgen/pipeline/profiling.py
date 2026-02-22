@@ -96,8 +96,16 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             'num_head_channels': mc.num_head_channels,
         })
 
+    # Pixel config (for brain-only normalization)
+    from medgen.diffusion.spaces import LatentSpace, PixelSpace, WaveletSpace
+    if isinstance(trainer.space, PixelSpace):
+        if trainer.space.shift is not None:
+            config['pixel'] = {
+                'pixel_shift': trainer.space.shift,
+                'pixel_scale': trainer.space.scale,
+            }
+
     # Wavelet config (for WDM — save stats so generation doesn't recompute)
-    from medgen.diffusion.spaces import LatentSpace, WaveletSpace
     if isinstance(trainer.space, WaveletSpace):
         wavelet_config: dict[str, Any] = {
             'rescale': trainer.space.rescale,

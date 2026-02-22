@@ -29,6 +29,18 @@ augment: false             # Data augmentation (disabled by default for diffusio
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
 rescale_data: false        # Rescale [0,1] data to [-1,1] for pixel-space diffusion (opt-in)
 
+# Per-channel pixel normalization: (x - shift) / scale in encode(), inverse in decode()
+# Computed from brain-only voxels (threshold > 0.01) on brainmetshare-3 training set.
+# Centers brain signal at 0 with std≈1, background maps to ≈-2.5.
+# When set, rescale_data is ignored (shift/scale takes priority).
+# Per-modality stats (256x256xN native resolution, 105 volumes):
+#   bravo:  shift=0.2033, scale=0.0832
+#   t1_pre: shift=0.3026, scale=0.1170
+#   t1_gd:  shift=0.2378, scale=0.0795
+#   seg:    binary — do not normalize
+pixel_shift: null          # Per-channel mean (list of floats), null = disabled
+pixel_scale: null          # Per-channel std (list of floats), null = disabled
+
 # Batch-level augmentations (VAE only - mixup/cutmix/mosaic/copy-paste)
 batch_augment:
   enabled: false           # Disabled by default, enabled in VAE configs

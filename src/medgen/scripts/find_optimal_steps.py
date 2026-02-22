@@ -425,11 +425,21 @@ def main():
             f"noise shape: {model_out_channels}x{noise_depth}x{noise_image_size}x{noise_image_size}"
         )
     else:
-        # Pixel space — channels as-is
+        # Pixel space — channels as-is, optionally with brain-only normalization
         model_in_channels = base_in_channels
         model_out_channels = base_out_channels
         noise_image_size = pixel_image_size
         noise_depth = pixel_depth
+
+        pixel_cfg = ckpt_cfg.get('pixel', {})
+        pixel_shift = pixel_cfg.get('pixel_shift')
+        pixel_scale = pixel_cfg.get('pixel_scale')
+        if pixel_shift is not None:
+            from medgen.diffusion.spaces import PixelSpace
+            space = PixelSpace(shift=pixel_shift, scale=pixel_scale)
+            decode_fn = space.decode
+            encode_cond_fn = space.encode
+            logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
 
     # ── Derive mode-specific config ───────────────────────────────────────
     is_seg = mode in SEG_MODES if mode else False

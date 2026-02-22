@@ -331,7 +331,11 @@ def main(cfg: DictConfig) -> None:
 
     else:
         rescale = cfg.training.get('rescale_data', False)
-        space = PixelSpace(rescale=rescale)
+        pixel_shift = cfg.training.get('pixel_shift', None)
+        pixel_scale = cfg.training.get('pixel_scale', None)
+        space = PixelSpace(rescale=rescale, shift=pixel_shift, scale=pixel_scale)
+        if pixel_shift is not None:
+            logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
 
         # Create trainer
         trainer = DiffusionTrainer(cfg, space=space)
@@ -784,7 +788,11 @@ def _train_3d(cfg: DictConfig) -> None:
                 logger.info(f"Wavelet space: Haar 3D 2x2x2, 8x channels, raw coefficients{', rescale [-1,1]' if rescale else ''}")
         else:
             rescale = cfg.training.get('rescale_data', False)
-            space = PixelSpace(rescale=rescale)
+            pixel_shift = cfg.training.get('pixel_shift', None)
+            pixel_scale = cfg.training.get('pixel_scale', None)
+            space = PixelSpace(rescale=rescale, shift=pixel_shift, scale=pixel_scale)
+            if pixel_shift is not None:
+                logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
 
         # Pixel-space training: no separate loaders needed for reference features
         pixel_train_loader = None

@@ -114,19 +114,60 @@ class PixelSpace(DiffusionSpace):
     Args:
         rescale: If True, rescale [0,1] data to [-1,1] in encode()
             and back to [0,1] in decode(). Default False.
+        shift: Per-channel mean for brain-only normalization.
+            If provided with scale, encode normalizes: (x - shift) / scale.
+        scale: Per-channel std for brain-only normalization.
+            Must be provided with shift.
     """
 
-    def __init__(self, rescale: bool = False) -> None:
+    def __init__(
+        self,
+        rescale: bool = False,
+        shift: list[float] | None = None,
+        scale: list[float] | None = None,
+    ) -> None:
         self._rescale = rescale
 
+        if shift is not None and scale is not None:
+            # Shape: [1, C, 1, 1, 1] for 3D or [1, C, 1, 1] for 2D broadcasting
+            self._shift = torch.tensor(shift, dtype=torch.float32).reshape(1, -1, 1, 1, 1)
+            self._scale = torch.tensor(scale, dtype=torch.float32).reshape(1, -1, 1, 1, 1)
+        else:
+            self._shift = None
+            self._scale = None
+
     def encode(self, x: Tensor) -> Tensor:
-        """Optionally rescale [0,1] -> [-1,1]."""
+        """Normalize pixel data for diffusion training.
+
+        Priority: shift/scale normalization > rescale [-1,1] > identity.
+        """
+        if self._shift is not None:
+            shift = self._shift
+            scale = self._scale
+            if shift.device != x.device:
+                self._shift = shift = shift.to(x.device)
+                self._scale = scale = scale.to(x.device)
+            # Squeeze trailing dims if input is 2D [B, C, H, W]
+            if x.dim() == 4:
+                shift = shift.squeeze(-1)
+                scale = scale.squeeze(-1)  # type: ignore[union-attr]
+            return (x - shift) / scale  # type: ignore[operator]
         if self._rescale:
             return 2.0 * x - 1.0
         return x
 
     def decode(self, z: Tensor) -> Tensor:
-        """Optionally rescale [-1,1] -> [0,1]."""
+        """Denormalize from diffusion space back to pixel [0,1]."""
+        if self._shift is not None:
+            shift = self._shift
+            scale = self._scale
+            if shift.device != z.device:
+                self._shift = shift = shift.to(z.device)
+                self._scale = scale = scale.to(z.device)
+            if z.dim() == 4:
+                shift = shift.squeeze(-1)
+                scale = scale.squeeze(-1)  # type: ignore[union-attr]
+            return z * scale + shift  # type: ignore[operator]
         if self._rescale:
             return (z + 1.0) / 2.0
         return z
@@ -142,13 +183,27 @@ class PixelSpace(DiffusionSpace):
 
     @property
     def needs_decode(self) -> bool:
-        """Needs decode when rescaling is enabled."""
-        return self._rescale
+        """Needs decode when rescaling or normalization is enabled."""
+        return self._rescale or self._shift is not None
 
     @property
     def latent_channels(self) -> int:
         """Pixel space has 1 channel per input channel."""
         return 1
+
+    @property
+    def shift(self) -> list[float] | None:
+        """Per-channel shift (mean), or None if not normalized."""
+        if self._shift is None:
+            return None
+        return self._shift.flatten().tolist()
+
+    @property
+    def scale(self) -> list[float] | None:
+        """Per-channel scale (std), or None if not normalized."""
+        if self._scale is None:
+            return None
+        return self._scale.flatten().tolist()
 
 
 class SpaceToDepthSpace(DiffusionSpace):
