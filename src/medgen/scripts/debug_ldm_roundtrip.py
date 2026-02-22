@@ -157,6 +157,8 @@ def main():
     # Latent normalization
     latent_shift = None
     latent_scale = None
+    latent_seg_shift = None
+    latent_seg_scale = None
     if args.latent_cache_dir:
         meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
         if meta_path.exists():
@@ -164,8 +166,12 @@ def main():
                 metadata = json_mod.load(f)
             latent_shift = metadata.get('latent_shift')
             latent_scale = metadata.get('latent_scale')
+            latent_seg_shift = metadata.get('latent_seg_shift')
+            latent_seg_scale = metadata.get('latent_seg_scale')
             if latent_shift is not None:
                 logger.info(f"Latent normalization: shift={latent_shift}, scale={latent_scale}")
+            if latent_seg_shift is not None:
+                logger.info(f"Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
 
     slicewise = (comp_spatial_dims == 2 and spatial_dims == 3)
     depth_sf = 1 if slicewise else scale_factor
@@ -181,6 +187,8 @@ def main():
         slicewise_encoding=slicewise,
         latent_shift=latent_shift,
         latent_scale=latent_scale,
+        latent_seg_shift=latent_seg_shift,
+        latent_seg_scale=latent_seg_scale,
     )
 
     model_out_channels = base_out_channels * latent_channels
@@ -259,45 +267,36 @@ def main():
         save_volume_nifti(orig_np, str(output_dir / f"{vol_idx:02d}_{patient_id}_original.nii.gz"), voxel_size)
 
         # Load conditioning if needed
-        cond_latent = None
+        cond_latent_norm = None
         if cond_channels > 0 and vol_idx < len(seg_files):
             seg_np = load_volume(seg_files[vol_idx], pixel_depth)
             seg_np = (seg_np > 0.5).astype(np.float32)
             seg_tensor = torch.from_numpy(seg_np).unsqueeze(0).unsqueeze(0).to(device)
             with autocast('cuda', dtype=torch.bfloat16):
-                cond_latent = space.encode(seg_tensor)
-            logger.info(f"  Conditioning latent shape: {cond_latent.shape}")
+                cond_latent_norm = space.encode_normalized_seg(seg_tensor).float()
+            logger.info(f"  Conditioning latent shape: {cond_latent_norm.shape}")
 
-        # Encode to latent
+        # Encode to latent (raw, for VQ-VAE roundtrip test at t=0)
         with autocast('cuda', dtype=torch.bfloat16):
-            clean_latent = space.encode(orig_tensor)  # raw (unnormalized)
-        logger.info(f"  Clean latent: shape={clean_latent.shape}, "
+            clean_latent = space.encode(orig_tensor)
+        logger.info(f"  Clean latent (raw): shape={clean_latent.shape}, "
                     f"range=[{clean_latent.min():.3f}, {clean_latent.max():.3f}], "
                     f"mean={clean_latent.mean():.3f}, std={clean_latent.std():.3f}")
 
         # Normalize latent (same as training pipeline)
-        if space._shift is not None:
-            normalized_latent = (clean_latent.float() - space._shift) / space._scale
-            logger.info(f"  Normalized latent: "
-                        f"range=[{normalized_latent.min():.3f}, {normalized_latent.max():.3f}], "
-                        f"mean={normalized_latent.mean():.3f}, std={normalized_latent.std():.3f}")
-        else:
-            normalized_latent = clean_latent.float()
-            logger.info("  No latent normalization applied")
-
-        if cond_latent is not None and space._shift is not None:
-            cond_latent_norm = (cond_latent.float() - space._shift) / space._scale
-        elif cond_latent is not None:
-            cond_latent_norm = cond_latent.float()
-        else:
-            cond_latent_norm = None
+        normalized_latent = space.normalize(clean_latent.float())
+        logger.info(f"  Normalized latent: "
+                    f"range=[{normalized_latent.min():.3f}, {normalized_latent.max():.3f}], "
+                    f"mean={normalized_latent.mean():.3f}, std={normalized_latent.std():.3f}")
 
         vol_results = {'patient_id': patient_id, 'levels': {}}
 
         # Fixed noise for this volume
-        gen = torch.Generator(device=device)
+        gen = torch.Generator(device='cpu')
         gen.manual_seed(args.seed + vol_idx)
-        noise = torch.randn_like(normalized_latent, generator=gen)
+        noise = torch.randn(
+            normalized_latent.shape, generator=gen, dtype=normalized_latent.dtype,
+        ).to(device)
 
         for noise_t in noise_levels:
             logger.info(f"\n  --- Noise level t={noise_t}/1000 ---")

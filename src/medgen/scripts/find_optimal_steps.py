@@ -193,6 +193,8 @@ def _setup_latent_space(
     # Load latent normalization stats from cache metadata
     latent_shift = None
     latent_scale = None
+    latent_seg_shift = None
+    latent_seg_scale = None
     if args.latent_cache_dir:
         meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
         if meta_path.exists():
@@ -200,10 +202,14 @@ def _setup_latent_space(
                 metadata = json.load(f)
             latent_shift = metadata.get('latent_shift')
             latent_scale = metadata.get('latent_scale')
+            latent_seg_shift = metadata.get('latent_seg_shift')
+            latent_seg_scale = metadata.get('latent_seg_scale')
             if latent_shift is not None:
                 logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
             else:
                 logger.warning("  metadata.json found but missing latent_shift/latent_scale")
+            if latent_seg_shift is not None:
+                logger.info(f"  Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
         else:
             logger.warning(f"  No metadata.json at {meta_path}")
     else:
@@ -226,6 +232,8 @@ def _setup_latent_space(
         slicewise_encoding=slicewise,
         latent_shift=latent_shift,
         latent_scale=latent_scale,
+        latent_seg_shift=latent_seg_shift,
+        latent_seg_scale=latent_seg_scale,
     )
 
     depth_sf = 1 if slicewise else scale_factor
@@ -505,7 +513,9 @@ def main():
         model_in_channels = base_in_channels * latent_ch
         noise_image_size = pixel_image_size // sf
         noise_depth = pixel_depth // depth_sf
-        encode_cond_fn = space.encode
+        # Conditioning is seg masks → use seg-specific normalization stats
+        # (matches LatentDataset.__getitem__ which normalizes latent_seg separately)
+        encode_cond_fn = space.encode_normalized_seg
         decode_fn = space.decode
         logger.info(
             f"Latent space: {sf}x compression, {latent_ch} latent channels, "

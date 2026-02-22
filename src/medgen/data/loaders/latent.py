@@ -288,6 +288,10 @@ class LatentCacheBuilder:
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Compute per-channel mean/std using Welford's online algorithm.
 
+        Uses the law of total variance to correctly compute overall std:
+            Var(z) = E[Var(z|sample)] + Var[E(z|sample)]
+        i.e., total variance = avg within-sample variance + between-sample mean variance.
+
         Args:
             pt_files: List of .pt file paths.
             key: Key to read from each .pt file ('latent' or 'latent_seg').
@@ -298,6 +302,7 @@ class LatentCacheBuilder:
         n = 0
         mean: torch.Tensor | None = None
         m2: torch.Tensor | None = None
+        var_sum: torch.Tensor | None = None  # sum of within-sample variances
 
         for f in pt_files:
             data = torch.load(f, weights_only=False)
@@ -308,22 +313,28 @@ class LatentCacheBuilder:
             n_ch = tensor.shape[0]
             flat = tensor.reshape(n_ch, -1).float()
             sample_mean = flat.mean(dim=1)
+            sample_var = flat.var(dim=1)
 
             n += 1
             if mean is None:
                 mean = sample_mean.clone()
                 m2 = torch.zeros_like(mean)
+                var_sum = sample_var.clone()
             else:
                 delta = sample_mean - mean
                 mean += delta / n
                 delta2 = sample_mean - mean
                 m2 += delta * delta2
+                var_sum += sample_var
 
-        if mean is None or n < 2:
+        if mean is None or m2 is None or var_sum is None or n < 2:
             return None
 
-        variance = m2 / (n - 1)
-        std = torch.sqrt(variance).clamp(min=1e-6)
+        # Law of total variance: Var(z) = E[Var(z|sample)] + Var[E(z|sample)]
+        avg_within_var = var_sum / n
+        between_var = m2 / (n - 1)
+        total_variance = avg_within_var + between_var
+        std = torch.sqrt(total_variance).clamp(min=1e-6)
         return mean, std
 
     @staticmethod

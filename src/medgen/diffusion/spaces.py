@@ -480,6 +480,8 @@ class LatentSpace(DiffusionSpace):
         slicewise_encoding: bool = False,
         latent_shift: list[float] | None = None,
         latent_scale: list[float] | None = None,
+        latent_seg_shift: list[float] | None = None,
+        latent_seg_scale: list[float] | None = None,
     ) -> None:
         # Store as 'vae' for backward compatibility with existing code
         self.vae = compression_model.eval()
@@ -491,14 +493,24 @@ class LatentSpace(DiffusionSpace):
 
         # Latent normalization: denormalize generated samples before decoding
         # Shape: [1, C, 1, 1] for 2D or [1, C, 1, 1, 1] for 3D
+        spatial_ones = (1,) * max(spatial_dims, 2 if not slicewise_encoding else 3)
         if latent_shift is not None and latent_scale is not None:
-            spatial_ones = (1,) * max(spatial_dims, 2 if not slicewise_encoding else 3)
             shape = (1, len(latent_shift)) + spatial_ones
             self._shift = torch.tensor(latent_shift, dtype=torch.float32).reshape(shape).to(device)
             self._scale = torch.tensor(latent_scale, dtype=torch.float32).reshape(shape).to(device)
         else:
             self._shift = None
             self._scale = None
+
+        # Separate normalization for seg conditioning (may differ from bravo stats)
+        # Falls back to bravo stats if not provided
+        if latent_seg_shift is not None and latent_seg_scale is not None:
+            seg_shape = (1, len(latent_seg_shift)) + spatial_ones
+            self._seg_shift = torch.tensor(latent_seg_shift, dtype=torch.float32).reshape(seg_shape).to(device)
+            self._seg_scale = torch.tensor(latent_seg_scale, dtype=torch.float32).reshape(seg_shape).to(device)
+        else:
+            self._seg_shift = self._shift
+            self._seg_scale = self._scale
 
         # Freeze model parameters
         for param in self.vae.parameters():
@@ -683,6 +695,41 @@ class LatentSpace(DiffusionSpace):
 
         # Stack along depth dimension: [B, C_lat, D, H_lat, W_lat]
         return torch.stack(latent_slices, dim=2)
+
+    def normalize(self, z: Tensor) -> Tensor:
+        """Normalize raw latent to training distribution: z_norm = (z - shift) / scale.
+
+        This matches the normalization applied in LatentDataset.__getitem__().
+        Use after encode() to get latents in the same space as diffusion training.
+        No-op if no normalization stats were provided.
+
+        Args:
+            z: Raw latent from encode(), any shape with channels in dim 1.
+
+        Returns:
+            Normalized latent (same shape).
+        """
+        if self._shift is None:
+            return z
+        return (z - self._shift) / self._scale
+
+    def normalize_seg(self, z: Tensor) -> Tensor:
+        """Normalize seg conditioning latent using seg-specific stats.
+
+        Falls back to bravo stats if no seg-specific stats were provided.
+        No-op if no normalization stats were provided.
+        """
+        if self._seg_shift is None:
+            return z
+        return (z - self._seg_shift) / self._seg_scale
+
+    def encode_normalized(self, x: Tensor) -> Tensor:
+        """Encode to latent space and normalize. Convenience for encode() + normalize()."""
+        return self.normalize(self.encode(x))
+
+    def encode_normalized_seg(self, x: Tensor) -> Tensor:
+        """Encode seg conditioning and normalize with seg-specific stats."""
+        return self.normalize_seg(self.encode(x))
 
     @torch.no_grad()
     def decode(self, z: Tensor) -> Tensor:
