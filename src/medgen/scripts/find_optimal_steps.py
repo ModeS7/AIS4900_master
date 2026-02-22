@@ -35,7 +35,7 @@ Usage:
     python -m medgen.scripts.find_optimal_steps \
         --checkpoint runs/wdm_checkpoint.pt \
         --data-root ~/MedicalDataSets/brainmetshare-3 \
-        --space wavelet --wavelet-normalize
+        --space wavelet
 
     # Smoke test (no checkpoint needed)
     python -m medgen.scripts.find_optimal_steps --smoke-test
@@ -160,15 +160,12 @@ def _setup_latent_space(
 ):
     """Load compression model and create LatentSpace for LDM decode.
 
-    Reads latent normalization stats from checkpoint config first (exact match
-    to training). Falls back to --latent-cache-dir metadata.json if checkpoint
-    doesn't have them (pre-fix checkpoints).
+    Reads latent normalization stats from checkpoint config (saved by
+    profiling.py:get_model_config — exact match to training).
 
     Returns:
         (space, latent_channels, scale_factor, depth_scale_factor)
     """
-    import json
-
     from medgen.data.loaders.latent import load_compression_model
     from medgen.diffusion.spaces import LatentSpace
 
@@ -190,8 +187,7 @@ def _setup_latent_space(
         f"latent_ch={latent_channels}, spatial_dims={comp_spatial_dims}"
     )
 
-    # Priority 1: Read latent normalization stats from checkpoint config
-    # (saved by profiling.py:get_model_config — exact match to training)
+    # Read latent normalization stats from checkpoint config
     latent_cfg = ckpt_cfg.get('latent', {})
     latent_shift = latent_cfg.get('latent_shift')
     latent_scale = latent_cfg.get('latent_scale')
@@ -199,35 +195,13 @@ def _setup_latent_space(
     latent_seg_scale = latent_cfg.get('latent_seg_scale')
 
     if latent_shift is not None:
-        logger.info("  Using latent stats from checkpoint (exact training match)")
         logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
         if latent_seg_shift is not None:
             logger.info(f"  Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
-    elif args.latent_cache_dir:
-        # Priority 2: Fall back to latent cache metadata.json
-        logger.warning(
-            "  Checkpoint has no latent stats — falling back to --latent-cache-dir metadata.json"
-        )
-        meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
-        if meta_path.exists():
-            with open(meta_path) as f:
-                metadata = json.load(f)
-            latent_shift = metadata.get('latent_shift')
-            latent_scale = metadata.get('latent_scale')
-            latent_seg_shift = metadata.get('latent_seg_shift')
-            latent_seg_scale = metadata.get('latent_seg_scale')
-            if latent_shift is not None:
-                logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
-            else:
-                logger.warning("  metadata.json found but missing latent_shift/latent_scale")
-            if latent_seg_shift is not None:
-                logger.info(f"  Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
-        else:
-            logger.warning(f"  No metadata.json at {meta_path}")
     else:
-        logger.warning(
-            "  No latent stats in checkpoint and no --latent-cache-dir provided. "
-            "Results may be incorrect if the diffusion model was trained with normalized latents."
+        raise ValueError(
+            "Checkpoint has no latent normalization stats (missing config.latent.latent_shift). "
+            "Retrain with the fixed profiling.py that saves stats in the checkpoint."
         )
 
     # Slicewise encoding: 2D compression model applied slice-by-slice to 3D volumes
@@ -255,147 +229,38 @@ def _setup_latent_space(
 def _setup_wavelet_space(
     args,
     ckpt_cfg: dict,
-    data_root: Path,
-    pixel_depth: int,
-    pixel_image_size: int,
 ):
-    """Create WaveletSpace, using stats from checkpoint if available.
+    """Create WaveletSpace from checkpoint stats.
 
-    Priority: checkpoint wavelet config > --wavelet-normalize (recompute from data).
-    This ensures generation uses the EXACT same stats as training.
+    Reads wavelet normalization stats from checkpoint config (saved by
+    profiling.py:get_model_config — exact match to training).
 
     Returns:
         (space, channels=8, scale_factor=2, depth_scale_factor=2)
     """
     from medgen.diffusion.spaces import WaveletSpace
 
-    # Try to load wavelet stats from checkpoint config (saved by profiling.py)
     wavelet_cfg = ckpt_cfg.get('wavelet', {})
-    ckpt_shift = wavelet_cfg.get('wavelet_shift')
-    ckpt_scale = wavelet_cfg.get('wavelet_scale')
-    ckpt_rescale = wavelet_cfg.get('rescale', False)
+    shift = wavelet_cfg.get('wavelet_shift')
+    scale = wavelet_cfg.get('wavelet_scale')
+    rescale = wavelet_cfg.get('rescale', False)
 
-    if ckpt_shift is not None and ckpt_scale is not None:
-        logger.info("Using wavelet stats from checkpoint (exact training match)")
-        rescale = ckpt_rescale
-        shift, scale = ckpt_shift, ckpt_scale
+    if shift is not None and scale is not None:
+        logger.info("Using wavelet stats from checkpoint")
         space = WaveletSpace(shift=shift, scale=scale, rescale=rescale)
         names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
         for i, name in enumerate(names):
             logger.info(f"  {name}: shift={shift[i]:.4f}, scale={scale[i]:.4f}")
         if rescale:
             logger.info("  rescale: [-1, 1]")
-    elif args.wavelet_normalize:
-        logger.warning(
-            "Checkpoint has no wavelet stats — recomputing from data. "
-            "This may not match training exactly if preprocessing differs."
-        )
-        rescale = args.wavelet_rescale
-        shift, scale = _compute_wavelet_stats(data_root, pixel_depth, pixel_image_size, rescale)
-        space = WaveletSpace(shift=shift, scale=scale, rescale=rescale)
-        names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
-        for i, name in enumerate(names):
-            logger.info(f"  {name}: shift={shift[i]:.4f}, scale={scale[i]:.4f}")
     else:
-        rescale = args.wavelet_rescale
-        space = WaveletSpace(rescale=rescale)
+        raise ValueError(
+            "Checkpoint has no wavelet normalization stats (missing config.wavelet.wavelet_shift). "
+            "Retrain with the fixed profiling.py that saves stats in the checkpoint."
+        )
 
     return space, 8, 2, 2
 
-
-def _compute_wavelet_stats(
-    data_root: Path,
-    depth: int,
-    image_size: int,
-    rescale: bool,
-) -> tuple[list[float], list[float]]:
-    """Compute wavelet normalization stats from training bravo volumes.
-
-    Loads NIfTI files, applies Haar 3D DWT, computes per-subband mean/std.
-    """
-    import nibabel as nib
-    import numpy as np
-
-    from medgen.models.haar_wavelet_3d import haar_forward_3d
-
-    # Find training split
-    train_dir = data_root / 'train'
-    if not train_dir.exists():
-        # Fallback: use any available split
-        for d in sorted(data_root.iterdir()):
-            if d.is_dir() and list(d.glob("*/bravo.nii.gz")):
-                train_dir = d
-                break
-
-    bravo_files = sorted(train_dir.glob("*/bravo.nii.gz"))[:200]
-    if not bravo_files:
-        raise FileNotFoundError(f"No bravo.nii.gz files in {train_dir}")
-
-    logger.info(f"  Using {len(bravo_files)} volumes from {train_dir.name}")
-
-    # Welford online mean/variance
-    n = 0
-    mean = None
-    m2 = None
-    var_sum = None
-
-    for path in bravo_files:
-        vol = nib.load(str(path)).get_fdata().astype(np.float32)
-        vmin, vmax = vol.min(), vol.max()
-        if vmax > vmin:
-            vol = (vol - vmin) / (vmax - vmin)
-
-        # [H, W, D] -> [1, 1, D, H, W]
-        vol = np.transpose(vol, (2, 0, 1))
-
-        # Pad/crop depth
-        d = vol.shape[0]
-        if d < depth:
-            pad = np.zeros((depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
-            vol = np.concatenate([vol, pad], axis=0)
-        elif d > depth:
-            vol = vol[:depth]
-
-        # Resize H/W if needed (bravo data might be 256 but model expects 128)
-        if vol.shape[1] != image_size or vol.shape[2] != image_size:
-            from torch.nn.functional import interpolate
-            t = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
-            t = interpolate(t, size=(depth, image_size, image_size), mode='trilinear', align_corners=False)
-            vol_tensor = t
-        else:
-            vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
-
-        if rescale:
-            vol_tensor = 2.0 * vol_tensor - 1.0
-
-        coeffs = haar_forward_3d(vol_tensor)  # [1, 8, D/2, H/2, W/2]
-        n_ch = coeffs.shape[1]
-        sample = coeffs[0]  # [8, D/2, H/2, W/2]
-        flat = sample.reshape(n_ch, -1).float()
-        sample_mean = flat.mean(dim=1)
-        sample_var = flat.var(dim=1)
-
-        n += 1
-        if mean is None:
-            mean = sample_mean.clone()
-            m2 = torch.zeros_like(mean)
-            var_sum = sample_var.clone()
-        else:
-            delta = sample_mean - mean
-            mean += delta / n
-            delta2 = sample_mean - mean
-            m2 += delta * delta2
-            var_sum += sample_var
-
-    if mean is None or n < 2:
-        raise ValueError("Not enough data to compute wavelet stats")
-
-    avg_within_var = var_sum / n
-    between_var = m2 / (n - 1)
-    total_variance = avg_within_var + between_var
-    std = torch.sqrt(total_variance).clamp(min=1e-6)
-
-    return mean.tolist(), std.tolist()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -426,13 +291,6 @@ def main():
                         help='Compression model checkpoint for --space latent')
     parser.add_argument('--compression-type', default=None,
                         help='Compression type: auto/vae/vqvae/dcae (default: auto)')
-    parser.add_argument('--latent-cache-dir', default=None,
-                        help='Latent cache dir containing train/metadata.json with '
-                             'latent_shift/latent_scale normalization stats')
-    parser.add_argument('--wavelet-normalize', action='store_true',
-                        help='Compute and apply per-subband wavelet normalization')
-    parser.add_argument('--wavelet-rescale', action='store_true',
-                        help='Rescale [0,1] -> [-1,1] before DWT')
 
     # Data
     parser.add_argument('--ref-modality', default=None,
@@ -555,9 +413,7 @@ def main():
             f"noise shape: {model_out_channels}x{noise_depth}x{noise_image_size}x{noise_image_size}"
         )
     elif args.space == 'wavelet':
-        space, wav_ch, sf, depth_sf = _setup_wavelet_space(
-            args, ckpt_cfg, data_root, pixel_depth, pixel_image_size,
-        )
+        space, wav_ch, sf, depth_sf = _setup_wavelet_space(args, ckpt_cfg)
         model_out_channels = base_out_channels * wav_ch
         model_in_channels = base_in_channels * wav_ch
         noise_image_size = pixel_image_size // sf

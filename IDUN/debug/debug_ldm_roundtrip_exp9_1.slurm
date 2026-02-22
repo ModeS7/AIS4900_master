@@ -37,29 +37,20 @@ COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/debug_ldm_roundtrip_exp9_1"
 
-# Latent normalization stats
-LATENT_CACHE_DIR=$(ls -d ${DATA_ROOT}-latents-vqvae-3d-*/train/metadata.json 2>/dev/null | head -1 | xargs -r dirname | xargs -r dirname)
-
 if [ -z "$CHECKPOINT" ]; then
     echo "ERROR: No checkpoint found"
     exit 1
 fi
 
-LATENT_CACHE_ARG=""
-if [ -n "$LATENT_CACHE_DIR" ]; then
-    echo "Latent cache: $LATENT_CACHE_DIR"
-    LATENT_CACHE_ARG="--latent-cache-dir ${LATENT_CACHE_DIR}"
-fi
-
 echo "Diffusion: $CHECKPOINT"
 echo "Compression: $COMPRESSION_CHECKPOINT"
+echo "Latent stats: read from diffusion checkpoint"
 echo ""
 
 time python -m medgen.scripts.debug_ldm_roundtrip \
     --checkpoint "${CHECKPOINT}" \
     --compression-checkpoint "${COMPRESSION_CHECKPOINT}" \
     --compression-type vqvae \
-    ${LATENT_CACHE_ARG} \
     --data-root "${DATA_ROOT}" \
     --output-dir "${OUTPUT_DIR}" \
     --num-volumes 3 \

@@ -42,21 +42,9 @@ COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp13_dit_4x"
 
-# Latent cache dir (contains train/metadata.json with normalization stats)
-# Auto-find by glob: {DATA_ROOT}-latents-vqvae-3d-{hash}/
-LATENT_CACHE_DIR=$(ls -d ${DATA_ROOT}-latents-vqvae-3d-*/train/metadata.json 2>/dev/null | head -1 | xargs -r dirname | xargs -r dirname)
-
 if [ -z "$CHECKPOINT" ]; then
     echo "ERROR: No checkpoint found for exp13_dit_4x_bravo_*"
     exit 1
-fi
-
-if [ -z "$LATENT_CACHE_DIR" ]; then
-    echo "WARNING: No latent cache found — running without latent normalization"
-    LATENT_CACHE_ARG=""
-else
-    echo "Latent cache: $LATENT_CACHE_DIR"
-    LATENT_CACHE_ARG="--latent-cache-dir ${LATENT_CACHE_DIR}"
 fi
 
 echo "Diffusion checkpoint: $CHECKPOINT"
@@ -66,6 +54,7 @@ echo "Space: latent (VQ-VAE 4x decode)"
 echo "Architecture: DiT-S (auto-detected from checkpoint)"
 echo "Mode: bravo_seg_cond (auto-detected)"
 echo "Strategy: rflow (auto-detected)"
+echo "Latent stats: read from diffusion checkpoint"
 echo ""
 
 time python -m medgen.scripts.find_optimal_steps \
@@ -75,7 +64,6 @@ time python -m medgen.scripts.find_optimal_steps \
     --space latent \
     --compression-checkpoint "${COMPRESSION_CHECKPOINT}" \
     --compression-type vqvae \
-    ${LATENT_CACHE_ARG} \
     --num-volumes 25 \
     --lo 10 --hi 100 \
     --metric fid \

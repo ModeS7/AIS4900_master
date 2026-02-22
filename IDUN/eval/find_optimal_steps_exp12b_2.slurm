@@ -54,7 +54,7 @@ echo "Pixel resolution: 128x128x160 (decoded from 64x64x80 wavelet)"
 echo ""
 
 # WDM uses DDPM strategy, not RFlow
-# --wavelet-normalize: recomputes per-subband stats from training data
+# Wavelet stats are read from checkpoint (saved by profiling.py)
 # --strategy ddpm: overrides auto-detection (checkpoint stores 'ddpm')
 # --prediction-type sample: x0 prediction (stored as 'sample' in code)
 # --image-size 128: WDM trains at 128x128 (not 256)
@@ -63,7 +63,6 @@ time python -m medgen.scripts.find_optimal_steps \
     --data-root "${DATA_ROOT}" \
     --output-dir "${OUTPUT_DIR}" \
     --space wavelet \
-    --wavelet-normalize \
     --strategy ddpm \
     --prediction-type sample \
     --schedule linear_beta \

@@ -105,8 +105,6 @@ def main():
     parser.add_argument('--checkpoint', required=True, help='Diffusion model checkpoint')
     parser.add_argument('--compression-checkpoint', required=True, help='Compression model checkpoint')
     parser.add_argument('--compression-type', default='auto')
-    parser.add_argument('--latent-cache-dir', default=None,
-                        help='Latent cache dir with train/metadata.json for normalization stats')
     parser.add_argument('--data-root', required=True, help='Dataset root')
     parser.add_argument('--output-dir', default='debug_ldm_roundtrip')
     parser.add_argument('--num-volumes', type=int, default=3, help='Volumes to test (default: 3)')
@@ -144,8 +142,6 @@ def main():
     del ckpt
 
     # ── Load compression model + latent space ──
-    import json as json_mod
-
     from medgen.data.loaders.compression_detection import load_compression_model
     from medgen.diffusion.spaces import LatentSpace
 
@@ -154,24 +150,16 @@ def main():
     )
     logger.info(f"Compression: {detected_type} {scale_factor}x, {latent_channels}ch")
 
-    # Latent normalization
-    latent_shift = None
-    latent_scale = None
-    latent_seg_shift = None
-    latent_seg_scale = None
-    if args.latent_cache_dir:
-        meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
-        if meta_path.exists():
-            with open(meta_path) as f:
-                metadata = json_mod.load(f)
-            latent_shift = metadata.get('latent_shift')
-            latent_scale = metadata.get('latent_scale')
-            latent_seg_shift = metadata.get('latent_seg_shift')
-            latent_seg_scale = metadata.get('latent_seg_scale')
-            if latent_shift is not None:
-                logger.info(f"Latent normalization: shift={latent_shift}, scale={latent_scale}")
-            if latent_seg_shift is not None:
-                logger.info(f"Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
+    # Latent normalization stats from checkpoint
+    latent_cfg = ckpt_cfg.get('latent', {})
+    latent_shift = latent_cfg.get('latent_shift')
+    latent_scale = latent_cfg.get('latent_scale')
+    latent_seg_shift = latent_cfg.get('latent_seg_shift')
+    latent_seg_scale = latent_cfg.get('latent_seg_scale')
+    if latent_shift is not None:
+        logger.info(f"Latent normalization: shift={latent_shift}, scale={latent_scale}")
+    if latent_seg_shift is not None:
+        logger.info(f"Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
 
     slicewise = (comp_spatial_dims == 2 and spatial_dims == 3)
     depth_sf = 1 if slicewise else scale_factor
