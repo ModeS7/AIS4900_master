@@ -211,10 +211,11 @@ def main():
     recon_psnr_dummy = 10 * np.log10(1.0 / max(
         ((dummy.cpu().float() - recon.cpu().float()) ** 2).mean().item(), 1e-10
     ))
+    # VQ-VAE trained on brain MRI — random noise won't reconstruct well, just sanity check
     all_passed &= check(
-        "Encode→decode PSNR (dummy data)",
-        recon_psnr_dummy > 15,
-        f"PSNR = {recon_psnr_dummy:.1f} dB (threshold: >15)",
+        "Encode→decode runs without error (dummy data)",
+        recon_psnr_dummy > 5,
+        f"PSNR = {recon_psnr_dummy:.1f} dB (low is expected for random input)",
     )
     del dummy, z, recon
     torch.cuda.empty_cache()
@@ -328,6 +329,8 @@ def main():
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 5: Seg conditioning ---")
 
+    space_full = None  # set if seg conditioning is tested
+    seg_shift, seg_scale = None, None
     seg_files = sorted(train_dir.glob("*/seg.nii.gz"))[:args.max_volumes]
     if seg_files:
         logger.info(f"  Encoding {len(seg_files)} seg volumes...")
@@ -467,18 +470,19 @@ def main():
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 8: Stats persistence (profiling.py round-trip) ---")
 
-    # Simulate what profiling.py saves
+    # Simulate what profiling.py saves — use space_full (has seg stats) if available
+    stats_space = space_full if space_full is not None else space
     saved_config = {
-        'compression_type': space.compression_type,
-        'scale_factor': space.scale_factor,
-        'latent_channels': space.latent_channels,
+        'compression_type': stats_space.compression_type,
+        'scale_factor': stats_space.scale_factor,
+        'latent_channels': stats_space.latent_channels,
     }
-    if space.latent_shift is not None:
-        saved_config['latent_shift'] = space.latent_shift
-        saved_config['latent_scale'] = space.latent_scale
-    if space.latent_seg_shift is not None:
-        saved_config['latent_seg_shift'] = space.latent_seg_shift
-        saved_config['latent_seg_scale'] = space.latent_seg_scale
+    if stats_space.latent_shift is not None:
+        saved_config['latent_shift'] = stats_space.latent_shift
+        saved_config['latent_scale'] = stats_space.latent_scale
+    if stats_space.latent_seg_shift is not None:
+        saved_config['latent_seg_shift'] = stats_space.latent_seg_shift
+        saved_config['latent_seg_scale'] = stats_space.latent_seg_scale
 
     # Simulate what find_optimal_steps.py reads
     loaded_shift = saved_config.get('latent_shift')
