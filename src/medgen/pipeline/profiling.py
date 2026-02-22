@@ -96,6 +96,17 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             'num_head_channels': mc.num_head_channels,
         })
 
+    # Wavelet config (for WDM — save stats so generation doesn't recompute)
+    from medgen.diffusion.spaces import WaveletSpace
+    if isinstance(trainer.space, WaveletSpace):
+        wavelet_config: dict[str, Any] = {
+            'rescale': trainer.space.rescale,
+        }
+        if trainer.space.shift is not None:
+            wavelet_config['wavelet_shift'] = trainer.space.shift
+            wavelet_config['wavelet_scale'] = trainer.space.scale
+        config['wavelet'] = wavelet_config
+
     # Size bin config (for seg_conditioned mode)
     if getattr(trainer, 'use_size_bin_embedding', False):
         config['size_bin'] = {

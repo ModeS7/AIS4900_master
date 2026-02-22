@@ -363,6 +363,25 @@ class WaveletSpace(DiffusionSpace):
         """Channel multiplier per input channel."""
         return 8
 
+    @property
+    def shift(self) -> list[float] | None:
+        """Per-subband mean (list of 8 floats), or None if not normalized."""
+        if self._shift is None:
+            return None
+        return self._shift.flatten().tolist()
+
+    @property
+    def scale(self) -> list[float] | None:
+        """Per-subband std (list of 8 floats), or None if not normalized."""
+        if self._scale is None:
+            return None
+        return self._scale.flatten().tolist()
+
+    @property
+    def rescale(self) -> bool:
+        """Whether [0,1] -> [-1,1] rescaling is applied before DWT."""
+        return self._rescale
+
     @staticmethod
     def compute_subband_stats(
         dataloader: 'torch.utils.data.DataLoader',  # type: ignore[type-arg]

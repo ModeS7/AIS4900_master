@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="debug_cond"
-#SBATCH --output=IDUN/output/eval/debug_conditioning_%j.out
-#SBATCH --error=IDUN/output/eval/debug_conditioning_%j.err
+#SBATCH --output=IDUN/output/debug/debug_conditioning_%j.out
+#SBATCH --error=IDUN/output/debug/debug_conditioning_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02

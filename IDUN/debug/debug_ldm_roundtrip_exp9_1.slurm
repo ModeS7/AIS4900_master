@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="dbg_rt_exp9_1"
-#SBATCH --output=IDUN/output/eval/debug_ldm_roundtrip_exp9_1_%j.out
-#SBATCH --error=IDUN/output/eval/debug_ldm_roundtrip_exp9_1_%j.err
+#SBATCH --output=IDUN/output/debug/ldm_roundtrip_exp9_1_%j.out
+#SBATCH --error=IDUN/output/debug/ldm_roundtrip_exp9_1_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02

@@ -242,29 +242,50 @@ def _setup_latent_space(
 
 def _setup_wavelet_space(
     args,
+    ckpt_cfg: dict,
     data_root: Path,
     pixel_depth: int,
     pixel_image_size: int,
 ):
-    """Create WaveletSpace, optionally with per-subband normalization.
+    """Create WaveletSpace, using stats from checkpoint if available.
 
-    When --wavelet-normalize is set, computes stats from training data.
+    Priority: checkpoint wavelet config > --wavelet-normalize (recompute from data).
+    This ensures generation uses the EXACT same stats as training.
 
     Returns:
         (space, channels=8, scale_factor=2, depth_scale_factor=2)
     """
     from medgen.diffusion.spaces import WaveletSpace
 
-    rescale = args.wavelet_rescale
+    # Try to load wavelet stats from checkpoint config (saved by profiling.py)
+    wavelet_cfg = ckpt_cfg.get('wavelet', {})
+    ckpt_shift = wavelet_cfg.get('wavelet_shift')
+    ckpt_scale = wavelet_cfg.get('wavelet_scale')
+    ckpt_rescale = wavelet_cfg.get('rescale', False)
 
-    if args.wavelet_normalize:
-        logger.info("Computing wavelet normalization stats from training data...")
+    if ckpt_shift is not None and ckpt_scale is not None:
+        logger.info("Using wavelet stats from checkpoint (exact training match)")
+        rescale = ckpt_rescale
+        shift, scale = ckpt_shift, ckpt_scale
+        space = WaveletSpace(shift=shift, scale=scale, rescale=rescale)
+        names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
+        for i, name in enumerate(names):
+            logger.info(f"  {name}: shift={shift[i]:.4f}, scale={scale[i]:.4f}")
+        if rescale:
+            logger.info("  rescale: [-1, 1]")
+    elif args.wavelet_normalize:
+        logger.warning(
+            "Checkpoint has no wavelet stats — recomputing from data. "
+            "This may not match training exactly if preprocessing differs."
+        )
+        rescale = args.wavelet_rescale
         shift, scale = _compute_wavelet_stats(data_root, pixel_depth, pixel_image_size, rescale)
         space = WaveletSpace(shift=shift, scale=scale, rescale=rescale)
         names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
         for i, name in enumerate(names):
             logger.info(f"  {name}: shift={shift[i]:.4f}, scale={scale[i]:.4f}")
     else:
+        rescale = args.wavelet_rescale
         space = WaveletSpace(rescale=rescale)
 
     return space, 8, 2, 2
@@ -523,7 +544,7 @@ def main():
         )
     elif args.space == 'wavelet':
         space, wav_ch, sf, depth_sf = _setup_wavelet_space(
-            args, data_root, pixel_depth, pixel_image_size,
+            args, ckpt_cfg, data_root, pixel_depth, pixel_image_size,
         )
         model_out_channels = base_out_channels * wav_ch
         model_in_channels = base_in_channels * wav_ch
