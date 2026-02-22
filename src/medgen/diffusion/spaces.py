@@ -839,6 +839,34 @@ class LatentSpace(DiffusionSpace):
         """Number of latent channels per input channel."""
         return self._latent_channels
 
+    @property
+    def latent_shift(self) -> list[float] | None:
+        """Per-channel shift (mean), or None if no normalization."""
+        if self._shift is None:
+            return None
+        return self._shift.flatten().tolist()
+
+    @property
+    def latent_scale(self) -> list[float] | None:
+        """Per-channel scale (std), or None if no normalization."""
+        if self._scale is None:
+            return None
+        return self._scale.flatten().tolist()
+
+    @property
+    def latent_seg_shift(self) -> list[float] | None:
+        """Per-channel seg shift, or None if no seg-specific normalization."""
+        if self._seg_shift is None or self._seg_shift is self._shift:
+            return None
+        return self._seg_shift.flatten().tolist()
+
+    @property
+    def latent_seg_scale(self) -> list[float] | None:
+        """Per-channel seg scale, or None if no seg-specific normalization."""
+        if self._seg_scale is None or self._seg_scale is self._scale:
+            return None
+        return self._seg_scale.flatten().tolist()
+
 
 def load_vae_for_latent_space(
     checkpoint_path: str,

@@ -97,7 +97,7 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
         })
 
     # Wavelet config (for WDM — save stats so generation doesn't recompute)
-    from medgen.diffusion.spaces import WaveletSpace
+    from medgen.diffusion.spaces import LatentSpace, WaveletSpace
     if isinstance(trainer.space, WaveletSpace):
         wavelet_config: dict[str, Any] = {
             'rescale': trainer.space.rescale,
@@ -106,6 +106,22 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             wavelet_config['wavelet_shift'] = trainer.space.shift
             wavelet_config['wavelet_scale'] = trainer.space.scale
         config['wavelet'] = wavelet_config
+
+    # Latent config (for LDM — save normalization stats so generation
+    # doesn't need the latent cache metadata.json)
+    if isinstance(trainer.space, LatentSpace):
+        latent_config: dict[str, Any] = {
+            'compression_type': trainer.space.compression_type,
+            'scale_factor': trainer.space.scale_factor,
+            'latent_channels': trainer.space.latent_channels,
+        }
+        if trainer.space.latent_shift is not None:
+            latent_config['latent_shift'] = trainer.space.latent_shift
+            latent_config['latent_scale'] = trainer.space.latent_scale
+        if trainer.space.latent_seg_shift is not None:
+            latent_config['latent_seg_shift'] = trainer.space.latent_seg_shift
+            latent_config['latent_seg_scale'] = trainer.space.latent_seg_scale
+        config['latent'] = latent_config
 
     # Size bin config (for seg_conditioned mode)
     if getattr(trainer, 'use_size_bin_embedding', False):

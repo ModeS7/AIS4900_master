@@ -154,15 +154,15 @@ def golden_section_search(
 
 def _setup_latent_space(
     args,
+    ckpt_cfg: dict,
     device: torch.device,
     spatial_dims: int,
 ):
     """Load compression model and create LatentSpace for LDM decode.
 
-    Reads latent normalization stats (latent_shift/latent_scale) from the
-    latent cache metadata.json if --latent-cache-dir is provided. These stats
-    are required for correct decoding — without them, generated latents won't
-    be denormalized before the compression decoder.
+    Reads latent normalization stats from checkpoint config first (exact match
+    to training). Falls back to --latent-cache-dir metadata.json if checkpoint
+    doesn't have them (pre-fix checkpoints).
 
     Returns:
         (space, latent_channels, scale_factor, depth_scale_factor)
@@ -190,12 +190,24 @@ def _setup_latent_space(
         f"latent_ch={latent_channels}, spatial_dims={comp_spatial_dims}"
     )
 
-    # Load latent normalization stats from cache metadata
-    latent_shift = None
-    latent_scale = None
-    latent_seg_shift = None
-    latent_seg_scale = None
-    if args.latent_cache_dir:
+    # Priority 1: Read latent normalization stats from checkpoint config
+    # (saved by profiling.py:get_model_config — exact match to training)
+    latent_cfg = ckpt_cfg.get('latent', {})
+    latent_shift = latent_cfg.get('latent_shift')
+    latent_scale = latent_cfg.get('latent_scale')
+    latent_seg_shift = latent_cfg.get('latent_seg_shift')
+    latent_seg_scale = latent_cfg.get('latent_seg_scale')
+
+    if latent_shift is not None:
+        logger.info("  Using latent stats from checkpoint (exact training match)")
+        logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
+        if latent_seg_shift is not None:
+            logger.info(f"  Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
+    elif args.latent_cache_dir:
+        # Priority 2: Fall back to latent cache metadata.json
+        logger.warning(
+            "  Checkpoint has no latent stats — falling back to --latent-cache-dir metadata.json"
+        )
         meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
         if meta_path.exists():
             with open(meta_path) as f:
@@ -214,7 +226,7 @@ def _setup_latent_space(
             logger.warning(f"  No metadata.json at {meta_path}")
     else:
         logger.warning(
-            "  No --latent-cache-dir provided — skipping latent normalization. "
+            "  No latent stats in checkpoint and no --latent-cache-dir provided. "
             "Results may be incorrect if the diffusion model was trained with normalized latents."
         )
 
@@ -528,7 +540,7 @@ def main():
     data_root = Path(args.data_root)
 
     if args.space == 'latent':
-        space, latent_ch, sf, depth_sf = _setup_latent_space(args, device, spatial_dims)
+        space, latent_ch, sf, depth_sf = _setup_latent_space(args, ckpt_cfg, device, spatial_dims)
         # Model operates in latent space
         model_out_channels = base_out_channels * latent_ch
         model_in_channels = base_in_channels * latent_ch

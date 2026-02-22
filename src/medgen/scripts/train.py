@@ -247,28 +247,47 @@ def main(cfg: DictConfig) -> None:
                 else:
                     logger.warning(f"Val cache invalid and auto_encode=false: {val_cache_dir}")
 
-        # Read normalization stats from train cache metadata (backfill if missing)
+        # Read normalization stats from train cache metadata (recompute if stale)
         import json
+        from medgen.data.loaders.latent import LATENT_STATS_VERSION
         latent_shift = None
         latent_scale = None
+        latent_seg_shift = None
+        latent_seg_scale = None
         train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
         if os.path.exists(train_meta_path):
             with open(train_meta_path) as f:
                 train_metadata = json.load(f)
-            latent_shift = train_metadata.get('latent_shift')
-            latent_scale = train_metadata.get('latent_scale')
 
-            # Backfill: old caches may lack stats
-            if latent_shift is None:
-                logger.info("Computing normalization stats for existing cache...")
+            stats_version = train_metadata.get('latent_stats_version', 0)
+            needs_recompute = (
+                'latent_shift' not in train_metadata
+                or stats_version < LATENT_STATS_VERSION
+            )
+
+            if needs_recompute:
+                if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
+                    logger.warning(
+                        f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
+                        f"Old scale={train_metadata.get('latent_scale')} was likely too small."
+                    )
+                else:
+                    logger.info("Computing normalization stats for existing cache...")
                 stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
                 if stats:
                     latent_shift = stats['latent_shift']
                     latent_scale = stats['latent_scale']
+                    latent_seg_shift = stats.get('latent_seg_shift')
+                    latent_seg_scale = stats.get('latent_seg_scale')
                     train_metadata.update(stats)
                     with open(train_meta_path, 'w') as f:
                         json.dump(train_metadata, f, indent=2)
-                    logger.info(f"Latent stats: shift={latent_shift}, scale={latent_scale}")
+                    logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
+            else:
+                latent_shift = train_metadata.get('latent_shift')
+                latent_scale = train_metadata.get('latent_scale')
+                latent_seg_shift = train_metadata.get('latent_seg_shift')
+                latent_seg_scale = train_metadata.get('latent_seg_scale')
 
         # Create LatentSpace with normalization stats (after cache ensures stats exist)
         space = LatentSpace(
@@ -279,6 +298,8 @@ def main(cfg: DictConfig) -> None:
             latent_channels=latent_channels,
             latent_shift=latent_shift,
             latent_scale=latent_scale,
+            latent_seg_shift=latent_seg_shift,
+            latent_seg_scale=latent_seg_scale,
         )
 
         # Create trainer (needs space)
@@ -648,29 +669,48 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_result = create_vae_3d_validation_dataloader(cfg, pixel_modality)
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
-        # Read normalization stats from train cache metadata (backfill if missing)
+        # Read normalization stats from train cache metadata (recompute if stale)
         import json
+        from medgen.data.loaders.latent import LATENT_STATS_VERSION
         latent_shift = None
         latent_scale = None
+        latent_seg_shift = None
+        latent_seg_scale = None
         train_cache_dir = os.path.join(cache_dir, 'train')
         train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
         if os.path.exists(train_meta_path):
             with open(train_meta_path) as f:
                 train_metadata = json.load(f)
-            latent_shift = train_metadata.get('latent_shift')
-            latent_scale = train_metadata.get('latent_scale')
 
-            # Backfill: old caches may lack stats
-            if latent_shift is None:
-                logger.info("Computing normalization stats for existing cache...")
+            stats_version = train_metadata.get('latent_stats_version', 0)
+            needs_recompute = (
+                'latent_shift' not in train_metadata
+                or stats_version < LATENT_STATS_VERSION
+            )
+
+            if needs_recompute:
+                if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
+                    logger.warning(
+                        f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
+                        f"Old scale={train_metadata.get('latent_scale')} was likely too small."
+                    )
+                else:
+                    logger.info("Computing normalization stats for existing cache...")
                 stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
                 if stats:
                     latent_shift = stats['latent_shift']
                     latent_scale = stats['latent_scale']
+                    latent_seg_shift = stats.get('latent_seg_shift')
+                    latent_seg_scale = stats.get('latent_seg_scale')
                     train_metadata.update(stats)
                     with open(train_meta_path, 'w') as f:
                         json.dump(train_metadata, f, indent=2)
-                    logger.info(f"Latent stats: shift={latent_shift}, scale={latent_scale}")
+                    logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
+            else:
+                latent_shift = train_metadata.get('latent_shift')
+                latent_scale = train_metadata.get('latent_scale')
+                latent_seg_shift = train_metadata.get('latent_seg_shift')
+                latent_seg_scale = train_metadata.get('latent_seg_scale')
 
         # Create LatentSpace with detected/configured parameters
         space = LatentSpace(
@@ -685,6 +725,8 @@ def _train_3d(cfg: DictConfig) -> None:
             slicewise_encoding=slicewise_encoding,
             latent_shift=latent_shift,
             latent_scale=latent_scale,
+            latent_seg_shift=latent_seg_shift,
+            latent_seg_scale=latent_seg_scale,
         )
 
     else:

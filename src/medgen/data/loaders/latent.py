@@ -30,6 +30,10 @@ from medgen.data.loaders.common import (
 
 logger = logging.getLogger(__name__)
 
+# Version 1: between-sample variance only (buggy — underestimates std)
+# Version 2: law of total variance (correct — within + between variance)
+LATENT_STATS_VERSION = 2
+
 
 def _validate_checkpoint_path(checkpoint_path: str) -> None:
     """Validate checkpoint path exists and is readable.
@@ -143,7 +147,17 @@ class LatentDataset(Dataset):
             except (json.JSONDecodeError, OSError):
                 pass
 
-        if metadata is not None and 'latent_shift' in metadata:
+        # Check if stats exist AND are current version.
+        # Version 1 (or missing version) used only between-sample variance,
+        # giving catastrophically small scale values. Must recompute.
+        stats_version = metadata.get('latent_stats_version', 0) if metadata else 0
+        has_current_stats = (
+            metadata is not None
+            and 'latent_shift' in metadata
+            and stats_version >= LATENT_STATS_VERSION
+        )
+
+        if has_current_stats:
             shift = torch.tensor(metadata['latent_shift'], dtype=torch.float32)
             scale = torch.tensor(metadata['latent_scale'], dtype=torch.float32)
 
@@ -155,7 +169,13 @@ class LatentDataset(Dataset):
 
             return shift, scale, seg_shift, seg_scale
 
-        # Backfill: compute stats and update metadata
+        if stats_version < LATENT_STATS_VERSION and metadata is not None and 'latent_shift' in metadata:
+            logger.warning(
+                f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
+                f"Old scale={metadata.get('latent_scale')} was likely too small."
+            )
+
+        # Compute (or recompute) stats and update metadata
         stats = LatentCacheBuilder.compute_channel_stats(self.cache_dir)
         if not stats:
             return None, None, None, None
@@ -166,7 +186,7 @@ class LatentDataset(Dataset):
             try:
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=2)
-                logger.info(f"Backfilled normalization stats into {metadata_path}")
+                logger.info(f"Updated normalization stats (v{LATENT_STATS_VERSION}) in {metadata_path}")
             except OSError as e:
                 logger.warning(f"Could not update metadata with stats: {e}")
 
@@ -364,9 +384,10 @@ class LatentCacheBuilder:
             return {}
 
         mean, std = result
-        stats: dict[str, list[float]] = {
+        stats: dict[str, list[float] | int] = {
             'latent_shift': mean.tolist(),
             'latent_scale': std.tolist(),
+            'latent_stats_version': LATENT_STATS_VERSION,
         }
 
         # Compute separate stats for latent_seg if present

@@ -427,3 +427,92 @@ class TestSharedDecoderMetricsBug:
             f"Shared decoder with small prediction error should give "
             f"PSNR > 35 dB, got {psnr_shared:.2f}"
         )
+
+
+class TestLatentStatsVersion:
+    """Tests for latent normalization stats versioning."""
+
+    def test_stale_stats_are_recomputed(self, tmp_path):
+        """Verify old stats (no version) trigger recomputation."""
+        from medgen.data.loaders.latent import (
+            LATENT_STATS_VERSION,
+            LatentCacheBuilder,
+            LatentDataset,
+        )
+
+        # Create fake cached latent files with known distribution
+        torch.manual_seed(42)
+        for i in range(10):
+            latent = torch.randn(4, 8, 8, 8) * 0.5 + 0.1  # std≈0.5, mean≈0.1
+            torch.save({'latent': latent}, tmp_path / f"sample_{i:04d}.pt")
+
+        # Write metadata with stale stats (no version = old buggy code)
+        import json
+        metadata = {
+            'latent_shift': [0.0, 0.0, 0.0, 0.0],
+            'latent_scale': [0.001, 0.001, 0.001, 0.001],  # Buggy: way too small
+            'num_samples': 10,
+        }
+        with open(tmp_path / 'metadata.json', 'w') as f:
+            json.dump(metadata, f)
+
+        # LatentDataset should detect stale stats and recompute
+        ds = LatentDataset(str(tmp_path), mode='bravo')
+
+        # Verify stats were recomputed (scale should be ≈0.5, not 0.001)
+        assert ds._scale is not None
+        for ch_scale in ds._scale.tolist():
+            assert ch_scale > 0.1, f"Scale {ch_scale} too small — stale stats not replaced"
+
+        # Verify metadata was updated with version
+        with open(tmp_path / 'metadata.json') as f:
+            updated = json.load(f)
+        assert updated.get('latent_stats_version') == LATENT_STATS_VERSION
+
+    def test_current_version_stats_not_recomputed(self, tmp_path):
+        """Verify current-version stats are used directly."""
+        from medgen.data.loaders.latent import (
+            LATENT_STATS_VERSION,
+            LatentDataset,
+        )
+
+        # Create one fake latent file (needed for dataset)
+        torch.save({'latent': torch.randn(4, 8, 8, 8)}, tmp_path / "sample_0000.pt")
+
+        # Write metadata with current-version stats
+        import json
+        metadata = {
+            'latent_shift': [0.1, 0.2, 0.3, 0.4],
+            'latent_scale': [0.5, 0.6, 0.7, 0.8],
+            'latent_stats_version': LATENT_STATS_VERSION,
+            'num_samples': 1,
+        }
+        with open(tmp_path / 'metadata.json', 'w') as f:
+            json.dump(metadata, f)
+
+        ds = LatentDataset(str(tmp_path), mode='bravo')
+
+        # Verify the stored stats were used as-is (float32 precision)
+        assert torch.allclose(ds._shift, torch.tensor([0.1, 0.2, 0.3, 0.4]))
+        assert torch.allclose(ds._scale, torch.tensor([0.5, 0.6, 0.7, 0.8]))
+
+    def test_normalized_latents_have_unit_scale(self, tmp_path):
+        """Verify correctly normalized latents have std ≈ 1."""
+        from medgen.data.loaders.latent import LatentDataset
+
+        # Create fake latents with known distribution
+        torch.manual_seed(42)
+        for i in range(20):
+            latent = torch.randn(4, 8, 8, 8) * 0.5 + 0.1
+            torch.save({'latent': latent}, tmp_path / f"sample_{i:04d}.pt")
+
+        # No metadata → forces fresh computation
+        ds = LatentDataset(str(tmp_path), mode='bravo')
+
+        # Load all and check distribution
+        all_latents = torch.stack([ds[i]['latent'] for i in range(len(ds))])
+        overall_std = all_latents.std().item()
+
+        assert 0.5 < overall_std < 2.0, (
+            f"Normalized latent std={overall_std:.3f}, expected ≈1.0"
+        )
