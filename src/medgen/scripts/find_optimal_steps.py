@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find the optimal Euler step count for RFlow generation via golden section search.
+"""Find the optimal step count for diffusion generation via golden section search.
 
 Uses golden section search to find the step count that minimizes FID
 within a given range. Much faster than exhaustive sweep — typically
@@ -9,27 +9,33 @@ Golden section search: at each iteration, evaluates one new point and
 narrows the interval by factor ~0.618. Requires the objective to be
 unimodal (single minimum) in the search range.
 
-Supports all modes (seg, bravo, dual, multi, seg_conditioned, etc.)
-with auto-detection from checkpoint config. Currently limited to UNet
-checkpoints (transformer model loading requires full Hydra config).
+Supports:
+- Pixel-space models (UNet, default)
+- Latent-space models (LDM with VAE/VQ-VAE/DC-AE decoder)
+- Wavelet-space models (WDM with inverse Haar DWT)
+- UNet and DiT architectures (auto-detected from checkpoint)
+- RFlow and DDPM strategies (auto-detected from checkpoint)
 
 Usage:
-    # Auto-detect mode from checkpoint
+    # Pixel-space model (default)
     python -m medgen.scripts.find_optimal_steps \
         --checkpoint runs/checkpoint_latest.pt \
         --data-root ~/MedicalDataSets/brainmetshare-3 \
         --num-volumes 25 --output-dir eval_optimal_steps
 
-    # Explicit mode override
+    # Latent-space model (LDM)
     python -m medgen.scripts.find_optimal_steps \
-        --checkpoint runs/checkpoint_seg.pt \
+        --checkpoint runs/ldm_checkpoint.pt \
         --data-root ~/MedicalDataSets/brainmetshare-3 \
-        --mode seg --num-volumes 25
+        --space latent \
+        --compression-checkpoint runs/vqvae_checkpoint.pt \
+        --compression-type vqvae
 
-    # Legacy --bravo-model still works
+    # Wavelet-space model (WDM)
     python -m medgen.scripts.find_optimal_steps \
-        --bravo-model runs/checkpoint_bravo.pt \
-        --data-root ~/MedicalDataSets/brainmetshare-3
+        --checkpoint runs/wdm_checkpoint.pt \
+        --data-root ~/MedicalDataSets/brainmetshare-3 \
+        --space wavelet --wavelet-normalize
 
     # Smoke test (no checkpoint needed)
     python -m medgen.scripts.find_optimal_steps --smoke-test
@@ -143,6 +149,184 @@ def golden_section_search(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Space setup helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _setup_latent_space(
+    args,
+    device: torch.device,
+    spatial_dims: int,
+):
+    """Load compression model and create LatentSpace for LDM decode.
+
+    Returns:
+        (space, latent_channels, scale_factor, depth_scale_factor)
+    """
+    from medgen.data.loaders.latent import load_compression_model
+    from medgen.diffusion.spaces import LatentSpace
+
+    if not args.compression_checkpoint:
+        raise ValueError("--compression-checkpoint required for --space latent")
+
+    compression_type = args.compression_type or 'auto'
+    logger.info(f"Loading compression model: {args.compression_checkpoint}")
+    comp_model, detected_type, comp_spatial_dims, scale_factor, latent_channels = (
+        load_compression_model(
+            args.compression_checkpoint,
+            compression_type,
+            device,
+            spatial_dims=spatial_dims,
+        )
+    )
+    logger.info(
+        f"  type={detected_type}, scale={scale_factor}x, "
+        f"latent_ch={latent_channels}, spatial_dims={comp_spatial_dims}"
+    )
+
+    # Slicewise encoding: 2D compression model applied slice-by-slice to 3D volumes
+    slicewise = (comp_spatial_dims == 2 and spatial_dims == 3)
+
+    space = LatentSpace(
+        compression_model=comp_model,
+        device=device,
+        deterministic=True,
+        spatial_dims=comp_spatial_dims,
+        compression_type=detected_type,
+        scale_factor=scale_factor,
+        latent_channels=latent_channels,
+        slicewise_encoding=slicewise,
+    )
+
+    depth_sf = 1 if slicewise else scale_factor
+    return space, latent_channels, scale_factor, depth_sf
+
+
+def _setup_wavelet_space(
+    args,
+    data_root: Path,
+    pixel_depth: int,
+    pixel_image_size: int,
+):
+    """Create WaveletSpace, optionally with per-subband normalization.
+
+    When --wavelet-normalize is set, computes stats from training data.
+
+    Returns:
+        (space, channels=8, scale_factor=2, depth_scale_factor=2)
+    """
+    from medgen.diffusion.spaces import WaveletSpace
+
+    rescale = args.wavelet_rescale
+
+    if args.wavelet_normalize:
+        logger.info("Computing wavelet normalization stats from training data...")
+        shift, scale = _compute_wavelet_stats(data_root, pixel_depth, pixel_image_size, rescale)
+        space = WaveletSpace(shift=shift, scale=scale, rescale=rescale)
+        names = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
+        for i, name in enumerate(names):
+            logger.info(f"  {name}: shift={shift[i]:.4f}, scale={scale[i]:.4f}")
+    else:
+        space = WaveletSpace(rescale=rescale)
+
+    return space, 8, 2, 2
+
+
+def _compute_wavelet_stats(
+    data_root: Path,
+    depth: int,
+    image_size: int,
+    rescale: bool,
+) -> tuple[list[float], list[float]]:
+    """Compute wavelet normalization stats from training bravo volumes.
+
+    Loads NIfTI files, applies Haar 3D DWT, computes per-subband mean/std.
+    """
+    import nibabel as nib
+    import numpy as np
+
+    from medgen.models.haar_wavelet_3d import haar_forward_3d
+
+    # Find training split
+    train_dir = data_root / 'train'
+    if not train_dir.exists():
+        # Fallback: use any available split
+        for d in sorted(data_root.iterdir()):
+            if d.is_dir() and list(d.glob("*/bravo.nii.gz")):
+                train_dir = d
+                break
+
+    bravo_files = sorted(train_dir.glob("*/bravo.nii.gz"))[:200]
+    if not bravo_files:
+        raise FileNotFoundError(f"No bravo.nii.gz files in {train_dir}")
+
+    logger.info(f"  Using {len(bravo_files)} volumes from {train_dir.name}")
+
+    # Welford online mean/variance
+    n = 0
+    mean = None
+    m2 = None
+    var_sum = None
+
+    for path in bravo_files:
+        vol = nib.load(str(path)).get_fdata().astype(np.float32)
+        vmin, vmax = vol.min(), vol.max()
+        if vmax > vmin:
+            vol = (vol - vmin) / (vmax - vmin)
+
+        # [H, W, D] -> [1, 1, D, H, W]
+        vol = np.transpose(vol, (2, 0, 1))
+
+        # Pad/crop depth
+        d = vol.shape[0]
+        if d < depth:
+            pad = np.zeros((depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
+            vol = np.concatenate([vol, pad], axis=0)
+        elif d > depth:
+            vol = vol[:depth]
+
+        # Resize H/W if needed (bravo data might be 256 but model expects 128)
+        if vol.shape[1] != image_size or vol.shape[2] != image_size:
+            from torch.nn.functional import interpolate
+            t = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
+            t = interpolate(t, size=(depth, image_size, image_size), mode='trilinear', align_corners=False)
+            vol_tensor = t
+        else:
+            vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
+
+        if rescale:
+            vol_tensor = 2.0 * vol_tensor - 1.0
+
+        coeffs = haar_forward_3d(vol_tensor)  # [1, 8, D/2, H/2, W/2]
+        n_ch = coeffs.shape[1]
+        sample = coeffs[0]  # [8, D/2, H/2, W/2]
+        flat = sample.reshape(n_ch, -1).float()
+        sample_mean = flat.mean(dim=1)
+        sample_var = flat.var(dim=1)
+
+        n += 1
+        if mean is None:
+            mean = sample_mean.clone()
+            m2 = torch.zeros_like(mean)
+            var_sum = sample_var.clone()
+        else:
+            delta = sample_mean - mean
+            mean += delta / n
+            delta2 = sample_mean - mean
+            m2 += delta * delta2
+            var_sum += sample_var
+
+    if mean is None or n < 2:
+        raise ValueError("Not enough data to compute wavelet stats")
+
+    avg_within_var = var_sum / n
+    between_var = m2 / (n - 1)
+    total_variance = avg_within_var + between_var
+    std = torch.sqrt(total_variance).clamp(min=1e-6)
+
+    return mean.tolist(), std.tolist()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -151,14 +335,31 @@ SEG_MODES = frozenset({'seg', 'seg_conditioned', 'seg_conditioned_input'})
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Find optimal Euler step count via golden section search",
+        description="Find optimal step count via golden section search",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    # Model
     parser.add_argument('--checkpoint', '--bravo-model', default=None, dest='checkpoint',
                         help='Path to trained model checkpoint')
     parser.add_argument('--mode', default=None,
                         help='Generation mode (auto-detected from checkpoint if omitted)')
+    parser.add_argument('--strategy', default=None, choices=['rflow', 'ddpm'],
+                        help='Diffusion strategy (auto-detected from checkpoint)')
+
+    # Space (pixel/latent/wavelet)
+    parser.add_argument('--space', default='pixel', choices=['pixel', 'latent', 'wavelet'],
+                        help='Diffusion space (default: pixel)')
+    parser.add_argument('--compression-checkpoint', default=None,
+                        help='Compression model checkpoint for --space latent')
+    parser.add_argument('--compression-type', default=None,
+                        help='Compression type: auto/vae/vqvae/dcae (default: auto)')
+    parser.add_argument('--wavelet-normalize', action='store_true',
+                        help='Compute and apply per-subband wavelet normalization')
+    parser.add_argument('--wavelet-rescale', action='store_true',
+                        help='Rescale [0,1] -> [-1,1] before DWT')
+
+    # Data
     parser.add_argument('--ref-modality', default=None,
                         help='Reference file modality, e.g. bravo or seg '
                              '(auto: bravo for image modes, seg for seg modes)')
@@ -168,12 +369,16 @@ def main():
                         help='Output directory (default: eval_optimal_steps)')
     parser.add_argument('--num-volumes', type=int, default=25,
                         help='Volumes per evaluation (default: 25)')
+
+    # Search params
     parser.add_argument('--lo', type=int, default=10,
                         help='Lower bound for step count search (default: 10)')
     parser.add_argument('--hi', type=int, default=50,
                         help='Upper bound for step count search (default: 50)')
     parser.add_argument('--tol', type=int, default=1,
                         help='Stop when interval width <= tol (default: 1)')
+
+    # Volume config
     parser.add_argument('--cond-split', default='val',
                         help='Split for conditioning seg masks (default: val)')
     parser.add_argument('--image-size', type=int, default=None)
@@ -181,12 +386,21 @@ def main():
     parser.add_argument('--trim-slices', type=int, default=10)
     parser.add_argument('--fov-mm', type=float, default=240.0)
     parser.add_argument('--seed', type=int, default=42)
+
+    # Metric
     parser.add_argument('--metric', choices=['fid', 'kid', 'cmmd'], default='fid',
                         help='Metric to minimize (default: fid)')
     parser.add_argument('--ref-split', default='all',
                         help='Reference split for metric computation (default: all)')
     parser.add_argument('--save-volumes', action='store_true',
                         help='Save generated volumes as NIfTI (off by default to save disk)')
+
+    # DDPM-specific
+    parser.add_argument('--prediction-type', default=None,
+                        help='DDPM prediction type: epsilon/sample (auto-detected)')
+    parser.add_argument('--schedule', default=None,
+                        help='DDPM noise schedule (auto-detected)')
+
     parser.add_argument('--smoke-test', action='store_true',
                         help='Smoke test with tiny dummy model')
     args = parser.parse_args()
@@ -210,47 +424,90 @@ def main():
     ckpt_cfg = ckpt.get('config', {})
 
     # New-style plain dict config (from profiling.py:get_model_config)
-    in_channels = ckpt_cfg.get('in_channels')
-    out_channels = ckpt_cfg.get('out_channels')
+    base_in_channels = ckpt_cfg.get('in_channels')
+    base_out_channels = ckpt_cfg.get('out_channels')
     mode = args.mode or ckpt_cfg.get('mode')
-    # Hydra stores mode as a config group (dict with 'name' key), not a string
     if isinstance(mode, dict):
         mode = mode.get('name', None)
     spatial_dims = ckpt_cfg.get('spatial_dims', 3)
-    image_size = args.image_size or ckpt_cfg.get('image_size', 256)
-    depth = args.depth or ckpt_cfg.get('depth_size', 160)
+    pixel_image_size = args.image_size or ckpt_cfg.get('image_size', 256)
+    pixel_depth = args.depth or ckpt_cfg.get('depth_size', 160)
+
+    # Auto-detect strategy from checkpoint
+    strategy_name = args.strategy or ckpt_cfg.get('strategy', 'rflow')
 
     # Legacy Hydra config fallback
-    if in_channels is None and hasattr(ckpt_cfg, 'model'):
+    if base_in_channels is None and hasattr(ckpt_cfg, 'model'):
         model_cfg = ckpt_cfg.model
-        in_channels = getattr(model_cfg, 'in_channels', 2)
-        out_channels = getattr(model_cfg, 'out_channels', 1)
-        image_size = args.image_size or getattr(model_cfg, 'image_size', 256)
-        depth = args.depth or getattr(model_cfg, 'depth_size', 160)
+        base_in_channels = getattr(model_cfg, 'in_channels', 2)
+        base_out_channels = getattr(model_cfg, 'out_channels', 1)
+        pixel_image_size = args.image_size or getattr(model_cfg, 'image_size', 256)
+        pixel_depth = args.depth or getattr(model_cfg, 'depth_size', 160)
 
-    # Defaults when nothing is available
-    if in_channels is None:
-        in_channels = 2
-    if out_channels is None:
-        out_channels = 1
+    if base_in_channels is None:
+        base_in_channels = 2
+    if base_out_channels is None:
+        base_out_channels = 1
     del ckpt
+
+    # ── Setup diffusion space ─────────────────────────────────────────────
+    encode_cond_fn = None
+    decode_fn = None
+    data_root = Path(args.data_root)
+
+    if args.space == 'latent':
+        space, latent_ch, sf, depth_sf = _setup_latent_space(args, device, spatial_dims)
+        # Model operates in latent space
+        model_out_channels = base_out_channels * latent_ch
+        model_in_channels = base_in_channels * latent_ch
+        noise_image_size = pixel_image_size // sf
+        noise_depth = pixel_depth // depth_sf
+        encode_cond_fn = space.encode
+        decode_fn = space.decode
+        logger.info(
+            f"Latent space: {sf}x compression, {latent_ch} latent channels, "
+            f"noise shape: {model_out_channels}x{noise_depth}x{noise_image_size}x{noise_image_size}"
+        )
+    elif args.space == 'wavelet':
+        space, wav_ch, sf, depth_sf = _setup_wavelet_space(
+            args, data_root, pixel_depth, pixel_image_size,
+        )
+        model_out_channels = base_out_channels * wav_ch
+        model_in_channels = base_in_channels * wav_ch
+        noise_image_size = pixel_image_size // sf
+        noise_depth = pixel_depth // depth_sf
+        encode_cond_fn = space.encode
+        decode_fn = space.decode
+        logger.info(
+            f"Wavelet space: 2x Haar DWT, 8 subbands, "
+            f"noise shape: {model_out_channels}x{noise_depth}x{noise_image_size}x{noise_image_size}"
+        )
+    else:
+        # Pixel space — channels as-is
+        model_in_channels = base_in_channels
+        model_out_channels = base_out_channels
+        noise_image_size = pixel_image_size
+        noise_depth = pixel_depth
 
     # ── Derive mode-specific config ───────────────────────────────────────
     is_seg = mode in SEG_MODES if mode else False
     ref_modality = args.ref_modality or ('seg' if is_seg else 'bravo')
-    cond_channels = in_channels - out_channels  # >0 means conditioning needed
+    cond_channels = base_in_channels - base_out_channels  # pixel-level conditioning check
 
-    voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
+    voxel_size = (args.fov_mm / pixel_image_size, args.fov_mm / pixel_image_size, 1.0)
 
     logger.info("=" * 70)
-    logger.info("Optimal Euler Step Search (Golden Section)")
+    logger.info("Optimal Step Search (Golden Section)")
     logger.info("=" * 70)
     logger.info(f"Checkpoint: {args.checkpoint}")
-    logger.info(f"Mode: {mode or 'unknown'} (in_ch={in_channels}, out_ch={out_channels}, "
-                f"cond_ch={cond_channels})")
+    logger.info(f"Mode: {mode or 'unknown'} | Strategy: {strategy_name} | Space: {args.space}")
+    logger.info(f"Base channels: in={base_in_channels}, out={base_out_channels}, cond={cond_channels}")
+    if args.space != 'pixel':
+        logger.info(f"Model channels: in={model_in_channels}, out={model_out_channels}")
     logger.info(f"Reference modality: {ref_modality}")
-    logger.info(f"Seg mode: {is_seg}")
-    logger.info(f"Volume: {image_size}x{image_size}x{depth} (spatial_dims={spatial_dims})")
+    logger.info(f"Pixel volume: {pixel_image_size}x{pixel_image_size}x{pixel_depth}")
+    if args.space != 'pixel':
+        logger.info(f"Model volume: {noise_image_size}x{noise_image_size}x{noise_depth}")
     logger.info(f"Search range: [{args.lo}, {args.hi}]")
     logger.info(f"Volumes per eval: {args.num_volumes}")
     logger.info(f"Metric: {args.metric} (vs '{args.ref_split}')")
@@ -258,7 +515,6 @@ def main():
     logger.info("=" * 70)
 
     # ── Data setup ────────────────────────────────────────────────────────
-    data_root = Path(args.data_root)
     splits = discover_splits(data_root, modality=ref_modality)
 
     # ── Load conditioning (only if model expects it) ──────────────────────
@@ -269,36 +525,61 @@ def main():
                 f"Split '{args.cond_split}' not found. Available: {list(splits.keys())}"
             )
         logger.info(f"Loading {args.num_volumes} conditioning masks...")
-        cond_list = load_conditioning(splits[args.cond_split], args.num_volumes, depth)
+        # Load at PIXEL depth — encode_cond_fn handles space conversion
+        cond_list = load_conditioning(splits[args.cond_split], args.num_volumes, pixel_depth)
 
     logger.info("Preparing reference features...")
     cache_dir = output_dir / "reference_features"
     ref_features = get_or_cache_reference_features(
-        splits, cache_dir, device, depth, args.trim_slices, image_size,
+        splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
         modality=ref_modality,
     )
 
     # ── Load model ────────────────────────────────────────────────────────
-    from medgen.diffusion import RFlowStrategy, load_diffusion_model
+    from medgen.diffusion import load_diffusion_model
 
     logger.info("Loading model...")
+    # For non-pixel spaces, pass actual model channels (not mode-level)
     model = load_diffusion_model(
         args.checkpoint, device=device,
-        in_channels=in_channels, out_channels=out_channels,
+        in_channels=model_in_channels, out_channels=model_out_channels,
         compile_model=False, spatial_dims=spatial_dims,
     )
 
-    strategy = RFlowStrategy()
-    strategy.setup_scheduler(
-        num_timesteps=1000, image_size=image_size,
-        depth_size=depth, spatial_dims=spatial_dims,
-    )
+    # ── Setup strategy ────────────────────────────────────────────────────
+    if strategy_name == 'ddpm':
+        from medgen.diffusion import DDPMStrategy
+        strategy = DDPMStrategy()
+        prediction_type = args.prediction_type or 'sample'
+        schedule = args.schedule or 'linear_beta'
+        scheduler_kwargs = dict(
+            num_timesteps=1000,
+            image_size=noise_image_size,
+            depth_size=noise_depth,
+            spatial_dims=spatial_dims,
+            prediction_type=prediction_type,
+            schedule=schedule,
+        )
+        # Disable sample clipping for non-pixel spaces (wavelet/latent values
+        # are not bounded to [-1, 1])
+        if args.space != 'pixel':
+            scheduler_kwargs['clip_sample'] = False
+        strategy.setup_scheduler(**scheduler_kwargs)
+        logger.info(f"Strategy: DDPM (prediction={prediction_type}, schedule={schedule})")
+    else:
+        from medgen.diffusion import RFlowStrategy
+        strategy = RFlowStrategy()
+        strategy.setup_scheduler(
+            num_timesteps=1000, image_size=noise_image_size,
+            depth_size=noise_depth, spatial_dims=spatial_dims,
+        )
+        logger.info("Strategy: RFlow")
 
     # ── Pre-generate noise (shared across all evaluations) ────────────────
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
     noise_list = generate_noise_tensors(
-        args.num_volumes, depth, image_size, device, args.seed,
-        out_channels=out_channels,
+        args.num_volumes, noise_depth, noise_image_size, device, args.seed,
+        out_channels=model_out_channels,
     )
 
     # ── Search history for logging ────────────────────────────────────────
@@ -313,6 +594,8 @@ def main():
         volumes, total_nfe, wall_time = generate_volumes(
             model, strategy, noise_list, cond_list, solver_cfg, device,
             is_seg=is_seg,
+            encode_cond_fn=encode_cond_fn,
+            decode_fn=decode_fn,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
@@ -325,7 +608,7 @@ def main():
                 modality=ref_modality,
             )
 
-        # Compute metrics
+        # Compute metrics (always in pixel space)
         split_metrics = compute_all_metrics(volumes, ref_features, device, args.trim_slices)
 
         ref_metrics = split_metrics.get(args.ref_split)
@@ -409,6 +692,8 @@ def _save_history(
     data = {
         'checkpoint': getattr(args, 'checkpoint', None),
         'mode': getattr(args, 'mode', None),
+        'space': getattr(args, 'space', 'pixel'),
+        'strategy': getattr(args, 'strategy', None),
         'search_range': [args.lo, args.hi],
         'metric': args.metric,
         'ref_split': args.ref_split,

@@ -39,6 +39,7 @@ import csv
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -469,6 +470,8 @@ def generate_volumes(
     solver_cfg: SolverConfig,
     device: torch.device,
     is_seg: bool = False,
+    encode_cond_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    decode_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[list[np.ndarray], int, float]:
     """Generate volumes for one solver configuration.
 
@@ -483,15 +486,20 @@ def generate_volumes(
         solver_cfg: Solver configuration.
         device: CUDA device.
         is_seg: If True, threshold output at 0.5 to produce binary masks.
+        encode_cond_fn: Optional function to encode conditioning to model space
+            (e.g., pixel -> latent or pixel -> wavelet). Applied before concat.
+        decode_fn: Optional function to decode model output to pixel space
+            (e.g., latent -> pixel or wavelet -> pixel). Applied before clamp.
 
     Returns:
         (volumes_list, total_nfe, wall_time_seconds)
         volumes_list contains numpy arrays [D, H, W] in [0, 1].
     """
     # Configure strategy
-    strategy.ode_solver = solver_cfg.solver
-    strategy.ode_atol = solver_cfg.atol
-    strategy.ode_rtol = solver_cfg.rtol
+    if hasattr(strategy, 'ode_solver'):
+        strategy.ode_solver = solver_cfg.solver
+        strategy.ode_atol = solver_cfg.atol
+        strategy.ode_rtol = solver_cfg.rtol
 
     # Wrap for NFE counting
     counter = NFECounter(model)
@@ -506,6 +514,9 @@ def generate_volumes(
     for i, noise in enumerate(noise_list):
         if cond_list is not None:
             seg_on_device = cond_list[i][1].to(device)
+            if encode_cond_fn is not None:
+                with torch.no_grad():
+                    seg_on_device = encode_cond_fn(seg_on_device)
             model_input = torch.cat([noise, seg_on_device], dim=1)
         else:
             model_input = noise
@@ -513,6 +524,11 @@ def generate_volumes(
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
                 result = strategy.generate(counter, model_input, num_steps, device)
+
+        # Decode from latent/wavelet space to pixel space
+        if decode_fn is not None:
+            with torch.no_grad():
+                result = decode_fn(result)
 
         if is_seg:
             vol = binarize_seg(result[0, 0])

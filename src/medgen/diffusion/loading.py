@@ -232,69 +232,107 @@ def load_diffusion_model_with_metadata(
         gcd = reduce(math.gcd, channels)
         norm_num_groups = min(gcd, 32)
 
-    # Log architecture info
-    if 'channels' in arch_config:
-        logger.info(f"Using architecture from checkpoint: channels={channels}, norm_num_groups={norm_num_groups}")
-    else:
-        logger.info(f"Using default architecture: channels={channels}")
+    # Detect model type: 'unet' (default) or transformer ('dit', 'sit')
+    model_type = arch_config.get('model_type', 'unet')
+    is_transformer = model_type in ('dit', 'sit')
 
-    # Create base model
-    base_model = DiffusionModelUNet(
-        spatial_dims=resolved_spatial_dims,
-        in_channels=resolved_in_channels,
-        out_channels=resolved_out_channels,
-        channels=tuple(channels),
-        attention_levels=tuple(attention_levels),
-        num_res_blocks=num_res_blocks,
-        num_head_channels=num_head_channels,
-        norm_num_groups=norm_num_groups,
-    )
+    if is_transformer:
+        # Create DiT/SiT model from checkpoint config
+        from medgen.models.dit import create_dit
 
-    # Wrap model if needed
-    # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
-    embed_dim = 4 * channels[0]
+        variant = arch_config.get('variant', 'S')
+        # image_size in DiT checkpoint config is the spatial input size (latent size)
+        dit_input_size = arch_config.get('image_size', 32)
+        patch_size = arch_config.get('patch_size', 2)
+        conditioning = arch_config.get('conditioning', 'concat')
+        qk_norm = arch_config.get('qk_norm', True)
 
-    if wrapper_type == 'raw':
-        model = base_model
-    elif wrapper_type in ('score_aug', 'mode_embed', 'combined'):
-        model, wrapper_name = create_conditioning_wrapper(
-            model=base_model,
-            use_omega=(wrapper_type in ('score_aug', 'combined')),
-            use_mode=(wrapper_type in ('mode_embed', 'combined')),
-            embed_dim=embed_dim,
-        )
-        logger.info(f"Applied {wrapper_name} conditioning wrapper")
-    elif wrapper_type == 'size_bin':
-        # Size bin wrapper for seg_conditioned mode
-        # Try checkpoint config first, then infer from state_dict shapes
-        size_bin_cfg = config.get('size_bin', {})
-        if size_bin_cfg:
-            # New checkpoints: all params saved in config
-            num_bins = size_bin_cfg.get('num_bins', 7)
-            max_count = size_bin_cfg.get('max_count', 10)
-            per_bin_embed_dim = size_bin_cfg.get('embed_dim', 32)
-            projection_hidden_dim = size_bin_cfg.get('projection_hidden_dim', 0)
-            projection_num_layers = size_bin_cfg.get('projection_num_layers', 2)
-        else:
-            # Legacy checkpoints: infer from state_dict weight shapes
-            num_bins, max_count, per_bin_embed_dim, projection_hidden_dim, projection_num_layers = (
-                _infer_size_bin_params(state_dict)
-            )
-        model = SizeBinModelWrapper(
-            model=base_model,
-            embed_dim=embed_dim,
-            num_bins=num_bins,
-            max_count=max_count,
-            per_bin_embed_dim=per_bin_embed_dim,
-            projection_hidden_dim=projection_hidden_dim,
-            projection_num_layers=projection_num_layers,
+        # For 3D, determine depth_size
+        depth_size = arch_config.get('depth_size', None)
+
+        # For concat conditioning, compute cond_channels
+        cond_channels = max(0, resolved_in_channels - resolved_out_channels)
+
+        base_model = create_dit(
+            variant=variant,
+            spatial_dims=resolved_spatial_dims,
+            input_size=dit_input_size,
+            patch_size=patch_size,
+            in_channels=resolved_out_channels,  # DiT in_channels = output channels
+            conditioning=conditioning,
+            cond_channels=cond_channels,
+            depth_size=depth_size,
+            qk_norm=qk_norm,
         )
         logger.info(
-            f"Applied SizeBinModelWrapper (num_bins={num_bins}, embed_dim={per_bin_embed_dim}, "
-            f"projection_hidden_dim={projection_hidden_dim}, projection_num_layers={projection_num_layers})"
+            f"Using DiT-{variant} from checkpoint: input_size={dit_input_size}, "
+            f"patch_size={patch_size}, in_ch={resolved_out_channels}, "
+            f"cond_ch={cond_channels}, spatial_dims={resolved_spatial_dims}"
         )
+
+        # DiT models are always 'raw' (no wrapper support)
+        model: nn.Module = base_model
     else:
-        raise ValueError(f"Unknown wrapper type: {wrapper_type}")
+        # Create UNet model
+        # Log architecture info
+        if 'channels' in arch_config:
+            logger.info(f"Using architecture from checkpoint: channels={channels}, norm_num_groups={norm_num_groups}")
+        else:
+            logger.info(f"Using default architecture: channels={channels}")
+
+        base_model = DiffusionModelUNet(
+            spatial_dims=resolved_spatial_dims,
+            in_channels=resolved_in_channels,
+            out_channels=resolved_out_channels,
+            channels=tuple(channels),
+            attention_levels=tuple(attention_levels),
+            num_res_blocks=num_res_blocks,
+            num_head_channels=num_head_channels,
+            norm_num_groups=norm_num_groups,
+        )
+
+        # Wrap model if needed
+        # MONAI DiffusionModelUNet time_embed output dim is 4 * channels[0]
+        embed_dim = 4 * channels[0]
+
+        if wrapper_type == 'raw':
+            model = base_model
+        elif wrapper_type in ('score_aug', 'mode_embed', 'combined'):
+            model, wrapper_name = create_conditioning_wrapper(
+                model=base_model,
+                use_omega=(wrapper_type in ('score_aug', 'combined')),
+                use_mode=(wrapper_type in ('mode_embed', 'combined')),
+                embed_dim=embed_dim,
+            )
+            logger.info(f"Applied {wrapper_name} conditioning wrapper")
+        elif wrapper_type == 'size_bin':
+            # Size bin wrapper for seg_conditioned mode
+            size_bin_cfg = config.get('size_bin', {})
+            if size_bin_cfg:
+                num_bins = size_bin_cfg.get('num_bins', 7)
+                max_count = size_bin_cfg.get('max_count', 10)
+                per_bin_embed_dim = size_bin_cfg.get('embed_dim', 32)
+                projection_hidden_dim = size_bin_cfg.get('projection_hidden_dim', 0)
+                projection_num_layers = size_bin_cfg.get('projection_num_layers', 2)
+            else:
+                num_bins, max_count, per_bin_embed_dim, projection_hidden_dim, projection_num_layers = (
+                    _infer_size_bin_params(state_dict)
+                )
+            model = SizeBinModelWrapper(
+                model=base_model,
+                embed_dim=embed_dim,
+                num_bins=num_bins,
+                max_count=max_count,
+                per_bin_embed_dim=per_bin_embed_dim,
+                projection_hidden_dim=projection_hidden_dim,
+                projection_num_layers=projection_num_layers,
+            )
+            logger.info(
+                f"Applied SizeBinModelWrapper (num_bins={num_bins}, embed_dim={per_bin_embed_dim}, "
+                f"projection_hidden_dim={projection_hidden_dim}, projection_num_layers={projection_num_layers})"
+            )
+        else:
+            raise ValueError(f"Unknown wrapper type: {wrapper_type}")
 
     # Load state dict
     model.load_state_dict(state_dict, strict=True)
