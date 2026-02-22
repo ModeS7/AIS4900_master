@@ -159,9 +159,16 @@ def _setup_latent_space(
 ):
     """Load compression model and create LatentSpace for LDM decode.
 
+    Reads latent normalization stats (latent_shift/latent_scale) from the
+    latent cache metadata.json if --latent-cache-dir is provided. These stats
+    are required for correct decoding — without them, generated latents won't
+    be denormalized before the compression decoder.
+
     Returns:
         (space, latent_channels, scale_factor, depth_scale_factor)
     """
+    import json
+
     from medgen.data.loaders.latent import load_compression_model
     from medgen.diffusion.spaces import LatentSpace
 
@@ -183,6 +190,28 @@ def _setup_latent_space(
         f"latent_ch={latent_channels}, spatial_dims={comp_spatial_dims}"
     )
 
+    # Load latent normalization stats from cache metadata
+    latent_shift = None
+    latent_scale = None
+    if args.latent_cache_dir:
+        meta_path = Path(args.latent_cache_dir) / 'train' / 'metadata.json'
+        if meta_path.exists():
+            with open(meta_path) as f:
+                metadata = json.load(f)
+            latent_shift = metadata.get('latent_shift')
+            latent_scale = metadata.get('latent_scale')
+            if latent_shift is not None:
+                logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
+            else:
+                logger.warning(f"  metadata.json found but missing latent_shift/latent_scale")
+        else:
+            logger.warning(f"  No metadata.json at {meta_path}")
+    else:
+        logger.warning(
+            "  No --latent-cache-dir provided — skipping latent normalization. "
+            "Results may be incorrect if the diffusion model was trained with normalized latents."
+        )
+
     # Slicewise encoding: 2D compression model applied slice-by-slice to 3D volumes
     slicewise = (comp_spatial_dims == 2 and spatial_dims == 3)
 
@@ -195,6 +224,8 @@ def _setup_latent_space(
         scale_factor=scale_factor,
         latent_channels=latent_channels,
         slicewise_encoding=slicewise,
+        latent_shift=latent_shift,
+        latent_scale=latent_scale,
     )
 
     depth_sf = 1 if slicewise else scale_factor
@@ -354,6 +385,9 @@ def main():
                         help='Compression model checkpoint for --space latent')
     parser.add_argument('--compression-type', default=None,
                         help='Compression type: auto/vae/vqvae/dcae (default: auto)')
+    parser.add_argument('--latent-cache-dir', default=None,
+                        help='Latent cache dir containing train/metadata.json with '
+                             'latent_shift/latent_scale normalization stats')
     parser.add_argument('--wavelet-normalize', action='store_true',
                         help='Compute and apply per-subband wavelet normalization')
     parser.add_argument('--wavelet-rescale', action='store_true',
