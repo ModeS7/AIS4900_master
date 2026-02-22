@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""Verify that the WDM training and generation pipelines are consistent.
+"""Verify the WDM training and generation pipeline BEFORE training.
 
-Only needs: diffusion checkpoint + data root.
-No extra files — wavelet stats are read from the checkpoint (saved by profiling.py).
+Only needs: data root (NIfTI volumes).
+No checkpoint needed — this verifies the pipeline mechanics are correct
+so you can confidently start a training run.
 
 Checks performed:
   1. Haar wavelet losslessness + energy preservation
   2. WaveletSpace encode→decode round-trip (no normalization)
-  3. Checkpoint has wavelet stats, normalization produces mean ≈ 0, std ≈ 1
-  4. Checkpoint stats match freshly computed stats from data
-  5. Noise/signal scale compatibility
-  6. Normalized encode→decode round-trip (lossless)
-  7. Generation pipeline shapes (encode, decode, model input)
-  8. Subband distribution characteristics (LLL dominance)
+  3. Per-subband stats computation produces valid normalization (mean≈0, std≈1)
+  4. Normalized encode→decode round-trip (lossless)
+  5. Noise/signal scale compatibility after normalization
+  6. Generation pipeline shapes (encode, decode, model input)
+  7. Subband distribution characteristics (LLL dominance)
+  8. Conditioning (seg) through wavelet space
 
 Usage:
     python -m medgen.scripts.verify_wdm_pipeline \
-        --checkpoint runs/diffusion_3d/.../checkpoint_latest.pt \
         --data-root /path/to/brainmetshare-3
+
+    # With rescale (if training uses wavelet.rescale=true)
+    python -m medgen.scripts.verify_wdm_pipeline \
+        --data-root /path/to/brainmetshare-3 --rescale
 """
 import argparse
 import logging
@@ -49,34 +53,39 @@ def check(name: str, condition: bool, detail: str = "") -> bool:
     return condition
 
 
-def load_bravo_volumes(
+def load_volumes(
     data_root: Path,
+    modality: str,
     depth: int,
     image_size: int,
-    max_volumes: int = 200,
+    max_volumes: int,
     rescale: bool = False,
+    binarize: bool = False,
 ) -> list[torch.Tensor]:
-    """Load BRAVO NIfTI volumes with standard preprocessing.
+    """Load NIfTI volumes with standard preprocessing.
 
-    Returns list of [1, 1, D, H, W] tensors in [0, 1].
+    Returns list of [1, 1, D, H, W] tensors.
     """
     train_dir = data_root / 'train'
     if not train_dir.exists():
         for d in sorted(data_root.iterdir()):
-            if d.is_dir() and list(d.glob("*/bravo.nii.gz")):
+            if d.is_dir() and list(d.glob(f"*/{modality}.nii.gz")):
                 train_dir = d
                 break
 
-    bravo_files = sorted(train_dir.glob("*/bravo.nii.gz"))[:max_volumes]
-    if not bravo_files:
-        raise FileNotFoundError(f"No bravo.nii.gz files in {train_dir}")
+    files = sorted(train_dir.glob(f"*/{modality}.nii.gz"))[:max_volumes]
+    if not files:
+        raise FileNotFoundError(f"No {modality}.nii.gz in {train_dir}")
 
     volumes = []
-    for path in bravo_files:
+    for path in files:
         vol = nib.load(str(path)).get_fdata().astype(np.float32)
-        vmin, vmax = vol.min(), vol.max()
-        if vmax > vmin:
-            vol = (vol - vmin) / (vmax - vmin)
+        if binarize:
+            vol = (vol > 0.5).astype(np.float32)
+        else:
+            vmin, vmax = vol.min(), vol.max()
+            if vmax > vmin:
+                vol = (vol - vmin) / (vmax - vmin)
 
         vol = np.transpose(vol, (2, 0, 1))  # [H, W, D] -> [D, H, W]
 
@@ -89,9 +98,10 @@ def load_bravo_volumes(
 
         vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
         if vol_tensor.shape[3] != image_size or vol_tensor.shape[4] != image_size:
+            mode = 'nearest' if binarize else 'trilinear'
             vol_tensor = torch.nn.functional.interpolate(
                 vol_tensor, size=(depth, image_size, image_size),
-                mode='trilinear', align_corners=False,
+                mode=mode, **(dict(align_corners=False) if mode == 'trilinear' else {}),
             )
 
         if rescale:
@@ -99,7 +109,7 @@ def load_bravo_volumes(
 
         volumes.append(vol_tensor)
 
-    logger.info(f"  Loaded {len(volumes)} volumes from {train_dir}")
+    logger.info(f"  Loaded {len(volumes)} {modality} volumes from {train_dir}")
     return volumes
 
 
@@ -144,36 +154,29 @@ def compute_wavelet_stats(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify WDM pipeline consistency")
-    parser.add_argument('--checkpoint', required=True,
-                        help='Diffusion model checkpoint (has wavelet stats in config)')
+    parser = argparse.ArgumentParser(description="Verify WDM pipeline BEFORE training")
     parser.add_argument('--data-root', required=True,
                         help='Dataset root with NIfTI volumes')
     parser.add_argument('--image-size', type=int, default=128)
     parser.add_argument('--depth', type=int, default=160)
-    parser.add_argument('--max-volumes', type=int, default=100,
-                        help='Max volumes for stats verification (default: 100)')
+    parser.add_argument('--rescale', action='store_true',
+                        help='Rescale [0,1] → [-1,1] before DWT (match wavelet.rescale config)')
+    parser.add_argument('--max-volumes', type=int, default=100)
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
     all_passed = True
 
     logger.info("=" * 70)
-    logger.info("WDM Pipeline Verification")
+    logger.info("WDM Pipeline Verification (pre-training)")
     logger.info("=" * 70)
-    logger.info(f"Checkpoint: {args.checkpoint}")
     logger.info(f"Data root: {data_root}")
     logger.info(f"Volume: {args.image_size}x{args.image_size}x{args.depth}")
+    logger.info(f"Rescale: {args.rescale}")
     logger.info("")
 
     from medgen.diffusion.spaces import WaveletSpace
     from medgen.models.haar_wavelet_3d import haar_forward_3d, haar_inverse_3d
-
-    # ── Load checkpoint config ──
-    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-    ckpt_cfg = ckpt.get('config', {})
-    wavelet_cfg = ckpt_cfg.get('wavelet', {})
-    del ckpt
 
     # ══════════════════════════════════════════════════════════════════════
     # CHECK 1: Haar wavelet losslessness + energy preservation
@@ -210,8 +213,7 @@ def main():
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n--- Check 2: Raw WaveletSpace round-trip ---")
 
-    ckpt_rescale = wavelet_cfg.get('rescale', False)
-    space_raw = WaveletSpace(rescale=ckpt_rescale)
+    space_raw = WaveletSpace(rescale=args.rescale)
     test_pixel = torch.rand(1, 1, 8, 16, 16)
     rt_err = (test_pixel - space_raw.decode(space_raw.encode(test_pixel))).abs().max().item()
 
@@ -222,41 +224,30 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 3: Checkpoint has wavelet stats, normalization → mean≈0, std≈1
+    # CHECK 3: Compute stats from real data, verify normalization
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 3: Checkpoint wavelet stats + normalization ---")
+    logger.info("\n--- Check 3: Stats computation + normalization ---")
 
-    ckpt_shift = wavelet_cfg.get('wavelet_shift')
-    ckpt_scale = wavelet_cfg.get('wavelet_scale')
-
-    all_passed &= check(
-        "Checkpoint has wavelet_shift/wavelet_scale",
-        ckpt_shift is not None and ckpt_scale is not None,
-        "present" if ckpt_shift else "MISSING — retrain with stats persistence fix",
+    logger.info(f"  Loading up to {args.max_volumes} bravo volumes...")
+    volumes = load_volumes(
+        data_root, 'bravo', args.depth, args.image_size,
+        max_volumes=args.max_volumes, rescale=args.rescale,
     )
 
-    if ckpt_shift is None:
-        logger.error("Cannot continue without wavelet stats. Retrain with the stats persistence fix.")
-        sys.exit(1)
+    shift, scale = compute_wavelet_stats(volumes)
 
-    logger.info(f"  rescale: {ckpt_rescale}")
+    logger.info("  Computed per-subband stats:")
     for i, name in enumerate(SUBBAND_NAMES):
-        logger.info(f"  {name}: shift={ckpt_shift[i]:.6f}, scale={ckpt_scale[i]:.6f}")
+        logger.info(f"    {name}: shift={shift[i]:.6f}, scale={scale[i]:.6f}")
 
     all_passed &= check(
-        "Scale values are positive",
-        all(s > 0 for s in ckpt_scale),
-        f"min scale = {min(ckpt_scale):.6f}",
+        "Scale values are positive and finite",
+        all(0 < s < 100 for s in scale),
+        f"scale range = [{min(scale):.6f}, {max(scale):.6f}]",
     )
 
-    # Create normalized space and verify on data
-    space_norm = WaveletSpace(shift=ckpt_shift, scale=ckpt_scale, rescale=ckpt_rescale)
-
-    logger.info(f"\n  Loading volumes for normalization check...")
-    volumes = load_bravo_volumes(
-        data_root, args.depth, args.image_size,
-        max_volumes=args.max_volumes, rescale=ckpt_rescale,
-    )
+    # Create normalized space and verify
+    space_norm = WaveletSpace(shift=shift, scale=scale, rescale=args.rescale)
 
     all_ch_means = []
     all_ch_stds = []
@@ -270,7 +261,7 @@ def main():
     avg_mean = torch.stack(all_ch_means).mean(dim=0)
     avg_std = torch.stack(all_ch_stds).mean(dim=0)
 
-    logger.info("  After normalization (per-subband):")
+    logger.info("  After normalization:")
     for i, name in enumerate(SUBBAND_NAMES):
         logger.info(f"    {name}: mean={avg_mean[i]:.4f}, std={avg_std[i]:.4f}")
 
@@ -286,56 +277,9 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 4: Checkpoint stats match freshly computed stats
+    # CHECK 4: Normalized encode→decode round-trip (lossless)
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 4: Checkpoint stats vs recomputed ---")
-
-    fresh_shift, fresh_scale = compute_wavelet_stats(volumes)
-
-    shift_diff = max(abs(a - b) for a, b in zip(fresh_shift, ckpt_shift))
-    scale_diff = max(abs(a - b) for a, b in zip(fresh_scale, ckpt_scale))
-
-    logger.info(f"  Max shift diff: {shift_diff:.6f}")
-    logger.info(f"  Max scale diff: {scale_diff:.6f}")
-
-    # Tolerance is loose because training uses DataLoader transforms
-    # while we load NIfTI directly — slight preprocessing differences expected
-    all_passed &= check(
-        "Checkpoint shift ≈ recomputed",
-        shift_diff < 0.05,
-        f"max diff = {shift_diff:.6f} (threshold: 0.05)",
-    )
-    all_passed &= check(
-        "Checkpoint scale ≈ recomputed",
-        scale_diff < 0.05,
-        f"max diff = {scale_diff:.6f} (threshold: 0.05)",
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # CHECK 5: Noise/signal scale
-    # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 5: Noise/signal scale ---")
-
-    sample_norm = space_norm.encode(volumes[0])
-    noise = torch.randn_like(sample_norm)
-    signal_std = sample_norm.std().item()
-    noise_std = noise.std().item()
-    ratio = signal_std / noise_std
-
-    logger.info(f"  Signal std (normalized): {signal_std:.4f}")
-    logger.info(f"  Noise std: {noise_std:.4f}")
-    logger.info(f"  Ratio: {ratio:.4f}")
-
-    all_passed &= check(
-        "Signal/noise ratio ≈ 1",
-        0.2 < ratio < 5.0,
-        f"ratio = {ratio:.4f} (expected: 0.2-5.0)",
-    )
-
-    # ══════════════════════════════════════════════════════════════════════
-    # CHECK 6: Normalized encode→decode round-trip (lossless)
-    # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 6: Normalized encode→decode round-trip ---")
+    logger.info("\n--- Check 4: Normalized round-trip on real data ---")
 
     original = volumes[0].clone()
     decoded = space_norm.decode(space_norm.encode(original))
@@ -356,9 +300,30 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 7: Generation pipeline shapes
+    # CHECK 5: Noise/signal scale compatibility
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 7: Generation pipeline shapes ---")
+    logger.info("\n--- Check 5: Noise/signal scale ---")
+
+    sample_norm = space_norm.encode(volumes[0])
+    noise = torch.randn_like(sample_norm)
+    signal_std = sample_norm.std().item()
+    noise_std = noise.std().item()
+    ratio = signal_std / noise_std
+
+    logger.info(f"  Signal std (normalized wavelet): {signal_std:.4f}")
+    logger.info(f"  Noise std: {noise_std:.4f}")
+    logger.info(f"  Ratio: {ratio:.4f}")
+
+    all_passed &= check(
+        "Signal/noise ratio ≈ 1",
+        0.2 < ratio < 5.0,
+        f"ratio = {ratio:.4f} (expected: 0.2-5.0)",
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CHECK 6: Generation pipeline shapes
+    # ══════════════════════════════════════════════════════════════════════
+    logger.info("\n--- Check 6: Generation pipeline shapes ---")
 
     wavelet_depth = args.depth // 2
     wavelet_hw = args.image_size // 2
@@ -393,9 +358,9 @@ def main():
     logger.info(f"  Pixel shape:   [B, 1, {args.depth}, {args.image_size}, {args.image_size}]")
 
     # ══════════════════════════════════════════════════════════════════════
-    # CHECK 8: Subband distribution characteristics
+    # CHECK 7: Subband distribution characteristics
     # ══════════════════════════════════════════════════════════════════════
-    logger.info("\n--- Check 8: Subband distribution ---")
+    logger.info("\n--- Check 7: Subband distribution ---")
 
     raw_coeffs = haar_forward_3d(volumes[0])
     subband_energies = []
@@ -414,18 +379,62 @@ def main():
     )
     all_passed &= check(
         "LLL has largest scale",
-        ckpt_scale[0] == max(ckpt_scale),
-        f"LLL scale={ckpt_scale[0]:.6f}, max={max(ckpt_scale):.6f}",
+        scale[0] == max(scale),
+        f"LLL scale={scale[0]:.6f}, max={max(scale):.6f}",
     )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # CHECK 8: Seg conditioning through wavelet space
+    # ══════════════════════════════════════════════════════════════════════
+    logger.info("\n--- Check 8: Seg conditioning ---")
+
+    try:
+        seg_volumes = load_volumes(
+            data_root, 'seg', args.depth, args.image_size,
+            max_volumes=5, rescale=args.rescale, binarize=True,
+        )
+
+        seg_encoded = space_norm.encode(seg_volumes[0])
+        bravo_encoded = space_norm.encode(volumes[0])
+
+        all_passed &= check(
+            "Seg wavelet shape matches bravo",
+            seg_encoded.shape == bravo_encoded.shape,
+            f"seg={tuple(seg_encoded.shape)}, bravo={tuple(bravo_encoded.shape)}",
+        )
+
+        # Seg is mostly zeros → wavelet coefficients should be mostly near shift
+        # (after normalization, mostly near 0 but with different distribution)
+        seg_nonzero = (seg_volumes[0] > 0).float().mean().item()
+        logger.info(f"  Seg volume sparsity: {1 - seg_nonzero:.1%} zero")
+
+        # Verify concat works
+        model_input = torch.cat([bravo_encoded, seg_encoded], dim=1)
+        all_passed &= check(
+            "Bravo + seg concat = 16 channels",
+            model_input.shape[1] == 16,
+            f"got {model_input.shape[1]}",
+        )
+
+        # Round-trip seg through wavelet
+        seg_decoded = space_norm.decode(seg_encoded)
+        seg_rt_err = (seg_volumes[0] - seg_decoded).abs().max().item()
+        all_passed &= check(
+            "Seg wavelet round-trip (lossless)",
+            seg_rt_err < 1e-5,
+            f"max error = {seg_rt_err:.2e}",
+        )
+    except FileNotFoundError:
+        logger.warning("  No seg.nii.gz found, skipping conditioning checks")
 
     # ══════════════════════════════════════════════════════════════════════
     # SUMMARY
     # ══════════════════════════════════════════════════════════════════════
     logger.info("\n" + "=" * 70)
     if all_passed:
-        logger.info("ALL CHECKS PASSED — WDM pipeline is consistent")
+        logger.info("ALL CHECKS PASSED — WDM pipeline is ready for training")
     else:
-        logger.info("SOME CHECKS FAILED — pipeline has issues (see above)")
+        logger.info("SOME CHECKS FAILED — fix issues before training")
     logger.info("=" * 70)
 
     sys.exit(0 if all_passed else 1)

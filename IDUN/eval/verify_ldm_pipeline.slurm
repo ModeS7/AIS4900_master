@@ -14,12 +14,12 @@
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
 
-# Verify LDM pipeline consistency
-# Only needs: diffusion checkpoint + compression checkpoint + data root
+# Verify LDM pipeline BEFORE training
+# Only needs: compression checkpoint + data root
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Verify LDM Pipeline ==="
+echo "=== Verify LDM Pipeline (pre-training) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -35,31 +35,22 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 
-# Auto-find LDM diffusion checkpoint (exp9_1)
-DIFFUSION_CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_seg_cond/exp9_1_*/checkpoint_latest.pt 2>/dev/null | head -1)
-
-if [ -z "$DIFFUSION_CHECKPOINT" ]; then
-    echo "ERROR: No LDM diffusion checkpoint found for exp9_1_*"
-    exit 1
-fi
-
-echo "Diffusion: $DIFFUSION_CHECKPOINT"
 echo "Compression: $COMPRESSION_CHECKPOINT"
 echo "Data root: $DATA_ROOT"
 echo ""
 
 python -m medgen.scripts.verify_ldm_pipeline \
-    --diffusion-checkpoint "${DIFFUSION_CHECKPOINT}" \
     --compression-checkpoint "${COMPRESSION_CHECKPOINT}" \
     --compression-type vqvae \
-    --data-root "${DATA_ROOT}"
+    --data-root "${DATA_ROOT}" \
+    --max-volumes 50
 
 EXIT_CODE=$?
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "=== ALL CHECKS PASSED — safe to retrain ==="
+    echo "=== ALL CHECKS PASSED — safe to start LDM training ==="
 else
-    echo "=== CHECKS FAILED — DO NOT retrain until fixed ==="
+    echo "=== CHECKS FAILED — fix issues before training ==="
 fi
 
 conda deactivate

@@ -14,12 +14,12 @@
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
 
-# Verify WDM pipeline consistency
-# Only needs: diffusion checkpoint + data root
+# Verify WDM pipeline BEFORE training
+# Only needs: data root (NIfTI volumes)
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Verify WDM Pipeline ==="
+echo "=== Verify WDM Pipeline (pre-training) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -34,21 +34,11 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # === PATHS ===
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 
-# Auto-find WDM checkpoint (exp12b_2)
-CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp12b_2_*/checkpoint_latest.pt 2>/dev/null | head -1)
-
-if [ -z "$CHECKPOINT" ]; then
-    echo "ERROR: No WDM checkpoint found for exp12b_2_*"
-    exit 1
-fi
-
-echo "Checkpoint: $CHECKPOINT"
 echo "Data root: $DATA_ROOT"
 echo ""
 
-# exp12b_2 trains at 128x128x160
+# exp12b_2 trains at 128x128x160 with wavelet normalize (no rescale)
 python -m medgen.scripts.verify_wdm_pipeline \
-    --checkpoint "${CHECKPOINT}" \
     --data-root "${DATA_ROOT}" \
     --image-size 128 \
     --depth 160 \
@@ -57,9 +47,9 @@ python -m medgen.scripts.verify_wdm_pipeline \
 EXIT_CODE=$?
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
-    echo "=== ALL CHECKS PASSED — safe to retrain ==="
+    echo "=== ALL CHECKS PASSED — safe to start WDM training ==="
 else
-    echo "=== CHECKS FAILED — DO NOT retrain until fixed ==="
+    echo "=== CHECKS FAILED — fix issues before training ==="
 fi
 
 conda deactivate
