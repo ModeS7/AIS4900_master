@@ -266,16 +266,11 @@ def load_diffusion_model_with_metadata(
             # For 2D: tokens = (H/p) * (W/p)
             if resolved_spatial_dims == 3:
                 # Solve: (depth_size/p) * (input_size/p)^2 = num_tokens
-                # Try to find input_size from x_embedder weight shape
-                x_emb_in_ch = state_dict.get('x_embedder.proj.weight', None)
-                if x_emb_in_ch is not None:
-                    # weight shape: [hidden, in_ch, p, p, p]
-                    pass  # in_channels confirmed by weight, not needed for size
-
-                # Brute-force: find (input_size, depth_size) where
-                # (d // p) * (s // p)^2 = num_tokens
-                # Typical input_sizes: 8, 16, 32, 64, 128
-                found = False
+                # Find (input_size, depth_size) where depth is a reasonable
+                # fraction of spatial size (medical volumes: depth ~ 0.3-0.8 * spatial)
+                # Prefer the solution closest to depth/spatial ratio of ~0.5
+                best_candidate = None
+                best_ratio_diff = float('inf')
                 for candidate_s in [8, 16, 32, 64, 128, 256]:
                     s_tokens = candidate_s // patch_size
                     if s_tokens <= 0:
@@ -283,11 +278,15 @@ def load_diffusion_model_with_metadata(
                     remaining = num_tokens / (s_tokens * s_tokens)
                     if remaining == int(remaining) and remaining > 0:
                         candidate_d = int(remaining) * patch_size
-                        if candidate_d > 0:
-                            dit_input_size = candidate_s
-                            depth_size = candidate_d
-                            found = True
-                            break
+                        if candidate_d <= 0 or candidate_d > candidate_s:
+                            continue
+                        ratio_diff = abs(candidate_d / candidate_s - 0.5)
+                        if ratio_diff < best_ratio_diff:
+                            best_ratio_diff = ratio_diff
+                            best_candidate = (candidate_s, candidate_d)
+                found = best_candidate is not None
+                if found:
+                    dit_input_size, depth_size = best_candidate
                 if not found:
                     logger.warning(
                         f"Could not infer DiT input_size from pos_embed "
