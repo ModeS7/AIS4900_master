@@ -259,7 +259,7 @@ def load_diffusion_model_with_metadata(
         # pos_embed shape: [1, num_tokens, hidden_size]
         # num_tokens = prod(input_dims / patch_size)
         dit_input_size = arch_config.get('image_size', 32)
-        depth_size = arch_config.get('depth_size', None)
+        depth_size = arch_config.get('depth_size')
         if 'pos_embed' in state_dict:
             num_tokens = state_dict['pos_embed'].shape[1]
             # For 3D: tokens = (D/p) * (H/p) * (W/p), assume H=W=input_size

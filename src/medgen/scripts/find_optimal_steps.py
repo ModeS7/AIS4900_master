@@ -203,7 +203,7 @@ def _setup_latent_space(
             if latent_shift is not None:
                 logger.info(f"  Latent normalization: shift={latent_shift}, scale={latent_scale}")
             else:
-                logger.warning(f"  metadata.json found but missing latent_shift/latent_scale")
+                logger.warning("  metadata.json found but missing latent_shift/latent_scale")
         else:
             logger.warning(f"  No metadata.json at {meta_path}")
     else:
