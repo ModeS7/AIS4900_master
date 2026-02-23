@@ -294,17 +294,18 @@ def generate_samples(
     model.eval()
     all_samples = []
 
-    # Check if using latent diffusion
-    is_latent = self_.space is not None and self_.space.needs_decode
+    # Check if conditioning must be encoded (latent/wavelet spaces only,
+    # NOT pixel-space normalization where conditioning stays in raw form)
+    encode_cond = self_.space is not None and self_.space.encode_conditioning
 
     # Generate in batches to avoid OOM with CUDA graphs
     for start_idx in range(0, num_to_use, batch_size):
         end_idx = min(start_idx + batch_size, num_to_use)
         masks = self_.fixed_conditioning_masks[start_idx:end_idx]
 
-        # For latent diffusion, encode pixel-space masks to latent space
-        # so noise and model input have correct latent dimensions
-        if is_latent:
+        # For latent/wavelet diffusion, encode pixel-space masks to match
+        # the spatial resolution the model operates at
+        if encode_cond:
             with torch.no_grad():
                 masks = self_.space.encode(masks)
 
@@ -424,15 +425,15 @@ def generate_and_extract_features_3d_streaming(
     # Limit diversity samples to 2 for 3D to avoid OOM
     max_diversity_samples = 2
 
-    # Check if using latent diffusion
-    is_latent = self_.space is not None and self_.space.needs_decode
+    # Check if conditioning must be encoded (latent/wavelet spaces only)
+    encode_cond = self_.space is not None and self_.space.encode_conditioning
 
     for idx in range(num_to_generate):
         # Get conditioning for this sample (pixel-space from dataset)
         masks_pixel = self_.fixed_conditioning_masks[idx:idx+1]
 
-        # For latent diffusion, encode masks to latent space
-        if is_latent:
+        # For latent/wavelet diffusion, encode masks to match model space
+        if encode_cond:
             with torch.no_grad():
                 masks = self_.space.encode(masks_pixel)
         else:

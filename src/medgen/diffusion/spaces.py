@@ -28,6 +28,16 @@ class DiffusionSpace(ABC):
         """
         return self.scale_factor > 1
 
+    @property
+    def encode_conditioning(self) -> bool:
+        """Whether conditioning inputs must be encoded through this space.
+
+        True for latent/wavelet spaces where the model operates at a different
+        spatial resolution. False for pixel-space normalization (shift/scale,
+        rescale) where conditioning (e.g. seg masks) should stay in raw form.
+        """
+        return self.scale_factor > 1
+
     @abstractmethod
     def encode(self, x: Tensor) -> Tensor:
         """Encode images from pixel space to diffusion space.

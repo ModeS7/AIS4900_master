@@ -207,7 +207,7 @@ def evaluate_test_set(
             # Regional metrics tracking (tumor vs background)
             if regional_tracker is not None and labels is not None:
                 # Decode labels to pixel space if needed
-                labels_pixel = trainer.space.decode(labels) if trainer.space.needs_decode else labels
+                labels_pixel = trainer.space.decode(labels) if trainer.space.encode_conditioning else labels
                 regional_tracker.update(metrics_pred, metrics_gt, labels_pixel)
 
             # Track worst batch
@@ -553,7 +553,11 @@ def compute_volume_3d_msssim_native(
         return None
 
     # Use pixel_val_loader if available (latent diffusion), else val_loader.
-    # Exception: bravo_seg_cond uses dual encoders — can't encode pixel seg correctly.
+    # bravo_seg_cond special case: uses dual encoders (bravo VQ-VAE + seg VQ-VAE).
+    # space.encode() only wraps the bravo VQ-VAE, so we can't encode pixel seg
+    # through it. Use latent val_loader for diffusion, pixel_val_loader in parallel
+    # for honest GT comparison (same pattern as validation.py).
+    pixel_metrics_iter: Any = None
     if data_split == 'val':
         use_pixel = (
             getattr(trainer, 'pixel_val_loader', None) is not None
@@ -562,6 +566,12 @@ def compute_volume_3d_msssim_native(
         loader = trainer.pixel_val_loader if use_pixel else trainer.val_loader
         if loader is None:
             return None
+        # bravo_seg_cond: parallel pixel loader for honest GT comparison
+        if (
+            mode_name == 'bravo_seg_cond'
+            and getattr(trainer, 'pixel_val_loader', None) is not None
+        ):
+            pixel_metrics_iter = iter(trainer.pixel_val_loader)
     else:
         # For other splits (test), create loader if needed
         if modality_override is not None:
@@ -628,9 +638,23 @@ def compute_volume_3d_msssim_native(
 
             # Handle latent vs pixel space data
             if is_latent_data:
-                # Data is already in latent space - decode for pixel comparison
+                # Data is already in latent space
                 volume_latent = volume
-                volume_pixel = trainer.space.decode_batch(volume)
+                # Use parallel pixel loader for honest GT (avoids shared decoder
+                # artifact cancellation). Fallback: decode latent.
+                if pixel_metrics_iter is not None:
+                    try:
+                        pixel_batch = next(pixel_metrics_iter)
+                        pixel_vol = pixel_batch['image'].to(trainer.device, non_blocking=True)
+                        if pixel_vol.shape[0] == volume.shape[0]:
+                            volume_pixel = pixel_vol
+                        else:
+                            volume_pixel = trainer.space.decode_batch(volume)
+                    except StopIteration:
+                        pixel_metrics_iter = None
+                        volume_pixel = trainer.space.decode_batch(volume)
+                else:
+                    volume_pixel = trainer.space.decode_batch(volume)
             else:
                 # Data is in pixel space - encode for model
                 volume_pixel = volume

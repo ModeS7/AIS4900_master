@@ -7,20 +7,20 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp12b_7_wdm"
+#SBATCH --job-name="exp19_0_wdm"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp12b_7/%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp12b_7/%j.err
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp19_0/%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp19_0/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp12b_7: Per-subband N(0,1) normalization (our approach)
-# vs exp12_7 which uses WDM paper approach (rescale [-1,1] + raw DWT)
-# DDPM, x₀ prediction, 74M params, batch=8, LR=1e-5
+# WDM 256x256x160: Per-subband N(0,1) normalization
+# DDPM, x₀ prediction, 74M params, batch=1 x accum=8 (effective=8), LR=1e-5
+# Wavelet → [B,8,80,128,128] — grad checkpointing to fit 80GB
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp12b_7"
+EXP_NAME="exp19_0"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -59,7 +59,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp12b_7 WDM Wavelet DDPM N(0,1) normalized: Bravo 128x128x160 ==="
+echo "=== Exp19_0 WDM Wavelet DDPM N(0,1) normalized: Bravo 256x256x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -82,10 +82,11 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.width=256 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
-    training.batch_size=8 \
-    training.learning_rate=1e-5 \
-    training.use_ema=true \
-    training.ema.decay=0.9999 \
+    training.batch_size=1 \
+    training.use_gradient_checkpointing=true \
+    training.learning_rate=1e-4 \
+    training.gradient_clip_norm=0.5 \
+    training.warmup_epochs=10 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

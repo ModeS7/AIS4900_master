@@ -132,7 +132,7 @@ def visualize_samples_3d(
             labels = cached_labels[:batch_size]
             # Check if labels are already in latent space (bravo_seg_cond mode)
             labels_is_latent = trainer._cached_train_batch.get('labels_is_latent', False)
-            if trainer.space.needs_decode and not labels_is_latent:
+            if trainer.space.encode_conditioning and not labels_is_latent:
                 labels_encoded = trainer.space.encode(labels)
             else:
                 labels_encoded = labels
@@ -287,7 +287,7 @@ def visualize_denoising_trajectory_3d(
         labels = cached_labels[:1]
         # Check if labels are already in latent space (bravo_seg_cond mode)
         labels_is_latent = trainer._cached_train_batch.get('labels_is_latent', False)
-        if trainer.space.needs_decode and not labels_is_latent:
+        if trainer.space.encode_conditioning and not labels_is_latent:
             labels_encoded = trainer.space.encode(labels)
         else:
             labels_encoded = labels

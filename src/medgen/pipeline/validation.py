@@ -561,10 +561,10 @@ def compute_per_modality_validation(
                     # Decode prediction to pixel space, compare against original pixels
                     if trainer.space.needs_decode:
                         metrics_pred = trainer.space.decode_batch(predicted_clean)
-                        metrics_labels = trainer.space.decode(labels) if labels is not None else None
                     else:
                         metrics_pred = predicted_clean
-                        metrics_labels = labels
+                    # Labels are only encoded in latent/wavelet spaces, not pixel normalization
+                    metrics_labels = trainer.space.decode(labels) if (labels is not None and trainer.space.encode_conditioning) else labels
                     metrics_gt = images_pixel
 
                     # Compute metrics in pixel space

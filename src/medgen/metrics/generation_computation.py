@@ -608,6 +608,16 @@ def compute_test_metrics(
             max_samples=self_.config.samples_test,
         )
 
+        # Skip metrics if test features are empty (e.g. latent test loader
+        # can't provide pixel images for ResNet/BiomedCLIP extraction)
+        if test_resnet.numel() == 0 or test_biomed.numel() == 0:
+            logger.warning(
+                "Test features empty (latent test loader?) — "
+                "falling back to val reference for FID/KID/CMMD"
+            )
+            test_resnet = self_.cache.val_resnet
+            test_biomed = self_.cache.val_biomed
+
         # FID (only for test)
         fid = compute_fid(test_resnet, gen_resnet)
         results['FID'] = fid
