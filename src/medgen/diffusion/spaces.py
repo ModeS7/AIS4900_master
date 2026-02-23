@@ -452,11 +452,9 @@ class WaveletSpace(DiffusionSpace):
         dataloader: 'torch.utils.data.DataLoader',  # type: ignore[type-arg]
         max_samples: int = 200,
         rescale: bool = False,
+        threshold: float = 0.0,
     ) -> dict[str, list[float]]:
         """Compute per-subband mean/std from training data.
-
-        Uses the law of total variance: Var[X] = E[Var[X|sample]] + Var[E[X|sample]]
-        to compute per-voxel statistics from per-sample spatial statistics.
 
         Args:
             dataloader: Training dataloader.
@@ -464,6 +462,10 @@ class WaveletSpace(DiffusionSpace):
                 so stats stabilize quickly. Default 200.
             rescale: If True, rescale [0,1] data to [-1,1] before DWT,
                 matching the WaveletSpace(rescale=True) encode path.
+            threshold: Exclude coefficients with |value| <= threshold from
+                statistics. Like pixel_norm brain-only: computes mean/std from
+                informative (non-background) values only. The resulting shift/scale
+                is still applied to ALL values. Default 0.0 (use all voxels).
 
         Returns:
             Dict with 'wavelet_shift' (list of 8 means) and
@@ -472,31 +474,77 @@ class WaveletSpace(DiffusionSpace):
         from medgen.diffusion.batch_data import BatchData
         from medgen.models.haar_wavelet_3d import haar_forward_3d
 
+        use_threshold = threshold > 0
+
+        if use_threshold:
+            # Accumulate sums for masked stats (brain-only)
+            sum_x: Tensor | None = None
+            sum_x2: Tensor | None = None
+            count: Tensor | None = None
+            n = 0
+
+            for batch in dataloader:
+                bd = BatchData.from_raw(batch)
+                images = bd.images
+                if rescale:
+                    images = 2.0 * images - 1.0
+                coeffs = haar_forward_3d(images)
+                n_ch = coeffs.shape[1]
+
+                for i in range(coeffs.shape[0]):
+                    flat = coeffs[i].reshape(n_ch, -1).float()  # [8, N]
+                    mask = flat.abs() > threshold  # [8, N]
+
+                    if sum_x is None:
+                        sum_x = torch.zeros(n_ch, dtype=torch.float64)
+                        sum_x2 = torch.zeros(n_ch, dtype=torch.float64)
+                        count = torch.zeros(n_ch, dtype=torch.int64)
+
+                    # Masked accumulation (zeros where mask is False don't contribute)
+                    masked = flat * mask.float()
+                    sum_x += masked.sum(dim=1).double()
+                    sum_x2 += (masked * masked).sum(dim=1).double()  # type: ignore[operator]
+                    count += mask.sum(dim=1).long()  # type: ignore[operator]
+
+                    n += 1
+                    if n >= max_samples:
+                        break
+                if n >= max_samples:
+                    break
+
+            if sum_x is None or count is None or count.min() < 2:
+                return {}
+
+            mean_t = (sum_x / count).float()
+            var_t = (sum_x2 / count - (sum_x / count) ** 2).float()  # type: ignore[operator]
+            std = torch.sqrt(var_t.clamp(min=0)).clamp(min=1e-6)
+
+            return {
+                'wavelet_shift': mean_t.tolist(),
+                'wavelet_scale': std.tolist(),
+            }
+
+        # Original path: use all voxels (Welford + law of total variance)
         n = 0
-        # Welford accumulators for per-sample spatial means
         mean: Tensor | None = None
         m2: Tensor | None = None
-        # Running sum of per-sample spatial variances (for E[Var[X|sample]])
         var_sum: Tensor | None = None
 
         for batch in dataloader:
             bd = BatchData.from_raw(batch)
             images = bd.images
 
-            # Match WaveletSpace.encode(): rescale before DWT
             if rescale:
                 images = 2.0 * images - 1.0
 
-            # Apply Haar wavelet to get subbands
             coeffs = haar_forward_3d(images)
             n_ch = coeffs.shape[1]
 
-            # Per-sample statistics
             for i in range(coeffs.shape[0]):
                 sample = coeffs[i]  # [C, D/2, H/2, W/2]
                 flat = sample.reshape(n_ch, -1).float()
                 sample_mean = flat.mean(dim=1)
-                sample_var = flat.var(dim=1)  # per-voxel variance within this sample
+                sample_var = flat.var(dim=1)
 
                 n += 1
                 if mean is None:
@@ -518,9 +566,8 @@ class WaveletSpace(DiffusionSpace):
         if mean is None or n < 2:
             return {}
 
-        # Law of total variance: Var[X] = E[Var[X|sample]] + Var[E[X|sample]]
-        avg_within_var = var_sum / n  # type: ignore[operator]  # E[Var[X|sample]]
-        between_var = m2 / (n - 1)  # type: ignore[operator]   # Var[E[X|sample]]
+        avg_within_var = var_sum / n  # type: ignore[operator]
+        between_var = m2 / (n - 1)  # type: ignore[operator]
         total_variance = avg_within_var + between_var
         std = torch.sqrt(total_variance).clamp(min=1e-6)
 

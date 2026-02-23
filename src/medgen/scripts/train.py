@@ -778,7 +778,12 @@ def _train_3d(cfg: DictConfig) -> None:
         elif wavelet_cfg.get('enabled', False):
             rescale = wavelet_cfg.get('rescale', False)
             if wavelet_cfg.get('normalize', False):
-                stats = WaveletSpace.compute_subband_stats(train_loader, rescale=rescale)
+                norm_threshold = wavelet_cfg.get('normalize_threshold', 0.0)
+                stats = WaveletSpace.compute_subband_stats(
+                    train_loader, rescale=rescale, threshold=norm_threshold,
+                )
+                if norm_threshold > 0:
+                    logger.info(f"Wavelet subband stats: brain-only (|coeff| > {norm_threshold})")
                 wavelet_shift = stats.get('wavelet_shift')
                 wavelet_scale = stats.get('wavelet_scale')
                 if wavelet_shift:

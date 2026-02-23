@@ -40,6 +40,7 @@ class RFlowStrategy(DiffusionStrategy):
     ode_solver: str = 'euler'
     ode_atol: float = 1e-5
     ode_rtol: float = 1e-5
+    prediction_type: str = 'velocity'  # 'velocity' or 'sample' (x₀)
 
     def setup_scheduler(
         self,
@@ -50,6 +51,7 @@ class RFlowStrategy(DiffusionStrategy):
         use_discrete_timesteps: bool = True,
         sample_method: str = 'logit-normal',
         use_timestep_transform: bool = True,
+        prediction_type: str = 'velocity',
         **kwargs,
     ):
         """Setup RFlow scheduler.
@@ -62,8 +64,10 @@ class RFlowStrategy(DiffusionStrategy):
             use_discrete_timesteps: Use discrete integer timesteps (default True).
             sample_method: Timestep sampling - 'uniform' or 'logit-normal' (default).
             use_timestep_transform: Apply resolution-based timestep transform (default True).
+            prediction_type: 'velocity' (default) or 'sample' (predict x₀ directly).
             **kwargs: Ignored (for interface compatibility with DDPMStrategy).
         """
+        self.prediction_type = prediction_type
         self.spatial_dims = spatial_dims
 
         if spatial_dims == 3:
@@ -83,10 +87,24 @@ class RFlowStrategy(DiffusionStrategy):
         )
         return self.scheduler
 
+    def _to_velocity(
+        self, model_output: torch.Tensor, noisy: torch.Tensor, timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """Convert model output to velocity if prediction_type is 'sample'.
+
+        For velocity prediction: no-op.
+        For sample (x₀) prediction: v = (x₀ - x_t) / t_norm.
+        """
+        if self.prediction_type != 'sample':
+            return model_output
+        t_norm = timesteps.float() / self.scheduler.num_train_timesteps
+        t_expanded = self._expand_to_broadcast(t_norm, model_output).clamp(min=1e-5)
+        return (model_output - noisy) / t_expanded
+
     def predict_noise_or_velocity(
         self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
-        """RFlow predicts velocity"""
+        """RFlow model forward pass (predicts velocity or x₀ depending on prediction_type)."""
         return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
 
     def compute_target(
@@ -94,7 +112,9 @@ class RFlowStrategy(DiffusionStrategy):
         clean_images: ImageOrDict,
         noise: ImageOrDict,
     ) -> ImageOrDict:
-        """RFlow predicts velocity: v = x_0 - x_1 (clean - noise)."""
+        """RFlow target: velocity v = x_0 - x_1, or x₀ directly."""
+        if self.prediction_type == 'sample':
+            return clean_images
         if isinstance(clean_images, dict):
             assert isinstance(noise, dict)
             return {k: clean_images[k] - noise[k] for k in clean_images.keys()}
@@ -107,18 +127,32 @@ class RFlowStrategy(DiffusionStrategy):
         prediction: ImageOrDict,
         timesteps: torch.Tensor,
     ) -> ImageOrDict:
-        """Reconstruct clean from velocity: x_0 = x_t + t * v.
+        """Reconstruct clean images from model prediction.
+
+        For velocity prediction: x_0 = x_t + t * v.
+        For sample prediction: x_0 = prediction (model output IS x₀).
 
         Args:
             noisy_images: Noisy images at timestep t (x_t).
-            prediction: Model velocity prediction.
+            prediction: Model prediction (velocity or x₀).
             timesteps: Current timesteps (can be continuous or discrete).
 
         Returns:
             Predicted clean images (x_0). Not clamped — values may be outside
             [0, 1] for latent/wavelet space or due to prediction error.
         """
-        # Get normalized timestep t in [0, 1]
+        if self.prediction_type == 'sample':
+            # Model directly predicts x₀
+            if isinstance(noisy_images, dict):
+                keys = list(noisy_images.keys())
+                assert isinstance(prediction, torch.Tensor)
+                return {
+                    keys[0]: self._slice_channel(prediction, 0, 1),
+                    keys[1]: self._slice_channel(prediction, 1, 2),
+                }
+            return prediction
+
+        # Velocity: x₀ = x_t + t * v
         t = timesteps.float() / self.scheduler.num_train_timesteps
 
         # Handle dual-image case
@@ -312,10 +346,10 @@ class RFlowStrategy(DiffusionStrategy):
                 current_model_input = self._prepare_dual_model_input(
                     noisy_pre, noisy_gd, image_conditioning
                 )
-                velocity_pred = self._call_model(
+                model_pred = self._call_model(
                     model, current_model_input, timesteps_batch, omega, mode_id, size_bins
                 )
-                return velocity_pred
+                return self._to_velocity(model_pred, x, timesteps_batch)
             else:
                 # Build model input
                 if image_conditioning is not None:
@@ -323,11 +357,11 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = x
 
-                velocity_pred = self._compute_cfg_prediction(
+                model_pred = self._compute_cfg_prediction(
                     model, cfg_ctx, current_cfg, current_model_input, x,
                     bin_maps, size_bins, timesteps_batch, omega, mode_id
                 )
-                return velocity_pred
+                return self._to_velocity(model_pred, x, timesteps_batch)
 
         # Build time span and solver options
         t_span = torch.tensor([0.0, 1.0], device=device)
@@ -571,11 +605,12 @@ class RFlowStrategy(DiffusionStrategy):
             else:
                 current_model_input = x
 
-            velocity_pred = self._compute_cfg_prediction(
+            model_pred = self._compute_cfg_prediction(
                 model, cfg_ctx, cfg_scale, current_model_input, x,
                 bin_maps, size_bins, timesteps_batch, omega, mode_id,
             )
 
+            velocity_pred = self._to_velocity(model_pred, x, timesteps_batch)
             x, _ = self.scheduler.step(velocity_pred, t_val, x, next_timestep)
             return x
 
@@ -790,10 +825,14 @@ class RFlowStrategy(DiffusionStrategy):
                 assert noisy_gd is not None
                 assert image_conditioning is not None
                 current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
-                velocity_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
+                model_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
                 # Split predictions for each channel (works for both 2D and 3D)
-                velocity_pred_pre, velocity_pred_gd = self._split_dual_predictions(velocity_pred)
+                pred_pre, pred_gd = self._split_dual_predictions(model_pred)
+
+                # Convert x₀ → velocity if prediction_type='sample'
+                velocity_pred_pre = self._to_velocity(pred_pre, noisy_pre, timesteps_batch)
+                velocity_pred_gd = self._to_velocity(pred_gd, noisy_gd, timesteps_batch)
 
                 # Update each channel SEPARATELY using scheduler
                 noisy_pre, _ = self.scheduler.step(velocity_pred_pre, t, noisy_pre, next_timestep)
@@ -808,11 +847,13 @@ class RFlowStrategy(DiffusionStrategy):
                 else:
                     current_model_input = noisy_images
 
-                velocity_pred = self._compute_cfg_prediction(
+                model_pred = self._compute_cfg_prediction(
                     model, cfg_ctx, current_cfg, current_model_input, noisy_images,
                     bin_maps, size_bins, timesteps_batch, omega, mode_id
                 )
 
+                # Convert x₀ → velocity if prediction_type='sample'
+                velocity_pred = self._to_velocity(model_pred, noisy_images, timesteps_batch)
                 noisy_images, _ = self.scheduler.step(velocity_pred, t, noisy_images, next_timestep)
 
         # Return final denoised images
