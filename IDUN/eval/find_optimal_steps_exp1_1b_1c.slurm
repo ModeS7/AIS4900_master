@@ -48,7 +48,7 @@ echo "=========================================="
 echo "  exp1: Pixel bravo [0,1] baseline"
 echo "=========================================="
 
-CKPT_EXP1=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_*/checkpoint_best.pt 2>/dev/null | head -1)
+CKPT_EXP1=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
 OUT_EXP1="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1"
 
 if [ -z "$CKPT_EXP1" ]; then
@@ -71,7 +71,7 @@ echo "=========================================="
 echo "  exp1b: Pixel bravo [-1,1] rescaled"
 echo "=========================================="
 
-CKPT_EXP1B=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_*/checkpoint_best.pt 2>/dev/null | head -1)
+CKPT_EXP1B=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_*/checkpoint_latest.pt 2>/dev/null | head -1)
 OUT_EXP1B="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1b"
 
 if [ -z "$CKPT_EXP1B" ]; then
@@ -94,7 +94,7 @@ echo "=========================================="
 echo "  exp1c: Pixel bravo brain N(0,1)"
 echo "=========================================="
 
-CKPT_EXP1C=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_*/checkpoint_best.pt 2>/dev/null | head -1)
+CKPT_EXP1C=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_*/checkpoint_latest.pt 2>/dev/null | head -1)
 OUT_EXP1C="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1c"
 
 if [ -z "$CKPT_EXP1C" ]; then
