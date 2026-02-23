@@ -232,9 +232,10 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
                 bottleneck_channels=bottleneck_channels,
                 num_bins=trainer.size_bin_num_bins,
             ).to(trainer.device)
-            # Hook on inner UNet's mid_block (wrapper.model is the raw UNet)
+            # Hook on inner UNet's middle_block (wrapper.model is the raw UNet)
+            # MONAI DiffusionModelUNet uses "middle_block", not "mid_block"
             inner_model = trainer.model_raw.model
-            trainer._bin_pred_hook = inner_model.mid_block.register_forward_hook(
+            trainer._bin_pred_hook = inner_model.middle_block.register_forward_hook(
                 trainer._bin_prediction_head.hook_fn
             )
             if trainer.is_main_process:
