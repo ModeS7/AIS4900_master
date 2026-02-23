@@ -434,12 +434,16 @@ def main():
         pixel_cfg = ckpt_cfg.get('pixel', {})
         pixel_shift = pixel_cfg.get('pixel_shift')
         pixel_scale = pixel_cfg.get('pixel_scale')
-        if pixel_shift is not None:
+        pixel_rescale = pixel_cfg.get('rescale', False)
+        if pixel_shift is not None or pixel_rescale:
             from medgen.diffusion.spaces import PixelSpace
-            space = PixelSpace(shift=pixel_shift, scale=pixel_scale)
+            space = PixelSpace(rescale=pixel_rescale, shift=pixel_shift, scale=pixel_scale)
             decode_fn = space.decode
             encode_cond_fn = space.encode
-            logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
+            if pixel_shift is not None:
+                logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
+            if pixel_rescale:
+                logger.info("Pixel rescale: [-1, 1]")
 
     # ── Derive mode-specific config ───────────────────────────────────────
     is_seg = mode in SEG_MODES if mode else False
