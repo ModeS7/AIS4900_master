@@ -116,6 +116,22 @@ python -m medgen.scripts.train model=uvit_3d model.variant=M mode=bravo strategy
 
 # Seg-conditioned diffusion (generate seg masks conditioned on tumor sizes)
 python -m medgen.scripts.train mode=seg_conditioned strategy=rflow
+
+# With EMA (Exponential Moving Average)
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    training.use_ema=true training.ema.decay=0.9999
+
+# With gradient clipping and warmup (recommended for stability)
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    training.gradient_clip_norm=0.5 training.warmup_epochs=10
+
+# With min-SNR loss weighting
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    training.use_min_snr=true training.min_snr_gamma=5.0
+
+# With perceptual loss
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    training.perceptual_weight=0.1
 ```
 
 ---
@@ -153,6 +169,16 @@ python -m medgen.scripts.train --config-name=diffusion_3d \
 python -m medgen.scripts.train --config-name=diffusion_3d \
     mode=bravo strategy=rflow \
     training.rescale_data=true
+
+# 3D Pixel-Space with brain-only N(0,1) normalization
+# Brain voxels: mean≈0, std≈1. Background: ≈-2.44. Available: bravo, t1_pre, t1_gd
+python -m medgen.scripts.train --config-name=diffusion_3d \
+    mode=bravo strategy=rflow \
+    pixel_norm=bravo
+
+# 2D Pixel-Space with brain-only N(0,1) normalization
+python -m medgen.scripts.train mode=bravo strategy=rflow \
+    pixel_norm=bravo
 
 # 3D Pixel-Space with Haar Wavelet Decomposition
 python -m medgen.scripts.train --config-name=diffusion_3d \
@@ -380,6 +406,64 @@ python -m medgen.scripts.train_compression --config-name=vae mode=dual \
 
 ---
 
+## Generation (Image/Volume Synthesis)
+
+```bash
+# 2D: seg -> bravo pipeline
+python -m medgen.scripts.generate mode=bravo \
+    seg_model=runs/seg/model.pt image_model=runs/bravo/model.pt
+
+# 3D: size_bins -> seg -> bravo pipeline
+python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \
+    seg_model=runs/seg/checkpoint.pt image_model=runs/bravo/checkpoint.pt
+
+# Custom output subdirectory and sample count
+python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \
+    num_samples=100 seg_model=... image_model=...
+```
+
+---
+
+## Downstream Segmentation Training
+
+```bash
+# Baseline (real data only)
+python -m medgen.scripts.train_segmentation scenario=baseline
+
+# Synthetic (generated data only)
+python -m medgen.scripts.train_segmentation scenario=synthetic \
+    data.synthetic_dir=runs/diffusion_3d/bravo/.../generated
+
+# Mixed (real + synthetic)
+python -m medgen.scripts.train_segmentation scenario=mixed \
+    data.synthetic_dir=runs/diffusion_3d/bravo/.../generated \
+    data.synthetic_ratio=0.5
+
+# 3D segmentation training
+python -m medgen.scripts.train_segmentation model.spatial_dims=3
+```
+
+---
+
+## Pixel Normalization Statistics
+
+```bash
+# Compute brain-only pixel stats for diffusion training
+python -m medgen.scripts.compute_pixel_stats \
+    --data-root /path/to/brainmetshare-3 \
+    --modalities bravo seg
+
+# With specific resolution
+python -m medgen.scripts.compute_pixel_stats \
+    --data-root /path/to/brainmetshare-3 \
+    --image-size 256 --depth 160 \
+    --modalities bravo seg
+```
+
+Output values are used in `configs/pixel_norm/*.yaml` files.
+
+---
+
 ## DiffRS (Rejection Sampling)
 
 ```bash
@@ -397,6 +481,13 @@ python -m medgen.scripts.train_diffrs_discriminator \
 python -m medgen.scripts.train_diffrs_discriminator \
     diffusion_checkpoint=runs/diffusion_3d/.../checkpoint_best.pt \
     data_mode=bravo spatial_dims=3
+
+# Evaluate DiffRS against baseline generation (argparse, not Hydra)
+python -m medgen.scripts.eval_diffrs \
+    --bravo-model runs/checkpoint_bravo.pt \
+    --diffrs-head runs/diffrs_head.pt \
+    --data-root ~/data/brainmetshare-3 \
+    --num-volumes 25 --output-dir results/eval_diffrs
 ```
 
 ---

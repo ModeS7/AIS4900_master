@@ -749,7 +749,9 @@ def train(
 
 **[-1,1] Rescaling**: All spaces except `LatentSpace` support an optional `rescale` parameter that maps [0,1] data to [-1,1] inside `encode()` and back in `decode()`. This keeps all downstream code (metrics, viz, saving) at [0,1]. Use `training.rescale_data=true` for pixel/S2D spaces, or `wavelet.rescale=true` (default) for wavelet space.
 
-**`needs_decode` property**: Use `space.needs_decode` (not `space.scale_factor > 1`) to check if `decode()` must be called to get pixel-space output. This correctly handles rescaling in PixelSpace (scale_factor=1 but still needs decode).
+**Brain-only N(0,1) normalization**: `PixelSpace` also supports per-channel shift/scale normalization via `pixel_norm=bravo` (or `t1_pre`, `t1_gd`). This normalizes using brain-only statistics: `encode: (x - shift) / scale`, `decode: z * scale + shift`. Brain voxels get mean=0, std=1 (matching noise distribution); background maps to ~-2.44. Configs in `configs/pixel_norm/`. Conditioning (seg masks) is NOT normalized — only the noisy image channel. Priority order: shift/scale > rescale [-1,1] > identity.
+
+**`needs_decode` property**: Use `space.needs_decode` (not `space.scale_factor > 1`) to check if `decode()` must be called to get pixel-space output. This correctly handles rescaling and normalization in PixelSpace (scale_factor=1 but still needs decode).
 
 **LatentSpace scale factors** depend on the compression model:
 

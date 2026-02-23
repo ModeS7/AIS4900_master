@@ -1,6 +1,6 @@
 # Complete Experiment Results
 
-Last updated: February 20, 2026. Data extracted from IDUN logs (`IDUN/output/`) and TensorBoard runs (`runs_tb/`).
+Last updated: February 23, 2026. Data extracted from IDUN logs (`IDUN/output/`) and TensorBoard runs (`runs_tb/`).
 
 ---
 
@@ -24,7 +24,7 @@ Last updated: February 20, 2026. Data extracted from IDUN logs (`IDUN/output/`) 
 |--------|-------------------|-------------|------------|
 | **2D Diffusion** | 89 | SiT-S (exp12_1c) | val_loss=0.005604 |
 | **2D Diffusion (FID)** | 10 evaluated | SiT-S (exp12_1b) | FID=33.43, KID=0.038 |
-| **3D Diffusion Pixel** | ~25 runs | exp1_1 256x256 | val_loss=0.00211 |
+| **3D Diffusion Pixel** | ~25 runs (+24 pending) | exp1_1 256x256 | val_loss=0.00211 |
 | **3D Diffusion Latent** | ~15 runs | exp9_1 LDM 4x | val_loss=0.0764 (still improving) |
 | **2D Compression VAE** | 5 | exp4 64lat | SSIM=0.999, val_G=0.001356 |
 | **2D Compression VQ-VAE** | 2 | exp6_1 4x | SSIM=0.997, val_G=0.002725 |
@@ -238,6 +238,8 @@ SiT-S wins on all three generation metrics.
 | exp1_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1b | Pixel [-1,1] | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp1b_1 | Pixel [-1,1] | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1c | Pixel N(0,1) | 128x128x160 | UNet 5L | 270M | rflow | bravo |
+| exp1c_1 | Pixel N(0,1) | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1_chained | Pixel (chain test) | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp2 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg_conditioned |
@@ -267,6 +269,19 @@ SiT-S wins on all three generation metrics.
 | exp12b_3 | Wavelet WDM [-1,1] | 128x128x160 | WDM 5L+attn | ~77M | rflow | bravo |
 | exp12b_7 | Wavelet WDM raw [-1,1] | 128x128x160 | WDM 5L | ~77M | ddpm x0 | bravo |
 | exp13 | LDM DiT 4x | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
+| exp17_0 | Pixel HDiT-S p=2 | 256x256x160 | HDiT-S | ~637M | rflow | bravo |
+| exp17_1 | Pixel HDiT-B p=4 | 256x256x160 | HDiT-B | -- | rflow | bravo |
+| exp17_2 | Pixel HDiT-L p=8 | 256x256x160 | HDiT-L | -- | rflow | bravo |
+| exp17_3 | Pixel HDiT-XL p=8 | 256x256x160 | HDiT-XL | -- | rflow | bravo |
+| exp18 | Pixel UViT-L p=8 | 256x256x160 | UViT-L | -- | rflow | bravo |
+| exp19_0 | Wavelet WDM 256 | 256x256x160 | WDM | ~74M | ddpm x0 | bravo |
+| exp19_1 | Wavelet WDM 256 | 256x256x160 | WDM | ~74M | rflow | bravo |
+| exp19_2 | Wavelet WDM 256 | 256x256x160 | WDM default | -- | -- | bravo |
+| exp19_3 | Wavelet WDM 256 | 256x256x160 | WDM large | -- | -- | bravo |
+| exp2d_1 | Pixel seg + aux bin | 256x256x160 | UNet 5L | 270M | rflow | seg_cond_3d |
+| exp7_1 | Pixel SiT-S/B/L/XL p=16 | 256x256x160 | SiT variants | -- | rflow | bravo |
+| exp7_2 | Pixel SiT-S/B/L p=8 | 256x256x160 | SiT variants | -- | rflow | bravo |
+| exp7_3 | Pixel SiT-S p=4 | 128x128x160 | SiT-S | -- | rflow | bravo |
 
 ## 3D Part 1: Pixel-Space Bravo Experiments
 
@@ -494,11 +509,112 @@ matching WDM paper convention and standard practice (DDPM, Stable Diffusion).
 ### exp1b/exp1b_1: Pixel-Space Bravo with [-1,1] Rescaling (not yet run)
 Same as exp1/exp1_1 but with `training.rescale_data=true`: data rescaled from [0,1] to [-1,1]
 in PixelSpace before diffusion. Tests whether zero-centering helps pixel-space 3D diffusion.
+Standard practice in modern diffusion models (DDPM, Stable Diffusion).
 
 | Experiment | Resolution | vs Baseline |
 |-----------|-----------|-------------|
 | exp1b | 128x128x160 | exp1 + [-1,1] |
 | exp1b_1 | 256x256x160 | exp1_1 + [-1,1] |
+
+### exp1c/exp1c_1: Pixel-Space Bravo with Brain-Only N(0,1) Normalization (not yet run)
+Same as exp1/exp1_1 but with `pixel_norm=bravo`: brain-only N(0,1) normalization using
+precomputed statistics from training data (105 volumes, brain voxels only with threshold > 0.01).
+
+**Normalization**: `encode: (x - 0.2033) / 0.0832`, `decode: z * 0.0832 + 0.2033`
+
+After normalization:
+- Brain tissue: mean=0, std=1 (matches N(0,1) noise distribution exactly)
+- Background (was 0.0): maps to -2.44 (strong negative signal, easy to separate)
+- Brightest voxel (was 1.0): maps to +9.57
+
+**Hypothesis**: Brain voxels having the exact same distribution as the noise should make the
+velocity field maximally well-conditioned for learning brain structure. Unlike [-1,1] rescaling
+which centers uniformly, this normalization specifically optimizes for the brain signal.
+
+**Key detail**: Conditioning (seg mask) is NOT normalized — only the noisy bravo channel gets
+brain-only normalization. Seg mask stays in raw [0,1] since `encode_conditioning=False` for
+pixel-space (scale_factor=1).
+
+| Experiment | Resolution | vs Baseline | Config |
+|-----------|-----------|-------------|--------|
+| exp1c | 128x128x160 | exp1 + brain N(0,1) | `pixel_norm=bravo` |
+| exp1c_1 | 256x256x160 | exp1_1 + brain N(0,1) | `pixel_norm=bravo` |
+
+### Data Normalization Comparison (exp1 vs exp1b vs exp1c)
+
+All three experiment families are identical in architecture and task (270M UNet, rflow, bravo
+conditioned on seg mask). The only difference is how pixel data is transformed before the
+diffusion model sees it:
+
+| Approach | Config | Model Sees | Data Mean | Noise Mean | Symmetry |
+|----------|--------|-----------|-----------|------------|----------|
+| **exp1**: Raw [0,1] | (default) | [0,1] | ~0.2 (dark bg) | 0 | Asymmetric |
+| **exp1b**: [-1,1] | `rescale_data=true` | [-1,1] | ~-0.6 | 0 | Better centered |
+| **exp1c**: Brain N(0,1) | `pixel_norm=bravo` | brain≈N(0,1) | 0 (brain) | 0 | Optimal for brain |
+
+## 3D Part 6: Transformer Architecture Sweep (not yet run)
+
+### exp7_1/7_2/7_3: SiT Patch Size & Variant Sweep
+
+Systematic sweep of SiT (Scalable Interpolant Transformer) configurations at pixel-space 3D.
+Explores patch size (4/8/16) x variant (S/B/L/XL) x resolution (128/256).
+
+| Experiment | Variant | Patch | Resolution | Notes |
+|-----------|---------|-------|-----------|-------|
+| exp7_1_sit_s_256_p16 | SiT-S | 16 | 256x256x160 | Fewest tokens |
+| exp7_1_sit_b_256_p16 | SiT-B | 16 | 256x256x160 | |
+| exp7_1_sit_l_256_p16 | SiT-L | 16 | 256x256x160 | |
+| exp7_1_sit_xl_256_p16 | SiT-XL | 16 | 256x256x160 | Largest model |
+| exp7_2_sit_s_256_p8 | SiT-S | 8 | 256x256x160 | |
+| exp7_2_sit_s_256_p4 | SiT-S | 4 | 256x256x160 | Most tokens |
+| exp7_2_sit_s_256_p8_2000 | SiT-S | 8 | 256x256x160 | 2000 epochs |
+| exp7_2_sit_b_256_p8 | SiT-B | 8 | 256x256x160 | |
+| exp7_2_sit_b_256_p8_2000 | SiT-B | 8 | 256x256x160 | 2000 epochs |
+| exp7_2_sit_l_256_p8 | SiT-L | 8 | 256x256x160 | |
+| exp7_2_sit_xl_256_p8 | SiT-XL | 8 | 256x256x160 | |
+| exp7_3_sit_s_128_p4 | SiT-S | 4 | 128x128x160 | Lower res, most tokens |
+
+### exp17: HDiT (Hierarchical DiT) Pixel-Space @ 256x256x160
+
+HDiT uses hierarchical attention (merge/split at multiple levels) instead of flat attention.
+Potentially better for high-resolution 3D volumes since attention cost scales with merged token count.
+
+| Experiment | Variant | Patch | Level Depths | Notes |
+|-----------|---------|-------|-------------|-------|
+| exp17_0 | HDiT-S | 2 | [1,2,4,6,4,2,1] | ~637M, compile=true |
+| exp17_1 | HDiT-B | 4 | -- | |
+| exp17_2 | HDiT-L | 8 | -- | |
+| exp17_3 | HDiT-XL | 8 | -- | |
+
+### exp18: UViT (Skip-Connection ViT) Pixel-Space @ 256x256x160
+
+UViT adds UNet-style skip connections to a ViT backbone. Flat attention (no hierarchy),
+but the skip connections help bridge low-level and high-level features.
+
+| Experiment | Variant | Patch | Hidden | Depth | Notes |
+|-----------|---------|-------|--------|-------|-------|
+| exp18 | UViT-L | 8 | 1024 | 21 (10+1+10) | 64GB RAM, compile=true |
+
+### exp19: WDM (Wavelet Diffusion Model) @ 256x256x160
+
+Higher-resolution WDM experiments using dedicated wavelet UNet (~74M params).
+Per-subband N(0,1) normalization. Multiple strategy variants.
+
+| Experiment | Strategy | Prediction | Normalization | Notes |
+|-----------|----------|-----------|---------------|-------|
+| exp19_0 | DDPM | x0 (sample) | Per-subband N(0,1) | grad_clip=0.5, warmup=10 |
+| exp19_1 | RFlow | velocity | Per-subband N(0,1) | |
+| exp19_2 | -- | default | Per-subband N(0,1) | Default WDM config |
+| exp19_3 | -- | -- | Per-subband N(0,1) | Large WDM model |
+| exp19_wdm_paper | -- | -- | -- | Paper baseline config |
+
+### exp2d_1: Seg-Conditioned with Auxiliary Bin Prediction Loss (not yet run)
+
+Tests auxiliary bin prediction loss for improving size-bin adherence.
+The model jointly predicts denoised seg mask AND a bin classification loss.
+
+**Config**: seg_conditioned_3d, LR=5e-5, aux_loss_weight=0.1, cfg_dropout=0.25,
+regional_weighting=true, embedding_dim=64, projection 4-layer MLP.
 
 ---
 
@@ -608,6 +724,18 @@ MAISI pretrained VAE is significantly worse than our trained models (PSNR 27 vs 
 
 Hit time limit at epoch 90. DC-AE 3D significantly worse than VQ-VAE 3D (PSNR 30.9 vs 39.9).
 
+## 3D KL-VAE (exp14, not yet run)
+
+Newer 3D VAE experiments with tuned hyperparameters. Focus on lower KL weight for better reconstruction.
+
+| Experiment | Compression | Latent Ch | KL Weight | Notes |
+|-----------|-------------|-----------|-----------|-------|
+| exp14_0 | 4x (64->64) | 4 | 1e-6 | Baseline, grad checkpointing |
+| exp14_1 | 8x (64->32) | 4 | 1e-6 | Higher compression |
+| exp14_2 | 8x low-res | 4 | 1e-6 | Low-resolution variant |
+| exp14_3 | 4x | 4 | lower | Lower KL weight |
+| exp14_4 | 4x | 4 | 0 | No KL (pure reconstruction) |
+
 ## 3D Compression Summary
 
 | Method | Compression | PSNR | MS-SSIM | Status |
@@ -615,6 +743,7 @@ Hit time limit at epoch 90. DC-AE 3D significantly worse than VQ-VAE 3D (PSNR 30
 | VQ-VAE 4x (exp8_1) | 4x | **39.88** | **0.995** | Production-ready |
 | VQ-VAE 8x (exp8_10) | 8x | 36.16 | 0.984 | Good |
 | VAE 3D (exp7 run3) | ~4x | 30.43 | 0.948 | Mediocre |
+| KL-VAE 3D (exp14) | 4x/8x | -- | -- | Not yet run |
 | DC-AE 3D (exp10_1) | varies | 30.91 | 0.935 | Poor (incomplete) |
 | MAISI pretrained | 4x | 26.95 | 0.946 | Baseline reference |
 
@@ -911,8 +1040,13 @@ Early 3D compression runs (exp7, exp8 run1/run2) had broken MS-SSIM (0.0 or N/A)
 
 ## Open Questions
 1. Can exp9_1 LDM (666M, val 0.076 at ep354) reach pixel-space quality with more epochs?
-2. Can WDM-style wavelet (exp12_2/12_3/12_4) avoid mean collapse with smaller model?
+2. Can WDM-style wavelet (exp12_2/12_3/12_4, exp19) avoid mean collapse with smaller model + proper normalization?
 3. Can DiT-S + VQ-VAE 4x (exp13) achieve good quality with fast compile?
 4. Should downstream segmentation use generated data augmentation?
 5. Does DC-AE 1.5 structured latent improve reconstruction quality for 2D?
 6. What does the seg generation evaluation look like with the fixed threshold?
+7. Does [-1,1] rescaling (exp1b) or brain-only N(0,1) normalization (exp1c) improve 3D pixel-space quality vs raw [0,1] baseline (exp1)?
+8. Can HDiT (exp17) or UViT (exp18) compete with UNet at 256x256 pixel-space 3D?
+9. Does the SiT patch size sweep (exp7_1/7_2/7_3) reveal an optimal patch configuration for 3D?
+10. Does the auxiliary bin prediction loss (exp2d_1) improve size-bin adherence vs baseline seg_conditioned?
+11. Can 3D KL-VAE (exp14) with tuned KL weight beat VQ-VAE 4x for compression?
