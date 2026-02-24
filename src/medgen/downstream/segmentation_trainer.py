@@ -128,11 +128,12 @@ class SegmentationTrainer(BaseTrainer):
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         exp_name = self.cfg.training.get('name', '')
         run_name = f"{exp_name}{timestamp}"
+        modality = self.cfg.data.get('modality', 'bravo')
         return os.path.join(
             self.cfg.paths.model_dir,
-            'segmentation',
-            f'{self.spatial_dims}d',
-            run_name
+            f'segmentation_{self.spatial_dims}d',
+            modality,
+            run_name,
         )
 
     def setup_model(self, pretrained_checkpoint: str | None = None) -> None:
