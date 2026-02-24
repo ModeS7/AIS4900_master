@@ -48,20 +48,16 @@ echo "=========================================="
 echo "  exp1: Pixel bravo [0,1] baseline"
 echo "=========================================="
 
-CKPT_EXP1=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
+CKPT_EXP1="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_rflow_128x160_20260129-233854/checkpoint_latest.pt"
 OUT_EXP1="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1"
 
-if [ -z "$CKPT_EXP1" ]; then
-    echo "WARNING: No checkpoint found for exp1_pixel_bravo_* — skipping"
-else
-    echo "Checkpoint: $CKPT_EXP1"
-    time python -m medgen.scripts.find_optimal_steps \
-        --checkpoint "${CKPT_EXP1}" \
-        --output-dir "${OUT_EXP1}" \
-        ${COMMON_ARGS}
-    echo "--- exp1 results ---"
-    cat "${OUT_EXP1}/search_results.json"
-fi
+echo "Checkpoint: $CKPT_EXP1"
+time python -m medgen.scripts.find_optimal_steps \
+    --checkpoint "${CKPT_EXP1}" \
+    --output-dir "${OUT_EXP1}" \
+    ${COMMON_ARGS}
+echo "--- exp1 results ---"
+cat "${OUT_EXP1}/search_results.json"
 
 # ============================================================
 # exp1b: Pixel bravo [-1,1] rescaled
@@ -71,20 +67,16 @@ echo "=========================================="
 echo "  exp1b: Pixel bravo [-1,1] rescaled"
 echo "=========================================="
 
-CKPT_EXP1B=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_*/checkpoint_latest.pt 2>/dev/null | head -1)
+CKPT_EXP1B="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_20260221-172156/checkpoint_latest.pt"
 OUT_EXP1B="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1b"
 
-if [ -z "$CKPT_EXP1B" ]; then
-    echo "WARNING: No checkpoint found for exp1b_* — skipping"
-else
-    echo "Checkpoint: $CKPT_EXP1B"
-    time python -m medgen.scripts.find_optimal_steps \
-        --checkpoint "${CKPT_EXP1B}" \
-        --output-dir "${OUT_EXP1B}" \
-        ${COMMON_ARGS}
-    echo "--- exp1b results ---"
-    cat "${OUT_EXP1B}/search_results.json"
-fi
+echo "Checkpoint: $CKPT_EXP1B"
+time python -m medgen.scripts.find_optimal_steps \
+    --checkpoint "${CKPT_EXP1B}" \
+    --output-dir "${OUT_EXP1B}" \
+    ${COMMON_ARGS}
+echo "--- exp1b results ---"
+cat "${OUT_EXP1B}/search_results.json"
 
 # ============================================================
 # exp1c: Pixel bravo brain-only N(0,1) normalized
@@ -94,20 +86,16 @@ echo "=========================================="
 echo "  exp1c: Pixel bravo brain N(0,1)"
 echo "=========================================="
 
-CKPT_EXP1C=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_*/checkpoint_latest.pt 2>/dev/null | head -1)
+CKPT_EXP1C="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_20260223-002347/checkpoint_latest.pt"
 OUT_EXP1C="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1c"
 
-if [ -z "$CKPT_EXP1C" ]; then
-    echo "WARNING: No checkpoint found for exp1c_* — skipping"
-else
-    echo "Checkpoint: $CKPT_EXP1C"
-    time python -m medgen.scripts.find_optimal_steps \
-        --checkpoint "${CKPT_EXP1C}" \
-        --output-dir "${OUT_EXP1C}" \
-        ${COMMON_ARGS}
-    echo "--- exp1c results ---"
-    cat "${OUT_EXP1C}/search_results.json"
-fi
+echo "Checkpoint: $CKPT_EXP1C"
+time python -m medgen.scripts.find_optimal_steps \
+    --checkpoint "${CKPT_EXP1C}" \
+    --output-dir "${OUT_EXP1C}" \
+    ${COMMON_ARGS}
+echo "--- exp1c results ---"
+cat "${OUT_EXP1C}/search_results.json"
 
 # ============================================================
 # Summary
