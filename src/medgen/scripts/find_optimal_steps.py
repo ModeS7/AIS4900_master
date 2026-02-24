@@ -37,6 +37,17 @@ Usage:
         --data-root ~/MedicalDataSets/brainmetshare-3 \
         --space wavelet
 
+    # Override pixel normalization (when checkpoint doesn't save config)
+    python -m medgen.scripts.find_optimal_steps \
+        --checkpoint runs/exp1b_checkpoint.pt \
+        --data-root ~/MedicalDataSets/brainmetshare-3 \
+        --rescale
+
+    python -m medgen.scripts.find_optimal_steps \
+        --checkpoint runs/exp1c_checkpoint.pt \
+        --data-root ~/MedicalDataSets/brainmetshare-3 \
+        --pixel-shift 0.2033 --pixel-scale 0.0832
+
     # Smoke test (no checkpoint needed)
     python -m medgen.scripts.find_optimal_steps --smoke-test
 """
@@ -328,6 +339,14 @@ def main():
     parser.add_argument('--save-volumes', action='store_true',
                         help='Save generated volumes as NIfTI (off by default to save disk)')
 
+    # Pixel normalization overrides (when checkpoint doesn't have these saved)
+    parser.add_argument('--rescale', action='store_true',
+                        help='Pixel rescale [-1, 1] -> [0, 1] (override checkpoint config)')
+    parser.add_argument('--pixel-shift', type=float, nargs='+', default=None,
+                        help='Pixel shift value(s) for brain-only normalization (override checkpoint)')
+    parser.add_argument('--pixel-scale', type=float, nargs='+', default=None,
+                        help='Pixel scale value(s) for brain-only normalization (override checkpoint)')
+
     # DDPM-specific
     parser.add_argument('--prediction-type', default=None,
                         help='DDPM prediction type: epsilon/sample (auto-detected)')
@@ -432,14 +451,16 @@ def main():
         noise_depth = pixel_depth
 
         pixel_cfg = ckpt_cfg.get('pixel', {})
-        pixel_shift = pixel_cfg.get('pixel_shift')
-        pixel_scale = pixel_cfg.get('pixel_scale')
-        pixel_rescale = pixel_cfg.get('rescale', False)
+        # CLI flags override checkpoint config
+        pixel_shift = args.pixel_shift or pixel_cfg.get('pixel_shift')
+        pixel_scale = args.pixel_scale or pixel_cfg.get('pixel_scale')
+        pixel_rescale = args.rescale or pixel_cfg.get('rescale', False)
         if pixel_shift is not None or pixel_rescale:
             from medgen.diffusion.spaces import PixelSpace
             space = PixelSpace(rescale=pixel_rescale, shift=pixel_shift, scale=pixel_scale)
             decode_fn = space.decode
-            encode_cond_fn = space.encode
+            # Don't set encode_cond_fn — seg masks should NOT be normalized,
+            # only spatial transforms (wavelet/latent) need conditioning encoding
             if pixel_shift is not None:
                 logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
             if pixel_rescale:

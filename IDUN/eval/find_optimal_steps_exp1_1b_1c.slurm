@@ -41,6 +41,46 @@ DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 COMMON_ARGS="--data-root ${DATA_ROOT} --image-size 128 --num-volumes 25 --lo 10 --hi 50 --metric fid --seed 42"
 
 # ============================================================
+# exp1c: Pixel bravo brain-only N(0,1) normalized
+# ============================================================
+echo ""
+echo "=========================================="
+echo "  exp1c: Pixel bravo brain N(0,1)"
+echo "=========================================="
+
+CKPT_EXP1C="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_20260223-002347/checkpoint_latest.pt"
+OUT_EXP1C="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1c"
+
+echo "Checkpoint: $CKPT_EXP1C"
+time python -m medgen.scripts.find_optimal_steps \
+    --checkpoint "${CKPT_EXP1C}" \
+    --output-dir "${OUT_EXP1C}" \
+    --pixel-shift 0.2033 --pixel-scale 0.0832 \
+    ${COMMON_ARGS}
+echo "--- exp1c results ---"
+cat "${OUT_EXP1C}/search_results.json"
+
+# ============================================================
+# exp1b: Pixel bravo [-1,1] rescaled
+# ============================================================
+echo ""
+echo "=========================================="
+echo "  exp1b: Pixel bravo [-1,1] rescaled"
+echo "=========================================="
+
+CKPT_EXP1B="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_20260221-172156/checkpoint_latest.pt"
+OUT_EXP1B="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1b"
+
+echo "Checkpoint: $CKPT_EXP1B"
+time python -m medgen.scripts.find_optimal_steps \
+    --checkpoint "${CKPT_EXP1B}" \
+    --output-dir "${OUT_EXP1B}" \
+    --rescale \
+    ${COMMON_ARGS}
+echo "--- exp1b results ---"
+cat "${OUT_EXP1B}/search_results.json"
+
+# ============================================================
 # exp1: Pixel bravo [0,1] baseline
 # ============================================================
 echo ""
@@ -58,44 +98,6 @@ time python -m medgen.scripts.find_optimal_steps \
     ${COMMON_ARGS}
 echo "--- exp1 results ---"
 cat "${OUT_EXP1}/search_results.json"
-
-# ============================================================
-# exp1b: Pixel bravo [-1,1] rescaled
-# ============================================================
-echo ""
-echo "=========================================="
-echo "  exp1b: Pixel bravo [-1,1] rescaled"
-echo "=========================================="
-
-CKPT_EXP1B="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_20260221-172156/checkpoint_latest.pt"
-OUT_EXP1B="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1b"
-
-echo "Checkpoint: $CKPT_EXP1B"
-time python -m medgen.scripts.find_optimal_steps \
-    --checkpoint "${CKPT_EXP1B}" \
-    --output-dir "${OUT_EXP1B}" \
-    ${COMMON_ARGS}
-echo "--- exp1b results ---"
-cat "${OUT_EXP1B}/search_results.json"
-
-# ============================================================
-# exp1c: Pixel bravo brain-only N(0,1) normalized
-# ============================================================
-echo ""
-echo "=========================================="
-echo "  exp1c: Pixel bravo brain N(0,1)"
-echo "=========================================="
-
-CKPT_EXP1C="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_20260223-002347/checkpoint_latest.pt"
-OUT_EXP1C="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1c"
-
-echo "Checkpoint: $CKPT_EXP1C"
-time python -m medgen.scripts.find_optimal_steps \
-    --checkpoint "${CKPT_EXP1C}" \
-    --output-dir "${OUT_EXP1C}" \
-    ${COMMON_ARGS}
-echo "--- exp1c results ---"
-cat "${OUT_EXP1C}/search_results.json"
 
 # ============================================================
 # Summary
