@@ -42,6 +42,52 @@ class RFlowStrategy(DiffusionStrategy):
     ode_rtol: float = 1e-5
     prediction_type: str = 'velocity'  # 'velocity' or 'sample' (x₀)
 
+    # EDM preconditioning state (disabled by default)
+    sigma_data: float = 0.0
+    _out_channels: int = 1
+
+    def set_preconditioning(self, sigma_data: float, out_channels: int) -> None:
+        """Enable EDM-style preconditioning for RFlow.
+
+        Args:
+            sigma_data: Standard deviation of the data distribution.
+                Measured from training data (e.g. 0.08 for bravo [0,1]).
+            out_channels: Number of output channels (for extracting x_t from model_input).
+
+        Raises:
+            ValueError: If prediction_type is 'sample' (incompatible with preconditioning).
+        """
+        if self.prediction_type == 'sample':
+            raise ValueError(
+                "EDM preconditioning is incompatible with prediction_type='sample'. "
+                "Preconditioning coefficients (c_skip, c_out) assume velocity prediction."
+            )
+        self.sigma_data = sigma_data
+        self._out_channels = out_channels
+        logger.info(
+            "EDM preconditioning enabled: sigma_data=%.4f, out_channels=%d",
+            sigma_data, out_channels,
+        )
+
+    def _edm_coefficients(
+        self, timesteps: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute EDM preconditioning coefficients for velocity prediction.
+
+        MONAI convention: t̃ = t/T, t̃=0 is clean, t̃=1 is noise.
+        x_t = (1-t̃)*x_0 + t̃*ε, D(t̃) = (1-t̃)²*σ²_data + t̃²
+
+        Returns:
+            (c_in, c_skip_v, c_out_v) tensors of shape [B].
+        """
+        t_norm = (timesteps.float() / self.scheduler.num_train_timesteps).clamp(1e-5, 1 - 1e-5)
+        sd2 = self.sigma_data ** 2
+        D = (1 - t_norm) ** 2 * sd2 + t_norm ** 2
+        c_in = 1.0 / D.sqrt()
+        c_skip_v = ((1 - t_norm) * sd2 - t_norm) / D
+        c_out_v = self.sigma_data / D.sqrt()
+        return c_in, c_skip_v, c_out_v
+
     def setup_scheduler(
         self,
         num_timesteps: int = 1000,
@@ -104,8 +150,51 @@ class RFlowStrategy(DiffusionStrategy):
     def predict_noise_or_velocity(
         self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor
     ) -> torch.Tensor:
-        """RFlow model forward pass (predicts velocity or x₀ depending on prediction_type)."""
-        return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
+        """RFlow model forward pass (predicts velocity or x₀ depending on prediction_type).
+
+        When EDM preconditioning is enabled (sigma_data > 0), applies input scaling
+        and output skip+scale: v = c_skip_v * x_t + c_out_v * F_θ(c_in * input, t).
+        """
+        if self.sigma_data <= 0:
+            return model(x=model_input, timesteps=timesteps)  # type: ignore[no-any-return]
+
+        c_in, c_skip_v, c_out_v = self._edm_coefficients(timesteps)
+        shape = (-1,) + (1,) * (model_input.dim() - 1)
+        c_in = c_in.view(*shape)
+        c_skip_v = c_skip_v.view(*shape)
+        c_out_v = c_out_v.view(*shape)
+
+        x_t = model_input[:, :self._out_channels]
+        F = model(x=c_in * model_input, timesteps=timesteps)
+        return c_skip_v * x_t + c_out_v * F  # type: ignore[no-any-return]
+
+    def _call_model(
+        self,
+        model: nn.Module,
+        model_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        omega: torch.Tensor | None,
+        mode_id: torch.Tensor | None,
+        size_bins: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Call model with EDM preconditioning during generation.
+
+        When sigma_data > 0, wraps the base class dispatch with preconditioning:
+        v = c_skip_v * x_t + c_out_v * F_θ(c_in * input, t).
+        """
+        if self.sigma_data <= 0:
+            return super()._call_model(model, model_input, timesteps, omega, mode_id, size_bins)
+
+        c_in, c_skip_v, c_out_v = self._edm_coefficients(timesteps)
+        shape = (-1,) + (1,) * (model_input.dim() - 1)
+        c_in = c_in.view(*shape)
+        c_skip_v = c_skip_v.view(*shape)
+        c_out_v = c_out_v.view(*shape)
+
+        x_t = model_input[:, :self._out_channels]
+        # Scale input, delegate dispatch to base class
+        F = super()._call_model(model, c_in * model_input, timesteps, omega, mode_id, size_bins)
+        return c_skip_v * x_t + c_out_v * F
 
     def compute_target(
         self,

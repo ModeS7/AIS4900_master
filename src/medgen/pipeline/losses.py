@@ -108,6 +108,45 @@ def compute_min_snr_weighted_mse(
     return (mse_per_sample * snr_weights).mean()
 
 
+def compute_rflow_snr_weighted_mse(
+    prediction: Tensor,
+    target: Tensor | dict[str, Tensor],
+    timesteps: Tensor,
+    num_timesteps: int,
+    gamma: float = 5.0,
+) -> Tensor:
+    """Compute MSE loss with Min-SNR-γ weighting for RFlow.
+
+    For RFlow: SNR(t̃) = ((1-t̃)/t̃)². Weight: min(SNR, γ) / SNR.
+    Downweights high-SNR timesteps (t̃≈0, near clean) where the model
+    wastes capacity on trivially easy predictions.
+
+    Args:
+        prediction: Model velocity prediction [B, C, ...].
+        target: Target velocity (images - noise). Tensor or dict for dual mode.
+        timesteps: Diffusion timesteps [B] in [0, num_timesteps].
+        num_timesteps: Total training timesteps (e.g. 1000).
+        gamma: SNR clipping threshold. 5.0 is standard.
+
+    Returns:
+        Weighted MSE loss scalar.
+    """
+    t_norm = (timesteps.float() / num_timesteps).clamp(1e-5, 1 - 1e-5)
+    snr = ((1 - t_norm) / t_norm) ** 2
+    weight = snr.clamp(max=gamma) / snr.clamp(min=1e-8)
+
+    if isinstance(target, dict):
+        keys = list(target.keys())
+        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
+        mse_0 = ((pred_0.float() - target[keys[0]].float()) ** 2).flatten(1).mean(1)
+        mse_1 = ((pred_1.float() - target[keys[1]].float()) ** 2).flatten(1).mean(1)
+        per_sample_mse = (mse_0 + mse_1) / 2
+    else:
+        per_sample_mse = ((prediction.float() - target.float()) ** 2).flatten(1).mean(1)
+
+    return (per_sample_mse * weight).mean()
+
+
 def compute_region_weighted_mse(
     trainer: 'DiffusionTrainer',
     prediction: Tensor,

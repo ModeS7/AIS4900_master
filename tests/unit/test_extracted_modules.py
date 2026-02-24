@@ -51,6 +51,8 @@ class TestProfilingModule:
             'in_channels': 2,
             'out_channels': 1,
         }
+        trainer._strategy_config.sigma_data = 0.0
+        trainer._strategy_config.snr_gamma = 0.0
         trainer.cfg = OmegaConf.create({
             'model': {
                 'spatial_dims': 2,
@@ -79,6 +81,8 @@ class TestProfilingModule:
             'in_channels': 2,
             'out_channels': 1,
         }
+        trainer._strategy_config.sigma_data = 0.0
+        trainer._strategy_config.snr_gamma = 0.0
         trainer.cfg = OmegaConf.create({
             'model': {
                 'spatial_dims': 2,

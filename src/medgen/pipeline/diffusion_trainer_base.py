@@ -113,6 +113,9 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
             )
             self.use_min_snr = False
 
+        # RFlow-specific Min-SNR-γ (uses RFlow's own SNR formula)
+        self.rflow_snr_gamma: float = sc.snr_gamma if self.strategy_name == 'rflow' else 0.0
+
         # ─────────────────────────────────────────────────────────────────────
         # DC-AE 1.5: Augmented Diffusion Training (from AugmentedDiffusionConfig)
         # ─────────────────────────────────────────────────────────────────────
@@ -424,6 +427,14 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # Log Min-SNR config
         if self.use_min_snr:
             logger.info(f"Min-SNR weighting enabled (gamma={self.min_snr_gamma})")
+
+        # Log RFlow Min-SNR-γ
+        if self.rflow_snr_gamma > 0:
+            logger.info(f"RFlow Min-SNR-γ weighting enabled (gamma={self.rflow_snr_gamma})")
+
+        # Log EDM preconditioning
+        if self._strategy_config.sigma_data > 0 and self.strategy_name == 'rflow':
+            logger.info(f"EDM preconditioning enabled (sigma_data={self._strategy_config.sigma_data})")
 
         # Log augmented diffusion config
         if self.augmented_diffusion_enabled:

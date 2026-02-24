@@ -688,6 +688,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             prediction, images, noise, timesteps
                         )
 
+                    if self.rflow_snr_gamma > 0:
+                        from .losses import compute_rflow_snr_weighted_mse
+                        target = self.strategy.compute_target(images, noise)
+                        mse_loss = compute_rflow_snr_weighted_mse(
+                            prediction, target, timesteps,
+                            self.num_timesteps, self.rflow_snr_gamma,
+                        )
+
                     # Apply regional weighting (per-pixel weights by tumor size)
                     if self.regional_weight_computer is not None:
                         # For seg_conditioned: images IS the seg mask (labels=None)
@@ -1036,6 +1044,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         """Initialize metrics, generation metrics, and logging."""
         super()._on_training_start()
         self._clear_caches()
+
+        # Enable EDM preconditioning on strategy if configured
+        if self._strategy_config.sigma_data > 0 and self.strategy_name == 'rflow':
+            out_ch = self._mode_config.out_channels
+            self.strategy.set_preconditioning(self._strategy_config.sigma_data, out_ch)
 
         # Initialize unified metrics system
         volume_size = None

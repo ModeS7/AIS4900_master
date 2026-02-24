@@ -305,7 +305,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
     # Compiled forward doesn't support mode_id parameter, so disable when using
     # mode embedding or omega conditioning (wrappers need extra kwargs)
     compile_fused = getattr(trainer.cfg.training, 'compile_fused_forward', True)
-    if trainer.use_multi_gpu or trainer.spatial_dims == 3 or trainer.space.scale_factor > 1 or trainer.use_min_snr or trainer.regional_weight_computer is not None or trainer.score_aug is not None or trainer.sda is not None or trainer.use_mode_embedding or trainer.use_omega_conditioning or trainer.augmented_diffusion_enabled or trainer.use_controlnet or trainer.use_size_bin_embedding or trainer.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
+    if trainer.use_multi_gpu or trainer.spatial_dims == 3 or trainer.space.scale_factor > 1 or trainer.use_min_snr or trainer.rflow_snr_gamma > 0 or trainer._strategy_config.sigma_data > 0 or trainer.regional_weight_computer is not None or trainer.score_aug is not None or trainer.sda is not None or trainer.use_mode_embedding or trainer.use_omega_conditioning or trainer.augmented_diffusion_enabled or trainer.use_controlnet or trainer.use_size_bin_embedding or trainer.mode_name not in (ModeType.SEG, ModeType.BRAVO, ModeType.DUAL):
         compile_fused = False
 
     trainer._setup_compiled_forward(compile_fused)

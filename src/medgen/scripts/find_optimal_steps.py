@@ -567,6 +567,11 @@ def main():
         )
         logger.info("Strategy: RFlow")
 
+    # EDM preconditioning (loaded from checkpoint config)
+    sigma_data = ckpt_cfg.get('sigma_data', 0.0)
+    if sigma_data > 0 and hasattr(strategy, 'set_preconditioning'):
+        strategy.set_preconditioning(sigma_data, model_out_channels)
+
     # ── Pre-generate noise (shared across all evaluations) ────────────────
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
     noise_list = generate_noise_tensors(

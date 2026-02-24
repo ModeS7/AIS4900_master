@@ -134,6 +134,13 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
             latent_config['latent_seg_scale'] = trainer.space.latent_seg_scale
         config['latent'] = latent_config
 
+    # Strategy-level config for generation scripts
+    sc = trainer._strategy_config
+    if sc.sigma_data > 0:
+        config['sigma_data'] = sc.sigma_data
+    if sc.snr_gamma > 0:
+        config['snr_gamma'] = sc.snr_gamma
+
     # Size bin config (for seg_conditioned mode)
     if getattr(trainer, 'use_size_bin_embedding', False):
         config['size_bin'] = {

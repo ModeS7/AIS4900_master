@@ -253,6 +253,15 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         strategy.ode_atol = cfg.get('ode_atol', 1e-5)
         strategy.ode_rtol = cfg.get('ode_rtol', 1e-5)
 
+    # EDM preconditioning (loaded from image model checkpoint)
+    _img_ckpt = torch.load(cfg.image_model, map_location='cpu', weights_only=False)
+    _img_cfg = _img_ckpt.get('config', {})
+    _sigma_data = _img_cfg.get('sigma_data', 0.0)
+    _out_ch = _img_cfg.get('out_channels', 1)
+    del _img_ckpt
+    if _sigma_data > 0 and hasattr(strategy, 'set_preconditioning'):
+        strategy.set_preconditioning(_sigma_data, _out_ch)
+
     # Load models
     logger.info("Loading segmentation model...")
     seg_model = load_diffusion_model(
@@ -415,6 +424,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         strategy.ode_solver = cfg.get('ode_solver', 'euler')
         strategy.ode_atol = cfg.get('ode_atol', 1e-5)
         strategy.ode_rtol = cfg.get('ode_rtol', 1e-5)
+
+    # EDM preconditioning (loaded from bravo/image model checkpoint)
+    # Determine which model to check based on gen_mode
+    _precond_model = cfg.get('image_model', cfg.get('seg_model', None))
+    if _precond_model:
+        _pc_ckpt = torch.load(_precond_model, map_location='cpu', weights_only=False)
+        _pc_cfg = _pc_ckpt.get('config', {})
+        _sigma_data = _pc_cfg.get('sigma_data', 0.0)
+        _out_ch = _pc_cfg.get('out_channels', 1)
+        del _pc_ckpt
+        if _sigma_data > 0 and hasattr(strategy, 'set_preconditioning'):
+            strategy.set_preconditioning(_sigma_data, _out_ch)
 
     # Parse fixed size bins if provided
     fixed_bins = None

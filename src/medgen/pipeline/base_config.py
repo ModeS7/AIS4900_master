@@ -176,6 +176,10 @@ class StrategyConfig:
     ode_atol: float = 1e-5
     ode_rtol: float = 1e-5
 
+    # RFlow loss weighting and preconditioning
+    snr_gamma: float = 0.0   # Min-SNR-γ for RFlow. 0 = disabled, 5.0 = standard
+    sigma_data: float = 0.0  # EDM preconditioning. 0 = disabled, 0.08 = bravo [0,1]
+
     def __post_init__(self):
         valid_names = ('ddpm', 'rflow')
         if self.name not in valid_names:
@@ -204,6 +208,8 @@ class StrategyConfig:
             ode_solver=strat_cfg.get('ode_solver', 'euler'),
             ode_atol=strat_cfg.get('ode_atol', 1e-5),
             ode_rtol=strat_cfg.get('ode_rtol', 1e-5),
+            snr_gamma=strat_cfg.get('snr_gamma', 0.0),
+            sigma_data=strat_cfg.get('sigma_data', 0.0),
         )
 
 
