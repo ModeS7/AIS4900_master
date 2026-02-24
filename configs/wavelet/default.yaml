@@ -25,3 +25,11 @@ normalize: false
 # Only meaningful when normalize=false (raw coefficients).
 # With normalize=true, this is redundant.
 rescale: false
+
+# Brain-only normalization threshold (like pixel_norm=bravo for wavelet space).
+# When > 0, compute per-subband stats excluding |coeff| <= threshold.
+# Background (0.0 in pixel space → 0.0 in all subbands) is excluded from stats
+# but still gets the shift/scale transform applied. Result: brain subbands ~N(0,1),
+# background maps to a constant (e.g. -2.44).
+# 0.0 = use all voxels (default).
+normalize_threshold: 0.0
