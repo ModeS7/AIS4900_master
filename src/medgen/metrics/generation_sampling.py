@@ -294,8 +294,8 @@ def generate_samples(
     model.eval()
     all_samples = []
 
-    # Check if conditioning must be encoded (latent/wavelet spaces only,
-    # NOT pixel-space normalization where conditioning stays in raw form)
+    # Check if conditioning must be encoded (latent/wavelet/pixel normalization)
+    # Training encodes labels through space.encode(), generation must match
     encode_cond = self_.space is not None and self_.space.encode_conditioning
 
     # Generate in batches to avoid OOM with CUDA graphs
@@ -303,8 +303,7 @@ def generate_samples(
         end_idx = min(start_idx + batch_size, num_to_use)
         masks = self_.fixed_conditioning_masks[start_idx:end_idx]
 
-        # For latent/wavelet diffusion, encode pixel-space masks to match
-        # the spatial resolution the model operates at
+        # Encode conditioning to match training (pixel norm, latent, wavelet)
         if encode_cond:
             with torch.no_grad():
                 masks = self_.space.encode(masks)
@@ -425,14 +424,14 @@ def generate_and_extract_features_3d_streaming(
     # Limit diversity samples to 2 for 3D to avoid OOM
     max_diversity_samples = 2
 
-    # Check if conditioning must be encoded (latent/wavelet spaces only)
+    # Check if conditioning must be encoded (latent/wavelet/pixel normalization)
     encode_cond = self_.space is not None and self_.space.encode_conditioning
 
     for idx in range(num_to_generate):
         # Get conditioning for this sample (pixel-space from dataset)
         masks_pixel = self_.fixed_conditioning_masks[idx:idx+1]
 
-        # For latent/wavelet diffusion, encode masks to match model space
+        # Encode conditioning to match training (pixel norm, latent, wavelet)
         if encode_cond:
             with torch.no_grad():
                 masks = self_.space.encode(masks_pixel)

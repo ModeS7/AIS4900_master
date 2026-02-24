@@ -32,9 +32,10 @@ class DiffusionSpace(ABC):
     def encode_conditioning(self) -> bool:
         """Whether conditioning inputs must be encoded through this space.
 
-        True for latent/wavelet spaces where the model operates at a different
-        spatial resolution. False for pixel-space normalization (shift/scale,
-        rescale) where conditioning (e.g. seg masks) should stay in raw form.
+        True when trainer.py:train_epoch encodes labels via space.encode().
+        This includes latent/wavelet spaces (spatial resolution change) AND
+        pixel-space normalization (rescale, shift/scale). Subclasses override
+        as needed.
         """
         return self.scale_factor > 1
 
@@ -194,6 +195,16 @@ class PixelSpace(DiffusionSpace):
     @property
     def needs_decode(self) -> bool:
         """Needs decode when rescaling or normalization is enabled."""
+        return self._rescale or self._shift is not None
+
+    @property
+    def encode_conditioning(self) -> bool:
+        """Whether conditioning must be encoded through this space.
+
+        True when rescale or shift/scale normalization is active, because
+        trainer.py encodes labels through space.encode() unconditionally.
+        Generation must match training: conditioning sees the same transform.
+        """
         return self._rescale or self._shift is not None
 
     @property

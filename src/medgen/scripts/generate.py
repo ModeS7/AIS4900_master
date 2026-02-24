@@ -526,6 +526,26 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
         )
 
+        # Pixel normalization from bravo checkpoint (exp1b rescale, exp1c shift/scale)
+        bravo_ckpt = torch.load(cfg.image_model, map_location='cpu', weights_only=False)
+        bravo_pixel_cfg = bravo_ckpt.get('config', {}).get('pixel', {})
+        del bravo_ckpt
+        bravo_space = None
+        _bravo_pixel_shift = bravo_pixel_cfg.get('pixel_shift')
+        _bravo_pixel_scale = bravo_pixel_cfg.get('pixel_scale')
+        _bravo_pixel_rescale = bravo_pixel_cfg.get('rescale', False)
+        if _bravo_pixel_shift is not None or _bravo_pixel_rescale:
+            from medgen.diffusion.spaces import PixelSpace
+            bravo_space = PixelSpace(
+                rescale=_bravo_pixel_rescale,
+                shift=_bravo_pixel_shift,
+                scale=_bravo_pixel_scale,
+            )
+            if _bravo_pixel_shift is not None:
+                logger.info(f"Bravo pixel normalization: shift={_bravo_pixel_shift}, scale={_bravo_pixel_scale}")
+            if _bravo_pixel_rescale:
+                logger.info("Bravo pixel rescale: [-1, 1]")
+
         # DiffRS (opt-in, applied to bravo model only)
         diffrs_disc, diffrs_cfg = _build_diffrs(cfg, bravo_model, device)
 
@@ -602,6 +622,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
 
+            # Encode conditioning to match training (pixel normalization encodes labels)
+            if bravo_space is not None:
+                seg_tensor = bravo_space.encode(seg_tensor)
+
             # Generate bravo with seg mask conditioning (CFG if enabled)
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
             bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device,
@@ -610,7 +634,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                    cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
                                    diffrs_discriminator=diffrs_disc,
                                    diffrs_config=diffrs_cfg)
-            # Clamp to [0, 1] like working 2D code does
+            # Decode from diffusion space to pixel space, then clamp
+            if bravo_space is not None:
+                bravo = bravo_space.decode(bravo)
             bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 
             # Validate segmentation is inside brain

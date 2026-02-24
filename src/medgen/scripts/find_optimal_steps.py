@@ -459,8 +459,9 @@ def main():
             from medgen.diffusion.spaces import PixelSpace
             space = PixelSpace(rescale=pixel_rescale, shift=pixel_shift, scale=pixel_scale)
             decode_fn = space.decode
-            # Don't set encode_cond_fn — seg masks should NOT be normalized,
-            # only spatial transforms (wavelet/latent) need conditioning encoding
+            # Training encodes labels through space.encode() (trainer.py:571),
+            # so generation must also encode conditioning to match
+            encode_cond_fn = space.encode
             if pixel_shift is not None:
                 logger.info(f"Pixel normalization: shift={pixel_shift}, scale={pixel_scale}")
             if pixel_rescale:
