@@ -42,7 +42,7 @@ time python -m medgen.scripts.generate \
     gen_mode=bravo \
     seg_model=${SEG_CHECKPOINT} \
     image_model=${BRAVO_CHECKPOINT} \
-    output_subdir=exp1_1_3d_256_100_baseline \
+    output_subdir=exp1_1_3d_256_525_baseline \
     num_images=525 \
     num_steps_seg=40 \
     num_steps_bravo=25 \
