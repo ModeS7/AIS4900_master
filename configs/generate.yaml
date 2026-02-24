@@ -40,7 +40,9 @@ fov_mm: 240.0
 # Generation settings
 batch_size: 8             # Batch size (auto-reduced for 3D)
 num_images: 1000          # Number of samples to generate
-num_steps: 50             # Number of diffusion steps
+num_steps: 50             # Number of diffusion steps (used as default for both models)
+num_steps_seg: null       # Override steps for seg model (null = use num_steps)
+num_steps_bravo: null     # Override steps for bravo/image model (null = use num_steps)
 current_image: 0          # Starting counter for resuming
 
 # Size bin settings (for seg_conditioned or 3D seg generation)

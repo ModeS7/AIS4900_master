@@ -284,6 +284,11 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     diffrs_disc, diffrs_cfg = _build_diffrs(cfg, image_model, device)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve per-model step counts (fallback to num_steps)
+    steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
+    steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
+
     logger.info(f"Generating {cfg.num_images} samples...")
 
     current_image = cfg.current_image
@@ -296,7 +301,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     while current_image < cfg.num_images:
         # Generate seg masks
         noise = torch.randn(get_noise_shape(batch_size, 1, 2, cfg.image_size, 0), device=device)
-        seg_masks = generate_batch(seg_model, strategy, noise, cfg.num_steps, device)
+        seg_masks = generate_batch(seg_model, strategy, noise, steps_seg, device)
 
         # Validate and cache masks
         valid_in_batch = 0
@@ -340,7 +345,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, cfg.image_size, 0), device=device)
             images = generate_batch(
-                image_model, strategy, noise, cfg.num_steps, device, masks_tensor,
+                image_model, strategy, noise, steps_bravo, device, masks_tensor,
                 diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
             )
 
@@ -366,7 +371,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(1, out_ch, 2, cfg.image_size, 0), device=device)
             images = generate_batch(
-                image_model, strategy, noise, cfg.num_steps, device, masks_tensor,
+                image_model, strategy, noise, steps_bravo, device, masks_tensor,
                 diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
             )
 
@@ -446,10 +451,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve per-model step counts (fallback to num_steps)
+    steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
+    steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
+
     # Log output dimensions
     trim_slices = cfg.get('trim_slices', 10)
     output_depth = cfg.depth - trim_slices if trim_slices > 0 else cfg.depth
     logger.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
+    if steps_seg != steps_bravo:
+        logger.info(f"Steps: seg={steps_seg}, bravo={steps_bravo}")
+    else:
+        logger.info(f"Steps: {steps_seg}")
 
     # Collect all bins info for CSV
     all_bins: list[tuple[int, list[int]]] = []
@@ -485,7 +498,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             retries = 0
             while not valid_mask and retries < max_retries:
                 noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
                                      cfg_scale=cfg.cfg_scale_seg,
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
@@ -608,7 +621,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             while not valid_mask and retries < max_retries:
                 # Generate seg with size bin conditioning
                 noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
                                      cfg_scale=cfg.cfg_scale_seg,
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
@@ -649,7 +662,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Generate bravo with seg mask conditioning (CFG if enabled)
             noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            bravo = generate_batch(bravo_model, strategy, noise, cfg.num_steps, device,
+            bravo = generate_batch(bravo_model, strategy, noise, steps_bravo, device,
                                    conditioning=seg_tensor,
                                    cfg_scale=cfg.cfg_scale_bravo,
                                    cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
@@ -749,7 +762,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             retries = 0
             while not valid_mask and retries < max_retries:
                 noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-                seg = generate_batch(seg_model, strategy, noise, cfg.num_steps, device,
+                seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      bin_maps=bin_maps,
                                      cfg_scale=cfg.cfg_scale_seg,
                                      cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
