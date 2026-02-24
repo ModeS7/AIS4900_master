@@ -251,44 +251,48 @@ def main(cfg: DictConfig) -> None:
         import json
 
         from medgen.data.loaders.latent import LATENT_STATS_VERSION
+        latent_normalize = latent_cfg.get('normalize', True)
         latent_shift = None
         latent_scale = None
         latent_seg_shift = None
         latent_seg_scale = None
-        train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
-        if os.path.exists(train_meta_path):
-            with open(train_meta_path) as f:
-                train_metadata = json.load(f)
+        if latent_normalize:
+            train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
+            if os.path.exists(train_meta_path):
+                with open(train_meta_path) as f:
+                    train_metadata = json.load(f)
 
-            stats_version = train_metadata.get('latent_stats_version', 0)
-            needs_recompute = (
-                'latent_shift' not in train_metadata
-                or stats_version < LATENT_STATS_VERSION
-            )
+                stats_version = train_metadata.get('latent_stats_version', 0)
+                needs_recompute = (
+                    'latent_shift' not in train_metadata
+                    or stats_version < LATENT_STATS_VERSION
+                )
 
-            if needs_recompute:
-                if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
-                    logger.warning(
-                        f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
-                        f"Old scale={train_metadata.get('latent_scale')} was likely too small."
-                    )
+                if needs_recompute:
+                    if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
+                        logger.warning(
+                            f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
+                            f"Old scale={train_metadata.get('latent_scale')} was likely too small."
+                        )
+                    else:
+                        logger.info("Computing normalization stats for existing cache...")
+                    stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
+                    if stats:
+                        latent_shift = stats['latent_shift']
+                        latent_scale = stats['latent_scale']
+                        latent_seg_shift = stats.get('latent_seg_shift')
+                        latent_seg_scale = stats.get('latent_seg_scale')
+                        train_metadata.update(stats)
+                        with open(train_meta_path, 'w') as f:
+                            json.dump(train_metadata, f, indent=2)
+                        logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
                 else:
-                    logger.info("Computing normalization stats for existing cache...")
-                stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
-                if stats:
-                    latent_shift = stats['latent_shift']
-                    latent_scale = stats['latent_scale']
-                    latent_seg_shift = stats.get('latent_seg_shift')
-                    latent_seg_scale = stats.get('latent_seg_scale')
-                    train_metadata.update(stats)
-                    with open(train_meta_path, 'w') as f:
-                        json.dump(train_metadata, f, indent=2)
-                    logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
-            else:
-                latent_shift = train_metadata.get('latent_shift')
-                latent_scale = train_metadata.get('latent_scale')
-                latent_seg_shift = train_metadata.get('latent_seg_shift')
-                latent_seg_scale = train_metadata.get('latent_seg_scale')
+                    latent_shift = train_metadata.get('latent_shift')
+                    latent_scale = train_metadata.get('latent_scale')
+                    latent_seg_shift = train_metadata.get('latent_seg_shift')
+                    latent_seg_scale = train_metadata.get('latent_seg_scale')
+        else:
+            logger.info("Latent normalization disabled (latent.normalize=false)")
 
         # Create LatentSpace with normalization stats (after cache ensures stats exist)
         space = LatentSpace(
@@ -316,6 +320,7 @@ def main(cfg: DictConfig) -> None:
             use_distributed=use_multi_gpu,
             rank=trainer.rank if use_multi_gpu else 0,
             world_size=trainer.world_size if use_multi_gpu else 1,
+            normalize=latent_normalize,
         )
         logger.info(f"Training dataset (latent): {len(train_dataset)} samples")
 
@@ -374,6 +379,7 @@ def main(cfg: DictConfig) -> None:
             cache_dir=cache_dir,
             mode=mode,
             world_size=world_size,
+            normalize=latent_normalize,
         )
     else:
         # Pixel-space validation dataloader using ModeFactory
@@ -659,11 +665,13 @@ def _train_3d(cfg: DictConfig) -> None:
 
         # Create latent dataloaders (for training)
         train_loader, train_dataset = create_latent_3d_dataloader(
-            cfg, cache_dir, 'train', mode
+            cfg, cache_dir, 'train', mode, normalize=latent_normalize,
         )
         logger.info(f"Train dataset (latent): {len(train_dataset)} volumes")
 
-        val_result = create_latent_3d_validation_dataloader(cfg, cache_dir, mode)
+        val_result = create_latent_3d_validation_dataloader(
+            cfg, cache_dir, mode, normalize=latent_normalize,
+        )
         if val_result is not None:
             val_loader, val_dataset = val_result
             logger.info(f"Val dataset (latent): {len(val_dataset)} volumes")
@@ -683,45 +691,49 @@ def _train_3d(cfg: DictConfig) -> None:
         import json
 
         from medgen.data.loaders.latent import LATENT_STATS_VERSION
+        latent_normalize = latent_cfg.get('normalize', True)
         latent_shift = None
         latent_scale = None
         latent_seg_shift = None
         latent_seg_scale = None
         train_cache_dir = os.path.join(cache_dir, 'train')
-        train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
-        if os.path.exists(train_meta_path):
-            with open(train_meta_path) as f:
-                train_metadata = json.load(f)
+        if latent_normalize:
+            train_meta_path = os.path.join(train_cache_dir, 'metadata.json')
+            if os.path.exists(train_meta_path):
+                with open(train_meta_path) as f:
+                    train_metadata = json.load(f)
 
-            stats_version = train_metadata.get('latent_stats_version', 0)
-            needs_recompute = (
-                'latent_shift' not in train_metadata
-                or stats_version < LATENT_STATS_VERSION
-            )
+                stats_version = train_metadata.get('latent_stats_version', 0)
+                needs_recompute = (
+                    'latent_shift' not in train_metadata
+                    or stats_version < LATENT_STATS_VERSION
+                )
 
-            if needs_recompute:
-                if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
-                    logger.warning(
-                        f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
-                        f"Old scale={train_metadata.get('latent_scale')} was likely too small."
-                    )
+                if needs_recompute:
+                    if stats_version < LATENT_STATS_VERSION and 'latent_shift' in train_metadata:
+                        logger.warning(
+                            f"Recomputing latent stats (version {stats_version} < {LATENT_STATS_VERSION}). "
+                            f"Old scale={train_metadata.get('latent_scale')} was likely too small."
+                        )
+                    else:
+                        logger.info("Computing normalization stats for existing cache...")
+                    stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
+                    if stats:
+                        latent_shift = stats['latent_shift']
+                        latent_scale = stats['latent_scale']
+                        latent_seg_shift = stats.get('latent_seg_shift')
+                        latent_seg_scale = stats.get('latent_seg_scale')
+                        train_metadata.update(stats)
+                        with open(train_meta_path, 'w') as f:
+                            json.dump(train_metadata, f, indent=2)
+                        logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
                 else:
-                    logger.info("Computing normalization stats for existing cache...")
-                stats = LatentCacheBuilder.compute_channel_stats(train_cache_dir)
-                if stats:
-                    latent_shift = stats['latent_shift']
-                    latent_scale = stats['latent_scale']
-                    latent_seg_shift = stats.get('latent_seg_shift')
-                    latent_seg_scale = stats.get('latent_seg_scale')
-                    train_metadata.update(stats)
-                    with open(train_meta_path, 'w') as f:
-                        json.dump(train_metadata, f, indent=2)
-                    logger.info(f"Latent stats (v{LATENT_STATS_VERSION}): shift={latent_shift}, scale={latent_scale}")
-            else:
-                latent_shift = train_metadata.get('latent_shift')
-                latent_scale = train_metadata.get('latent_scale')
-                latent_seg_shift = train_metadata.get('latent_seg_shift')
-                latent_seg_scale = train_metadata.get('latent_seg_scale')
+                    latent_shift = train_metadata.get('latent_shift')
+                    latent_scale = train_metadata.get('latent_scale')
+                    latent_seg_shift = train_metadata.get('latent_seg_shift')
+                    latent_seg_scale = train_metadata.get('latent_seg_scale')
+        else:
+            logger.info("Latent normalization disabled (latent.normalize=false)")
 
         # Create LatentSpace with detected/configured parameters
         space = LatentSpace(

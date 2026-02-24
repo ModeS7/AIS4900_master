@@ -68,6 +68,7 @@ class LatentDataset(Dataset):
         cache_dir: Directory containing pre-encoded .pt files.
         mode: Training mode ('bravo', 'dual', 'seg', 'multi', 'multi_modality').
         spatial_dims: Number of spatial dimensions (2 or 3). Auto-detected if None.
+        normalize: Whether to apply per-channel normalization. Default True.
     """
 
     def __init__(
@@ -75,6 +76,7 @@ class LatentDataset(Dataset):
         cache_dir: str,
         mode: str,
         spatial_dims: int | None = None,
+        normalize: bool = True,
     ) -> None:
         # Validate cache directory exists
         if not os.path.isdir(cache_dir):
@@ -95,9 +97,12 @@ class LatentDataset(Dataset):
         self.spatial_dims = spatial_dims
 
         # Load normalization stats from metadata (or backfill from cache)
-        self._shift, self._scale, self._seg_shift, self._seg_scale = (
-            self._load_normalization_stats()
-        )
+        if normalize:
+            self._shift, self._scale, self._seg_shift, self._seg_scale = (
+                self._load_normalization_stats()
+            )
+        else:
+            self._shift = self._scale = self._seg_shift = self._seg_scale = None
 
         name = "LatentDataset" if spatial_dims == 2 else "Latent3DDataset"
         logger.info(f"{name}: Found {len(self.files)} samples in {cache_dir}")
@@ -892,6 +897,7 @@ def create_latent_dataloader(
     rank: int = 0,
     world_size: int = 1,
     spatial_dims: int | None = None,
+    normalize: bool = True,
 ) -> tuple[DataLoader, LatentDataset]:
     """Create dataloader for pre-encoded latents.
 
@@ -908,13 +914,14 @@ def create_latent_dataloader(
         rank: Process rank for distributed training.
         world_size: Total number of processes.
         spatial_dims: Override spatial dimensions (auto-detected if None).
+        normalize: Whether to apply per-channel normalization. Default True.
 
     Returns:
         Tuple of (DataLoader, LatentDataset).
     """
     split_cache_dir = get_validated_split_dir(cache_dir, split, raise_on_missing=True)
 
-    dataset = LatentDataset(split_cache_dir, mode, spatial_dims=spatial_dims)
+    dataset = LatentDataset(split_cache_dir, mode, spatial_dims=spatial_dims, normalize=normalize)
 
     dataloader = create_dataloader(
         dataset,
@@ -934,6 +941,7 @@ def create_latent_validation_dataloader(
     batch_size: int | None = None,
     world_size: int = 1,
     spatial_dims: int | None = None,
+    normalize: bool = True,
 ) -> tuple[DataLoader, LatentDataset] | None:
     """Create validation dataloader for pre-encoded latents.
 
@@ -944,6 +952,7 @@ def create_latent_validation_dataloader(
         batch_size: Override batch size.
         world_size: Number of GPUs for DDP.
         spatial_dims: Override spatial dimensions (auto-detected if None).
+        normalize: Whether to apply per-channel normalization. Default True.
 
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if val cache doesn't exist.
@@ -958,7 +967,7 @@ def create_latent_validation_dataloader(
     if world_size > 1:
         batch_size = max(1, batch_size // world_size)
 
-    dataset = LatentDataset(val_cache_dir, mode, spatial_dims=spatial_dims)
+    dataset = LatentDataset(val_cache_dir, mode, spatial_dims=spatial_dims, normalize=normalize)
 
     # Fixed seed for reproducible validation
     val_generator = torch.Generator().manual_seed(42)
@@ -982,6 +991,7 @@ def create_latent_test_dataloader(
     mode: str,
     batch_size: int | None = None,
     spatial_dims: int | None = None,
+    normalize: bool = True,
 ) -> tuple[DataLoader, LatentDataset] | None:
     """Create test dataloader for pre-encoded latents.
 
@@ -991,6 +1001,7 @@ def create_latent_test_dataloader(
         mode: Training mode.
         batch_size: Override batch size.
         spatial_dims: Override spatial dimensions (auto-detected if None).
+        normalize: Whether to apply per-channel normalization. Default True.
 
     Returns:
         Tuple of (DataLoader, LatentDataset) or None if test cache doesn't exist.
@@ -1001,7 +1012,7 @@ def create_latent_test_dataloader(
 
     batch_size = batch_size or cfg.training.batch_size
 
-    dataset = LatentDataset(test_cache_dir, mode, spatial_dims=spatial_dims)
+    dataset = LatentDataset(test_cache_dir, mode, spatial_dims=spatial_dims, normalize=normalize)
 
     dataloader = create_dataloader(
         dataset,

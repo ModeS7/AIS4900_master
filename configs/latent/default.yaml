@@ -82,3 +82,8 @@ num_workers: 4
 
 # Batch size for encoding (when building cache)
 batch_size: 32
+
+# Per-channel normalization of latents: z_norm = (z - mean) / std
+# When true (default), latent channels are normalized to ~N(0,1)
+# When false, raw encoder outputs are used directly
+normalize: true
