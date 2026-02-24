@@ -61,6 +61,7 @@ def compute_validation_losses(
     total_lpips = 0.0
     total_dice = 0.0
     total_iou = 0.0
+    total_aux_bin = 0.0
     n_batches = 0
 
     # Check if seg mode (use Dice/IoU instead of perceptual metrics)
@@ -182,6 +183,18 @@ def compute_validation_losses(
             else:
                 prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
             mse_loss, predicted_clean = trainer.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+
+            # Auxiliary bin prediction loss (validation)
+            bin_pred_head = getattr(trainer, '_bin_prediction_head', None)
+            if bin_pred_head is not None and size_bins is not None:
+                mask = size_bins.sum(dim=1) > 0  # [B] — True for conditioned samples
+                if mask.any():
+                    bin_pred = bin_pred_head.predict()
+                    if bin_pred is not None:
+                        target = size_bins[mask].float()
+                        pred = bin_pred[mask]
+                        total_aux_bin += torch.nn.functional.mse_loss(pred, target).item()
+                bin_pred_head.clear_cache()
 
             # Compute perceptual loss
             if trainer.perceptual_weight > 0:
@@ -390,6 +403,8 @@ def compute_validation_losses(
             if trainer.perceptual_weight > 0:
                 trainer._unified_metrics.update_loss('Total', metrics['total'], phase='val')
                 trainer._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')
+            if total_aux_bin > 0:
+                trainer._unified_metrics.update_loss('AuxBin', total_aux_bin / n_batches, phase='val')
 
             # Compute 3D MS-SSIM first so we can include it in metrics
             msssim_3d = None

@@ -189,7 +189,7 @@ class SizeBinTimeEmbed(nn.Module):
 class BinPredictionHead(nn.Module):
     """Predicts size bin counts from UNet bottleneck features.
 
-    Attaches via forward hook on mid_block — no model architecture changes.
+    Attaches via forward hook on middle_block — no model architecture changes.
     Used as auxiliary loss to force the bottleneck to encode bin information.
     """
 
