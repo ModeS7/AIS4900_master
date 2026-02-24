@@ -663,6 +663,12 @@ def _train_3d(cfg: DictConfig) -> None:
                     seg_checkpoint_path=seg_checkpoint_path,
                 )
 
+        # Read normalization config before creating dataloaders
+        import json
+
+        from medgen.data.loaders.latent import LATENT_STATS_VERSION
+        latent_normalize = latent_cfg.get('normalize', True)
+
         # Create latent dataloaders (for training)
         train_loader, train_dataset = create_latent_3d_dataloader(
             cfg, cache_dir, 'train', mode, normalize=latent_normalize,
@@ -688,10 +694,6 @@ def _train_3d(cfg: DictConfig) -> None:
         pixel_val_loader = pixel_val_result[0] if pixel_val_result else None
 
         # Read normalization stats from train cache metadata (recompute if stale)
-        import json
-
-        from medgen.data.loaders.latent import LATENT_STATS_VERSION
-        latent_normalize = latent_cfg.get('normalize', True)
         latent_shift = None
         latent_scale = None
         latent_seg_shift = None
