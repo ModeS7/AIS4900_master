@@ -6,6 +6,8 @@ using RANO-BM clinical thresholds (Feret diameter).
 
 Unlike RegionalMetricsTracker which tracks reconstruction error,
 this tracks segmentation quality metrics per region.
+
+Supports both 2D and 3D data via ``spatial_dims`` parameter.
 """
 import logging
 
@@ -20,20 +22,29 @@ from ..constants import TUMOR_SIZE_CATEGORIES, TUMOR_SIZE_THRESHOLDS_MM
 
 logger = logging.getLogger(__name__)
 
+# 26-connectivity structure for 3D connected components
+_STRUCTURE_3D = np.ones((3, 3, 3), dtype=np.int32)
+
 
 class SegRegionalMetricsTracker:
-    """Regional Dice/IoU tracking for segmentation compression.
+    """Regional Dice/IoU tracking for segmentation.
 
     Tracks segmentation quality (Dice, IoU) per tumor size category.
     Each tumor is classified by Feret diameter using RANO-BM thresholds.
 
-    Unlike RegionalMetricsTracker which computes L1/MSE error per region,
-    this computes Dice/IoU scores per individual tumor.
+    Supports both 2D (``spatial_dims=2``) and 3D (``spatial_dims=3``).
+    For 3D, uses 26-connectivity connected components and computes
+    Feret diameter from the max-area axial slice.
 
     Args:
         image_size: Image size in pixels (e.g., 64, 128, 256).
         fov_mm: Field of view in millimeters. Default: 240.0.
         device: PyTorch device for computation.
+        spatial_dims: 2 for 2D slices, 3 for 3D volumes.
+        voxel_spacing: Voxel size in mm for anisotropic 3D data.
+            For 2D, only the first value is used (isotropic).
+            For 3D, expects ``(D, H, W)`` ordering.
+            Default: ``None`` (computed from ``fov_mm / image_size``).
 
     Example:
         tracker = SegRegionalMetricsTracker(image_size=256)
@@ -51,22 +62,31 @@ class SegRegionalMetricsTracker:
         image_size: int,
         fov_mm: float = 240.0,
         device: torch.device | None = None,
+        spatial_dims: int = 2,
+        voxel_spacing: tuple[float, ...] | None = None,
     ):
         self.image_size = image_size
         self.fov_mm = fov_mm
         self.device = device or torch.device('cuda')
+        self.spatial_dims = spatial_dims
         self.tumor_size_thresholds = TUMOR_SIZE_THRESHOLDS_MM
-        self.mm_per_pixel = fov_mm / image_size
+
+        if voxel_spacing is not None:
+            self.voxel_spacing = voxel_spacing
+            # For Feret diameter, use the in-plane (H, W) spacing
+            self.mm_per_pixel = voxel_spacing[-1] if len(voxel_spacing) >= 2 else voxel_spacing[0]
+        else:
+            self.mm_per_pixel = fov_mm / image_size
+            self.voxel_spacing = (self.mm_per_pixel,) * spatial_dims
+
         self.reset()
 
     def reset(self) -> None:
         """Reset accumulators for new validation run."""
-        # Overall metrics
         self.total_dice = 0.0
         self.total_iou = 0.0
         self.total_tumors = 0
 
-        # Per-size accumulators
         self.size_dice_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
         self.size_iou_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
         self.size_tumor_count: dict[str, int] = {k: 0 for k in TUMOR_SIZE_CATEGORIES}
@@ -84,35 +104,83 @@ class SegRegionalMetricsTracker:
         target_binary: np.ndarray,
         tumor_mask: np.ndarray,
         smooth: float = 1.0,
-    ) -> tuple:
+    ) -> tuple[float, float]:
         """Compute Dice and IoU for a single tumor region.
 
+        Works for both 2D and 3D arrays.
+
         Args:
-            pred_binary: Binary prediction mask [H, W].
-            target_binary: Binary target mask [H, W].
-            tumor_mask: Binary mask for this specific tumor [H, W].
+            pred_binary: Binary prediction mask.
+            target_binary: Binary target mask.
+            tumor_mask: Binary mask for this specific tumor.
             smooth: Smoothing factor to avoid division by zero.
 
         Returns:
             Tuple of (dice, iou) scores for this tumor.
         """
-        # Extract predictions and targets within tumor region
         pred_in_region = pred_binary[tumor_mask]
         target_in_region = target_binary[tumor_mask]
 
-        # Compute intersection and union
         intersection = np.sum(pred_in_region & target_in_region)
         pred_sum = np.sum(pred_in_region)
         target_sum = np.sum(target_in_region)
 
-        # Dice = 2*|A∩B| / (|A| + |B|)
         dice = (2.0 * intersection + smooth) / (pred_sum + target_sum + smooth)
 
-        # IoU = |A∩B| / |A∪B|
         union = pred_sum + target_sum - intersection
         iou = (intersection + smooth) / (union + smooth)
 
         return dice, iou
+
+    def _get_2d_feret(self, region: 'regionprops') -> float:
+        """Get Feret diameter for a 2D region with fallback.
+
+        Args:
+            region: skimage regionprops region object.
+
+        Returns:
+            Feret diameter in pixels.
+        """
+        try:
+            return region.feret_diameter_max
+        except (ValueError, Exception):
+            # Degenerate region — fall back to bounding box diagonal
+            bbox = region.bbox
+            if len(bbox) == 4:
+                extent = [bbox[2] - bbox[0], bbox[3] - bbox[1]]
+            else:
+                extent = [bbox[i + len(bbox) // 2] - bbox[i] for i in range(len(bbox) // 2)]
+            return max(extent) if extent else 0.0
+
+    def _get_3d_feret(self, tumor_mask_3d: np.ndarray) -> float | None:
+        """Get Feret diameter for a 3D tumor by extracting max-area axial slice.
+
+        Reuses the approach from RegionalMetricsTracker: find the axial slice
+        with the largest cross-sectional area, then compute 2D Feret on that.
+
+        Args:
+            tumor_mask_3d: 3D binary mask for this tumor [D, H, W].
+
+        Returns:
+            Feret diameter in pixels, or None if no valid region found.
+        """
+        # Find slice with maximum cross-sectional area
+        slice_areas = tumor_mask_3d.sum(axis=(1, 2))  # [D]
+        max_slice_idx = np.argmax(slice_areas)
+
+        # Extract 2D slice for Feret diameter computation
+        tumor_slice_2d = tumor_mask_3d[max_slice_idx]
+
+        # Run 2D connected components on the max slice
+        labeled_2d, _ = scipy_label(tumor_slice_2d)
+        regions_2d = regionprops(labeled_2d)
+
+        if not regions_2d:
+            return None
+
+        # Use the largest region in this slice
+        largest_region = max(regions_2d, key=lambda r: r.area)
+        return self._get_2d_feret(largest_region)
 
     def update(
         self,
@@ -127,80 +195,89 @@ class SegRegionalMetricsTracker:
         then computes Dice/IoU for each tumor region.
 
         Args:
-            prediction: Predicted mask (logits or probabilities) [B, 1, H, W].
-            target: Binary target mask [B, 1, H, W].
+            prediction: Predicted mask (logits or probabilities).
+                2D: [B, 1, H, W], 3D: [B, 1, D, H, W].
+            target: Binary target mask (same shape as prediction).
             apply_sigmoid: Whether to apply sigmoid to prediction.
             threshold: Binarization threshold.
         """
-        # Move to CPU for connected component analysis
         pred = prediction.detach()
         tgt = target.detach()
 
         if apply_sigmoid:
             pred = torch.sigmoid(pred)
 
-        # Binarize
         pred_binary = (pred > threshold).cpu().numpy()
         target_binary = (tgt > threshold).cpu().numpy()
 
         batch_size = target.shape[0]
 
         for i in range(batch_size):
-            # Get 2D arrays
-            pred_i = pred_binary[i, 0]  # [H, W]
-            tgt_i = target_binary[i, 0]  # [H, W]
+            pred_i = pred_binary[i, 0]  # [H, W] or [D, H, W]
+            tgt_i = target_binary[i, 0]
 
-            # Find tumors using connected components on TARGET
-            labeled, num_tumors = scipy_label(tgt_i)
+            if self.spatial_dims == 3:
+                self._update_3d_sample(pred_i, tgt_i)
+            else:
+                self._update_2d_sample(pred_i, tgt_i)
 
-            if num_tumors == 0:
+    def _update_2d_sample(self, pred_i: np.ndarray, tgt_i: np.ndarray) -> None:
+        """Process a single 2D sample [H, W]."""
+        labeled, num_tumors = scipy_label(tgt_i)
+        if num_tumors == 0:
+            return
+
+        regions = regionprops(labeled)
+
+        for region in regions:
+            if region.area < 5:
                 continue
 
-            # Get region properties
-            regions = regionprops(labeled)
+            feret_px = self._get_2d_feret(region)
+            feret_mm = feret_px * self.mm_per_pixel
+            size_cat = self._classify_tumor_size(feret_mm)
 
-            for region in regions:
-                # Skip tiny fragments (<5 pixels)
-                if region.area < 5:
-                    continue
+            tumor_mask = (labeled == region.label)
+            dice, iou = self._compute_tumor_dice_iou(pred_i, tgt_i, tumor_mask)
 
-                # Get Feret diameter (may fail on degenerate 3D regions)
-                try:
-                    feret_px = region.feret_diameter_max
-                except ValueError:
-                    # Degenerate region (e.g., flat 2D plane in 3D)
-                    # Fall back to approximate diameter from bounding box
-                    logger.debug("Degenerate region detected, using bbox fallback for diameter")
-                    bbox = region.bbox
-                    if len(bbox) == 6:  # 3D: (min_z, min_y, min_x, max_z, max_y, max_x)
-                        extent = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
-                    elif len(bbox) == 4:  # 2D: (min_y, min_x, max_y, max_x)
-                        extent = [bbox[2] - bbox[0], bbox[3] - bbox[1]]
-                    else:
-                        logger.warning(f"Unexpected bbox length {len(bbox)}, skipping region")
-                        continue
-                    feret_px = max(extent) if extent else 0
-                feret_mm = feret_px * self.mm_per_pixel
+            self._accumulate(size_cat, dice, iou)
 
-                # Classify by size
-                size_cat = self._classify_tumor_size(feret_mm)
+    def _update_3d_sample(self, pred_i: np.ndarray, tgt_i: np.ndarray) -> None:
+        """Process a single 3D sample [D, H, W]."""
+        # 26-connectivity for 3D connected components
+        labeled, num_tumors = scipy_label(tgt_i, structure=_STRUCTURE_3D)
+        if num_tumors == 0:
+            return
 
-                # Create mask for this tumor
-                tumor_mask = (labeled == region.label)
+        regions = regionprops(labeled)
 
-                # Compute Dice/IoU for this tumor
-                dice, iou = self._compute_tumor_dice_iou(
-                    pred_i, tgt_i, tumor_mask
-                )
+        for region in regions:
+            if region.area < 5:
+                continue
 
-                # Accumulate
-                self.total_dice += dice
-                self.total_iou += iou
-                self.total_tumors += 1
+            # Get tumor mask for this region
+            tumor_mask = (labeled == region.label)
 
-                self.size_dice_sum[size_cat] += dice
-                self.size_iou_sum[size_cat] += iou
-                self.size_tumor_count[size_cat] += 1
+            # Compute Feret diameter from max-area axial slice
+            feret_px = self._get_3d_feret(tumor_mask)
+            if feret_px is None:
+                continue
+
+            feret_mm = feret_px * self.mm_per_pixel
+            size_cat = self._classify_tumor_size(feret_mm)
+
+            dice, iou = self._compute_tumor_dice_iou(pred_i, tgt_i, tumor_mask)
+            self._accumulate(size_cat, dice, iou)
+
+    def _accumulate(self, size_cat: str, dice: float, iou: float) -> None:
+        """Add dice/iou to overall and per-size accumulators."""
+        self.total_dice += dice
+        self.total_iou += iou
+        self.total_tumors += 1
+
+        self.size_dice_sum[size_cat] += dice
+        self.size_iou_sum[size_cat] += iou
+        self.size_tumor_count[size_cat] += 1
 
     def compute(self) -> dict[str, float]:
         """Compute final metrics after all batches processed.
@@ -217,7 +294,6 @@ class SegRegionalMetricsTracker:
             'n_tumors': self.total_tumors,
         }
 
-        # Per-size metrics
         for size_name in TUMOR_SIZE_CATEGORIES:
             count = self.size_tumor_count[size_name]
             if count > 0:
@@ -234,7 +310,7 @@ class SegRegionalMetricsTracker:
         self,
         writer: SummaryWriter | None,
         epoch: int,
-        prefix: str = 'regional_seg',
+        prefix: str = 'regional',
     ) -> None:
         """Log metrics to TensorBoard.
 
@@ -254,10 +330,15 @@ class SegRegionalMetricsTracker:
         writer.add_scalar(f'{prefix}/dice', metrics['dice'], epoch)
         writer.add_scalar(f'{prefix}/iou', metrics['iou'], epoch)
 
-        # Per-size Dice
+        # Per-size Dice and IoU
         for size in TUMOR_SIZE_CATEGORIES:
             writer.add_scalar(
                 f'{prefix}/dice_{size}',
                 metrics[f'dice_{size}'],
-                epoch
+                epoch,
+            )
+            writer.add_scalar(
+                f'{prefix}/iou_{size}',
+                metrics[f'iou_{size}'],
+                epoch,
             )

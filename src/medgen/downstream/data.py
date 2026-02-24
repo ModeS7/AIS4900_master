@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import albumentations as A
+import nibabel as nib
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -43,6 +45,7 @@ class SegmentationConfig:
     volume_depth: int
     batch_size: int
     augment: bool
+    augmentation_strength: str
     real_dir: str
     synthetic_dir: str | None
     synthetic_ratio: float
@@ -56,6 +59,7 @@ class SegmentationConfig:
             volume_depth=cfg.volume.get('pad_depth_to', 160) if spatial_dims == 3 else 160,
             batch_size=cfg.training.get('batch_size_3d', 2) if spatial_dims == 3 else cfg.training.batch_size,
             augment=cfg.data.get('augment', True) and split == 'train',
+            augmentation_strength=cfg.data.get('augmentation_strength', 'standard'),
             real_dir=cfg.data.real_dir,
             synthetic_dir=cfg.data.get('synthetic_dir'),
             synthetic_ratio=cfg.data.get('synthetic_ratio', 0.5),
@@ -84,6 +88,152 @@ def _build_transform(spatial_dims: int, image_size: int):
 
 
 # =============================================================================
+# Augmentation Pipelines
+# =============================================================================
+
+
+def build_seg_downstream_augmentation_2d(strength: str = 'standard') -> A.Compose | None:
+    """Build 2D augmentation pipeline for downstream segmentation.
+
+    Uses albumentations with ``additional_targets`` for paired image-mask transforms.
+
+    Args:
+        strength: 'light' (flips only) or 'standard' (full pipeline).
+
+    Returns:
+        Albumentations Compose, or None if strength is invalid.
+    """
+    if strength == 'light':
+        return A.Compose([
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+        ], additional_targets={'mask': 'mask'})
+
+    # Standard: spatial + intensity
+    return A.Compose([
+        # Spatial (applied identically to image and mask)
+        A.RandomRotate90(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.ShiftScaleRotate(
+            shift_limit=0.1,
+            scale_limit=0.1,
+            rotate_limit=15,
+            border_mode=0,
+            p=0.5,
+        ),
+        # Intensity (image only — mask is unaffected by default)
+        A.GaussNoise(std_range=(0.01, 0.03), p=0.3),
+        A.GaussianBlur(blur_limit=(3, 5), p=0.2),
+        A.RandomBrightnessContrast(
+            brightness_limit=0.1,
+            contrast_limit=0.1,
+            p=0.3,
+        ),
+    ], additional_targets={'mask': 'mask'})
+
+
+def build_seg_downstream_augmentation_3d(strength: str = 'standard'):
+    """Build 3D augmentation pipeline for downstream segmentation.
+
+    Uses MONAI dict transforms operating on ``{'image': ..., 'seg': ...}``.
+
+    Args:
+        strength: 'light' (flips only) or 'standard' (full pipeline).
+
+    Returns:
+        MONAI Compose pipeline.
+    """
+    from monai.transforms import (
+        Compose,
+        RandAdjustContrastd,
+        RandAffined,
+        RandFlipd,
+        RandGaussianNoised,
+        RandRotate90d,
+    )
+
+    keys = ['image', 'seg']
+
+    if strength == 'light':
+        return Compose([
+            RandFlipd(keys=keys, spatial_axis=0, prob=0.5),
+            RandFlipd(keys=keys, spatial_axis=1, prob=0.5),
+            RandFlipd(keys=keys, spatial_axis=2, prob=0.5),
+            RandRotate90d(keys=keys, spatial_axes=(1, 2), prob=0.5),
+        ])
+
+    # Standard: spatial + intensity
+    return Compose([
+        RandFlipd(keys=keys, spatial_axis=0, prob=0.5),
+        RandFlipd(keys=keys, spatial_axis=1, prob=0.5),
+        RandFlipd(keys=keys, spatial_axis=2, prob=0.5),
+        RandRotate90d(keys=keys, spatial_axes=(1, 2), prob=0.5),
+        RandAffined(
+            keys=keys,
+            rotate_range=(0.26, 0.26, 0.26),  # ~15 degrees
+            scale_range=(0.1, 0.1, 0.1),       # ±10%
+            mode=('bilinear', 'nearest'),       # bilinear for image, nearest for seg
+            padding_mode='zeros',
+            prob=0.5,
+        ),
+        # Intensity (image only)
+        RandGaussianNoised(keys=['image'], std=0.03, prob=0.3),
+        RandAdjustContrastd(keys=['image'], gamma=(0.9, 1.1), prob=0.3),
+    ])
+
+
+def _apply_augmentation_2d(
+    image: torch.Tensor,
+    seg: torch.Tensor,
+    aug: A.Compose,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply 2D albumentations augmentation to image-seg pair.
+
+    Args:
+        image: [C, H, W] tensor.
+        seg: [1, H, W] tensor.
+        aug: Albumentations Compose with ``additional_targets={'mask': 'mask'}``.
+
+    Returns:
+        Augmented (image, seg) tensors.
+    """
+    # Transpose to HWC for albumentations
+    img_np = image.permute(1, 2, 0).numpy()  # [H, W, C]
+    seg_np = seg[0].numpy()  # [H, W]
+
+    result = aug(image=img_np, mask=seg_np)
+
+    img_out = torch.from_numpy(result['image']).permute(2, 0, 1).float()
+    seg_out = torch.from_numpy((result['mask'] > 0.5).astype(np.float32)).unsqueeze(0)
+
+    return img_out, seg_out
+
+
+def _apply_augmentation_3d(
+    image: torch.Tensor,
+    seg: torch.Tensor,
+    aug,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply 3D MONAI augmentation to image-seg pair.
+
+    Args:
+        image: [C, D, H, W] tensor.
+        seg: [1, D, H, W] tensor.
+        aug: MONAI Compose pipeline.
+
+    Returns:
+        Augmented (image, seg) tensors.
+    """
+    data = {'image': image, 'seg': seg}
+    result = aug(data)
+    img_out = result['image'].float()
+    seg_out = (result['seg'] > 0.5).float()
+    return img_out, seg_out
+
+
+# =============================================================================
 # Datasets
 # =============================================================================
 
@@ -104,6 +254,7 @@ class SegmentationDataset(Dataset):
         image_size: Target image size (2D: H=W, 3D: H=W).
         spatial_dims: 2 for 2D slices, 3 for 3D volumes.
         augment: Whether to apply data augmentation.
+        augmentation_strength: 'light' (flips only) or 'standard' (full pipeline).
         volume_depth: Target depth for 3D volumes.
     """
 
@@ -114,6 +265,7 @@ class SegmentationDataset(Dataset):
         image_size: int = 256,
         spatial_dims: int = 2,
         augment: bool = False,
+        augmentation_strength: str = 'standard',
         volume_depth: int = 160,
     ) -> None:
         self.data_dir = data_dir
@@ -131,6 +283,14 @@ class SegmentationDataset(Dataset):
         # Build transform
         self.transform = _build_transform(spatial_dims, image_size)
 
+        # Build augmentation pipeline
+        self._aug = None
+        if augment:
+            if spatial_dims == 2:
+                self._aug = build_seg_downstream_augmentation_2d(augmentation_strength)
+            else:
+                self._aug = build_seg_downstream_augmentation_3d(augmentation_strength)
+
         # Load datasets using NiFTIDataset
         self._image_datasets = {
             mod: NiFTIDataset(data_dir, mod, self.transform)
@@ -144,7 +304,8 @@ class SegmentationDataset(Dataset):
 
         logger.info(
             f"SegmentationDataset: {len(self.patients)} patients, "
-            f"modalities={self.modalities}, spatial_dims={spatial_dims}, augment={augment}"
+            f"modalities={self.modalities}, spatial_dims={spatial_dims}, "
+            f"augment={augment}, strength={augmentation_strength}"
         )
 
     def _build_slice_indices(self) -> list[tuple[int, int]]:
@@ -194,8 +355,8 @@ class SegmentationDataset(Dataset):
         image_slice = image[..., slice_idx]  # [C, H, W]
         seg_slice = _binarize_seg(seg[..., slice_idx])  # [1, H, W]
 
-        if self.augment:
-            image_slice, seg_slice = self._apply_augmentation(image_slice, seg_slice, rotate=True)
+        if self._aug is not None:
+            image_slice, seg_slice = _apply_augmentation_2d(image_slice, seg_slice, self._aug)
 
         return {'image': image_slice, 'seg': seg_slice}
 
@@ -213,8 +374,8 @@ class SegmentationDataset(Dataset):
         image = self._pad_depth(image)
         seg = self._pad_depth(seg)
 
-        if self.augment:
-            image, seg = self._apply_augmentation(image, seg, rotate=False)
+        if self._aug is not None:
+            image, seg = _apply_augmentation_3d(image, seg, self._aug)
 
         return {'image': image, 'seg': seg}
 
@@ -227,42 +388,27 @@ class SegmentationDataset(Dataset):
             volume = torch.cat([volume, padding], dim=1)
         return volume
 
-    def _apply_augmentation(
-        self, image: torch.Tensor, seg: torch.Tensor, rotate: bool = True
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply augmentation to image and mask pair.
-
-        Args:
-            image: Image tensor.
-            seg: Segmentation tensor.
-            rotate: Whether to apply 90-degree rotation (2D only).
-        """
-        # Random horizontal flip
-        if torch.rand(1) > 0.5:
-            image = torch.flip(image, dims=[-1])
-            seg = torch.flip(seg, dims=[-1])
-
-        # Random vertical flip
-        if torch.rand(1) > 0.5:
-            image = torch.flip(image, dims=[-2])
-            seg = torch.flip(seg, dims=[-2])
-
-        # Random 90-degree rotation (2D only)
-        if rotate:
-            k = torch.randint(0, 4, (1,)).item()
-            if k > 0:
-                image = torch.rot90(image, k, dims=[-2, -1])
-                seg = torch.rot90(seg, k, dims=[-2, -1])
-
-        return image, seg
-
 
 class SyntheticDataset(Dataset):
-    """Dataset for loading generated synthetic data.
+    """Dataset for loading generated synthetic data from ``generate.py``.
 
-    Expects NIfTI files in the synthetic directory with naming:
-    - {prefix}_image.nii.gz or image_{idx}.nii.gz
-    - {prefix}_seg.nii.gz or seg_{idx}.nii.gz
+    Auto-detects the output format:
+
+    **2D stacked format** — flat NIfTI files ``{id:05d}.nii.gz`` with
+    channels stacked along the last axis ``[H, W, C]``. The last channel
+    is the segmentation mask; preceding channels are image modalities.
+
+    **3D subdirectory format** — subdirectories ``{id:05d}/`` containing
+    separate files: ``seg.nii.gz`` + ``{modality}.nii.gz``.
+
+    Args:
+        data_dir: Directory containing generated samples.
+        image_size: Target image size (H=W) for resizing.
+        spatial_dims: 2 for 2D, 3 for 3D.
+        volume_depth: Target depth for 3D volumes.
+        modality: Modality file name for 3D subdirectory format (e.g., 'bravo').
+        augment: Whether to apply augmentation.
+        augmentation_strength: 'light' or 'standard'.
     """
 
     def __init__(
@@ -271,54 +417,187 @@ class SyntheticDataset(Dataset):
         image_size: int = 256,
         spatial_dims: int = 2,
         volume_depth: int = 160,
+        modality: str = 'bravo',
+        augment: bool = False,
+        augmentation_strength: str = 'standard',
     ) -> None:
         self.data_dir = data_dir
         self.spatial_dims = spatial_dims
+        self.image_size = image_size
         self.volume_depth = volume_depth
+        self.modality = modality
 
-        self.pairs = self._find_pairs()
-        if not self.pairs:
-            raise ValueError(f"No synthetic image-seg pairs found in {data_dir}")
+        # Detect format and find samples
+        self.format, self.samples = self._find_samples()
+        if not self.samples:
+            raise ValueError(f"No synthetic samples found in {data_dir}")
 
-        self.transform = _build_transform(spatial_dims, image_size)
-        logger.info(f"SyntheticDataset: {len(self.pairs)} pairs from {data_dir}")
-
-    def _find_pairs(self) -> list[tuple[str, str]]:
-        """Find all image-seg pairs in the directory."""
-        pairs = []
-        files = os.listdir(self.data_dir)
-        seg_files = [f for f in files if 'seg' in f.lower() and f.endswith('.nii.gz')]
-
-        for seg_file in seg_files:
-            if '_seg' in seg_file:
-                image_file = seg_file.replace('_seg', '_image')
-            elif 'seg_' in seg_file:
-                image_file = seg_file.replace('seg_', 'image_')
+        # Build augmentation pipeline
+        self._aug = None
+        if augment:
+            if spatial_dims == 2:
+                self._aug = build_seg_downstream_augmentation_2d(augmentation_strength)
             else:
-                continue
+                self._aug = build_seg_downstream_augmentation_3d(augmentation_strength)
 
-            if image_file in files:
-                pairs.append((
-                    os.path.join(self.data_dir, image_file),
-                    os.path.join(self.data_dir, seg_file),
-                ))
-        return pairs
+        logger.info(
+            f"SyntheticDataset: {len(self.samples)} samples from {data_dir} "
+            f"(format={self.format}, modality={modality})"
+        )
+
+    def _find_samples(self) -> tuple[str, list]:
+        """Detect format and find all samples.
+
+        Returns:
+            Tuple of (format_name, sample_list) where:
+            - '2d_stacked': sample_list is list of NIfTI file paths
+            - '3d_subdir': sample_list is list of subdirectory paths
+        """
+        entries = sorted(os.listdir(self.data_dir))
+
+        # Check for subdirectories with seg.nii.gz (3D format)
+        subdirs = []
+        for entry in entries:
+            entry_path = os.path.join(self.data_dir, entry)
+            if os.path.isdir(entry_path):
+                seg_path = os.path.join(entry_path, 'seg.nii.gz')
+                if os.path.exists(seg_path):
+                    subdirs.append(entry_path)
+
+        if subdirs:
+            return '3d_subdir', subdirs
+
+        # Check for flat NIfTI files (2D stacked format)
+        nifti_files = [
+            os.path.join(self.data_dir, f)
+            for f in entries
+            if f.endswith('.nii.gz') and not f.startswith('.')
+        ]
+
+        if nifti_files:
+            return '2d_stacked', nifti_files
+
+        return 'unknown', []
 
     def __len__(self) -> int:
-        return len(self.pairs)
+        return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        img_path, seg_path = self.pairs[idx]
+        if self.format == '2d_stacked':
+            return self._load_2d_stacked(idx)
+        elif self.format == '3d_subdir':
+            return self._load_3d_subdir(idx)
+        else:
+            raise RuntimeError(f"Unknown synthetic data format: {self.format}")
 
-        image = _to_tensor(self.transform(img_path))
-        seg = _binarize_seg(_to_tensor(self.transform(seg_path)))
+    def _load_nifti(self, path: str) -> np.ndarray:
+        """Load a NIfTI file and return float32 array."""
+        return nib.load(path).get_fdata().astype(np.float32)
 
-        # For 3D, transpose to [C, D, H, W]
-        if self.spatial_dims == 3 and image.dim() == 4:
-            image = image.permute(0, 3, 1, 2)
-            seg = seg.permute(0, 3, 1, 2)
+    def _load_2d_stacked(self, idx: int) -> dict[str, torch.Tensor]:
+        """Load a 2D stacked NIfTI file.
+
+        Format: ``[H, W, C]`` where last channel is seg, rest are image.
+        """
+        path = self.samples[idx]
+        data = self._load_nifti(path)  # [H, W, C]
+
+        # Split: last channel is seg, rest is image
+        seg_np = data[..., -1]  # [H, W]
+        image_np = data[..., :-1]  # [H, W, C_img]
+
+        # Normalize image to [0, 1]
+        img_max = image_np.max()
+        if img_max > 0:
+            image_np = image_np / img_max
+
+        # Binarize seg
+        seg_np = (seg_np > 0.5).astype(np.float32)
+
+        # Resize if needed
+        if image_np.shape[0] != self.image_size or image_np.shape[1] != self.image_size:
+            from skimage.transform import resize as skimage_resize
+            image_np = skimage_resize(
+                image_np, (self.image_size, self.image_size, image_np.shape[-1]),
+                order=1, preserve_range=True,
+            ).astype(np.float32)
+            seg_np = skimage_resize(
+                seg_np, (self.image_size, self.image_size),
+                order=0, preserve_range=True,
+            ).astype(np.float32)
+
+        # To tensors: [C, H, W]
+        if image_np.ndim == 2:
+            image = torch.from_numpy(image_np).unsqueeze(0).float()
+        else:
+            image = torch.from_numpy(image_np).permute(2, 0, 1).float()  # [C, H, W]
+        seg = torch.from_numpy(seg_np).unsqueeze(0).float()  # [1, H, W]
+
+        if self._aug is not None:
+            image, seg = _apply_augmentation_2d(image, seg, self._aug)
 
         return {'image': image, 'seg': seg}
+
+    def _load_3d_subdir(self, idx: int) -> dict[str, torch.Tensor]:
+        """Load a 3D sample from subdirectory.
+
+        Format: ``{id}/seg.nii.gz`` + ``{id}/{modality}.nii.gz``.
+        """
+        subdir = self.samples[idx]
+
+        seg_path = os.path.join(subdir, 'seg.nii.gz')
+        img_path = os.path.join(subdir, f'{self.modality}.nii.gz')
+
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(
+                f"Modality file not found: {img_path}. "
+                f"Available files: {os.listdir(subdir)}"
+            )
+
+        seg_np = self._load_nifti(seg_path)    # [H, W, D]
+        image_np = self._load_nifti(img_path)  # [H, W, D]
+
+        # Normalize image to [0, 1]
+        img_max = image_np.max()
+        if img_max > 0:
+            image_np = image_np / img_max
+
+        # Binarize seg
+        seg_np = (seg_np > 0.5).astype(np.float32)
+
+        # Resize H, W (preserve depth)
+        if image_np.shape[0] != self.image_size or image_np.shape[1] != self.image_size:
+            from skimage.transform import resize as skimage_resize
+            h, w = self.image_size, self.image_size
+            d = image_np.shape[2]
+            image_np = skimage_resize(
+                image_np, (h, w, d), order=1, preserve_range=True,
+            ).astype(np.float32)
+            seg_np = skimage_resize(
+                seg_np, (h, w, d), order=0, preserve_range=True,
+            ).astype(np.float32)
+
+        # To tensors [C, D, H, W]  (NIfTI is [H, W, D])
+        image = torch.from_numpy(image_np).permute(2, 0, 1).unsqueeze(0).float()  # [1, D, H, W]
+        seg = torch.from_numpy(seg_np).permute(2, 0, 1).unsqueeze(0).float()      # [1, D, H, W]
+
+        # Pad depth
+        image = self._pad_depth(image)
+        seg = self._pad_depth(seg)
+
+        if self._aug is not None:
+            image, seg = _apply_augmentation_3d(image, seg, self._aug)
+
+        return {'image': image, 'seg': seg}
+
+    def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
+        """Pad volume depth to target size using replication."""
+        current_depth = volume.shape[1]  # [C, D, H, W]
+        if current_depth < self.volume_depth:
+            pad_total = self.volume_depth - current_depth
+            padding = volume[:, -1:, :, :].repeat(1, pad_total, 1, 1)
+            volume = torch.cat([volume, padding], dim=1)
+        return volume
 
 
 # =============================================================================
@@ -407,6 +686,7 @@ def create_segmentation_dataloader(
             image_size=seg_cfg.image_size,
             spatial_dims=spatial_dims,
             augment=seg_cfg.augment,
+            augmentation_strength=seg_cfg.augmentation_strength,
             volume_depth=seg_cfg.volume_depth,
         )
         datasets.append(('real', real_dataset))
@@ -426,6 +706,9 @@ def create_segmentation_dataloader(
             image_size=seg_cfg.image_size,
             spatial_dims=spatial_dims,
             volume_depth=seg_cfg.volume_depth,
+            modality=seg_cfg.modality if isinstance(seg_cfg.modality, str) else seg_cfg.modality[0],
+            augment=seg_cfg.augment,
+            augmentation_strength=seg_cfg.augmentation_strength,
         )
         datasets.append(('synthetic', synthetic_dataset))
 

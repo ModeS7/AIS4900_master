@@ -501,12 +501,14 @@ class UnifiedMetrics:
         across all trainers (compression seg_mode and SegmentationTrainer).
 
         Args:
-            metrics: Dictionary of validation metrics. Keys: 'bce', 'dice_score', 'boundary', 'gen', 'iou'.
+            metrics: Dictionary of validation metrics.
+                Keys: 'bce', 'dice_score', 'dice_loss', 'boundary', 'gen', 'iou'.
             epoch: Current epoch number.
 
         TensorBoard paths:
             - Loss/BCE_val
-            - Loss/Dice_val
+            - Validation/Dice (dice score metric, higher=better)
+            - Loss/Dice_val (dice loss, lower=better)
             - Loss/Boundary_val
             - Loss/Generator_val
             - Validation/IoU
@@ -516,7 +518,9 @@ class UnifiedMetrics:
         if 'bce' in metrics:
             self.writer.add_scalar('Loss/BCE_val', metrics['bce'], epoch)
         if 'dice_score' in metrics:
-            self.writer.add_scalar('Loss/Dice_val', metrics['dice_score'], epoch)
+            self.writer.add_scalar('Validation/Dice', metrics['dice_score'], epoch)
+        if 'dice_loss' in metrics:
+            self.writer.add_scalar('Loss/Dice_val', metrics['dice_loss'], epoch)
         if 'boundary' in metrics:
             self.writer.add_scalar('Loss/Boundary_val', metrics['boundary'], epoch)
         if 'gen' in metrics:

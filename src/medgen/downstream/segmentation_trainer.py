@@ -174,6 +174,7 @@ class SegmentationTrainer(BaseTrainer):
             image_size=self.image_size,
             fov_mm=fov_mm,
             device=self.device,
+            spatial_dims=self.spatial_dims,
         )
 
         # Create global metrics tracker (precision, recall, HD95)
@@ -366,7 +367,7 @@ class SegmentationTrainer(BaseTrainer):
         self.regional_tracker.reset()
         self.global_metrics.reset()
 
-        val_losses = {'loss': 0.0, 'bce': 0.0, 'dice_loss': 0.0}
+        val_losses = {'loss': 0.0, 'bce': 0.0, 'dice_loss': 0.0, 'boundary': 0.0}
         n_batches = 0
         worst_loss = 0.0
         worst_batch_data: dict[str, Any] | None = None
@@ -384,6 +385,7 @@ class SegmentationTrainer(BaseTrainer):
                 val_losses['loss'] += batch_loss
                 val_losses['bce'] += breakdown['bce'].item()
                 val_losses['dice_loss'] += breakdown['dice'].item()
+                val_losses['boundary'] += breakdown['boundary'].item()
                 n_batches += 1
 
                 # Track worst batch (highest loss)
@@ -414,6 +416,8 @@ class SegmentationTrainer(BaseTrainer):
         for key in val_losses:
             val_losses[key] /= max(n_batches, 1)
 
+        logger.debug(f"val_losses after averaging: {val_losses}")
+
         # Compute per-size metrics
         regional_metrics = self.regional_tracker.compute()
 
@@ -435,7 +439,8 @@ class SegmentationTrainer(BaseTrainer):
             seg_metrics = {
                 'bce': val_losses.get('bce', 0),
                 'dice_score': regional_metrics.get('dice', 0),  # dice METRIC, not loss
-                'boundary': 0,  # Not tracked in val
+                'dice_loss': val_losses.get('dice_loss', 0),  # actual dice loss
+                'boundary': val_losses.get('boundary', 0),
                 'gen': val_losses.get('loss', 0),
                 'iou': regional_metrics.get('iou', 0),
             }
@@ -463,7 +468,7 @@ class SegmentationTrainer(BaseTrainer):
 
         # Log regional metrics (per-size dice) separately
         if self.writer is not None:
-            self.regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional_seg')
+            self.regional_tracker.log_to_tensorboard(self.writer, epoch, prefix='regional')
 
             # Log predictions figure
             if log_figures and n_batches > 0:
@@ -516,9 +521,8 @@ class SegmentationTrainer(BaseTrainer):
     ) -> None:
         """Log sample predictions to TensorBoard.
 
-        Columns: Input | Ground Truth | Prediction | Confidence | Uncertainty
-        If MC dropout disabled, shows 4 columns (sigmoid as confidence).
-        If MC dropout enabled, shows 5 columns with MC-based confidence + uncertainty.
+        Columns: Ground Truth | Prediction | |Difference|
+        If MC dropout enabled, adds 4th column with uncertainty map.
 
         Args:
             epoch: Current epoch number.
@@ -546,16 +550,13 @@ class SegmentationTrainer(BaseTrainer):
             sigmoid_pred = torch.sigmoid(logits)
 
         if has_mc:
-            pred_binary = (mc_mean_pred > 0.5)
-            confidence = mc_mean_pred
+            pred_binary = (mc_mean_pred > 0.5).float()
             uncertainty = mc_uncertainty
-            n_cols = 5
         else:
-            pred_binary = (sigmoid_pred > 0.5)
-            confidence = sigmoid_pred
+            pred_binary = (sigmoid_pred > 0.5).float()
             uncertainty = None
-            n_cols = 4
 
+        n_cols = 4 if has_mc else 3
         n_samples = min(4, images.shape[0])
         fig, axes = plt.subplots(n_samples, n_cols, figsize=(4 * n_cols, 4 * n_samples))
         if n_samples == 1:
@@ -563,43 +564,36 @@ class SegmentationTrainer(BaseTrainer):
 
         for i in range(n_samples):
             if self.spatial_dims == 3:
-                s = images.shape[2] // 2  # middle slice
-                img = images[i, 0, s].cpu().numpy()
+                s = targets.shape[2] // 2  # middle depth slice
                 tgt = targets[i, 0, s].cpu().numpy()
-                pred = pred_binary[i, 0, s].float().cpu().numpy()
-                conf = confidence[i, 0, s].cpu().numpy()
+                pred = pred_binary[i, 0, s].cpu().numpy()
                 unc = uncertainty[i, 0, s].cpu().numpy() if uncertainty is not None else None
                 slice_label = ' (mid slice)'
             else:
-                img = images[i, 0].cpu().numpy()
                 tgt = targets[i, 0].cpu().numpy()
-                pred = pred_binary[i, 0].float().cpu().numpy()
-                conf = confidence[i, 0].cpu().numpy()
+                pred = pred_binary[i, 0].cpu().numpy()
                 unc = uncertainty[i, 0].cpu().numpy() if uncertainty is not None else None
                 slice_label = ''
 
-            axes[i, 0].imshow(img, cmap='gray')
-            axes[i, 0].set_title(f'Input{slice_label}')
+            diff = abs(tgt - pred)
+
+            axes[i, 0].imshow(tgt, cmap='gray')
+            axes[i, 0].set_title(f'Ground Truth{slice_label}')
             axes[i, 0].axis('off')
 
-            axes[i, 1].imshow(tgt, cmap='gray')
-            axes[i, 1].set_title('Ground Truth')
+            axes[i, 1].imshow(pred, cmap='gray')
+            axes[i, 1].set_title('Prediction')
             axes[i, 1].axis('off')
 
-            axes[i, 2].imshow(pred, cmap='gray')
-            axes[i, 2].set_title('Prediction')
+            axes[i, 2].imshow(diff, cmap='hot', vmin=0, vmax=1)
+            axes[i, 2].set_title('|Difference|')
             axes[i, 2].axis('off')
 
-            im = axes[i, 3].imshow(conf, cmap='viridis', vmin=0, vmax=1)
-            axes[i, 3].set_title('Confidence' if has_mc else 'Sigmoid')
-            axes[i, 3].axis('off')
-            fig.colorbar(im, ax=axes[i, 3], fraction=0.046, pad=0.04)
-
             if has_mc and unc is not None:
-                im = axes[i, 4].imshow(unc, cmap='hot')
-                axes[i, 4].set_title('Uncertainty')
-                axes[i, 4].axis('off')
-                fig.colorbar(im, ax=axes[i, 4], fraction=0.046, pad=0.04)
+                im = axes[i, 3].imshow(unc, cmap='hot')
+                axes[i, 3].set_title('Uncertainty')
+                axes[i, 3].axis('off')
+                fig.colorbar(im, ax=axes[i, 3], fraction=0.046, pad=0.04)
 
         plt.tight_layout()
         self.writer.add_figure('val/predictions', fig, epoch)
