@@ -1254,6 +1254,15 @@ def load_compression_model(
     if compression_type == 'vae':
         from monai.networks.nets import AutoencoderKL
 
+        # If checkpoint config is missing architecture keys, infer from state_dict
+        if 'channels' not in model_config:
+            from medgen.data.loaders.compression_detection import _infer_vae_config_from_state_dict
+            state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+            # Strip 'model.' prefix for inference
+            sd = {k.replace('model.', '', 1) if k.startswith('model.') else k: v
+                  for k, v in state_dict.items()}
+            model_config = _infer_vae_config_from_state_dict(sd)
+
         model = AutoencoderKL(
             spatial_dims=spatial_dims,
             in_channels=model_config.get('in_channels', 1),
@@ -1263,6 +1272,8 @@ def load_compression_model(
             latent_channels=model_config.get('latent_channels', 4),
             num_res_blocks=model_config.get('num_res_blocks', 2),
             norm_num_groups=model_config.get('norm_num_groups', 32),
+            with_encoder_nonlocal_attn=model_config.get('with_encoder_nonlocal_attn', True),
+            with_decoder_nonlocal_attn=model_config.get('with_decoder_nonlocal_attn', True),
         ).to(device)
 
     elif compression_type == 'vqvae':
