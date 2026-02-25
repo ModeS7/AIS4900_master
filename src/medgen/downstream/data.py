@@ -110,7 +110,7 @@ def build_seg_downstream_augmentation_2d(strength: str = 'standard') -> A.Compos
             A.RandomRotate90(p=0.5),
         ], additional_targets={'mask': 'mask'})
 
-    # Standard: spatial + intensity
+    # Standard: spatial + intensity (clamped back to [0,1] in _apply_augmentation_2d)
     return A.Compose([
         # Spatial (applied identically to image and mask)
         A.RandomRotate90(p=0.5),
@@ -123,7 +123,7 @@ def build_seg_downstream_augmentation_2d(strength: str = 'standard') -> A.Compos
             border_mode=0,
             p=0.5,
         ),
-        # Intensity (image only — mask is unaffected by default)
+        # Intensity (image only — mask unaffected)
         A.GaussNoise(std_range=(0.01, 0.03), p=0.3),
         A.GaussianBlur(blur_limit=(3, 5), p=0.2),
         A.RandomBrightnessContrast(
@@ -164,7 +164,7 @@ def build_seg_downstream_augmentation_3d(strength: str = 'standard'):
             RandRotate90d(keys=keys, spatial_axes=(1, 2), prob=0.5),
         ])
 
-    # Standard: spatial + intensity
+    # Standard: spatial + intensity (clamped back to [0,1] in _apply_augmentation_3d)
     return Compose([
         RandFlipd(keys=keys, spatial_axis=0, prob=0.5),
         RandFlipd(keys=keys, spatial_axis=1, prob=0.5),
@@ -205,7 +205,7 @@ def _apply_augmentation_2d(
 
     result = aug(image=img_np, mask=seg_np)
 
-    img_out = torch.from_numpy(result['image']).permute(2, 0, 1).float()
+    img_out = torch.from_numpy(result['image']).permute(2, 0, 1).float().clamp(0, 1)
     seg_out = torch.from_numpy((result['mask'] > 0.5).astype(np.float32)).unsqueeze(0)
 
     return img_out, seg_out
@@ -228,7 +228,7 @@ def _apply_augmentation_3d(
     """
     data = {'image': image, 'seg': seg}
     result = aug(data)
-    img_out = result['image'].float()
+    img_out = result['image'].float().clamp(0, 1)
     seg_out = (result['seg'] > 0.5).float()
     return img_out, seg_out
 

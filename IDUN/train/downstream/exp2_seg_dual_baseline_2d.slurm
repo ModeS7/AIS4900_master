@@ -72,6 +72,7 @@ time python -m medgen.scripts.train_segmentation \
     model.spatial_dims=2 \
     model.in_channels=2 \
     "data.modality=[t1_pre,t1_gd]" \
+    data.augmentation_strength=light \
     training.epochs=500 \
     training.batch_size=16 \
     training.name=${EXP_NAME}_ \

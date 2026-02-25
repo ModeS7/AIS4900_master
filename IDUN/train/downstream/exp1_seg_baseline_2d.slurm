@@ -71,6 +71,7 @@ time python -m medgen.scripts.train_segmentation \
     paths=cluster \
     scenario=baseline \
     model.spatial_dims=2 \
+    data.augmentation_strength=light \
     training.epochs=500 \
     training.batch_size=16 \
     training.name=${EXP_NAME}_ \
