@@ -32,8 +32,8 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === UPDATE THESE PATHS ===
-SEG_CHECKPOINT="runs/diffusion_3d/seg_conditioned/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
-BRAVO_CHECKPOINT="runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
+SEG_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg_conditioned/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
+BRAVO_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
 # ==========================
 
 time python -m medgen.scripts.generate \

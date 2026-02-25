@@ -100,20 +100,22 @@ def measure_latent_stats(cfg: DictConfig) -> None:
 
             images = images.to(device).float()
 
-            # Get encoder features via model.encode()
-            latents = model.encode(images)
-
-            # VAE-specific: also get mu, logvar, sampled z
+            # Get latents from encoder
             z_mu = None
             z_logvar = None
             z_sampled = None
             posterior_std = None
             if is_vae:
+                # VAE encode() returns (z_mu, z_logvar)
                 h = model.encoder(images)
                 z_mu = model.quant_conv_mu(h)
                 z_logvar = model.quant_conv_log_sigma(h)
                 z_sampled = model.sampling(z_mu, z_logvar)
                 posterior_std = torch.exp(0.5 * z_logvar)
+                latents = z_sampled
+            else:
+                # VQ-VAE / DC-AE: encode returns a tensor directly
+                latents = model.encode(images)
 
             # Initialize per-channel lists on first batch
             if not ch_latent_mean:
