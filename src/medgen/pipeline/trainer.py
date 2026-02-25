@@ -737,20 +737,38 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         )
                         total_loss = total_loss + tt.self_cond.consistency_weight * consistency_loss
 
-            # Auxiliary bin prediction loss (forces bottleneck to encode bin info)
+            # Auxiliary bin prediction loss (forces model to encode bin info)
             aux_bin_loss = torch.tensor(0.0, device=self.device)
-            if self.use_size_bin_embedding and getattr(self, 'size_bin_aux_loss_weight', 0) > 0:
+            self._aux_bin_level_losses = None  # Reset per-level tracking
+            if self.use_size_bin_embedding and getattr(self, 'size_bin_aux_loss_weight', 0) > 0 and size_bins is not None:
+                # Skip CFG-dropped samples (all-zeros = unconditional)
+                mask = size_bins.sum(dim=1) > 0  # [B] — True for conditioned samples
+
+                bin_pred_multi = getattr(self, '_bin_prediction_multi', None)
                 bin_pred_head = getattr(self, '_bin_prediction_head', None)
-                if bin_pred_head is not None and size_bins is not None:
-                    # Skip CFG-dropped samples (all-zeros = unconditional)
-                    mask = size_bins.sum(dim=1) > 0  # [B] — True for conditioned samples
-                    if mask.any():
-                        bin_pred = bin_pred_head.predict()  # [B, num_bins]
-                        if bin_pred is not None:
-                            target = size_bins[mask].float()
-                            pred = bin_pred[mask]
-                            aux_bin_loss = nn.functional.mse_loss(pred, target)
-                            total_loss = total_loss + self.size_bin_aux_loss_weight * aux_bin_loss
+
+                if bin_pred_multi is not None and mask.any():
+                    # Multi-level path: compute per-level MSE, average them
+                    predictions = bin_pred_multi.predict_all()
+                    if predictions:
+                        target = size_bins[mask].float()
+                        level_losses = {}
+                        for level_name, pred in predictions.items():
+                            level_losses[level_name] = nn.functional.mse_loss(pred[mask], target)
+                        aux_bin_loss = torch.stack(list(level_losses.values())).mean()
+                        total_loss = total_loss + self.size_bin_aux_loss_weight * aux_bin_loss
+                        # Store for per-level TensorBoard logging
+                        self._aux_bin_level_losses = {k: v.item() for k, v in level_losses.items()}
+                    bin_pred_multi.clear_all_caches()
+
+                elif bin_pred_head is not None and mask.any():
+                    # Single-head path (bottleneck only, exp2d behavior)
+                    bin_pred = bin_pred_head.predict()  # [B, num_bins]
+                    if bin_pred is not None:
+                        target = size_bins[mask].float()
+                        pred = bin_pred[mask]
+                        aux_bin_loss = nn.functional.mse_loss(pred, target)
+                        total_loss = total_loss + self.size_bin_aux_loss_weight * aux_bin_loss
                     bin_pred_head.clear_cache()
 
             # SDA (Shifted Data Augmentation) path
@@ -842,6 +860,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
         epoch_mse_loss = 0
         epoch_perceptual_loss = 0
         epoch_aux_bin_loss = 0
+        epoch_aux_bin_level_losses: dict[str, float] = {}  # Per-level accumulation
 
         epoch_iter = create_epoch_iterator(
             data_loader, epoch, not self.verbose, self.is_main_process,
@@ -870,6 +889,13 @@ class DiffusionTrainer(DiffusionTrainerBase):
             epoch_mse_loss += result.mse_loss
             epoch_perceptual_loss += result.perceptual_loss
             epoch_aux_bin_loss += result.aux_bin_loss
+            # Accumulate per-level aux bin losses (set by train_step when multilevel)
+            level_losses = getattr(self, '_aux_bin_level_losses', None)
+            if level_losses:
+                for level_name, loss_val in level_losses.items():
+                    epoch_aux_bin_level_losses[level_name] = (
+                        epoch_aux_bin_level_losses.get(level_name, 0.0) + loss_val
+                    )
 
             if hasattr(epoch_iter, 'set_postfix'):
                 epoch_iter.set_postfix(loss=f"{epoch_loss / (step + 1):.6f}")
@@ -928,6 +954,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 self._unified_metrics.update_loss('Perceptual', avg_perceptual)
             if avg_aux_bin > 0:
                 self._unified_metrics.update_loss('AuxBin', avg_aux_bin)
+            # Per-level aux bin losses (multilevel mode)
+            if epoch_aux_bin_level_losses:
+                for level_name, total_level_loss in epoch_aux_bin_level_losses.items():
+                    avg_level_loss = total_level_loss / n_batches
+                    self._unified_metrics.update_loss(f'AuxBin/{level_name}', avg_level_loss)
             self._unified_metrics.update_lr(self.lr_scheduler.get_last_lr()[0])
             self._unified_metrics.update_vram()
             self._unified_metrics.log_training(epoch)

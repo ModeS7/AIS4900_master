@@ -319,6 +319,7 @@ class SizeBinConfig:
     projection_hidden_dim: int = 0    # 0 = legacy 2-layer MLP
     projection_num_layers: int = 2    # only used when projection_hidden_dim > 0
     aux_loss_weight: float = 0.0     # 0 = disabled; auxiliary bin prediction loss weight
+    aux_loss_multilevel: bool = False  # false = bottleneck only; true = multi-level (mid + dec0 + dec1)
 
     def __post_init__(self):
         if not self.enabled:
@@ -359,6 +360,7 @@ class SizeBinConfig:
             projection_hidden_dim=size_bin_cfg.get('projection_hidden_dim', 0),
             projection_num_layers=size_bin_cfg.get('projection_num_layers', 2),
             aux_loss_weight=float(size_bin_cfg.get('aux_loss_weight', 0.0)),
+            aux_loss_multilevel=bool(size_bin_cfg.get('aux_loss_multilevel', False)),
         )
 
 

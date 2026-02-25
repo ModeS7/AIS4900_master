@@ -222,6 +222,88 @@ class BinPredictionHead(nn.Module):
         self._cached_features = None
 
 
+class MultiLevelBinPrediction(nn.Module):
+    """Manages BinPredictionHead instances at multiple UNet levels.
+
+    Hooks prediction heads at decoder levels to force bin information
+    through the decoder path (skip connections bypass the bottleneck).
+
+    Levels:
+        - mid: middle_block (deepest features, baseline comparison)
+        - dec0: up_blocks[0] (first decoder level)
+        - dec1: up_blocks[1] (second decoder level)
+    """
+
+    # Maps level name -> how to resolve the module on the UNet
+    LEVEL_SPECS: dict[str, str | tuple[str, int]] = {
+        'mid': 'middle_block',
+        'dec0': ('up_blocks', 0),
+        'dec1': ('up_blocks', 1),
+    }
+
+    def __init__(
+        self,
+        level_channels: dict[str, int],
+        num_bins: int = DEFAULT_NUM_BINS,
+        hidden_dim: int = 128,
+    ):
+        """Initialize multi-level bin prediction.
+
+        Args:
+            level_channels: Dict mapping level name -> channel count.
+                Only levels present here will have heads created.
+            num_bins: Number of size bins to predict.
+            hidden_dim: Hidden dimension for each prediction head.
+        """
+        super().__init__()
+        self.heads = nn.ModuleDict({
+            name: BinPredictionHead(ch, num_bins, hidden_dim)
+            for name, ch in level_channels.items()
+        })
+        self._hooks: list[torch.utils.hooks.RemovableHook] = []
+
+    def register_hooks(self, model: nn.Module) -> None:
+        """Register forward hooks on the target UNet modules.
+
+        Args:
+            model: The inner UNet (e.g., MONAI DiffusionModelUNet).
+        """
+        for name, head in self.heads.items():
+            spec = self.LEVEL_SPECS[name]
+            if isinstance(spec, str):
+                module = getattr(model, spec)
+            else:
+                attr, idx = spec
+                module = getattr(model, attr)[idx]
+            hook = module.register_forward_hook(head.hook_fn)
+            self._hooks.append(hook)
+
+    def predict_all(self) -> dict[str, torch.Tensor]:
+        """Predict bins from all heads with cached features.
+
+        Returns:
+            Dict mapping level name -> prediction tensor [B, num_bins].
+            Only includes heads that have cached features.
+        """
+        results = {}
+        for name, head in self.heads.items():
+            pred = head.predict()
+            if pred is not None:
+                results[name] = pred
+        return results
+
+    def clear_all_caches(self) -> None:
+        """Clear cached features from all heads."""
+        for head in self.heads.values():
+            head.clear_cache()
+
+    def remove_hooks(self) -> None:
+        """Remove all registered forward hooks."""
+        for hook in self._hooks:
+            hook.remove()
+        self._hooks.clear()
+
+
 class SizeBinModelWrapper(nn.Module):
     """Wrapper to inject size bin conditioning into MONAI UNet.
 

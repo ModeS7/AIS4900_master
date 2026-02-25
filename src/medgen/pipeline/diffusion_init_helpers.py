@@ -183,8 +183,14 @@ def setup_conditional_embeddings(trainer: DiffusionTrainer) -> None:
         trainer.size_bin_projection_hidden_dim = size_bin_cfg.projection_hidden_dim
         trainer.size_bin_projection_num_layers = size_bin_cfg.projection_num_layers
         trainer.size_bin_aux_loss_weight = size_bin_cfg.aux_loss_weight
+        trainer.size_bin_aux_loss_multilevel = size_bin_cfg.aux_loss_multilevel
         if trainer.is_main_process:
-            aux_info = f", aux_loss_weight={trainer.size_bin_aux_loss_weight}" if trainer.size_bin_aux_loss_weight > 0 else ""
+            aux_parts = []
+            if trainer.size_bin_aux_loss_weight > 0:
+                aux_parts.append(f"aux_loss_weight={trainer.size_bin_aux_loss_weight}")
+                if trainer.size_bin_aux_loss_multilevel:
+                    aux_parts.append("multilevel=True")
+            aux_info = f", {', '.join(aux_parts)}" if aux_parts else ""
             logger.info(
                 f"Size bin embedding enabled: num_bins={trainer.size_bin_num_bins}, "
                 f"max_count={trainer.size_bin_max_count}, embed_dim={trainer.size_bin_embed_dim}{aux_info}"
