@@ -463,9 +463,10 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
     wavelet.enabled=true \
     training.augmented_diffusion.enabled=true
 
-# CORRECT - learned latent space with VAE checkpoint
+# CORRECT - learned latent space with compression checkpoint
 python -m medgen.scripts.train mode=bravo strategy=rflow \
-    vae_checkpoint=runs/compression_2d/.../checkpoint_best.pt \
+    latent.enabled=true \
+    latent.compression_checkpoint=runs/compression_2d/.../checkpoint_best.pt \
     training.augmented_diffusion.enabled=true
 ```
 
@@ -856,7 +857,7 @@ def _get_2d_feret(self, region) -> float:
 
 **Affected code**: `src/medgen/metrics/generation_sampling.py`, `src/medgen/metrics/sampler.py`
 
-## 78. scale_factor > 1 Guard Missed PixelSpace with Rescaling (Fixed Feb 2026)
+## 77. scale_factor > 1 Guard Missed PixelSpace with Rescaling (Fixed Feb 2026)
 **Problem**: Many locations guarded `space.decode()` calls with `if space.scale_factor > 1`, but `PixelSpace` has `scale_factor=1` even when rescaling is enabled. This meant perceptual loss, metrics, and visualization code would skip decoding for rescaled pixel-space data, producing [-1,1] values where [0,1] was expected.
 
 **Root cause**: `scale_factor` was only designed for spatial downsampling (latent, wavelet, S2D). When [-1,1] rescaling was added to `PixelSpace`, the guard pattern broke.
@@ -867,14 +868,14 @@ def _get_2d_feret(self, region) -> float:
 
 **Affected code**: `spaces.py`, `trainer.py`, `validation.py`, `evaluation.py`, `sampler.py`, `generation_sampling.py`, `visualization.py`, `evaluation/visualization.py`
 
-## 79. Compiled Forward Paths Had [0,1] Clamps (Fixed Feb 2026)
+## 78. Compiled Forward Paths Had [0,1] Clamps (Fixed Feb 2026)
 **Problem**: `diffusion_model_setup.py`, `compile_manager.py`, and `training_tricks.py` all applied `torch.clamp(0, 1)` to predicted clean images in the compiled forward path. Same class of bug as #75 but in different code paths.
 
 **Fix**: Removed all `torch.clamp(0, 1)` from `_forward_single` and `_forward_dual` in all three files (4 clamps each = 12 total).
 
 **Affected code**: `src/medgen/pipeline/diffusion_model_setup.py`, `src/medgen/pipeline/compile_manager.py`, `src/medgen/pipeline/training_tricks.py`
 
-## 80. Seg Binarization Inconsistency (Fixed)
+## 79. Seg Binarization Inconsistency (Fixed)
 
 **Problem**: The 2D generation pipeline (`generate.py`) used min-max normalization + `make_binary(threshold=0.1)` for seg binarization, while the training pipeline (`generation_sampling.py`) used `clamp(0,1) + > 0.5`. This caused inconsistent behavior between training evaluation and standalone generation.
 
@@ -890,7 +891,7 @@ def _get_2d_feret(self, region) -> float:
 
 **Rule**: Always use `binarize_seg()` for generated or augmented seg data. Use `make_binary()` only for ground-truth data that's already in [0,1].
 
-## 79. Duplicated Functions in seg_conditioned.py (Fixed)
+## 80. Duplicated Functions in seg_conditioned.py (Fixed)
 
 **Problem**: `seg_conditioned.py` had full copies of 4 functions already in `datasets.py`: `compute_feret_diameter()`, `compute_size_bins()`, `create_size_bin_maps()`, `DEFAULT_BIN_EDGES`. The `seg_conditioned.py` copy of `compute_feret_diameter` used non-deterministic `np.random.choice` while `datasets.py` uses `np.random.default_rng(seed=...)`.
 
@@ -898,7 +899,7 @@ def _get_2d_feret(self, region) -> float:
 
 **Rule**: Canonical location for size-bin utilities is `src/medgen/data/loaders/datasets.py`. Never duplicate these functions.
 
-## 80. Inline NIfTI Save Logic (Fixed)
+## 81. Inline NIfTI Save Logic (Fixed)
 
 **Problem**: `save_nifti()` existed in `generate.py` but `eval_ode_solvers.py` inlined the same `np.diag + Nifti1Image + nib.save` logic in 2 functions.
 
@@ -906,7 +907,7 @@ def _get_2d_feret(self, region) -> float:
 
 **Rule**: Use `from medgen.data.utils import save_nifti` for NIfTI output.
 
-## 81. Voxel Spacing Ordering Convention
+## 82. Voxel Spacing Ordering Convention
 
 **Caution**: Two different ordering conventions exist:
 - `compute_voxel_size()` returns `(x, y, z)` = `(0.9375, 0.9375, 1.0)` — for NIfTI affine matrices

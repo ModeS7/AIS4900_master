@@ -89,6 +89,8 @@ src/medgen/
 │   ├── metric_logger.py         # Metric logging
 │   ├── regional_manager.py      # Regional metrics management
 │   ├── sampler.py               # Metric sampling
+│   ├── seg_metrics.py           # Segmentation-specific metrics (Dice, IoU)
+│   ├── mc_dropout.py            # Monte Carlo dropout for uncertainty estimation
 │   ├── visualization_constants.py # Viz constants
 │   ├── regional/               # Regional metrics (per-tumor)
 │   │   ├── base.py             # Regional base
@@ -163,7 +165,17 @@ src/medgen/
     ├── measure_latent_std.py    # Measure latent space statistics
     ├── lr_finder.py             # Learning rate finder
     ├── common.py                # Shared utilities
-    └── visualize_augmentations.py  # Debug augmentation pipelines
+    ├── visualize_augmentations.py  # Debug augmentation pipelines
+    ├── compute_pixel_stats.py   # Compute brain-only pixel statistics for normalization
+    ├── debug_ldm_roundtrip.py   # Debug latent diffusion model roundtrip
+    ├── eval_compression_fid.py  # Evaluate compression models using FID
+    ├── eval_diffrs.py           # Evaluate DiffRS rejection sampling
+    ├── eval_restart.py          # Evaluate restart sampling
+    ├── measure_distinguishability.py  # Measure real vs synthetic distinguishability
+    ├── plot_tumor_detection.py  # Plot tumor detection results
+    ├── recompute_latent_stats.py # Recompute latent space statistics
+    ├── verify_ldm_pipeline.py   # Verify latent diffusion pipeline
+    └── verify_wdm_pipeline.py   # Verify wavelet diffusion pipeline
 
 configs/
 ├── diffusion.yaml               # 2D diffusion training config
@@ -202,12 +214,17 @@ configs/
 ├── dcae_3d/default.yaml         # DC-AE 3D architecture
 ├── dcae_3d/f32_d4.yaml          # DC-AE 3D f32 with 4x depth compression
 ├── volume/default.yaml          # 3D volume dimensions (256×256×160)
+├── diffrs.yaml                  # DiffRS rejection sampling config
+├── pixel_norm/default.yaml      # Pixel normalization (disabled)
+├── pixel_norm/bravo.yaml        # Brain-only N(0,1) stats for BRAVO
+├── pixel_norm/t1_pre.yaml       # Brain-only N(0,1) stats for T1 pre-contrast
+├── pixel_norm/t1_gd.yaml        # Brain-only N(0,1) stats for T1 post-contrast
 ├── paths/{local,cluster}.yaml
 ├── strategy/{ddpm,rflow}.yaml
 ├── mode/{seg,bravo,bravo_seg_cond,dual,multi,multi_modality,...}.yaml
 ├── mode/{seg_compression,seg_conditioned,seg_conditioned_3d,...}.yaml
 ├── mode/{seg_conditioned_input,seg_conditioned_input_3d}.yaml
-└── training/{default,fast_debug}.yaml
+└── training/{default,fast_debug,smoke_test}.yaml
 ```
 
 ---
@@ -228,6 +245,16 @@ configs/
 | `lr_finder.py` | Find optimal learning rate | `lr_finder.yaml` | |
 | `common.py` | Shared utilities (get_image_keys, run_test_evaluation, etc.) | N/A | Not a script |
 | `visualize_augmentations.py` | Debug augmentation pipelines | `visualize_augmentations.yaml` | |
+| `compute_pixel_stats.py` | Compute brain-only pixel statistics | N/A | For `pixel_norm` configs |
+| `eval_diffrs.py` | Evaluate DiffRS rejection sampling | N/A | Argparse (not Hydra) |
+| `eval_compression_fid.py` | Evaluate compression model FID | N/A | |
+| `eval_restart.py` | Evaluate restart sampling | N/A | |
+| `measure_distinguishability.py` | Measure real vs synthetic distinguishability | N/A | |
+| `debug_ldm_roundtrip.py` | Debug LDM encode/decode roundtrip | N/A | |
+| `recompute_latent_stats.py` | Recompute latent space statistics | N/A | |
+| `plot_tumor_detection.py` | Plot tumor detection visualization | N/A | |
+| `verify_ldm_pipeline.py` | Verify latent diffusion pipeline | N/A | |
+| `verify_wdm_pipeline.py` | Verify wavelet diffusion pipeline | N/A | |
 
 ### Compression Training Config Names
 
@@ -575,12 +602,13 @@ training:
 **Usage**:
 ```bash
 # Step 1: Train DC-AE with structured latent space (f64 recommended)
-python -m medgen.scripts.train_dcae dcae=f64 \
+python -m medgen.scripts.train_compression --config-name=dcae dcae=f64 mode=multi_modality \
     dcae.structured_latent.enabled=true
 
 # Step 2: Train diffusion with augmented diffusion training
 python -m medgen.scripts.train mode=bravo strategy=rflow \
-    vae_checkpoint=runs/compression_2d/.../checkpoint_best.pt \
+    latent.enabled=true \
+    latent.compression_checkpoint=runs/compression_2d/.../checkpoint_best.pt \
     training.augmented_diffusion.enabled=true
 ```
 
@@ -1040,7 +1068,7 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
 
 ### Implementation Notes
 
-- **File**: `src/medgen/data/score_aug.py`
+- **File**: `src/medgen/augmentation/score_aug.py`
 - **Wrapper**: `ScoreAugModelWrapper` injects omega conditioning into UNet's time embedding
 - **torch.compile**: Inner UNet is compiled, wrapper (with data-dependent omega encoding) stays uncompiled
 - **Perceptual loss**: Skipped for non-invertible transforms (translation, cutout) since original space can't be recovered
@@ -1366,6 +1394,8 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 ### Metrics
 - `src/medgen/metrics/unified.py`: UnifiedMetrics (MANDATORY for all trainers)
 - `src/medgen/metrics/quality.py`: MS-SSIM, PSNR, LPIPS
+- `src/medgen/metrics/seg_metrics.py`: Segmentation-specific metrics (Dice, IoU)
+- `src/medgen/metrics/mc_dropout.py`: Monte Carlo dropout for uncertainty estimation
 - `src/medgen/metrics/regional/`: Per-tumor regional metrics by size category
 - `src/medgen/metrics/generation.py`: KID, CMMD, FID (ResNet50 + BiomedCLIP)
 - `src/medgen/metrics/figures.py`: Reconstruction figures
@@ -1383,9 +1413,20 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/scripts/generate.py`: Generation/inference
 - `src/medgen/scripts/encode_latents.py`: Pre-encode datasets for latent diffusion
 - `src/medgen/scripts/eval_ode_solvers.py`: Evaluate ODE solvers for RFlow generation
+- `src/medgen/scripts/eval_diffrs.py`: Evaluate DiffRS rejection sampling (argparse)
+- `src/medgen/scripts/eval_compression_fid.py`: Evaluate compression model FID
+- `src/medgen/scripts/eval_restart.py`: Evaluate restart sampling
 - `src/medgen/scripts/find_optimal_steps.py`: Golden-section search for optimal Euler step count
 - `src/medgen/scripts/measure_latent_std.py`: Measure latent space statistics
+- `src/medgen/scripts/measure_distinguishability.py`: Measure real vs synthetic distinguishability
+- `src/medgen/scripts/compute_pixel_stats.py`: Compute brain-only pixel statistics
+- `src/medgen/scripts/recompute_latent_stats.py`: Recompute latent space statistics
 - `src/medgen/scripts/lr_finder.py`: Learning rate finder
+- `src/medgen/scripts/debug_ldm_roundtrip.py`: Debug LDM encode/decode roundtrip
+- `src/medgen/scripts/verify_ldm_pipeline.py`: Verify latent diffusion pipeline
+- `src/medgen/scripts/verify_wdm_pipeline.py`: Verify wavelet diffusion pipeline
+- `src/medgen/scripts/plot_tumor_detection.py`: Plot tumor detection visualization
+- `src/medgen/scripts/visualize_augmentations.py`: Debug augmentation pipelines
 - `src/medgen/scripts/common.py`: Shared utilities
 
 ---
