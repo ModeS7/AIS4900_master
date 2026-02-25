@@ -209,6 +209,50 @@ class TestInferSpatialFromPosEmbeds:
         )
         assert size == 8
 
+    def test_dit_3d_depth_greater_than_spatial(self):
+        """Regression: 128x128x160 volume must not reject depth > spatial."""
+        # (128/4)^2 * (160/4) = 32*32*40 = 40960 tokens
+        sd = {"pos_embed": torch.empty(1, 40960, 384)}
+        size, depth = _infer_spatial_from_pos_embeds(
+            sd, spatial_dims=3, patch_size=4,
+            default_input_size=999, default_depth_size=999, model_type="dit",
+        )
+        assert size == 128
+        assert depth == 160
+
+    def test_hdit_3d_depth_greater_than_spatial(self):
+        """Regression: HDiT on 128x128x160 volume, patch_size=4."""
+        # Same token count, uses pos_embeds.0 key
+        sd = {"pos_embeds.0": torch.empty(1, 40960, 384)}
+        size, depth = _infer_spatial_from_pos_embeds(
+            sd, spatial_dims=3, patch_size=4,
+            default_input_size=999, default_depth_size=999, model_type="hdit",
+        )
+        assert size == 128
+        assert depth == 160
+
+    def test_dit_3d_cube_volume(self):
+        """128x128x128 cube: depth == spatial, ratio = 1.0 (perfect)."""
+        # (128/4)^2 * (128/4) = 32*32*32 = 32768 tokens
+        sd = {"pos_embed": torch.empty(1, 32768, 384)}
+        size, depth = _infer_spatial_from_pos_embeds(
+            sd, spatial_dims=3, patch_size=4,
+            default_input_size=999, default_depth_size=999, model_type="dit",
+        )
+        assert size == 128
+        assert depth == 128
+
+    def test_dit_3d_depth_less_than_spatial(self):
+        """64x64x32 volume: depth < spatial still works."""
+        # (64/2)^2 * (32/2) = 32*32*16 = 16384 tokens
+        sd = {"pos_embed": torch.empty(1, 16384, 384)}
+        size, depth = _infer_spatial_from_pos_embeds(
+            sd, spatial_dims=3, patch_size=2,
+            default_input_size=999, default_depth_size=999, model_type="dit",
+        )
+        assert size == 64
+        assert depth == 32
+
     def test_missing_key_returns_defaults(self):
         size, depth = _infer_spatial_from_pos_embeds(
             {}, spatial_dims=2, patch_size=2,

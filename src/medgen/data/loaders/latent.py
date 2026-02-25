@@ -1149,9 +1149,14 @@ def detect_scale_factor(checkpoint_path: str, compression_type: str = 'auto') ->
         return 32
 
     # VAE/VQ-VAE: count downsampling stages or use channels length
+    # AutoencoderKL: downsamples happen BETWEEN levels → len(channels)-1 downsamples
+    # VQVAE: each level has a strided conv → len(channels) downsamples
     if 'channels' in config:
-        num_stages = len(config['channels'])
-        return 2 ** num_stages  # Typically 2^3 = 8
+        num_levels = len(config['channels'])
+        if compression_type == 'vqvae':
+            return 2 ** num_levels
+        else:
+            return 2 ** (num_levels - 1)
 
     # Default for VAE/VQ-VAE
     return 8

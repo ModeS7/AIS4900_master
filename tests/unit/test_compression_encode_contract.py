@@ -4,6 +4,7 @@ Verifies:
 - VAE (AutoencoderKL): encode() returns (z_mu, z_logvar) tuple
 - VQ-VAE (VQVAE): encode() returns a quantized tensor
 - _infer_vae_config_from_state_dict: roundtrip from state_dict → config → model
+- _detect_scale_factor_from_dict: correct scale for VAE vs VQ-VAE
 
 Catches silent API breakage if MONAI changes encode() signatures.
 """
@@ -12,7 +13,10 @@ import pytest
 import torch
 from monai.networks.nets import AutoencoderKL, VQVAE
 
-from medgen.data.loaders.compression_detection import _infer_vae_config_from_state_dict
+from medgen.data.loaders.compression_detection import (
+    _detect_scale_factor_from_dict,
+    _infer_vae_config_from_state_dict,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -219,3 +223,37 @@ class TestInferVAEConfig:
         )
         # Must load without errors (strict=True is default)
         new_vae.load_state_dict(sd)
+
+
+# ---------------------------------------------------------------------------
+# _detect_scale_factor_from_dict
+# ---------------------------------------------------------------------------
+
+
+class TestDetectScaleFactor:
+    """Regression: VAE has len(channels)-1 downsamples, VQ-VAE has len(channels)."""
+
+    def test_vae_3_levels_is_4x(self):
+        """3-level VAE: 2 downsamples → 4x, NOT 8x."""
+        ckpt = {"config": {"channels": [32, 64, 128]}}
+        assert _detect_scale_factor_from_dict(ckpt, "vae") == 4
+
+    def test_vae_4_levels_is_8x(self):
+        """4-level VAE: 3 downsamples → 8x."""
+        ckpt = {"config": {"channels": [32, 64, 128, 128]}}
+        assert _detect_scale_factor_from_dict(ckpt, "vae") == 8
+
+    def test_vae_2_levels_is_2x(self):
+        """2-level VAE: 1 downsample → 2x."""
+        ckpt = {"config": {"channels": [32, 64]}}
+        assert _detect_scale_factor_from_dict(ckpt, "vae") == 2
+
+    def test_vqvae_3_levels_is_8x(self):
+        """3-level VQ-VAE: 3 strided convs → 8x."""
+        ckpt = {"config": {"channels": [64, 128, 256]}}
+        assert _detect_scale_factor_from_dict(ckpt, "vqvae") == 8
+
+    def test_vqvae_2_levels_is_4x(self):
+        """2-level VQ-VAE: 2 strided convs → 4x."""
+        ckpt = {"config": {"channels": [64, 128]}}
+        assert _detect_scale_factor_from_dict(ckpt, "vqvae") == 4

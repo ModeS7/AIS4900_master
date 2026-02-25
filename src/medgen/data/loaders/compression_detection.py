@@ -155,13 +155,16 @@ def _detect_scale_factor_from_dict(checkpoint: dict, compression_type: str) -> i
         return 32
 
     # VAE/VQ-VAE: count downsampling stages or use channels length
+    # AutoencoderKL: downsamples happen BETWEEN levels → len(channels)-1 downsamples
+    # VQVAE: each level has a strided conv → len(channels) downsamples
     if 'channels' in config:
-        num_stages = len(config['channels'])
-        return 2 ** num_stages  # Typically 2^3 = 8
+        num_levels = len(config['channels'])
+        if compression_type == 'vqvae':
+            return 2 ** num_levels
+        else:
+            return 2 ** (num_levels - 1)
 
     # Fallback: count downsample blocks in encoder state_dict
-    # Downsample blocks are identified by postconv or standalone conv patterns
-    # between ResBlock groups in the encoder
     state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', {}))
     downsample_count = sum(
         1 for k in state_dict
@@ -169,8 +172,7 @@ def _detect_scale_factor_from_dict(checkpoint: dict, compression_type: str) -> i
         and k.endswith('.postconv.conv.weight')
     )
     if downsample_count > 0:
-        # scale = 2^num_downsamples, +1 for the total levels
-        return 2 ** (downsample_count + 1)
+        return 2 ** downsample_count
 
     # Default for VAE/VQ-VAE
     return 8

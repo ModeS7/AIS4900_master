@@ -369,9 +369,11 @@ def load_diffusion_model_with_metadata(
                     remaining = num_tokens / (s_tokens * s_tokens)
                     if remaining == int(remaining) and remaining > 0:
                         candidate_d = int(remaining) * patch_size
-                        if candidate_d <= 0 or candidate_d > candidate_s:
+                        if candidate_d <= 0:
                             continue
-                        ratio_diff = abs(candidate_d / candidate_s - 0.5)
+                        # Target ratio ~1.0 (depth ≈ spatial); medical
+                        # volumes can have depth > spatial (e.g. 160 depth, 128 spatial)
+                        ratio_diff = abs(candidate_d / candidate_s - 1.0)
                         if ratio_diff < best_ratio_diff:
                             best_ratio_diff = ratio_diff
                             best_candidate = (candidate_s, candidate_d)
@@ -634,9 +636,11 @@ def _infer_spatial_from_pos_embeds(
             remaining = num_tokens / (s_tokens * s_tokens)
             if remaining == int(remaining) and remaining > 0:
                 candidate_d = int(remaining) * patch_size
-                if candidate_d <= 0 or candidate_d > candidate_s:
+                if candidate_d <= 0:
                     continue
-                ratio_diff = abs(candidate_d / candidate_s - 0.5)
+                # Target ratio ~1.0 (depth ≈ spatial); medical
+                # volumes can have depth > spatial (e.g. 160 depth, 128 spatial)
+                ratio_diff = abs(candidate_d / candidate_s - 1.0)
                 if ratio_diff < best_ratio_diff:
                     best_ratio_diff = ratio_diff
                     best_candidate = (candidate_s, candidate_d)
