@@ -82,6 +82,7 @@ data:
 
   # Augmentation
   augment: true
+  augmentation_strength: standard  # 'light' (flips only) or 'standard' (full pipeline)
 
 # Training hyperparameters
 training:
