@@ -44,6 +44,10 @@ def minimal_seg_config():
             'save_best': False,
             'save_last': False,
         },
+        'data': {
+            'modality': 'bravo',
+            'real_dir': '/tmp/data/train',
+        },
         'evaluation': {
             'fov_mm': 240.0,
             'size_bins': {
