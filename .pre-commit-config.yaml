@@ -23,6 +23,30 @@ repos:
         types: [python]
         pass_filenames: true
 
+  # Selective regression tests (on commit, only when relevant files change)
+  - repo: local
+    hooks:
+      - id: test-model-loading
+        name: test model loading
+        entry: pytest tests/unit/test_model_loading.py tests/unit/test_model_loading_roundtrip.py tests/unit/test_arch_detection.py -x -q --tb=line --timeout=30
+        language: system
+        pass_filenames: false
+        files: ^src/medgen/(diffusion/loading|models/(dit|hdit|uvit|factory))\.py$
+
+      - id: test-spaces
+        name: test diffusion spaces
+        entry: pytest tests/unit/test_space_contracts.py tests/unit/test_wavelet_space.py tests/unit/test_space_to_depth.py -x -q --tb=line --timeout=30
+        language: system
+        pass_filenames: false
+        files: ^src/medgen/diffusion/spaces\.py$
+
+      - id: test-compression
+        name: test compression models
+        entry: pytest tests/unit/test_compression_encode_contract.py -x -q --tb=line --timeout=30
+        language: system
+        pass_filenames: false
+        files: ^src/medgen/data/loaders/(latent|compression_detection)\.py$
+
   # Fast unit tests (on pre-push only - can be slow)
   - repo: local
     hooks:
