@@ -113,6 +113,7 @@ ignore = [
 "tests/*" = ["B", "SIM"]  # Less strict for tests
 "scripts/*" = ["B", "SIM"]
 "*/__init__.py" = ["I001", "F401"]  # Skip isort and unused imports in __init__.py
+"*/plot_tumor_detection.py" = ["I001"]  # matplotlib.use('Agg') must precede pyplot import
 
 [tool.ruff.lint.isort]
 known-first-party = ["medgen"]
