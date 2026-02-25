@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-10:00:00
+#SBATCH --time=0-02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
@@ -32,7 +32,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === UPDATE THESE PATHS ===
-SEG_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg_conditioned/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
+SEG_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
 BRAVO_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
 # ==========================
 
