@@ -180,6 +180,9 @@ class StrategyConfig:
     snr_gamma: float = 0.0   # Min-SNR-γ for RFlow. 0 = disabled, 5.0 = standard
     sigma_data: float = 0.0  # EDM preconditioning. 0 = disabled, 0.08 = bravo [0,1]
 
+    # RFlow loss shape (exp1g / exp1h)
+    loss_type: str = 'mse'   # mse | pseudo_huber | lpips_huber
+
     def __post_init__(self):
         valid_names = ('ddpm', 'rflow')
         if self.name not in valid_names:
@@ -192,6 +195,9 @@ class StrategyConfig:
         )
         if self.ode_solver not in valid_solvers:
             raise ValueError(f"ode_solver must be one of {valid_solvers}, got '{self.ode_solver}'")
+        valid_loss_types = ('mse', 'pseudo_huber', 'lpips_huber')
+        if self.loss_type not in valid_loss_types:
+            raise ValueError(f"loss_type must be one of {valid_loss_types}, got '{self.loss_type}'")
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'StrategyConfig':
@@ -210,6 +216,7 @@ class StrategyConfig:
             ode_rtol=strat_cfg.get('ode_rtol', 1e-5),
             snr_gamma=strat_cfg.get('snr_gamma', 0.0),
             sigma_data=strat_cfg.get('sigma_data', 0.0),
+            loss_type=strat_cfg.get('loss_type', 'mse'),
         )
 
 

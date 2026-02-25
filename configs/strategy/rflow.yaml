@@ -38,3 +38,6 @@ ode_rtol: 1e-5                    # Relative tolerance (dopri5 only)
 # Loss weighting and preconditioning (exp1e / exp1f)
 snr_gamma: 0.0                    # Min-SNR-γ for RFlow. 0 = disabled, 5.0 = standard
 sigma_data: 0.0                   # EDM preconditioning. 0 = disabled, 0.08 = bravo [0,1]
+
+# Loss shape (exp1g / exp1h)
+loss_type: mse                    # mse (default), pseudo_huber, lpips_huber

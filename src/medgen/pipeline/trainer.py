@@ -696,6 +696,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             self.num_timesteps, self.rflow_snr_gamma,
                         )
 
+                    if self.velocity_loss_type == 'pseudo_huber':
+                        from .losses import compute_pseudo_huber_loss
+                        target = self.strategy.compute_target(images, noise)
+                        mse_loss = compute_pseudo_huber_loss(prediction, target)
+                    elif self.velocity_loss_type == 'lpips_huber':
+                        from .losses import compute_lpips_huber_loss
+                        target = self.strategy.compute_target(images, noise)
+                        mse_loss = compute_lpips_huber_loss(
+                            prediction, target, timesteps, self.num_timesteps,
+                        )
+
                     # Apply regional weighting (per-pixel weights by tumor size)
                     if self.regional_weight_computer is not None:
                         # For seg_conditioned: images IS the seg mask (labels=None)

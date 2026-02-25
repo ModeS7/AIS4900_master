@@ -116,6 +116,9 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # RFlow-specific Min-SNR-γ (uses RFlow's own SNR formula)
         self.rflow_snr_gamma: float = sc.snr_gamma if self.strategy_name == 'rflow' else 0.0
 
+        # RFlow loss shape: pseudo_huber or lpips_huber (exp1g / exp1h)
+        self.velocity_loss_type: str = sc.loss_type if self.strategy_name == 'rflow' else 'mse'
+
         # ─────────────────────────────────────────────────────────────────────
         # DC-AE 1.5: Augmented Diffusion Training (from AugmentedDiffusionConfig)
         # ─────────────────────────────────────────────────────────────────────
@@ -435,6 +438,10 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # Log EDM preconditioning
         if self._strategy_config.sigma_data > 0 and self.strategy_name == 'rflow':
             logger.info(f"EDM preconditioning enabled (sigma_data={self._strategy_config.sigma_data})")
+
+        # Log velocity loss type
+        if self.velocity_loss_type != 'mse':
+            logger.info(f"Velocity loss type: {self.velocity_loss_type}")
 
         # Log augmented diffusion config
         if self.augmented_diffusion_enabled:

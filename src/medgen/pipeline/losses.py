@@ -147,6 +147,97 @@ def compute_rflow_snr_weighted_mse(
     return (per_sample_mse * weight).mean()
 
 
+def compute_pseudo_huber_loss(
+    prediction: Tensor,
+    target: Tensor | dict[str, Tensor],
+) -> Tensor:
+    """Pseudo-Huber loss for velocity prediction.
+
+    From "Improving Training of Rectified Flows" (NeurIPS 2024).
+    L = sqrt(||v_pred - v_target||² + c²) - c
+
+    Uses per-sample squared L2 norm (not per-element mean), then batch mean.
+    c = 0.00054 * sqrt(d) where d = total data dimensionality per sample.
+
+    Args:
+        prediction: Model velocity prediction [B, C, ...].
+        target: Target velocity. Tensor or dict for dual mode.
+
+    Returns:
+        Pseudo-Huber loss scalar.
+    """
+    if isinstance(target, dict):
+        keys = list(target.keys())
+        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
+        error_0 = (pred_0.float() - target[keys[0]].float()).flatten(1)
+        error_1 = (pred_1.float() - target[keys[1]].float()).flatten(1)
+        # d = dimensionality per sample per modality
+        d = error_0.shape[1]
+        c = 0.00054 * (d ** 0.5)
+        sq_norm_0 = (error_0 ** 2).sum(1)
+        sq_norm_1 = (error_1 ** 2).sum(1)
+        huber_0 = (sq_norm_0 + c * c).sqrt() - c
+        huber_1 = (sq_norm_1 + c * c).sqrt() - c
+        return ((huber_0 + huber_1) / 2).mean()
+    else:
+        error = (prediction.float() - target.float()).flatten(1)
+        d = error.shape[1]
+        c = 0.00054 * (d ** 0.5)
+        sq_norm = (error ** 2).sum(1)
+        return ((sq_norm + c * c).sqrt() - c).mean()
+
+
+def compute_lpips_huber_loss(
+    prediction: Tensor,
+    target: Tensor | dict[str, Tensor],
+    timesteps: Tensor,
+    num_timesteps: int,
+) -> Tensor:
+    """(1-t)-weighted Pseudo-Huber loss for LPIPS-Huber combination.
+
+    From "Improving Training of Rectified Flows" (NeurIPS 2024).
+    L = (1-t) * L_huber(v_pred, v_target)
+
+    The LPIPS term is handled by the existing perceptual loss code in the trainer
+    (set perceptual_weight=1.0 in config).
+
+    At t≈0 (clean): full Huber weight + LPIPS
+    At t≈1 (noise): LPIPS only (Huber weight → 0)
+
+    Args:
+        prediction: Model velocity prediction [B, C, ...].
+        target: Target velocity. Tensor or dict for dual mode.
+        timesteps: Diffusion timesteps [B] in [0, num_timesteps].
+        num_timesteps: Total training timesteps (e.g. 1000).
+
+    Returns:
+        Time-weighted Pseudo-Huber loss scalar.
+    """
+    t_norm = (timesteps.float() / num_timesteps).clamp(0, 1)  # [B]
+    weight = 1.0 - t_norm  # [B]
+
+    if isinstance(target, dict):
+        keys = list(target.keys())
+        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
+        error_0 = (pred_0.float() - target[keys[0]].float()).flatten(1)
+        error_1 = (pred_1.float() - target[keys[1]].float()).flatten(1)
+        d = error_0.shape[1]
+        c = 0.00054 * (d ** 0.5)
+        sq_norm_0 = (error_0 ** 2).sum(1)
+        sq_norm_1 = (error_1 ** 2).sum(1)
+        huber_0 = (sq_norm_0 + c * c).sqrt() - c
+        huber_1 = (sq_norm_1 + c * c).sqrt() - c
+        per_sample = (huber_0 + huber_1) / 2
+    else:
+        error = (prediction.float() - target.float()).flatten(1)
+        d = error.shape[1]
+        c = 0.00054 * (d ** 0.5)
+        sq_norm = (error ** 2).sum(1)
+        per_sample = (sq_norm + c * c).sqrt() - c
+
+    return (per_sample * weight).mean()
+
+
 def compute_region_weighted_mse(
     trainer: 'DiffusionTrainer',
     prediction: Tensor,
