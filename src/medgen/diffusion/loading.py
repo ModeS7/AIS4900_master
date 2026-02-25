@@ -232,11 +232,102 @@ def load_diffusion_model_with_metadata(
         gcd = reduce(math.gcd, channels)
         norm_num_groups = min(gcd, 32)
 
-    # Detect model type: 'unet' (default) or transformer ('dit', 'sit')
-    model_type = arch_config.get('model_type', 'unet')
-    is_transformer = model_type in ('dit', 'sit')
+    # Detect model type: 'unet', 'dit'/'sit', 'hdit', or 'uvit'
+    model_type = arch_config.get('model_type')
+    if model_type is None:
+        model_type = _detect_model_arch_from_state_dict(state_dict)
 
-    if is_transformer:
+    if model_type in ('hdit',):
+        from medgen.models.hdit import create_hdit
+
+        variant = arch_config.get('variant')
+        patch_size = arch_config.get('patch_size', 4)
+        conditioning = arch_config.get('conditioning', 'concat')
+
+        if conditioning == 'concat':
+            hdit_in_channels = resolved_in_channels
+        else:
+            hdit_in_channels = resolved_out_channels
+        cond_channels = max(0, resolved_in_channels - resolved_out_channels)
+
+        # Infer variant from hidden_size in state_dict
+        if variant is None:
+            variant = _infer_variant_from_state_dict(state_dict, 'hdit')
+
+        # Infer level_depths from state_dict
+        level_depths = _infer_hdit_level_depths(state_dict)
+
+        # Infer input_size and depth_size from pos_embeds
+        hdit_input_size = arch_config.get('image_size', 128)
+        depth_size = arch_config.get('depth_size')
+        hdit_input_size, depth_size = _infer_spatial_from_pos_embeds(
+            state_dict, resolved_spatial_dims, patch_size,
+            hdit_input_size, depth_size, model_type='hdit',
+        )
+
+        base_model = create_hdit(
+            variant=variant,
+            spatial_dims=resolved_spatial_dims,
+            input_size=hdit_input_size,
+            patch_size=patch_size,
+            in_channels=hdit_in_channels,
+            out_channels=resolved_out_channels,
+            conditioning=conditioning,
+            cond_channels=cond_channels,
+            level_depths=level_depths,
+            depth_size=depth_size,
+        )
+        logger.info(
+            f"Using HDiT-{variant} from checkpoint: input_size={hdit_input_size}, "
+            f"depth_size={depth_size}, patch_size={patch_size}, in_ch={hdit_in_channels}, "
+            f"cond_ch={cond_channels}, level_depths={level_depths}"
+        )
+        model: nn.Module = base_model
+
+    elif model_type in ('uvit',):
+        from medgen.models.uvit import create_uvit
+
+        variant = arch_config.get('variant')
+        patch_size = arch_config.get('patch_size', 2)
+        conditioning = arch_config.get('conditioning', 'concat')
+
+        if conditioning == 'concat':
+            uvit_in_channels = resolved_in_channels
+        else:
+            uvit_in_channels = resolved_out_channels
+        cond_channels = max(0, resolved_in_channels - resolved_out_channels)
+
+        # Infer variant from hidden_size in state_dict
+        if variant is None:
+            variant = _infer_variant_from_state_dict(state_dict, 'uvit')
+
+        # Infer input_size and depth_size from pos_embed
+        uvit_input_size = arch_config.get('image_size', 128)
+        depth_size = arch_config.get('depth_size')
+        uvit_input_size, depth_size = _infer_spatial_from_pos_embeds(
+            state_dict, resolved_spatial_dims, patch_size,
+            uvit_input_size, depth_size, model_type='uvit',
+        )
+
+        base_model = create_uvit(
+            variant=variant,
+            spatial_dims=resolved_spatial_dims,
+            input_size=uvit_input_size,
+            patch_size=patch_size,
+            in_channels=uvit_in_channels,
+            out_channels=resolved_out_channels,
+            conditioning=conditioning,
+            cond_channels=cond_channels,
+            depth_size=depth_size,
+        )
+        logger.info(
+            f"Using UViT-{variant} from checkpoint: input_size={uvit_input_size}, "
+            f"depth_size={depth_size}, patch_size={patch_size}, in_ch={uvit_in_channels}, "
+            f"cond_ch={cond_channels}"
+        )
+        model = base_model
+
+    elif model_type in ('dit', 'sit'):
         # Create DiT/SiT model from checkpoint config
         from medgen.models.dit import create_dit
 
@@ -404,6 +495,161 @@ def load_diffusion_model_with_metadata(
     )
 
 
+def _detect_model_arch_from_state_dict(state_dict: dict[str, Any]) -> str:
+    """Detect model architecture from state dict key patterns.
+
+    Returns:
+        'hdit', 'uvit', 'dit', 'sit', or 'unet'.
+    """
+    keys = set(state_dict.keys())
+
+    # HDiT: has encoder_levels, decoder_levels, mergers, splitters
+    if any(k.startswith('encoder_levels.') for k in keys):
+        return 'hdit'
+
+    # UViT: has in_blocks, out_blocks, mid_block, decoder_pred
+    if any(k.startswith('in_blocks.') for k in keys):
+        return 'uvit'
+
+    # DiT/SiT: has blocks.N.attn and final_layer.adaLN_modulation
+    if any(k.startswith('blocks.') for k in keys) and any('final_layer' in k for k in keys):
+        return 'dit'
+
+    return 'unet'
+
+
+def _infer_variant_from_state_dict(state_dict: dict[str, Any], model_type: str) -> str:
+    """Infer model variant (S/B/L/XL) from hidden_size in state dict."""
+    from medgen.models.dit import DIT_VARIANTS
+
+    # Find hidden_size from a known weight shape
+    hidden_size = None
+    if model_type == 'hdit':
+        # encoder_levels.0.0.attn.qkv.weight shape: [3*hidden, hidden]
+        for k, v in state_dict.items():
+            if 'encoder_levels.0.0.mlp.fc1.weight' in k:
+                hidden_size = v.shape[1]
+                break
+    elif model_type == 'uvit':
+        from medgen.models.uvit import UVIT_VARIANTS
+        for k, v in state_dict.items():
+            if 'in_blocks.0.mlp.fc1.weight' in k:
+                hidden_size = v.shape[1]
+                break
+        if hidden_size is not None:
+            for name, cfg in UVIT_VARIANTS.items():
+                if cfg['hidden_size'] == hidden_size:
+                    return name
+        return 'S'
+    elif model_type in ('dit', 'sit'):
+        for k, v in state_dict.items():
+            if 'blocks.0.mlp.fc1.weight' in k:
+                hidden_size = v.shape[1]
+                break
+
+    if hidden_size is not None:
+        for name, cfg in DIT_VARIANTS.items():
+            if cfg['hidden_size'] == hidden_size:
+                return name
+
+    return 'S'
+
+
+def _infer_hdit_level_depths(state_dict: dict[str, Any]) -> list[int]:
+    """Infer HDiT level_depths from encoder_levels/mid_blocks/decoder_levels keys."""
+    encoder_levels: dict[int, set[int]] = {}
+    decoder_levels: dict[int, set[int]] = {}
+    mid_blocks: set[int] = set()
+
+    for key in state_dict:
+        if key.startswith('encoder_levels.'):
+            parts = key.split('.')
+            level, block = int(parts[1]), int(parts[2])
+            encoder_levels.setdefault(level, set()).add(block)
+        elif key.startswith('decoder_levels.'):
+            parts = key.split('.')
+            level, block = int(parts[1]), int(parts[2])
+            decoder_levels.setdefault(level, set()).add(block)
+        elif key.startswith('mid_blocks.'):
+            parts = key.split('.')
+            mid_blocks.add(int(parts[1]))
+
+    depths = []
+    # Encoder levels (0, 1, ...)
+    for level in sorted(encoder_levels):
+        depths.append(len(encoder_levels[level]))
+    # Mid blocks
+    depths.append(len(mid_blocks))
+    # Decoder levels (0, 1, ...) - reverse order to match level_depths convention
+    for level in sorted(decoder_levels):
+        depths.append(len(decoder_levels[level]))
+
+    return depths if depths else [2, 4, 6, 4, 2]
+
+
+def _infer_spatial_from_pos_embeds(
+    state_dict: dict[str, Any],
+    spatial_dims: int,
+    patch_size: int,
+    default_input_size: int,
+    default_depth_size: int | None,
+    model_type: str = 'dit',
+) -> tuple[int, int | None]:
+    """Infer input_size and depth_size from positional embedding shapes."""
+    # HDiT has multiple pos_embeds (one per level)
+    # UViT/DiT have a single pos_embed
+    pos_embed_key = None
+    if model_type == 'hdit':
+        pos_embed_key = 'pos_embeds.0'
+    else:
+        pos_embed_key = 'pos_embed'
+
+    if pos_embed_key not in state_dict:
+        return default_input_size, default_depth_size
+
+    # pos_embed shape: [1, num_tokens, hidden_size] or [num_tokens, hidden_size]
+    pos_embed = state_dict[pos_embed_key]
+    if pos_embed.ndim == 3:
+        num_tokens = pos_embed.shape[1]
+    elif pos_embed.ndim == 2:
+        num_tokens = pos_embed.shape[0]
+    else:
+        return default_input_size, default_depth_size
+
+    # For UViT, first token is the time token
+    if model_type == 'uvit':
+        num_tokens -= 1
+
+    input_size = default_input_size
+    depth_size = default_depth_size
+
+    if spatial_dims == 3:
+        # Solve: (depth/p) * (size/p)^2 = num_tokens (for level 0 / full resolution)
+        best_candidate = None
+        best_ratio_diff = float('inf')
+        for candidate_s in [8, 16, 32, 64, 128, 256]:
+            s_tokens = candidate_s // patch_size
+            if s_tokens <= 0:
+                continue
+            remaining = num_tokens / (s_tokens * s_tokens)
+            if remaining == int(remaining) and remaining > 0:
+                candidate_d = int(remaining) * patch_size
+                if candidate_d <= 0 or candidate_d > candidate_s:
+                    continue
+                ratio_diff = abs(candidate_d / candidate_s - 0.5)
+                if ratio_diff < best_ratio_diff:
+                    best_ratio_diff = ratio_diff
+                    best_candidate = (candidate_s, candidate_d)
+        if best_candidate is not None:
+            input_size, depth_size = best_candidate
+    else:
+        tokens_per_side = int(num_tokens ** 0.5)
+        if tokens_per_side * tokens_per_side == num_tokens:
+            input_size = tokens_per_side * patch_size
+
+    return input_size, depth_size
+
+
 def _infer_channels_from_state_dict(
     state_dict: dict[str, Any],
 ) -> tuple[int | None, int | None]:
@@ -420,11 +666,17 @@ def _infer_channels_from_state_dict(
     for key, tensor in state_dict.items():
         if not isinstance(tensor, torch.Tensor):
             continue
-        # conv_in.conv.weight shape: [features, in_channels, *kernel_size]
+        # UNet: conv_in.conv.weight shape: [features, in_channels, *kernel_size]
         if key.endswith('conv_in.conv.weight'):
             in_channels = tensor.shape[1]
-        # out.2.conv.weight shape: [out_channels, features, *kernel_size]
+        # UNet: out.2.conv.weight shape: [out_channels, features, *kernel_size]
         if key.endswith('out.2.conv.weight'):
+            out_channels = tensor.shape[0]
+        # DiT/HDiT/UViT: x_embedder.proj.weight shape: [hidden, in_channels, *patch]
+        if key.endswith('x_embedder.proj.weight') and in_channels is None:
+            in_channels = tensor.shape[1]
+        # UViT: final_conv.weight shape: [out_channels, out_channels, *kernel]
+        if key.endswith('final_conv.weight') and out_channels is None:
             out_channels = tensor.shape[0]
 
     return in_channels, out_channels
