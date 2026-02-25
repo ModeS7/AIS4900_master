@@ -425,8 +425,11 @@ class SegmentationTrainer(BaseTrainer):
         # Compute global metrics
         global_results = self.global_metrics.compute()
 
+        # Detection summary (detection rates + FP count)
+        detection = self.regional_tracker.get_detection_summary()
+
         # Merge metrics
-        metrics = {**val_losses, **regional_metrics, **global_results}
+        metrics = {**val_losses, **regional_metrics, **global_results, **detection}
 
         # MC Dropout confidence estimation (on first batch only)
         mc_metrics: dict[str, float] = {}
@@ -493,7 +496,8 @@ class SegmentationTrainer(BaseTrainer):
             )
             if 'hd95' in metrics:
                 global_str += f", HD95: {metrics['hd95']:.1f}"
-            logger.info(f"Validation - {dice_str} | {size_str} | {global_str}")
+            det_str = f"Det: {metrics.get('detection_rate', 0):.0%}, FP: {metrics.get('false_positives', 0):.0f}"
+            logger.info(f"Validation - {dice_str} | {size_str} | {global_str} | {det_str}")
 
         return metrics
 
@@ -709,3 +713,33 @@ class SegmentationTrainer(BaseTrainer):
             f"[{timestamp}] Epoch {epoch + 1:3d}/{total_epochs} ({epoch_pct:5.1f}%) | "
             + " | ".join(parts)
         )
+
+    def _on_training_end(self, total_time: float) -> None:
+        """Save per-tumor detection records after training."""
+        self._save_detection_records()
+        super()._on_training_end(total_time)
+
+    def _save_detection_records(self) -> None:
+        """Save per-tumor detection records to JSON for post-hoc analysis."""
+        if not self.is_main_process:
+            return
+
+        records = self.regional_tracker.get_per_tumor_records()
+        if not records:
+            logger.info("No per-tumor records to save")
+            return
+
+        import json
+
+        output = {
+            'summary': self.regional_tracker.get_detection_summary(),
+            'detection_threshold': self.regional_tracker.detection_threshold,
+            'n_tumors': len(records),
+            'tumors': records,
+        }
+
+        path = os.path.join(self.save_dir, 'per_tumor_detection.json')
+        with open(path, 'w') as f:
+            json.dump(output, f, indent=2)
+
+        logger.info(f"Saved {len(records)} per-tumor records to {path}")

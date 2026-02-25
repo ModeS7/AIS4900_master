@@ -64,12 +64,14 @@ class SegRegionalMetricsTracker:
         device: torch.device | None = None,
         spatial_dims: int = 2,
         voxel_spacing: tuple[float, ...] | None = None,
+        detection_threshold: float = 0.1,
     ):
         self.image_size = image_size
         self.fov_mm = fov_mm
         self.device = device or torch.device('cuda')
         self.spatial_dims = spatial_dims
         self.tumor_size_thresholds = TUMOR_SIZE_THRESHOLDS_MM
+        self.detection_threshold = detection_threshold
 
         if voxel_spacing is not None:
             self.voxel_spacing = voxel_spacing
@@ -90,6 +92,9 @@ class SegRegionalMetricsTracker:
         self.size_dice_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
         self.size_iou_sum: dict[str, float] = {k: 0.0 for k in TUMOR_SIZE_CATEGORIES}
         self.size_tumor_count: dict[str, int] = {k: 0 for k in TUMOR_SIZE_CATEGORIES}
+
+        self._per_tumor_records: list[dict] = []
+        self._false_positives: int = 0
 
     def _classify_tumor_size(self, diameter_mm: float) -> str:
         """Classify tumor by Feret diameter using RANO-BM thresholds."""
@@ -240,7 +245,10 @@ class SegRegionalMetricsTracker:
             tumor_mask = (labeled == region.label)
             dice, iou = self._compute_tumor_dice_iou(pred_i, tgt_i, tumor_mask)
 
-            self._accumulate(size_cat, dice, iou)
+            self._accumulate(size_cat, dice, iou, feret_mm)
+
+        # Count false positives: predicted blobs with no GT overlap
+        self._count_false_positives(pred_i, tgt_i)
 
     def _update_3d_sample(self, pred_i: np.ndarray, tgt_i: np.ndarray) -> None:
         """Process a single 3D sample [D, H, W]."""
@@ -267,9 +275,12 @@ class SegRegionalMetricsTracker:
             size_cat = self._classify_tumor_size(feret_mm)
 
             dice, iou = self._compute_tumor_dice_iou(pred_i, tgt_i, tumor_mask)
-            self._accumulate(size_cat, dice, iou)
+            self._accumulate(size_cat, dice, iou, feret_mm)
 
-    def _accumulate(self, size_cat: str, dice: float, iou: float) -> None:
+        # Count false positives: predicted blobs with no GT overlap
+        self._count_false_positives(pred_i, tgt_i, structure=_STRUCTURE_3D)
+
+    def _accumulate(self, size_cat: str, dice: float, iou: float, feret_mm: float) -> None:
         """Add dice/iou to overall and per-size accumulators."""
         self.total_dice += dice
         self.total_iou += iou
@@ -278,6 +289,65 @@ class SegRegionalMetricsTracker:
         self.size_dice_sum[size_cat] += dice
         self.size_iou_sum[size_cat] += iou
         self.size_tumor_count[size_cat] += 1
+
+        self._per_tumor_records.append({
+            'feret_mm': round(feret_mm, 2),
+            'size_cat': size_cat,
+            'dice': round(dice, 4),
+            'iou': round(iou, 4),
+            'detected': dice > self.detection_threshold,
+        })
+
+    def _count_false_positives(
+        self,
+        pred_i: np.ndarray,
+        tgt_i: np.ndarray,
+        structure: np.ndarray | None = None,
+    ) -> None:
+        """Count predicted blobs that have zero GT overlap.
+
+        Args:
+            pred_i: Binary prediction mask [H, W] or [D, H, W].
+            tgt_i: Binary target mask (same shape).
+            structure: Connectivity structure for scipy_label (None=default for 2D).
+        """
+        pred_labeled, num_pred = scipy_label(pred_i, structure=structure)
+        for j in range(1, num_pred + 1):
+            pred_blob = pred_labeled == j
+            if pred_blob.sum() < 5:
+                continue
+            if not np.any(tgt_i[pred_blob]):
+                self._false_positives += 1
+
+    def get_detection_summary(self) -> dict[str, float]:
+        """Return detection rates overall and per-size, plus FP count.
+
+        Returns:
+            Dict with keys: detection_rate, detection_rate_{size}, false_positives.
+        """
+        records = self._per_tumor_records
+        if not records:
+            return {'detection_rate': 0.0, 'false_positives': float(self._false_positives)}
+
+        total_detected = sum(1 for r in records if r['detected'])
+        summary: dict[str, float] = {
+            'detection_rate': total_detected / len(records),
+            'false_positives': float(self._false_positives),
+        }
+
+        for size in TUMOR_SIZE_CATEGORIES:
+            size_records = [r for r in records if r['size_cat'] == size]
+            if size_records:
+                detected = sum(1 for r in size_records if r['detected'])
+                summary[f'detection_rate_{size}'] = detected / len(size_records)
+            else:
+                summary[f'detection_rate_{size}'] = 0.0
+
+        return summary
+
+    def get_per_tumor_records(self) -> list[dict]:
+        """Return raw per-tumor records for JSON export."""
+        return list(self._per_tumor_records)
 
     def compute(self) -> dict[str, float]:
         """Compute final metrics after all batches processed.
@@ -342,3 +412,12 @@ class SegRegionalMetricsTracker:
                 metrics[f'iou_{size}'],
                 epoch,
             )
+
+        # Detection metrics
+        detection = self.get_detection_summary()
+        writer.add_scalar(f'{prefix}/detection_rate', detection['detection_rate'], epoch)
+        writer.add_scalar(f'{prefix}/false_positives', detection['false_positives'], epoch)
+        for size in TUMOR_SIZE_CATEGORIES:
+            key = f'detection_rate_{size}'
+            if key in detection:
+                writer.add_scalar(f'{prefix}/{key}', detection[key], epoch)
