@@ -1,18 +1,13 @@
 name: Nightly Tests
 
-# DISABLED: Moved to local cron to avoid GitHub Actions billing.
-# Run locally: ./misc/nightly_cron.sh
-# Install cron: ./misc/nightly_cron.sh --install
-#
-# NOTE: GPU-dependent jobs (e2e-tests, slow-integration-tests, baseline-tests)
-# are disabled until a self-hosted GPU runner is configured.
-# To re-enable, uncomment the jobs below and set up a runner with labels [self-hosted, gpu].
+# Runs nightly on self-hosted runner at 3 AM UTC.
+# GPU-dependent jobs (e2e, slow integration, baseline) remain disabled
+# until a self-hosted GPU runner is configured with labels [self-hosted, gpu].
 
 on:
-  # schedule:
-  #   - cron: "0 3 * * *"
+  schedule:
+    - cron: "0 3 * * *"  # 3 AM UTC daily
   workflow_dispatch:
-    # Allow manual triggers only
 
 env:
   VENV: /home/mode/actions-venv/bin/activate
