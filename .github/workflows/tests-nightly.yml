@@ -132,7 +132,16 @@ jobs:
           pytest tests/ -m "not gpu and not baseline" \
             -v --tb=short --timeout=120 \
             --cov=src/medgen \
-            --cov-report=term-missing
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: nightly
+          fail_ci_if_error: false
 
   # Notify on failure
   notify-failure:

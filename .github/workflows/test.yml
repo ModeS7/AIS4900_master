@@ -54,6 +54,7 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
+          flags: unit
           fail_ci_if_error: false
 
   lint:
@@ -86,7 +87,17 @@ jobs:
         run: |
           source $VENV
           pytest tests/integration -m "not slow and not gpu and not baseline" \
-            -v --tb=short --timeout=60
+            -v --tb=short --timeout=60 \
+            --cov=src/medgen \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: integration
+          fail_ci_if_error: false
 
   cli-tests:
     runs-on: self-hosted
@@ -102,4 +113,14 @@ jobs:
       - name: Run CLI tests (help commands, imports)
         run: |
           source $VENV
-          pytest tests/e2e/test_cli_complete.py -v --tb=short --timeout=120
+          pytest tests/e2e/test_cli_complete.py -v --tb=short --timeout=120 \
+            --cov=src/medgen \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: e2e
+          fail_ci_if_error: false
