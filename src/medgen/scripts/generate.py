@@ -40,9 +40,8 @@ from medgen.data.utils import save_nifti
 from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
 from medgen.metrics.brain_mask import (
     create_brain_mask,
-    is_seg_inside_brain,
-    load_brain_atlas,
     is_seg_inside_atlas,
+    load_brain_atlas,
     remove_tumors_outside_brain,
 )
 
