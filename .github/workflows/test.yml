@@ -46,7 +46,15 @@ jobs:
           pytest tests/unit -m "not slow" -v --tb=short \
             --cov=src/medgen \
             --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
             --cov-fail-under=15
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
 
   lint:
     runs-on: self-hosted
