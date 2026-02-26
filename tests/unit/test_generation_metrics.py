@@ -376,9 +376,9 @@ class TestExtractFeaturesBatched3D:
 
             features = metrics._extract_features_batched(samples_3d, mock_extractor)
 
-            # CRITICAL: Must return 16 features (one per slice), NOT 1
-            assert features.shape[0] == 16, \
-                f"3D extraction should produce 16 features (one per slice), got {features.shape[0]}"
+            # Multi-view: axial=16 + coronal=64 + sagittal=64 = 144 features
+            assert features.shape[0] == 144, \
+                f"3D extraction should produce 144 multi-view features, got {features.shape[0]}"
             assert features.shape[1] == 2048
 
     def test_3d_removes_padding(self):
@@ -401,9 +401,9 @@ class TestExtractFeaturesBatched3D:
 
             features = metrics._extract_features_batched(samples_3d, mock_extractor)
 
-            # Should return 12 features (original depth), not 16
-            assert features.shape[0] == 12, \
-                f"Should exclude padded slices: expected 12 features, got {features.shape[0]}"
+            # Multi-view after depth truncation to 12: axial=12 + coronal=64 + sagittal=64 = 140
+            assert features.shape[0] == 140, \
+                f"Should exclude padded slices: expected 140 multi-view features, got {features.shape[0]}"
 
     def test_2d_unchanged(self):
         """2D extraction behavior unchanged (no regression)."""

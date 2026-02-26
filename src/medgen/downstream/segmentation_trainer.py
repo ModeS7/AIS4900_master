@@ -731,6 +731,22 @@ class SegmentationTrainer(BaseTrainer):
 
         import json
 
+        import numpy as np
+
+        class _NumpyEncoder(json.JSONEncoder):
+            """Handle numpy scalars that aren't JSON serializable."""
+
+            def default(self, o: object) -> object:
+                if isinstance(o, np.integer):
+                    return int(o)
+                if isinstance(o, np.floating):
+                    return float(o)
+                if isinstance(o, np.bool_):
+                    return bool(o)
+                if isinstance(o, np.ndarray):
+                    return o.tolist()
+                return super().default(o)
+
         output = {
             'summary': self.regional_tracker.get_detection_summary(),
             'detection_threshold': self.regional_tracker.detection_threshold,
@@ -740,6 +756,6 @@ class SegmentationTrainer(BaseTrainer):
 
         path = os.path.join(self.save_dir, 'per_tumor_detection.json')
         with open(path, 'w') as f:
-            json.dump(output, f, indent=2)
+            json.dump(output, f, indent=2, cls=_NumpyEncoder)
 
         logger.info(f"Saved {len(records)} per-tumor records to {path}")

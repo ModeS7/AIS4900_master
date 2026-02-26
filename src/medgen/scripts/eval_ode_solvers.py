@@ -124,10 +124,13 @@ class SolverConfig:
 @dataclass
 class SplitMetrics:
     """Metrics computed against one reference split."""
-    fid: float
-    kid_mean: float
-    kid_std: float
-    cmmd: float
+    fid: float                     # ImageNet ResNet50
+    kid_mean: float                # ImageNet ResNet50
+    kid_std: float                 # ImageNet ResNet50
+    cmmd: float                    # BiomedCLIP
+    fid_radimagenet: float         # RadImageNet ResNet50
+    kid_radimagenet_mean: float    # RadImageNet ResNet50
+    kid_radimagenet_std: float     # RadImageNet ResNet50
 
 
 @dataclass
@@ -143,7 +146,7 @@ class EvalResult:
     wall_time_s: float                        # Total generation time
     time_per_volume_s: float                  # Average time per volume
     num_volumes: int
-    metrics: dict[str, dict[str, float]]      # split -> {fid, kid_mean, kid_std, cmmd}
+    metrics: dict[str, dict[str, float]]      # split -> SplitMetrics fields as dict
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -297,9 +300,10 @@ def extract_split_features(
     modality: str = 'bravo',
     chunk_size: int = 32,
 ) -> torch.Tensor:
-    """Extract features from all volumes in a split, one volume at a time.
+    """Extract multi-view features from all volumes in a split.
 
-    Memory-efficient: loads one volume, extracts slice features, frees volume.
+    Uses extract_features_3d for multi-view (axial+coronal+sagittal) extraction.
+    Memory-efficient: loads one volume at a time.
 
     Args:
         split_dir: Directory with patient_id/{modality}.nii.gz.
@@ -311,8 +315,10 @@ def extract_split_features(
         chunk_size: Slices per feature extraction batch.
 
     Returns:
-        Feature tensor [total_slices, feat_dim].
+        Feature tensor [total_features, feat_dim] with multi-view features.
     """
+    from medgen.metrics.generation_3d import extract_features_3d
+
     bravo_files = sorted(split_dir.glob(f"*/{modality}.nii.gz"))
     all_features = []
     effective_depth = depth - trim_slices
@@ -334,19 +340,12 @@ def extract_split_features(
             pad = np.zeros((effective_depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
             vol = np.concatenate([vol, pad], axis=0)
 
-        # Resize if needed (model may use different resolution than data)
-        # vol is [D, H, W], we need [D, 1, H, W] for feature extraction
-        slices_tensor = torch.from_numpy(vol).unsqueeze(1)  # [D, 1, H, W]
+        # [D, H, W] -> [1, 1, D, H, W] for multi-view extraction
+        vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
+        features = extract_features_3d(vol_tensor, extractor, chunk_size)
+        all_features.append(features.cpu())
 
-        # Extract features in chunks
-        for start in range(0, slices_tensor.shape[0], chunk_size):
-            end = min(start + chunk_size, slices_tensor.shape[0])
-            chunk = slices_tensor[start:end]
-            features = extractor.extract_features(chunk)
-            all_features.append(features.cpu())
-            del features
-
-        del vol, slices_tensor
+        del vol, vol_tensor, features
 
     return torch.cat(all_features, dim=0)
 
@@ -362,8 +361,12 @@ def get_or_cache_reference_features(
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Extract and cache reference features for all splits.
 
+    Uses multi-view (axial+coronal+sagittal) extraction and both ImageNet
+    and RadImageNet ResNet50 backbones. Cache files use '_3view' suffix to
+    avoid collisions with old axial-only caches.
+
     Returns:
-        Dict: split_name -> {'resnet': Tensor, 'clip': Tensor}
+        Dict: split_name -> {'resnet': Tensor, 'resnet_radimagenet': Tensor, 'clip': Tensor}
         Also includes 'all' key with concatenated features.
     """
     from medgen.metrics.feature_extractors import BiomedCLIPFeatures, ResNet50Features
@@ -371,40 +374,62 @@ def get_or_cache_reference_features(
     cache_dir.mkdir(parents=True, exist_ok=True)
     ref_features: dict[str, dict[str, torch.Tensor]] = {}
 
-    # Check if all features are cached
+    # Check if all features are cached (3 extractors x N splits)
     all_cached = True
     for split_name in splits:
-        resnet_path = cache_dir / f"{split_name}_{modality}_resnet.pt"
-        clip_path = cache_dir / f"{split_name}_{modality}_clip.pt"
-        if not resnet_path.exists() or not clip_path.exists():
+        resnet_path = cache_dir / f"{split_name}_{modality}_resnet_3view.pt"
+        resnet_rin_path = cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt"
+        clip_path = cache_dir / f"{split_name}_{modality}_clip_3view.pt"
+        if not resnet_path.exists() or not resnet_rin_path.exists() or not clip_path.exists():
             all_cached = False
             break
 
     if all_cached:
-        logger.info("Loading cached reference features...")
+        logger.info("Loading cached reference features (multi-view)...")
         for split_name in splits:
             ref_features[split_name] = {
-                'resnet': torch.load(cache_dir / f"{split_name}_{modality}_resnet.pt", weights_only=True),
-                'clip': torch.load(cache_dir / f"{split_name}_{modality}_clip.pt", weights_only=True),
+                'resnet': torch.load(
+                    cache_dir / f"{split_name}_{modality}_resnet_3view.pt", weights_only=True),
+                'resnet_radimagenet': torch.load(
+                    cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt", weights_only=True),
+                'clip': torch.load(
+                    cache_dir / f"{split_name}_{modality}_clip_3view.pt", weights_only=True),
             }
-            logger.info(f"  {split_name}: resnet={ref_features[split_name]['resnet'].shape}, "
-                         f"clip={ref_features[split_name]['clip'].shape}")
+            logger.info(
+                f"  {split_name}: resnet={ref_features[split_name]['resnet'].shape}, "
+                f"resnet_rin={ref_features[split_name]['resnet_radimagenet'].shape}, "
+                f"clip={ref_features[split_name]['clip'].shape}"
+            )
     else:
-        logger.info("Extracting reference features (this is a one-time cost)...")
+        logger.info("Extracting reference features (multi-view, one-time cost)...")
 
-        # Extract ResNet features
-        logger.info("  Loading ResNet50...")
-        resnet = ResNet50Features(device, compile_model=False)
+        # Extract ResNet (ImageNet) features
+        logger.info("  Loading ResNet50 (ImageNet)...")
+        resnet = ResNet50Features(device, network_type='imagenet', compile_model=False)
         for split_name, split_dir in splits.items():
-            logger.info(f"  Extracting ResNet50 features for '{split_name}'...")
+            logger.info(f"  Extracting ResNet50 (ImageNet) features for '{split_name}'...")
             features = extract_split_features(
                 split_dir, resnet, depth, trim_slices, image_size,
                 modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet_3view.pt")
             ref_features.setdefault(split_name, {})['resnet'] = features
             logger.info(f"    {split_name}: {features.shape}")
         resnet.unload()
+
+        # Extract ResNet (RadImageNet) features
+        logger.info("  Loading ResNet50 (RadImageNet)...")
+        resnet_rin = ResNet50Features(device, network_type='radimagenet', compile_model=False)
+        for split_name, split_dir in splits.items():
+            logger.info(f"  Extracting ResNet50 (RadImageNet) features for '{split_name}'...")
+            features = extract_split_features(
+                split_dir, resnet_rin, depth, trim_slices, image_size,
+                modality=modality,
+            )
+            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt")
+            ref_features[split_name]['resnet_radimagenet'] = features
+            logger.info(f"    {split_name}: {features.shape}")
+        resnet_rin.unload()
 
         # Extract CLIP features
         logger.info("  Loading BiomedCLIP...")
@@ -415,16 +440,22 @@ def get_or_cache_reference_features(
                 split_dir, clip, depth, trim_slices, image_size,
                 modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_{modality}_clip.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_clip_3view.pt")
             ref_features[split_name]['clip'] = features
             logger.info(f"    {split_name}: {features.shape}")
         clip.unload()
 
     # Build 'all' by concatenating
     all_resnet = torch.cat([ref_features[s]['resnet'] for s in splits], dim=0)
+    all_resnet_rin = torch.cat([ref_features[s]['resnet_radimagenet'] for s in splits], dim=0)
     all_clip = torch.cat([ref_features[s]['clip'] for s in splits], dim=0)
-    ref_features['all'] = {'resnet': all_resnet, 'clip': all_clip}
-    logger.info(f"  all (combined): resnet={all_resnet.shape}, clip={all_clip.shape}")
+    ref_features['all'] = {
+        'resnet': all_resnet,
+        'resnet_radimagenet': all_resnet_rin,
+        'clip': all_clip,
+    }
+    logger.info(f"  all (combined): resnet={all_resnet.shape}, "
+                 f"resnet_rin={all_resnet_rin.shape}, clip={all_clip.shape}")
 
     return ref_features
 
@@ -584,7 +615,9 @@ def extract_generated_features(
     trim_slices: int,
     chunk_size: int = 32,
 ) -> torch.Tensor:
-    """Extract features from generated volumes (list of numpy arrays).
+    """Extract multi-view features from generated volumes.
+
+    Uses extract_features_3d for multi-view (axial+coronal+sagittal) extraction.
 
     Args:
         volumes: List of [D, H, W] numpy arrays in [0, 1].
@@ -593,21 +626,19 @@ def extract_generated_features(
         chunk_size: Slices per extraction batch.
 
     Returns:
-        Feature tensor [total_slices, feat_dim].
+        Feature tensor [total_features, feat_dim] with multi-view features.
     """
+    from medgen.metrics.generation_3d import extract_features_3d
+
     all_features = []
     for vol_np in volumes:
         if trim_slices > 0:
             vol_np = vol_np[:-trim_slices]
-        # [D, H, W] -> [D, 1, H, W]
-        slices_tensor = torch.from_numpy(vol_np).unsqueeze(1)
-
-        for start in range(0, slices_tensor.shape[0], chunk_size):
-            end = min(start + chunk_size, slices_tensor.shape[0])
-            chunk = slices_tensor[start:end]
-            features = extractor.extract_features(chunk)
-            all_features.append(features.cpu())
-            del features
+        # [D, H, W] -> [1, 1, D, H, W] for multi-view extraction
+        vol_tensor = torch.from_numpy(vol_np).unsqueeze(0).unsqueeze(0)
+        features = extract_features_3d(vol_tensor, extractor, chunk_size)
+        all_features.append(features.cpu())
+        del vol_tensor, features
 
     return torch.cat(all_features, dim=0)
 
@@ -624,26 +655,35 @@ def compute_all_metrics(
 ) -> dict[str, SplitMetrics]:
     """Compute FID, KID, CMMD for generated volumes against all reference splits.
 
+    Uses both ImageNet and RadImageNet ResNet50 backbones for FID/KID.
+
     Args:
         gen_volumes: List of generated [D, H, W] numpy arrays.
-        ref_features: Dict of split_name -> {'resnet': Tensor, 'clip': Tensor}.
+        ref_features: Dict of split_name -> {'resnet': T, 'resnet_radimagenet': T, 'clip': T}.
         device: CUDA device for feature extraction.
         trim_slices: Slices to trim from generated volumes.
 
     Returns:
-        Dict of split_name -> SplitMetrics.
+        Dict of split_name -> SplitMetrics (with both ImageNet and RadImageNet metrics).
     """
     from medgen.metrics.feature_extractors import BiomedCLIPFeatures, ResNet50Features
     from medgen.metrics.generation import compute_cmmd, compute_fid, compute_kid
 
     results = {}
 
-    # Extract ResNet features from generated volumes
-    logger.info("    Extracting ResNet50 features from generated...")
-    resnet = ResNet50Features(device, compile_model=False)
+    # Extract ResNet (ImageNet) features from generated volumes
+    logger.info("    Extracting ResNet50 (ImageNet) features from generated...")
+    resnet = ResNet50Features(device, network_type='imagenet', compile_model=False)
     gen_resnet = extract_generated_features(gen_volumes, resnet, trim_slices)
-    logger.info(f"    Generated ResNet features: {gen_resnet.shape}")
+    logger.info(f"    Generated ResNet (ImageNet) features: {gen_resnet.shape}")
     resnet.unload()
+
+    # Extract ResNet (RadImageNet) features from generated volumes
+    logger.info("    Extracting ResNet50 (RadImageNet) features from generated...")
+    resnet_rin = ResNet50Features(device, network_type='radimagenet', compile_model=False)
+    gen_resnet_rin = extract_generated_features(gen_volumes, resnet_rin, trim_slices)
+    logger.info(f"    Generated ResNet (RadImageNet) features: {gen_resnet_rin.shape}")
+    resnet_rin.unload()
 
     # Extract CLIP features from generated volumes
     logger.info("    Extracting BiomedCLIP features from generated...")
@@ -655,21 +695,35 @@ def compute_all_metrics(
     # Compute metrics against each split
     for split_name, split_feats in ref_features.items():
         ref_resnet = split_feats['resnet']
+        ref_resnet_rin = split_feats['resnet_radimagenet']
         ref_clip = split_feats['clip']
 
+        # ImageNet ResNet50
         fid = compute_fid(ref_resnet, gen_resnet)
-
-        # Cap KID subset_size to min available
         min_n = min(ref_resnet.shape[0], gen_resnet.shape[0])
         kid_subset = min(100, min_n)
         kid_mean, kid_std = compute_kid(ref_resnet, gen_resnet, subset_size=kid_subset)
 
+        # RadImageNet ResNet50
+        fid_rin = compute_fid(ref_resnet_rin, gen_resnet_rin)
+        min_n_rin = min(ref_resnet_rin.shape[0], gen_resnet_rin.shape[0])
+        kid_subset_rin = min(100, min_n_rin)
+        kid_rin_mean, kid_rin_std = compute_kid(
+            ref_resnet_rin, gen_resnet_rin, subset_size=kid_subset_rin,
+        )
+
+        # BiomedCLIP
         cmmd = compute_cmmd(ref_clip, gen_clip)
 
         results[split_name] = SplitMetrics(
             fid=fid, kid_mean=kid_mean, kid_std=kid_std, cmmd=cmmd,
+            fid_radimagenet=fid_rin,
+            kid_radimagenet_mean=kid_rin_mean, kid_radimagenet_std=kid_rin_std,
         )
-        logger.info(f"    vs {split_name}: FID={fid:.2f}  KID={kid_mean:.6f}  CMMD={cmmd:.6f}")
+        logger.info(
+            f"    vs {split_name}: FID={fid:.2f}  KID={kid_mean:.6f}  CMMD={cmmd:.6f}  "
+            f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin_mean:.6f}"
+        )
 
     return results
 
@@ -680,12 +734,12 @@ def compute_all_metrics(
 
 def print_results_table(results: list[EvalResult], primary_split: str = 'all') -> None:
     """Print formatted results table sorted by NFE."""
-    print("\n" + "=" * 130)
+    print("\n" + "=" * 160)
     print(f"ODE Solver Evaluation Results (vs '{primary_split}' reference)")
-    print("=" * 130)
+    print("=" * 160)
     print(f"{'Config':<28} {'Steps':>5} {'NFE/vol':>8} {'Time/vol':>9} "
-          f"{'FID':>10} {'KID':>14} {'CMMD':>10}")
-    print("-" * 130)
+          f"{'FID':>10} {'KID':>14} {'FID_RIN':>10} {'KID_RIN':>14} {'CMMD':>10}")
+    print("-" * 160)
 
     sorted_results = sorted(results, key=lambda r: r.nfe_per_volume)
 
@@ -695,16 +749,19 @@ def print_results_table(results: list[EvalResult], primary_split: str = 'all') -
             continue
         steps_str = str(r.steps) if r.steps is not None else "adapt"
         kid_str = f"{m['kid_mean']:.6f}±{m['kid_std']:.4f}"
+        kid_rin_str = f"{m.get('kid_radimagenet_mean', 0):.6f}±{m.get('kid_radimagenet_std', 0):.4f}"
         label = f"{r.solver}({r.dir_name.split('_', 1)[1]})"
         print(f"{label:<28} {steps_str:>5} {r.nfe_per_volume:>8.0f} "
               f"{r.time_per_volume_s:>8.1f}s "
-              f"{m['fid']:>10.2f} {kid_str:>14} {m['cmmd']:>10.6f}")
+              f"{m['fid']:>10.2f} {kid_str:>14} "
+              f"{m.get('fid_radimagenet', 0):>10.2f} {kid_rin_str:>14} "
+              f"{m['cmmd']:>10.6f}")
 
-    print("=" * 130)
+    print("=" * 160)
 
     # Group by NFE bucket for comparison
     print(f"\nNFE-Normalized Comparison (vs '{primary_split}'):")
-    print("-" * 100)
+    print("-" * 130)
 
     nfe_buckets: dict[str, list[EvalResult]] = {}
     for r in sorted_results:
@@ -739,6 +796,8 @@ def print_results_table(results: list[EvalResult], primary_split: str = 'all') -
             marker = " *" if r is best and len(bucket_results) > 1 else ""
             print(f"    {r.dir_name:<30} NFE={r.nfe_per_volume:<6.0f} "
                   f"FID={m['fid']:<10.2f} KID={m['kid_mean']:<10.6f} "
+                  f"FID_RIN={m.get('fid_radimagenet', 0):<10.2f} "
+                  f"KID_RIN={m.get('kid_radimagenet_mean', 0):<10.6f} "
                   f"CMMD={m['cmmd']:<10.6f} {r.time_per_volume_s:.1f}s{marker}")
 
 
@@ -757,8 +816,12 @@ def save_results_csv(results: list[EvalResult], path: Path) -> None:
         header = ['solver', 'steps', 'tol', 'dir_name', 'nfe_per_volume',
                   'wall_time_s', 'time_per_volume_s', 'num_volumes']
         for split in all_splits:
-            header.extend([f'fid_{split}', f'kid_mean_{split}', f'kid_std_{split}',
-                          f'cmmd_{split}'])
+            header.extend([
+                f'fid_{split}', f'kid_mean_{split}', f'kid_std_{split}',
+                f'cmmd_{split}',
+                f'fid_radimagenet_{split}',
+                f'kid_radimagenet_mean_{split}', f'kid_radimagenet_std_{split}',
+            ])
         writer.writerow(header)
 
         # Data rows
@@ -780,6 +843,9 @@ def save_results_csv(results: list[EvalResult], path: Path) -> None:
                     f"{m.get('kid_mean', ''):.6f}" if m else '',
                     f"{m.get('kid_std', ''):.6f}" if m else '',
                     f"{m.get('cmmd', ''):.6f}" if m else '',
+                    f"{m.get('fid_radimagenet', ''):.4f}" if m else '',
+                    f"{m.get('kid_radimagenet_mean', ''):.6f}" if m else '',
+                    f"{m.get('kid_radimagenet_std', ''):.6f}" if m else '',
                 ])
             writer.writerow(row)
 
@@ -909,11 +975,15 @@ def _run_smoke_test(args) -> None:
     save_conditioning(cond_list, output_dir, voxel_size, trim_slices)
 
     # ── Fake reference features (random — metrics will be meaningless but code paths exercised)
-    effective_slices = depth - trim_slices
+    # Multi-view: axial(D-trim) + coronal(H) + sagittal(W) per volume
+    effective_depth = depth - trim_slices
+    num_features_per_vol = effective_depth + image_size + image_size  # D' + H + W
+    total_features = num_volumes * num_features_per_vol
     ref_features = {
         'fake_split': {
-            'resnet': torch.randn(num_volumes * effective_slices, 2048),
-            'clip': torch.randn(num_volumes * effective_slices, 512),
+            'resnet': torch.randn(total_features, 2048),
+            'resnet_radimagenet': torch.randn(total_features, 2048),
+            'clip': torch.randn(total_features, 512),
         },
     }
 

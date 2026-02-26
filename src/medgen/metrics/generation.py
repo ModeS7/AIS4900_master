@@ -88,6 +88,7 @@ class GenerationMetricsConfig:
     size_bin_edges: list[float] | None = None  # Bin edges in mm (default from loader)
     size_bin_fov_mm: float = 240.0  # Field of view in mm
     compile_extractors: bool = True  # torch.compile on feature extractors (disable for 3D to save ~10GB VRAM)
+    resnet_network_type: str = "imagenet"  # 'imagenet' or 'radimagenet' for ResNet50 features
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
@@ -170,6 +171,7 @@ class GenerationMetricsConfig:
             size_bin_edges=size_bin_edges,
             size_bin_fov_mm=size_bin_fov_mm,
             compile_extractors=compile_extractors,
+            resnet_network_type=gen_cfg.get('resnet_network_type', 'imagenet'),
         )
 
 
@@ -650,7 +652,7 @@ class GenerationMetrics:
 
         # Initialize feature extractors (lazy-loaded)
         # For 3D: compile_extractors=False saves ~10GB VRAM from CUDA Graph pools
-        self.resnet = ResNet50Features(device, cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
+        self.resnet = ResNet50Features(device, network_type=config.resnet_network_type, cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
         self.biomed = BiomedCLIPFeatures(device, cache_dir=config.cache_dir, compile_model=config.compile_extractors)
 
         # Reference feature cache

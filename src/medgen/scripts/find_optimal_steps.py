@@ -332,7 +332,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
 
     # Metric
-    parser.add_argument('--metric', choices=['fid', 'kid', 'cmmd'], default='fid',
+    parser.add_argument('--metric', choices=[
+        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet',
+    ], default='fid',
                         help='Metric to minimize (default: fid)')
     parser.add_argument('--ref-split', default='all',
                         help='Reference split for metric computation (default: all)')
@@ -606,7 +608,7 @@ def main():
                 modality=ref_modality,
             )
 
-        # Compute metrics (always in pixel space)
+        # Compute metrics (always in pixel space, dual backbone)
         split_metrics = compute_all_metrics(volumes, ref_features, device, args.trim_slices)
 
         ref_metrics = split_metrics.get(args.ref_split)
@@ -618,12 +620,19 @@ def main():
         fid = m['fid']
         kid = m['kid_mean']
         cmmd = m['cmmd']
+        fid_rin = m['fid_radimagenet']
+        kid_rin = m['kid_radimagenet_mean']
 
-        target = {'fid': fid, 'kid': kid, 'cmmd': cmmd}[args.metric]
+        target = {
+            'fid': fid, 'kid': kid, 'cmmd': cmmd,
+            'fid_radimagenet': fid_rin, 'kid_radimagenet': kid_rin,
+        }[args.metric]
 
         elapsed = time.time() - t0
-        logger.info(f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  "
-                     f"CMMD={cmmd:.6f}  ({elapsed:.0f}s)")
+        logger.info(
+            f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
+            f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}  ({elapsed:.0f}s)"
+        )
 
         history.append({
             'steps': num_steps,
@@ -631,6 +640,9 @@ def main():
             'kid_mean': kid,
             'kid_std': m['kid_std'],
             'cmmd': cmmd,
+            'fid_radimagenet': fid_rin,
+            'kid_radimagenet_mean': kid_rin,
+            'kid_radimagenet_std': m['kid_radimagenet_std'],
             'wall_time_s': wall_time,
             'eval_time_s': elapsed,
         })
@@ -670,12 +682,17 @@ def main():
 
     # Print full history with all metrics
     logger.info("\nFull history:")
-    logger.info(f"  {'Steps':>5}  {'FID':>8}  {'KID':>10}  {'CMMD':>10}  {'Time':>7}")
-    logger.info(f"  {'-'*48}")
+    logger.info(f"  {'Steps':>5}  {'FID':>8}  {'KID':>10}  {'FID_RIN':>8}  "
+                 f"{'KID_RIN':>10}  {'CMMD':>10}  {'Time':>7}")
+    logger.info(f"  {'-'*68}")
     for h in sorted(history, key=lambda x: x['steps']):
         marker = " <--" if h['steps'] == best_steps else ""
-        logger.info(f"  {h['steps']:>5}  {h['fid']:>8.2f}  {h['kid_mean']:>10.6f}  "
-                     f"{h['cmmd']:>10.6f}  {h['wall_time_s']:>6.1f}s{marker}")
+        logger.info(
+            f"  {h['steps']:>5}  {h['fid']:>8.2f}  {h['kid_mean']:>10.6f}  "
+            f"{h.get('fid_radimagenet', 0):>8.2f}  "
+            f"{h.get('kid_radimagenet_mean', 0):>10.6f}  "
+            f"{h['cmmd']:>10.6f}  {h['wall_time_s']:>6.1f}s{marker}"
+        )
 
     _save_history(output_dir, history, args, best_steps=best_steps)
 

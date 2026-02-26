@@ -74,7 +74,7 @@ class TestExtractFeatures3D:
     """Test extract_features_3d function."""
 
     def test_output_shape(self):
-        """Returns [B*D, feat_dim]."""
+        """Returns multi-view features from all 3 axes."""
         # Mock extractor with extract_features method
         def mock_extract(x, use_amp=True):
             return torch.randn(x.shape[0], 2048)
@@ -85,15 +85,15 @@ class TestExtractFeatures3D:
         mock_extractor.to = Mock(return_value=mock_extractor)
         mock_extractor.train = Mock(return_value=mock_extractor)
 
-        volumes = torch.rand(2, 1, 16, 64, 64)  # B=2, D=16
+        volumes = torch.rand(2, 1, 16, 64, 64)  # B=2, D=16, H=64, W=64
 
         features = extract_features_3d(volumes, mock_extractor, chunk_size=8)
 
-        # Should return [B*D, feat_dim] = [32, 2048]
-        assert features.shape == (32, 2048)
+        # Multi-view: axial=2*16=32 + coronal=2*64=128 + sagittal=2*64=128 = 288
+        assert features.shape == (288, 2048)
 
     def test_slicewise_extraction(self):
-        """Features extracted per slice."""
+        """Features extracted per slice across all 3 views."""
         call_count = [0]
 
         def mock_extract(x, use_amp=True):
@@ -110,8 +110,8 @@ class TestExtractFeatures3D:
 
         features = extract_features_3d(volumes, mock_extractor, chunk_size=16)
 
-        # With chunk_size=16 and B*D=32, should call twice
-        assert call_count[0] == 2
+        # chunk_size=16: axial=ceil(32/16)=2, coronal=ceil(128/16)=8, sagittal=ceil(128/16)=8 = 18
+        assert call_count[0] == 18
 
     def test_chunk_size_parameter(self):
         """Chunked processing for memory."""
@@ -127,9 +127,9 @@ class TestExtractFeatures3D:
         mock_extractor.to = Mock(return_value=mock_extractor)
         mock_extractor.train = Mock(return_value=mock_extractor)
 
-        volumes = torch.rand(2, 1, 16, 64, 64)  # 32 slices total
+        volumes = torch.rand(2, 1, 16, 64, 64)  # B=2, D=16, H=64, W=64
 
-        # With chunk_size=8, should make 4 calls
+        # chunk_size=8: axial=ceil(32/8)=4, coronal=ceil(128/8)=16, sagittal=ceil(128/8)=16 = 36
         features = extract_features_3d(volumes, mock_extractor, chunk_size=8)
 
-        assert call_count[0] == 4
+        assert call_count[0] == 36
