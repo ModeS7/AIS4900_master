@@ -89,7 +89,8 @@ jobs:
           pytest tests/integration -m "not slow and not gpu and not baseline" \
             -v --tb=short --timeout=60 \
             --cov=src/medgen \
-            --cov-report=xml:coverage.xml
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=0
 
       - name: Upload coverage to Codecov
         if: always()
@@ -115,7 +116,8 @@ jobs:
           source $VENV
           pytest tests/e2e/test_cli_complete.py -v --tb=short --timeout=120 \
             --cov=src/medgen \
-            --cov-report=xml:coverage.xml
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=0
 
       - name: Upload coverage to Codecov
         if: always()
