@@ -1,12 +1,12 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-04:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g"
+#SBATCH --constraint="a100|h100"
 #SBATCH --job-name="exp1_1_gen_3d_256"
 #SBATCH --output=IDUN/output/generate/exp1_1_gen_3d_256_%j.out
 #SBATCH --error=IDUN/output/generate/exp1_1_gen_3d_256_%j.err
