@@ -89,6 +89,19 @@ The framework uses a **Strategy + Mode** design pattern:
 - **Strategy** (HOW to diffuse): `ddpm` or `rflow`
 - **Mode** (WHAT to generate): `seg`, `bravo`, `dual`, `multi`, `seg_conditioned`
 
+### RFlow Timestep Convention
+
+MONAI `RFlowScheduler` uses: **t=0 → clean data, t=T (t̃=1) → pure noise.**
+
+```
+x_t = (1 - t̃) * x₀ + t̃ * ε     where t̃ = t/T ∈ [0, 1]
+velocity target: v = x₀ - noise   (points from noise toward clean)
+predicted clean: x̂₀ = x_t + t̃*v
+generation:      t = T → 0         (noise → clean)
+```
+
+> **Warning**: This is **reversed** from the original Rectified Flow paper (Liu et al., 2023) which uses t=0 → noise, t=1 → clean. MONAI follows the DDPM-era convention (increasing t = more noise), which is also used by Lee et al. (NeurIPS 2024), Lipman et al. (Flow Matching, 2023), and most frameworks (Diffusers, k-diffusion). All `(1-t)` loss weights in this codebase use the MONAI convention.
+
 ### Trainer Hierarchy
 
 ```

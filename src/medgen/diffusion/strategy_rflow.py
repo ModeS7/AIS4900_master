@@ -1,6 +1,15 @@
 """Rectified Flow (RFlow) strategy implementation.
 
-Moved from strategies.py during file split.
+Timestep convention (MONAI RFlowScheduler):
+    t=0 → clean data, t=T (t_norm=1) → pure noise.
+    x_t = (1-t̃)*x₀ + t̃*ε   where t̃ = t/T ∈ [0,1].
+    Velocity target: v = x₀ − noise  (points noise → clean).
+    Predicted clean: x̂₀ = x_t + t̃*v.
+
+    NOTE: This is REVERSED from the original RF paper (Liu et al., 2023)
+    which uses t=0 → noise, t=1 → clean. MONAI follows the DDPM-like
+    convention (also used by Lee et al., NeurIPS 2024).
+    Generation runs from t=T → t=0 (noise → clean).
 """
 from __future__ import annotations
 

@@ -4,6 +4,13 @@ This module provides loss functions for:
 - Self-conditioning consistency loss
 - Min-SNR weighted MSE loss
 - Region-weighted MSE loss (tumor-focused)
+- LPIPS-Huber premetric (Lee et al., NeurIPS 2024)
+- Pseudo-Huber loss
+
+Timestep convention (MONAI RFlowScheduler):
+    t=0 → clean data, t=T (t_norm=1) → pure noise.
+    All (1-t) weights in this file use this convention:
+    (1-t_norm) = 1.0 near clean, 0.0 near noise.
 """
 import logging
 import random
@@ -195,14 +202,23 @@ def compute_lpips_huber_loss(
 ) -> Tensor:
     """(1-t)-weighted Pseudo-Huber loss for LPIPS-Huber combination.
 
-    From "Improving Training of Rectified Flows" (NeurIPS 2024).
-    L = (1-t) * L_huber(v_pred, v_target)
+    From "Improving Training of Rectified Flows" (Lee et al., NeurIPS 2024).
+    Paper formula (Eq. in Section 3.2):
 
-    The LPIPS term is handled by the existing perceptual loss code in the trainer
-    (set perceptual_weight=1.0 in config).
+        L = (1-t) * Huber(v_target, v_pred) + LPIPS(x₀, x̂₀)
 
-    At t≈0 (clean): full Huber weight + LPIPS
-    At t≈1 (noise): LPIPS only (Huber weight → 0)
+    This function computes ONLY the (1-t)*Huber term.
+    The LPIPS term is computed separately in the trainer (constant weight,
+    no time dependence — matching the paper).
+
+    Convention (MONAI RFlowScheduler, same as Lee et al.):
+        t=0 → clean data,  t=T (t_norm=1) → pure noise.
+        (1-t_norm) = 1.0 near clean, 0.0 near noise.
+        NOTE: REVERSED from original RF paper (Liu 2023) where t=0 is noise.
+
+    Behavior:
+        At t≈0 (clean): (1-t)≈1 → full Huber + LPIPS
+        At t≈1 (noise): (1-t)≈0 → LPIPS only (Huber fades out)
 
     Args:
         prediction: Model velocity prediction [B, C, ...].

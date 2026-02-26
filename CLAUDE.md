@@ -42,6 +42,7 @@ Before marking ANY task complete, STOP and verify:
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
 | **Discrete timesteps** | DDPM - integers in [0, 999] |
+| **RFlow t convention** | MONAI: t=0 → clean, t=T (t̃=1) → noise. `x_t = (1-t̃)*x₀ + t̃*ε`. REVERSED from original RF paper (Liu: t=0→noise). |
 | **Voxel spacing (NIfTI)** | `compute_voxel_size()` returns `(x, y, z)` = `(0.9375, 0.9375, 1.0)` for affine matrices |
 | **Voxel spacing (3D bins)** | Config `voxel_spacing` is `[D, H, W]` = `[1.0, 0.9375, 0.9375]` for `compute_feret_diameter_3d` |
 
@@ -123,7 +124,7 @@ This catches:
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |
 | `@docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression) |
 | `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
-| `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
+| `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) — **check here FIRST before web search** |
 
 ---
 

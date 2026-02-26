@@ -718,17 +718,19 @@ num_train_timesteps: 1000         # Total timesteps
 **To re-enable**: Set `training.augment=true` on command line or in config.
 
 ## 68. RFlow Timestep Convention: t=0 is Clean, t=1 is Noise
-**Important**: RFlow uses the convention where `t=0` is the clean image and `t=1` is pure noise.
+**Important**: MONAI RFlowScheduler uses the convention where `t=0` is the clean image and `t=1` (or `t=T`) is pure noise. This matches "Improving the Training of Rectified Flows" (Lee et al., NeurIPS 2024) but is **REVERSED** from the original RF paper (Liu et al., 2023) which uses `t=0` → noise, `t=1` → clean.
 
-**Interpolation formula**: `x_t = (1 - t) * x_0 + t * noise`
-- At `t=0`: `x_t = x_0` (clean image)
-- At `t=1`: `x_t = noise` (pure noise)
+**Interpolation formula**: `x_t = (1 - t̃) * x_0 + t̃ * noise` where `t̃ = t/T ∈ [0,1]`
+- At `t̃=0`: `x_t = x_0` (clean image)
+- At `t̃=1`: `x_t = noise` (pure noise)
 
-**Inference direction**: Goes from `t=1000` down to `t=0` (noise → clean).
+**Inference direction**: Goes from `t=T` down to `t=0` (noise → clean).
 
 **Velocity target**: `v = x_0 - noise` (points from noise toward clean data).
 
 **Euler integration**: `x_{t-dt} = x_t + dt * v` (ADDITION, not subtraction).
+
+**Time-dependent loss weighting**: `(1 - t̃)` = 1.0 near clean, 0.0 near noise. Used by LPIPS-Huber to fade Huber out near noise (LPIPS stays constant). See `pipeline/losses.py:compute_lpips_huber_loss()`.
 
 ## 69. Velocity MSE vs Reconstruction MSE - Know the Difference
 **Problem**: Confusing what different MSE metrics measure in RFlow training.
