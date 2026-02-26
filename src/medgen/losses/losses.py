@@ -92,14 +92,19 @@ class PerceptualLoss(nn.Module):
 
         Handles any number of input channels by computing per-channel
         perceptual loss and averaging (same approach as DiffusionTrainer).
+        For 5D inputs [B, C, D, H, W], computes slice-wise loss along depth.
 
         Args:
-            input: Predicted/reconstructed images [B, C, H, W].
-            target: Ground truth images [B, C, H, W].
+            input: Predicted images [B, C, H, W] or [B, C, D, H, W].
+            target: Ground truth images, same shape as input.
 
         Returns:
             Scalar perceptual loss tensor.
         """
+        # 3D volumes: compute slice-wise perceptual loss along depth axis
+        if input.ndim == 5:
+            return self._forward_3d(input, target)
+
         num_channels = input.shape[1]
 
         if num_channels == 1:
@@ -114,6 +119,36 @@ class PerceptualLoss(nn.Module):
             ch_target = target[:, ch:ch+1].float()  # [B, 1, H, W]
             losses.append(self._loss_fn(ch_input, ch_target))
 
+        return sum(losses) / len(losses)
+
+    def _forward_3d(
+        self,
+        input: Tensor,
+        target: Tensor,
+    ) -> Tensor:
+        """Compute perceptual loss for 3D volumes slice-by-slice.
+
+        MONAI's PerceptualLoss only supports 4D [B, C, H, W] input.
+        For 3D volumes, extract slices along depth and average.
+        """
+        B, C, D, H, W = input.shape
+        # Reshape to process all slices as a batch: [B*D, C, H, W]
+        inp_slices = input.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+        tgt_slices = target.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+        # Process in chunks to avoid OOM on large volumes
+        chunk_size = max(1, min(D, 16))
+        losses = []
+        for i in range(0, B * D, chunk_size):
+            chunk_inp = inp_slices[i:i + chunk_size]
+            chunk_tgt = tgt_slices[i:i + chunk_size]
+            if C == 1:
+                losses.append(self._loss_fn(chunk_inp.float(), chunk_tgt.float()))
+            else:
+                for ch in range(C):
+                    losses.append(self._loss_fn(
+                        chunk_inp[:, ch:ch+1].float(),
+                        chunk_tgt[:, ch:ch+1].float(),
+                    ))
         return sum(losses) / len(losses)
 
     def _forward_dict(
@@ -220,6 +255,31 @@ class LPIPSLoss(nn.Module):
         self.net = net
         logger.info(f"LPIPSLoss initialized with {net} backbone")
 
+    def _forward_2d(
+        self,
+        input: Tensor,
+        target: Tensor,
+    ) -> Tensor:
+        """Compute LPIPS loss for 4D [B, C, H, W] inputs."""
+        num_channels = input.shape[1]
+
+        if num_channels == 1:
+            input_3ch = input.repeat(1, 3, 1, 1)
+            target_3ch = target.repeat(1, 3, 1, 1)
+            return self._loss_fn(input_3ch.float(), target_3ch.float()).mean()
+
+        if num_channels == 3:
+            return self._loss_fn(input.float(), target.float()).mean()
+
+        # Multi-channel (not 1 or 3): compute per-channel loss and average
+        losses = []
+        for ch in range(num_channels):
+            ch_input = input[:, ch:ch+1].repeat(1, 3, 1, 1).float()
+            ch_target = target[:, ch:ch+1].repeat(1, 3, 1, 1).float()
+            losses.append(self._loss_fn(ch_input, ch_target).mean())
+
+        return sum(losses) / len(losses)
+
     def _forward_tensor(
         self,
         input: Tensor,
@@ -228,35 +288,30 @@ class LPIPSLoss(nn.Module):
         """Compute LPIPS loss between tensor inputs.
 
         Handles any number of input channels by computing per-channel
-        LPIPS loss and averaging.
+        LPIPS loss and averaging. For 5D inputs, computes slice-wise.
 
         Args:
-            input: Predicted/reconstructed images [B, C, H, W].
-            target: Ground truth images [B, C, H, W].
+            input: Predicted images [B, C, H, W] or [B, C, D, H, W].
+            target: Ground truth images, same shape as input.
 
         Returns:
             Scalar LPIPS loss tensor.
         """
-        num_channels = input.shape[1]
+        if input.ndim == 5:
+            # 3D volumes: slice along depth, average
+            B, C, D, H, W = input.shape
+            inp_slices = input.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+            tgt_slices = target.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+            chunk_size = max(1, min(D, 16))
+            losses = []
+            for i in range(0, B * D, chunk_size):
+                losses.append(self._forward_2d(
+                    inp_slices[i:i + chunk_size],
+                    tgt_slices[i:i + chunk_size],
+                ))
+            return sum(losses) / len(losses)
 
-        if num_channels == 1:
-            # 1-channel: repeat to 3 channels for LPIPS
-            input_3ch = input.repeat(1, 3, 1, 1)
-            target_3ch = target.repeat(1, 3, 1, 1)
-            return self._loss_fn(input_3ch.float(), target_3ch.float()).mean()
-
-        if num_channels == 3:
-            # 3-channel: use directly
-            return self._loss_fn(input.float(), target.float()).mean()
-
-        # Multi-channel (not 1 or 3): compute per-channel loss and average
-        losses = []
-        for ch in range(num_channels):
-            ch_input = input[:, ch:ch+1].repeat(1, 3, 1, 1).float()   # [B, 3, H, W]
-            ch_target = target[:, ch:ch+1].repeat(1, 3, 1, 1).float()  # [B, 3, H, W]
-            losses.append(self._loss_fn(ch_input, ch_target).mean())
-
-        return sum(losses) / len(losses)
+        return self._forward_2d(input, target)
 
     def _forward_dict(
         self,

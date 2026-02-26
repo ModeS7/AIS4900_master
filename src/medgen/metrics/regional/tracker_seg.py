@@ -295,7 +295,7 @@ class SegRegionalMetricsTracker:
             'size_cat': size_cat,
             'dice': round(dice, 4),
             'iou': round(iou, 4),
-            'detected': dice > self.detection_threshold,
+            'detected': bool(dice > self.detection_threshold),
         })
 
     def _count_false_positives(
