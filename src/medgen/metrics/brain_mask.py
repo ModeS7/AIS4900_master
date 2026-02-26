@@ -6,6 +6,7 @@ Uses morphological operations to handle internal low-intensity regions
 (ventricles, CSF) and boundary cases correctly.
 """
 import logging
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -148,3 +149,108 @@ def compute_outside_brain_ratio(
         'n_tumor_pixels': n_tumor,
         'n_outside_pixels': n_outside,
     }
+
+
+def load_brain_atlas(atlas_path: str | Path, expected_shape: tuple[int, ...] | None = None) -> np.ndarray:
+    """Load a pre-computed brain atlas from NIfTI file.
+
+    Args:
+        atlas_path: Path to atlas NIfTI file (stored as [H, W, D]).
+        expected_shape: If provided, validate atlas matches (D, H, W).
+
+    Returns:
+        Bool array [D, H, W].
+    """
+    import nibabel as nib
+
+    atlas_path = Path(atlas_path)
+    if not atlas_path.exists():
+        raise FileNotFoundError(f"Brain atlas not found: {atlas_path}")
+
+    vol = nib.load(str(atlas_path)).get_fdata()
+    # NIfTI is [H, W, D] → transpose to [D, H, W]
+    atlas = np.transpose(vol, (2, 0, 1)) > 0.5
+
+    if expected_shape is not None and atlas.shape != expected_shape:
+        raise ValueError(
+            f"Brain atlas shape {atlas.shape} does not match expected {expected_shape}"
+        )
+
+    return atlas
+
+
+def is_seg_inside_atlas(
+    seg: torch.Tensor | np.ndarray,
+    atlas: np.ndarray,
+    tolerance: float = 0.0,
+    dilate_pixels: int = 0,
+) -> bool:
+    """Check if segmentation mask is inside a pre-computed brain atlas.
+
+    Like ``is_seg_inside_brain()`` but uses a pre-computed atlas instead
+    of deriving the brain mask from an MRI image at runtime.
+
+    Args:
+        seg: Segmentation mask (any shape with optional batch/channel dims).
+        atlas: Pre-computed brain atlas as bool array [D, H, W].
+        tolerance: Maximum allowed ratio of outside voxels (0-1).
+        dilate_pixels: Extra dilation applied to atlas at runtime.
+
+    Returns:
+        True if segmentation is valid (inside atlas).
+    """
+    if isinstance(seg, torch.Tensor):
+        seg = seg.detach().cpu().numpy()
+    seg = np.squeeze(seg)
+
+    brain_mask = atlas
+    if dilate_pixels > 0:
+        brain_mask = ndimage.binary_dilation(brain_mask, iterations=dilate_pixels)
+
+    tumor_mask = seg > 0.5
+    n_tumor = int(tumor_mask.sum())
+    if n_tumor == 0:
+        return True
+
+    n_outside = int((tumor_mask & ~brain_mask).sum())
+    return (n_outside / n_tumor) <= tolerance
+
+
+def remove_tumors_outside_brain(
+    seg: np.ndarray,
+    brain_mask: np.ndarray,
+    outside_threshold: float = 0.1,
+) -> tuple[np.ndarray, int]:
+    """Remove individual tumors that fall outside the brain mask.
+
+    Labels connected components in seg, then removes any component where
+    more than ``outside_threshold`` of its voxels are outside the brain mask.
+
+    Args:
+        seg: Binary segmentation mask [D, H, W] (or [H, W] for 2D).
+        brain_mask: Binary brain mask, same spatial shape as seg.
+        outside_threshold: Fraction of voxels outside brain to trigger removal
+            (default 0.1 = remove if >10% outside).
+
+    Returns:
+        Tuple of (cleaned_seg, n_removed) where cleaned_seg is the
+        segmentation with outside tumors zeroed out.
+    """
+    seg_binary = (seg > 0.5).astype(np.uint8)
+    brain_binary = brain_mask.astype(bool)
+
+    labeled, n_components = ndimage.label(seg_binary)
+    if n_components == 0:
+        return seg_binary.astype(np.float32), 0
+
+    n_removed = 0
+    for label_id in range(1, n_components + 1):
+        component = labeled == label_id
+        n_voxels = int(component.sum())
+        n_outside = int((component & ~brain_binary).sum())
+
+        if n_voxels > 0 and (n_outside / n_voxels) > outside_threshold:
+            seg_binary[component] = 0
+            n_removed += 1
+
+    return seg_binary.astype(np.float32), n_removed

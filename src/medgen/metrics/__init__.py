@@ -77,6 +77,9 @@ from .brain_mask import (
     create_brain_mask,
     is_seg_inside_brain,
     compute_outside_brain_ratio,
+    load_brain_atlas,
+    is_seg_inside_atlas,
+    remove_tumors_outside_brain,
 )
 
 __all__ = [
@@ -139,4 +142,7 @@ __all__ = [
     'create_brain_mask',
     'is_seg_inside_brain',
     'compute_outside_brain_ratio',
+    'load_brain_atlas',
+    'is_seg_inside_atlas',
+    'remove_tumors_outside_brain',
 ]

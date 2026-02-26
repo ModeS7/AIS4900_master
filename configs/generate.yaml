@@ -76,6 +76,7 @@ brain_threshold: 0.05            # Brain mask intensity threshold
 brain_tolerance: 0.0             # Tolerance for tumor-outside-brain overlap
 brain_dilate_pixels: 0           # Dilate brain mask by N pixels before validation
 max_brain_retries: 5             # Max retries for brain mask validation
+brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 
 # Size bin parameters (used when size_bins is null for random sampling)
 bin_edges: [0, 3, 6, 10, 15, 20, 30]  # Feret diameter bin edges (mm)

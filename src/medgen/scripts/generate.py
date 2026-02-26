@@ -38,7 +38,13 @@ from medgen.data.loaders.datasets import create_size_bin_maps
 from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
 from medgen.data.utils import save_nifti
 from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
-from medgen.metrics.brain_mask import is_seg_inside_brain
+from medgen.metrics.brain_mask import (
+    create_brain_mask,
+    is_seg_inside_brain,
+    load_brain_atlas,
+    is_seg_inside_atlas,
+    remove_tumors_outside_brain,
+)
 
 setup_cuda_optimizations()
 
@@ -401,6 +407,41 @@ def save_bins_csv(bins_data: list[tuple[int, list[int]]], output_path: Path) -> 
             f.write(f'{sample_id:05d},{bins_str},{total}\n')
 
 
+def _generate_bravo(
+    seg_binary: np.ndarray,
+    bravo_model: torch.nn.Module,
+    strategy: DiffusionStrategy,
+    steps_bravo: int,
+    device: torch.device,
+    cfg: DictConfig,
+    bravo_space: object | None,
+    diffrs_disc: object | None = None,
+    diffrs_cfg: dict | None = None,
+) -> np.ndarray:
+    """Generate a BRAVO volume conditioned on a binary seg mask.
+
+    Returns:
+        BRAVO image as numpy array [D, H, W] in [0, 1].
+    """
+    seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
+
+    # Encode conditioning to match training (pixel normalization encodes labels)
+    if bravo_space is not None:
+        seg_tensor = bravo_space.encode(seg_tensor)
+
+    noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+    bravo = generate_batch(bravo_model, strategy, noise, steps_bravo, device,
+                           conditioning=seg_tensor,
+                           cfg_scale=cfg.cfg_scale_bravo,
+                           cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
+                           diffrs_discriminator=diffrs_disc,
+                           diffrs_config=diffrs_cfg)
+    # Decode from diffusion space to pixel space, then clamp
+    if bravo_space is not None:
+        bravo = bravo_space.decode(bravo)
+    return torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
+
+
 def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     """Run 3D generation pipeline: size_bins -> seg -> bravo.
 
@@ -451,6 +492,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load brain atlas
+    brain_atlas = None
+    atlas_path = cfg.get('brain_atlas_path', None)
+    if atlas_path == 'auto':
+        # Bundled atlas: data/brain_atlas_{H}x{W}x{D}.nii.gz relative to repo root
+        repo_root = Path(__file__).resolve().parents[3]  # src/medgen/scripts -> repo root
+        atlas_path = repo_root / 'data' / f'brain_atlas_{cfg.image_size}x{cfg.image_size}x{cfg.depth}.nii.gz'
+        if not atlas_path.exists():
+            logger.warning(f"Bundled brain atlas not found: {atlas_path} (skipping atlas validation)")
+            atlas_path = None
+    if atlas_path:
+        expected_shape = (cfg.depth, cfg.image_size, cfg.image_size)
+        brain_atlas = load_brain_atlas(atlas_path, expected_shape=expected_shape)
+        logger.info(f"Brain atlas loaded: {atlas_path} (coverage: {brain_atlas.mean():.1%})")
+
     # Resolve per-model step counts (fallback to num_steps)
     steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
     steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
@@ -482,9 +538,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         num_bins = cfg.get('num_bins', 7)
         max_retries = cfg.get('max_retries', 10)
 
+        # Atlas validation settings
+        brain_tolerance = cfg.get('brain_tolerance', 0.0)
+        brain_dilate = cfg.get('brain_dilate_pixels', 0)
+
         logger.info(f"Generating {cfg.num_images} seg masks...")
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
+        if brain_atlas is not None:
+            logger.info(f"Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
 
         generated = 0
         total_retries = 0
@@ -515,6 +577,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         if cfg.verbose and retries == 1:
                             logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                        continue
+
+                # Atlas validation: check tumors are inside brain atlas
+                if brain_atlas is not None:
+                    if not is_seg_inside_atlas(seg_binary, brain_atlas,
+                                              tolerance=brain_tolerance,
+                                              dilate_pixels=brain_dilate):
+                        retries += 1
+                        total_retries += 1
+                        if cfg.verbose and retries == 1:
+                            logger.warning(f"Sample {generated}: seg outside brain atlas, retrying...")
                         continue
 
                 valid_mask = True
@@ -601,8 +674,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         logger.info(f"Generating {cfg.num_images} seg+bravo pairs...")
         logger.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
+        if brain_atlas is not None:
+            logger.info(f"Stage 1 — Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
         if validate_brain_mask:
-            logger.info(f"Brain mask validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
+            logger.info(f"Stage 2 — Brain mask validation: enabled (per-tumor cleanup, threshold={brain_threshold})")
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
@@ -654,43 +729,52 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             if not valid_mask:
                 logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
-            seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
+            # Stage 1 — Atlas check (before BRAVO generation)
+            if brain_atlas is not None:
+                cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_atlas)
+                if n_removed > 0:
+                    logger.info(f"Sample {generated}: atlas check removed {n_removed} tumor(s)")
+                    if cleaned_seg.sum() == 0:
+                        # All tumors outside atlas — retry with new seg
+                        total_retries += 1
+                        continue
+                    seg_binary = cleaned_seg
 
-            # Encode conditioning to match training (pixel normalization encodes labels)
-            if bravo_space is not None:
-                seg_tensor = bravo_space.encode(seg_tensor)
+            # Generate BRAVO conditioned on seg mask
+            bravo_np = _generate_bravo(
+                seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                bravo_space, diffrs_disc, diffrs_cfg,
+            )
 
-            # Generate bravo with seg mask conditioning (CFG if enabled)
-            noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-            bravo = generate_batch(bravo_model, strategy, noise, steps_bravo, device,
-                                   conditioning=seg_tensor,
-                                   cfg_scale=cfg.cfg_scale_bravo,
-                                   cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
-                                   diffrs_discriminator=diffrs_disc,
-                                   diffrs_config=diffrs_cfg)
-            # Decode from diffusion space to pixel space, then clamp
-            if bravo_space is not None:
-                bravo = bravo_space.decode(bravo)
-            bravo_np = torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
-
-            # Validate segmentation is inside brain
+            # Stage 2 — BRAVO brain mask check (per-tumor cleanup)
             if validate_brain_mask:
-                if not is_seg_inside_brain(
-                    bravo_np, seg_binary,
-                    brain_threshold=brain_threshold,
-                    tolerance=brain_tolerance,
+                brain_mask = create_brain_mask(
+                    bravo_np, threshold=brain_threshold,
                     dilate_pixels=brain_dilate,
-                ):
-                    brain_retries += 1
-                    total_retries += 1
-                    if brain_retries < max_brain_retries:
-                        if cfg.verbose:
-                            logger.warning(f"Sample {generated}: seg outside brain, retrying...")
-                        continue  # Retry with new seg mask
+                )
+                cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
+
+                if n_removed > 0:
+                    logger.info(f"Sample {generated}: bravo check removed {n_removed} tumor(s)")
+
+                    if cleaned_seg.sum() == 0:
+                        # All tumors outside — retry with new seg entirely
+                        brain_retries += 1
+                        total_retries += 1
+                        if brain_retries < max_brain_retries:
+                            if cfg.verbose:
+                                logger.warning(f"Sample {generated}: all tumors outside brain, retrying...")
+                            continue
+                        else:
+                            logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+                            brain_retries = 0
                     else:
-                        logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
-                        brain_retries = 0  # Reset for next sample
-                        # Fall through to save this sample
+                        # Re-generate BRAVO with cleaned seg mask
+                        seg_binary = cleaned_seg
+                        bravo_np = _generate_bravo(
+                            seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                            bravo_space, diffrs_disc, diffrs_cfg,
+                        )
 
             # Reset brain retries on success
             brain_retries = 0
@@ -740,9 +824,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_count = cfg.get('max_count', 10)
         max_retries = cfg.get('max_retries', 10)
 
+        # Atlas validation settings
+        brain_tolerance = cfg.get('brain_tolerance', 0.0)
+        brain_dilate = cfg.get('brain_dilate_pixels', 0)
+
         logger.info(f"Generating {cfg.num_images} seg masks with input conditioning...")
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
+        if brain_atlas is not None:
+            logger.info(f"Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
 
         generated = 0
         total_retries = 0
@@ -779,6 +869,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         if cfg.verbose and retries == 1:
                             logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                        continue
+
+                # Atlas validation: check tumors are inside brain atlas
+                if brain_atlas is not None:
+                    if not is_seg_inside_atlas(seg_binary, brain_atlas,
+                                              tolerance=brain_tolerance,
+                                              dilate_pixels=brain_dilate):
+                        retries += 1
+                        total_retries += 1
+                        if cfg.verbose and retries == 1:
+                            logger.warning(f"Sample {generated}: seg outside brain atlas, retrying...")
                         continue
 
                 valid_mask = True
