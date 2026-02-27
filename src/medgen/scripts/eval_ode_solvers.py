@@ -36,6 +36,7 @@ Usage:
 """
 import argparse
 import csv
+import gc
 import json
 import logging
 import time
@@ -358,6 +359,7 @@ def get_or_cache_reference_features(
     trim_slices: int,
     image_size: int,
     modality: str = 'bravo',
+    build_all: bool = True,
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Extract and cache reference features for all splits.
 
@@ -365,9 +367,14 @@ def get_or_cache_reference_features(
     and RadImageNet ResNet50 backbones. Cache files use '_3view' suffix to
     avoid collisions with old axial-only caches.
 
+    Args:
+        build_all: If True (default), also build an 'all' key with concatenated
+            features from all splits. Set to False for memory-constrained usage
+            (e.g. find_optimal_steps with a single ref_split).
+
     Returns:
         Dict: split_name -> {'resnet': Tensor, 'resnet_radimagenet': Tensor, 'clip': Tensor}
-        Also includes 'all' key with concatenated features.
+        Also includes 'all' key with concatenated features if build_all=True.
     """
     from medgen.metrics.feature_extractors import BiomedCLIPFeatures, ResNet50Features
 
@@ -445,17 +452,18 @@ def get_or_cache_reference_features(
             logger.info(f"    {split_name}: {features.shape}")
         clip.unload()
 
-    # Build 'all' by concatenating
-    all_resnet = torch.cat([ref_features[s]['resnet'] for s in splits], dim=0)
-    all_resnet_rin = torch.cat([ref_features[s]['resnet_radimagenet'] for s in splits], dim=0)
-    all_clip = torch.cat([ref_features[s]['clip'] for s in splits], dim=0)
-    ref_features['all'] = {
-        'resnet': all_resnet,
-        'resnet_radimagenet': all_resnet_rin,
-        'clip': all_clip,
-    }
-    logger.info(f"  all (combined): resnet={all_resnet.shape}, "
-                 f"resnet_rin={all_resnet_rin.shape}, clip={all_clip.shape}")
+    # Build 'all' by concatenating (optional — doubles memory)
+    if build_all:
+        all_resnet = torch.cat([ref_features[s]['resnet'] for s in splits], dim=0)
+        all_resnet_rin = torch.cat([ref_features[s]['resnet_radimagenet'] for s in splits], dim=0)
+        all_clip = torch.cat([ref_features[s]['clip'] for s in splits], dim=0)
+        ref_features['all'] = {
+            'resnet': all_resnet,
+            'resnet_radimagenet': all_resnet_rin,
+            'clip': all_clip,
+        }
+        logger.info(f"  all (combined): resnet={all_resnet.shape}, "
+                     f"resnet_rin={all_resnet_rin.shape}, clip={all_clip.shape}")
 
     return ref_features
 
@@ -724,6 +732,8 @@ def compute_all_metrics(
             f"    vs {split_name}: FID={fid:.2f}  KID={kid_mean:.6f}  CMMD={cmmd:.6f}  "
             f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin_mean:.6f}"
         )
+        # Free numpy temporaries from FID/KID computation (np.cov uses float64 copies)
+        gc.collect()
 
     return results
 

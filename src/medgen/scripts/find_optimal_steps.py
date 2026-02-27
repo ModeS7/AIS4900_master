@@ -524,10 +524,37 @@ def main():
 
     logger.info("Preparing reference features...")
     cache_dir = output_dir / "reference_features"
-    ref_features = get_or_cache_reference_features(
-        splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
-        modality=ref_modality,
-    )
+
+    # Only load/extract features for splits we actually need.
+    # For --ref-split test: load only test features (~300 MB vs ~2 GB for all).
+    # For --ref-split all: must load all per-split features to concatenate.
+    import gc
+    if args.ref_split == 'all':
+        ref_features = get_or_cache_reference_features(
+            splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
+            modality=ref_modality, build_all=False,
+        )
+        logger.info("Building combined 'all' reference features...")
+        eval_ref = {'all': {
+            key: torch.cat([ref_features[s][key] for s in splits], dim=0)
+            for key in ('resnet', 'resnet_radimagenet', 'clip')
+        }}
+        logger.info(f"  all: {eval_ref['all']['resnet'].shape[0]} features")
+        del ref_features
+        gc.collect()
+    elif args.ref_split in splits:
+        # Only load the single needed split
+        needed_splits = {args.ref_split: splits[args.ref_split]}
+        ref_features = get_or_cache_reference_features(
+            needed_splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
+            modality=ref_modality, build_all=False,
+        )
+        eval_ref = {args.ref_split: ref_features[args.ref_split]}
+        del ref_features
+        gc.collect()
+    else:
+        available = list(splits.keys()) + ['all']
+        raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
 
     # ── Load model ────────────────────────────────────────────────────────
     from medgen.diffusion import load_diffusion_model
@@ -608,8 +635,8 @@ def main():
                 modality=ref_modality,
             )
 
-        # Compute metrics (always in pixel space, dual backbone)
-        split_metrics = compute_all_metrics(volumes, ref_features, device, args.trim_slices)
+        # Compute metrics against only the needed split (saves memory + time)
+        split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
 
         ref_metrics = split_metrics.get(args.ref_split)
         if ref_metrics is None:
@@ -651,6 +678,7 @@ def main():
         _save_history(output_dir, history, args)
 
         del volumes
+        gc.collect()
         torch.cuda.empty_cache()
 
         return target

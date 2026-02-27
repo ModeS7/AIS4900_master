@@ -4,7 +4,7 @@
 #SBATCH --time=0-06:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="optim_exp19_2"
@@ -57,6 +57,7 @@ echo ""
 # WDM uses DDPM strategy with x0 prediction
 # --image-size 256: exp19_2 trains at 256x256
 # 80GB GPU required for 256x256x160 wavelet generation
+# --ref-split test: use test split only (saves memory vs 'all' concatenation)
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CHECKPOINT}" \
     --data-root "${DATA_ROOT}" \
@@ -69,6 +70,7 @@ time python -m medgen.scripts.find_optimal_steps \
     --num-volumes 25 \
     --lo 10 --hi 100 \
     --metric fid \
+    --ref-split test \
     --seed 42
 
 echo "=== Search complete ==="
