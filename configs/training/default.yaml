@@ -20,6 +20,7 @@ verbose: true
 # Core training parameters
 epochs: 500                # Total training epochs
 batch_size: 16             # Batch size per GPU
+gradient_accumulation_steps: 1  # Accumulate gradients over N micro-batches (effective_bs = batch_size * N)
 limit_train_batches: null  # Limit batches per epoch (null = use all, int = limit)
 learning_rate: 1.0e-4      # Base learning rate
 gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
