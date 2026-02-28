@@ -96,7 +96,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.ema.decay=0.9999 \
     training.ema.update_after_step=100 \
     training.ema.update_every=10 \
-    training.use_compile=true \
+    training.use_compile=false \
     training.gradient_checkpointing=false \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
