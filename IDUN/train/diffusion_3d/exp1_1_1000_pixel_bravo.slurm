@@ -15,7 +15,7 @@
 #SBATCH --signal=B:SIGUSR1@120
 
 # Exp1_1_1000: 3D Pixel-Space Diffusion — Bravo (256x256x160), 1000 epochs
-# Same as exp1_1 but trained for 1000 epochs instead of 500
+# Same as exp1_1 but trained for 1000 epochs with warmup + gradient clipping
 # Architecture: 270M UNet (default_3d)
 #   - channels: [16, 32, 64, 256, 512, 512]
 #   - attention_levels: [false, false, false, false, true, true]
@@ -87,6 +87,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.pad_depth_to=160 \
     training.epochs=1000 \
     training.learning_rate=1e-4 \
+    training.warmup_epochs=10 \
+    training.gradient_clip_norm=0.5 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
