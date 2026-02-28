@@ -77,6 +77,11 @@ data:
   # 0.5 = 50% real, 50% synthetic
   synthetic_ratio: 0.5
 
+  # Limit number of synthetic samples (null = use all)
+  # Uses reproducible random selection with synthetic_seed
+  max_synthetic_samples: null
+  synthetic_seed: 42
+
   # Input modality for segmentation
   modality: bravo
 

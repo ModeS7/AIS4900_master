@@ -95,6 +95,7 @@ class SegRegionalMetricsTracker:
 
         self._per_tumor_records: list[dict] = []
         self._false_positives: int = 0
+        self._fp_by_size: dict[str, int] = {k: 0 for k in TUMOR_SIZE_CATEGORIES}
 
     def _classify_tumor_size(self, diameter_mm: float) -> str:
         """Classify tumor by Feret diameter using RANO-BM thresholds."""
@@ -304,33 +305,57 @@ class SegRegionalMetricsTracker:
         tgt_i: np.ndarray,
         structure: np.ndarray | None = None,
     ) -> None:
-        """Count predicted blobs that have zero GT overlap.
+        """Count predicted blobs that have zero GT overlap, categorized by size.
 
         Args:
             pred_i: Binary prediction mask [H, W] or [D, H, W].
             tgt_i: Binary target mask (same shape).
             structure: Connectivity structure for scipy_label (None=default for 2D).
         """
+        is_3d = pred_i.ndim == 3
         pred_labeled, num_pred = scipy_label(pred_i, structure=structure)
         for j in range(1, num_pred + 1):
             pred_blob = pred_labeled == j
             if pred_blob.sum() < 5:
                 continue
-            if not np.any(tgt_i[pred_blob]):
-                self._false_positives += 1
+            if np.any(tgt_i[pred_blob]):
+                continue
+
+            # Measure FP blob size via Feret diameter
+            if is_3d:
+                feret_px = self._get_3d_feret(pred_blob)
+            else:
+                blob_regions = regionprops((pred_blob).astype(np.int32))
+                feret_px = self._get_2d_feret(blob_regions[0]) if blob_regions else None
+
+            if feret_px is not None:
+                feret_mm = feret_px * self.mm_per_pixel
+                size_cat = self._classify_tumor_size(feret_mm)
+            else:
+                size_cat = 'tiny'
+
+            self._false_positives += 1
+            self._fp_by_size[size_cat] += 1
 
     def get_detection_summary(self) -> dict[str, float]:
-        """Return detection rates overall and per-size, plus FP count.
+        """Return detection rates overall and per-size, plus FP counts by size.
 
         Returns:
-            Dict with keys: detection_rate, detection_rate_{size}, false_positives.
+            Dict with keys: detection_rate, detection_rate_{size},
+            false_positives, fp_{size}.
         """
         records = self._per_tumor_records
         if not records:
-            return {'detection_rate': 0.0, 'false_positives': float(self._false_positives)}
+            summary: dict[str, float] = {
+                'detection_rate': 0.0,
+                'false_positives': float(self._false_positives),
+            }
+            for size in TUMOR_SIZE_CATEGORIES:
+                summary[f'fp_{size}'] = float(self._fp_by_size[size])
+            return summary
 
         total_detected = sum(1 for r in records if r['detected'])
-        summary: dict[str, float] = {
+        summary = {
             'detection_rate': total_detected / len(records),
             'false_positives': float(self._false_positives),
         }
@@ -342,6 +367,7 @@ class SegRegionalMetricsTracker:
                 summary[f'detection_rate_{size}'] = detected / len(size_records)
             else:
                 summary[f'detection_rate_{size}'] = 0.0
+            summary[f'fp_{size}'] = float(self._fp_by_size[size])
 
         return summary
 
@@ -421,3 +447,6 @@ class SegRegionalMetricsTracker:
             key = f'detection_rate_{size}'
             if key in detection:
                 writer.add_scalar(f'{prefix}/{key}', detection[key], epoch)
+            fp_key = f'fp_{size}'
+            if fp_key in detection:
+                writer.add_scalar(f'{prefix}/{fp_key}', detection[fp_key], epoch)

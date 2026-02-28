@@ -49,6 +49,8 @@ class SegmentationConfig:
     real_dir: str
     synthetic_dir: str | None
     synthetic_ratio: float
+    max_synthetic_samples: int | None
+    synthetic_seed: int
 
     @classmethod
     def from_cfg(cls, cfg: DictConfig, spatial_dims: int, split: str = 'train') -> 'SegmentationConfig':
@@ -63,6 +65,8 @@ class SegmentationConfig:
             real_dir=cfg.data.real_dir,
             synthetic_dir=cfg.data.get('synthetic_dir'),
             synthetic_ratio=cfg.data.get('synthetic_ratio', 0.5),
+            max_synthetic_samples=cfg.data.get('max_synthetic_samples'),
+            synthetic_seed=cfg.data.get('synthetic_seed', 42),
         )
 
 
@@ -712,29 +716,45 @@ def create_segmentation_dataloader(
         )
         datasets.append(('synthetic', synthetic_dataset))
 
+    # Helper: reproducible random subset of synthetic data
+    def _subset_synthetic(synthetic_ds: Dataset, n: int) -> Dataset:
+        n_available = len(synthetic_ds)
+        if n >= n_available:
+            return synthetic_ds
+        gen = torch.Generator().manual_seed(seg_cfg.synthetic_seed)
+        indices = torch.randperm(n_available, generator=gen)[:n].tolist()
+        logger.info(
+            f"Subsampling {n}/{n_available} synthetic samples "
+            f"(seed={seg_cfg.synthetic_seed})"
+        )
+        return Subset(synthetic_ds, indices)
+
     # Combine datasets
-    if scenario in ('baseline', 'synthetic'):
+    if scenario == 'baseline':
         dataset = datasets[0][1]
+    elif scenario == 'synthetic':
+        synthetic_dataset = datasets[0][1]
+        if seg_cfg.max_synthetic_samples is not None:
+            synthetic_dataset = _subset_synthetic(
+                synthetic_dataset, seg_cfg.max_synthetic_samples,
+            )
+        dataset = synthetic_dataset
     else:  # mixed
         real_dataset = datasets[0][1]
         synthetic_dataset = datasets[1][1]
 
-        n_real = len(real_dataset)
-        n_synthetic_available = len(synthetic_dataset)
-        n_synthetic_target = int(n_real * seg_cfg.synthetic_ratio / (1 - seg_cfg.synthetic_ratio))
-        n_synthetic = min(n_synthetic_target, n_synthetic_available)
-
-        if n_synthetic < n_synthetic_available:
-            indices = torch.randperm(n_synthetic_available)[:n_synthetic].tolist()
-            synthetic_subset = Subset(synthetic_dataset, indices)
-            dataset = ConcatDataset([real_dataset, synthetic_subset])
+        if seg_cfg.max_synthetic_samples is not None:
+            n_synthetic = seg_cfg.max_synthetic_samples
         else:
-            dataset = ConcatDataset([real_dataset, synthetic_dataset])
+            n_real = len(real_dataset)
+            n_synthetic = int(n_real * seg_cfg.synthetic_ratio / (1 - seg_cfg.synthetic_ratio))
+        n_synthetic = min(n_synthetic, len(synthetic_dataset))
+        synthetic_dataset = _subset_synthetic(synthetic_dataset, n_synthetic)
 
         logger.info(
-            f"Mixed dataset: {n_real} real + {n_synthetic} synthetic "
-            f"(ratio: {n_synthetic / (n_real + n_synthetic):.2%})"
+            f"Mixed dataset: {len(real_dataset)} real + {n_synthetic} synthetic"
         )
+        dataset = ConcatDataset([real_dataset, synthetic_dataset])
 
     # Create DataLoader
     dataloader = create_dataloader(
