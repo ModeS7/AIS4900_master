@@ -41,12 +41,17 @@ def run_training_command(
         CompletedProcess with stdout, stderr, returncode
     """
     full_args = [sys.executable, "-m"] + args
+    # Force CPU: training e2e tests only verify the pipeline works (config,
+    # data loading, checkpoint saving).  Full GPU training + validation over
+    # the entire dataset would take 10+ min per test.
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
     result = subprocess.run(
         full_args,
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=os.environ.copy(),
+        env=env,
     )
 
     if check and result.returncode != 0:
@@ -469,7 +474,7 @@ class Test3DTraining:
                 "training.warmup_epochs=0",
                 f"hydra.run.dir={temp_output_dir}",
             ],
-            timeout=600,  # 3D is slower
+            timeout=300,  # 3D is slower
             check=False,
         )
 
