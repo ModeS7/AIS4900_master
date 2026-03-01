@@ -13,13 +13,16 @@ CHECKPOINT_DIR="${SCRIPT_DIR}/golden_checkpoint"
 
 echo "Creating golden checkpoints in: ${CHECKPOINT_DIR}"
 
-# Common settings for minimal training
+# Common settings for minimal training (diffusion)
+# Uses smoke_test model config: tiny UNet (~174K params)
 COMMON_ARGS=(
     "training.epochs=1"
     "training.batch_size=2"
-    "training.limit_batches=10"
-    "model.channels=[32,64]"
-    "model.image_size=64"
+    "training.limit_train_batches=10"
+    "training.generation_metrics.enabled=false"
+    "training.use_compile=false"
+    "training.warmup_epochs=0"
+    "model=smoke_test"
 )
 
 # Create bravo checkpoint
@@ -48,8 +51,14 @@ python -m medgen.scripts.train_compression \
     mode=multi_modality \
     training.epochs=1 \
     training.batch_size=2 \
-    training.limit_batches=10 \
-    "model.channels=[32,64]" \
+    training.limit_train_batches=10 \
+    training.use_compile=false \
+    training.warmup_epochs=0 \
+    "vae.channels=[32,64]" \
+    "vae.attention_levels=[false,false]" \
+    "vae.num_res_blocks=1" \
+    "vae.disc_num_channels=8" \
+    "model=smoke_test" \
     "hydra.run.dir=${CHECKPOINT_DIR}/vae"
 
 echo ""

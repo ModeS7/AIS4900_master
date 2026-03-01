@@ -88,7 +88,7 @@ def generated_samples(golden_checkpoint, tmp_path_factory):
         capture_output=True,
         text=True,
         timeout=600,
-        env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
+        env=os.environ.copy(),
     )
 
     if result.returncode != 0:

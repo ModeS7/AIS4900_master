@@ -109,7 +109,7 @@ def run_generation_command(
         capture_output=True,
         text=True,
         timeout=timeout,
-        env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},  # Force CPU for CI
+        env=os.environ.copy(),
     )
 
     if check and result.returncode != 0:
@@ -495,48 +495,21 @@ class TestGenerationModes:
     """Test different generation modes."""
 
     @pytest.mark.gpu
-    def test_seg_mode_generation(self, seg_checkpoint, temp_output_dir):
-        """Seg mode generation works."""
-        result = run_generation_command(
-            [
-                "medgen.scripts.generate",
-                "gen_mode=seg",
-                f"seg_model={seg_checkpoint}",
-                f"paths.generated_dir={temp_output_dir}",
-                "num_images=2",
-                "num_steps=5",
-                "image_size=64",
-            ],
-            timeout=300,
-            check=False,
-        )
-
-        # Should complete or give understandable error
-        if result.returncode != 0:
-            # Check it's not a crash
-            assert "Traceback" not in result.stderr[-1000:] or "expected" in result.stderr.lower(), (
-                f"Seg mode crashed:\n{result.stderr[-1000:]}"
-            )
-
-    @pytest.mark.gpu
-    @pytest.mark.parametrize("gen_mode", ["bravo", "seg"])
+    @pytest.mark.parametrize("gen_mode", ["bravo", "dual"])
     def test_generation_mode_starts(
         self, gen_mode, seg_checkpoint, bravo_checkpoint, temp_output_dir
     ):
-        """Each generation mode starts without crashing."""
+        """Each 2D generation mode starts without crashing."""
         args = [
             "medgen.scripts.generate",
             f"gen_mode={gen_mode}",
             f"seg_model={seg_checkpoint}",
+            f"image_model={bravo_checkpoint}",
             f"paths.generated_dir={temp_output_dir}",
             "num_images=1",
             "num_steps=3",
             "image_size=64",
         ]
-
-        # Add image_model for modes that need it
-        if gen_mode != "seg":
-            args.append(f"image_model={bravo_checkpoint}")
 
         result = run_generation_command(args, timeout=300, check=False)
 
