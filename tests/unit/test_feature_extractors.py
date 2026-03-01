@@ -74,7 +74,7 @@ class TestExtractFeatures3D:
     """Test extract_features_3d function."""
 
     def test_output_shape(self):
-        """Returns multi-view features from all 3 axes."""
+        """Returns axial slice features from 3D volumes."""
         # Mock extractor with extract_features method
         def mock_extract(x, use_amp=True):
             return torch.randn(x.shape[0], 2048)
@@ -89,11 +89,11 @@ class TestExtractFeatures3D:
 
         features = extract_features_3d(volumes, mock_extractor, chunk_size=8)
 
-        # Multi-view: axial=2*16=32 + coronal=2*64=128 + sagittal=2*64=128 = 288
-        assert features.shape == (288, 2048)
+        # Axial only: B*D = 2*16 = 32
+        assert features.shape == (32, 2048)
 
     def test_slicewise_extraction(self):
-        """Features extracted per slice across all 3 views."""
+        """Features extracted per axial slice in chunks."""
         call_count = [0]
 
         def mock_extract(x, use_amp=True):
@@ -110,8 +110,8 @@ class TestExtractFeatures3D:
 
         features = extract_features_3d(volumes, mock_extractor, chunk_size=16)
 
-        # chunk_size=16: axial=ceil(32/16)=2, coronal=ceil(128/16)=8, sagittal=ceil(128/16)=8 = 18
-        assert call_count[0] == 18
+        # chunk_size=16: ceil(32/16) = 2 chunks
+        assert call_count[0] == 2
 
     def test_chunk_size_parameter(self):
         """Chunked processing for memory."""
@@ -129,7 +129,7 @@ class TestExtractFeatures3D:
 
         volumes = torch.rand(2, 1, 16, 64, 64)  # B=2, D=16, H=64, W=64
 
-        # chunk_size=8: axial=ceil(32/8)=4, coronal=ceil(128/8)=16, sagittal=ceil(128/8)=16 = 36
+        # chunk_size=8: ceil(32/8) = 4 chunks
         features = extract_features_3d(volumes, mock_extractor, chunk_size=8)
 
-        assert call_count[0] == 36
+        assert call_count[0] == 4
