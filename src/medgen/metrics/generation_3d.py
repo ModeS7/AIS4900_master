@@ -1,6 +1,6 @@
 """3D slice-wise (2.5D) generation metrics.
 
-Extracts features from 3D volumes by reshaping to 2D slices and
+Extracts features from 3D volumes by reshaping to 2D axial slices and
 computing metrics on the slice distributions.
 
 Moved from generation.py during file split.
@@ -12,39 +12,30 @@ from .feature_extractors import BiomedCLIPFeatures, ResNet50Features
 from .generation import compute_cmmd, compute_fid, compute_kid
 
 
-def volumes_to_slices(volumes: torch.Tensor, axis: int = 0) -> torch.Tensor:
-    """Reshape 3D volumes to 2D slices along a given spatial axis.
+def volumes_to_slices(volumes: torch.Tensor) -> torch.Tensor:
+    """Reshape 3D volumes to 2D axial slices for feature extraction.
+
+    Converts [B, C, D, H, W] -> [B*D, C, H, W] by treating each depth slice
+    as an independent 2D sample. This enables using 2D feature extractors
+    (ResNet50, BiomedCLIP) on 3D volumes.
 
     Args:
         volumes: 5D tensor [B, C, D, H, W] with B batches of 3D volumes.
-        axis: Spatial axis to slice along.
-            0 = axial (D axis)  -> [B*D, C, H, W]
-            1 = coronal (H axis) -> [B*H, C, D, W]
-            2 = sagittal (W axis) -> [B*W, C, D, H]
 
     Returns:
-        4D tensor with all slices batched together.
+        4D tensor [B*D, C, H, W] with all slices batched together.
 
     Example:
-        >>> volumes = torch.randn(2, 1, 160, 256, 256)
-        >>> volumes_to_slices(volumes, axis=0).shape  # (320, 1, 256, 256)
-        >>> volumes_to_slices(volumes, axis=1).shape  # (512, 1, 160, 256)
-        >>> volumes_to_slices(volumes, axis=2).shape  # (512, 1, 160, 256)
+        >>> volumes = torch.randn(2, 1, 160, 256, 256)  # 2 volumes
+        >>> slices = volumes_to_slices(volumes)
+        >>> slices.shape  # (320, 1, 256, 256) - 320 slices
     """
     if volumes.dim() != 5:
         raise ValueError(f"Expected 5D tensor [B,C,D,H,W], got {volumes.dim()}D")
-    if axis not in (0, 1, 2):
-        raise ValueError(f"axis must be 0 (axial), 1 (coronal), or 2 (sagittal), got {axis}")
 
-    # Spatial axis in the 5D tensor is axis + 2 (skip B, C dims)
-    spatial_dim = axis + 2
-    B, C = volumes.shape[:2]
-    n_slices = volumes.shape[spatial_dim]
-
-    # Move the slice axis to position 2 (after B, C), then merge B and slice dims
-    # e.g. axis=1: [B,C,D,H,W] -> [B,C,H,D,W] via moveaxis(3,2) -> [B*H, C, D, W]
-    moved = volumes.moveaxis(spatial_dim, 2)
-    return moved.reshape(B * n_slices, C, moved.shape[3], moved.shape[4])
+    B, C, D, H, W = volumes.shape
+    # Permute to [B, D, C, H, W] then reshape to [B*D, C, H, W]
+    return volumes.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
 
 
 def extract_features_3d(
@@ -52,17 +43,11 @@ def extract_features_3d(
     extractor: ResNet50Features | BiomedCLIPFeatures,
     chunk_size: int = 64,
 ) -> torch.Tensor:
-    """Extract features from 3D volumes using multi-view 2.5D slicing.
+    """Extract features from 3D volumes slice-wise (2.5D approach).
 
-    Slices volumes along all 3 anatomical planes (axial, coronal, sagittal),
-    extracts 2D features from each slice, and concatenates them. This gives
-    a more comprehensive feature distribution than axial-only slicing.
-
-    For a volume [B, 1, 160, 256, 256]:
-    - Axial:    B*160 slices of [256, 256]
-    - Coronal:  B*256 slices of [160, 256]
-    - Sagittal: B*256 slices of [160, 256]
-    - Total:    B*672 feature vectors
+    Reshapes 5D volumes to 4D axial slices and extracts features in chunks
+    to avoid GPU OOM. The resulting features represent the distribution
+    of 2D axial slices within the 3D volumes.
 
     Args:
         volumes: 5D tensor [B, C, D, H, W] in [0, 1] range.
@@ -70,21 +55,25 @@ def extract_features_3d(
         chunk_size: Number of slices per forward pass (memory vs speed tradeoff).
 
     Returns:
-        Feature tensor [N, feat_dim] with features from all views concatenated.
+        Feature tensor [B*D, feat_dim] with features for each slice.
+
+    Example:
+        >>> volumes = torch.randn(1, 1, 160, 256, 256).cuda()
+        >>> resnet = ResNet50Features(device)
+        >>> features = extract_features_3d(volumes, resnet)
+        >>> features.shape  # (160, 2048) - one feature per slice
     """
+    # Reshape to axial slices
+    slices = volumes_to_slices(volumes)  # [B*D, C, H, W]
+    total_slices = slices.shape[0]
+
     all_features = []
-    for axis in range(3):
-        slices = volumes_to_slices(volumes, axis=axis)
-        total_slices = slices.shape[0]
-
-        for start in range(0, total_slices, chunk_size):
-            end = min(start + chunk_size, total_slices)
-            chunk = slices[start:end]
-            features = extractor.extract_features(chunk)
-            all_features.append(features.cpu())
-            del features, chunk
-
-        del slices
+    for start in range(0, total_slices, chunk_size):
+        end = min(start + chunk_size, total_slices)
+        chunk = slices[start:end]
+        features = extractor.extract_features(chunk)
+        all_features.append(features.cpu())
+        del features, chunk
 
     return torch.cat(all_features, dim=0)
 

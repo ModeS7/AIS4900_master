@@ -301,9 +301,9 @@ def extract_split_features(
     modality: str = 'bravo',
     chunk_size: int = 32,
 ) -> torch.Tensor:
-    """Extract multi-view features from all volumes in a split.
+    """Extract axial slice-wise features from all volumes in a split.
 
-    Uses extract_features_3d for multi-view (axial+coronal+sagittal) extraction.
+    Uses extract_features_3d for axial slice-wise extraction.
     Memory-efficient: loads one volume at a time.
 
     Args:
@@ -316,7 +316,7 @@ def extract_split_features(
         chunk_size: Slices per feature extraction batch.
 
     Returns:
-        Feature tensor [total_features, feat_dim] with multi-view features.
+        Feature tensor [total_features, feat_dim] with axial slice features.
     """
     from medgen.metrics.generation_3d import extract_features_3d
 
@@ -341,7 +341,7 @@ def extract_split_features(
             pad = np.zeros((effective_depth - d, vol.shape[1], vol.shape[2]), dtype=np.float32)
             vol = np.concatenate([vol, pad], axis=0)
 
-        # [D, H, W] -> [1, 1, D, H, W] for multi-view extraction
+        # [D, H, W] -> [1, 1, D, H, W] for slice-wise extraction
         vol_tensor = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
         features = extract_features_3d(vol_tensor, extractor, chunk_size)
         all_features.append(features.cpu())
@@ -363,9 +363,8 @@ def get_or_cache_reference_features(
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Extract and cache reference features for all splits.
 
-    Uses multi-view (axial+coronal+sagittal) extraction and both ImageNet
-    and RadImageNet ResNet50 backbones. Cache files use '_3view' suffix to
-    avoid collisions with old axial-only caches.
+    Uses axial slice-wise extraction and both ImageNet
+    and RadImageNet ResNet50 backbones.
 
     Args:
         build_all: If True (default), also build an 'all' key with concatenated
@@ -384,23 +383,23 @@ def get_or_cache_reference_features(
     # Check if all features are cached (3 extractors x N splits)
     all_cached = True
     for split_name in splits:
-        resnet_path = cache_dir / f"{split_name}_{modality}_resnet_3view.pt"
-        resnet_rin_path = cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt"
-        clip_path = cache_dir / f"{split_name}_{modality}_clip_3view.pt"
+        resnet_path = cache_dir / f"{split_name}_{modality}_resnet.pt"
+        resnet_rin_path = cache_dir / f"{split_name}_{modality}_resnet_radimagenet.pt"
+        clip_path = cache_dir / f"{split_name}_{modality}_clip.pt"
         if not resnet_path.exists() or not resnet_rin_path.exists() or not clip_path.exists():
             all_cached = False
             break
 
     if all_cached:
-        logger.info("Loading cached reference features (multi-view)...")
+        logger.info("Loading cached reference features...")
         for split_name in splits:
             ref_features[split_name] = {
                 'resnet': torch.load(
-                    cache_dir / f"{split_name}_{modality}_resnet_3view.pt", weights_only=True),
+                    cache_dir / f"{split_name}_{modality}_resnet.pt", weights_only=True),
                 'resnet_radimagenet': torch.load(
-                    cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt", weights_only=True),
+                    cache_dir / f"{split_name}_{modality}_resnet_radimagenet.pt", weights_only=True),
                 'clip': torch.load(
-                    cache_dir / f"{split_name}_{modality}_clip_3view.pt", weights_only=True),
+                    cache_dir / f"{split_name}_{modality}_clip.pt", weights_only=True),
             }
             logger.info(
                 f"  {split_name}: resnet={ref_features[split_name]['resnet'].shape}, "
@@ -408,7 +407,7 @@ def get_or_cache_reference_features(
                 f"clip={ref_features[split_name]['clip'].shape}"
             )
     else:
-        logger.info("Extracting reference features (multi-view, one-time cost)...")
+        logger.info("Extracting reference features (one-time cost)...")
 
         # Extract ResNet (ImageNet) features
         logger.info("  Loading ResNet50 (ImageNet)...")
@@ -419,7 +418,7 @@ def get_or_cache_reference_features(
                 split_dir, resnet, depth, trim_slices, image_size,
                 modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet_3view.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet.pt")
             ref_features.setdefault(split_name, {})['resnet'] = features
             logger.info(f"    {split_name}: {features.shape}")
         resnet.unload()
@@ -433,7 +432,7 @@ def get_or_cache_reference_features(
                 split_dir, resnet_rin, depth, trim_slices, image_size,
                 modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet_radimagenet_3view.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_resnet_radimagenet.pt")
             ref_features[split_name]['resnet_radimagenet'] = features
             logger.info(f"    {split_name}: {features.shape}")
         resnet_rin.unload()
@@ -447,7 +446,7 @@ def get_or_cache_reference_features(
                 split_dir, clip, depth, trim_slices, image_size,
                 modality=modality,
             )
-            torch.save(features, cache_dir / f"{split_name}_{modality}_clip_3view.pt")
+            torch.save(features, cache_dir / f"{split_name}_{modality}_clip.pt")
             ref_features[split_name]['clip'] = features
             logger.info(f"    {split_name}: {features.shape}")
         clip.unload()
@@ -623,9 +622,9 @@ def extract_generated_features(
     trim_slices: int,
     chunk_size: int = 32,
 ) -> torch.Tensor:
-    """Extract multi-view features from generated volumes.
+    """Extract axial slice-wise features from generated volumes.
 
-    Uses extract_features_3d for multi-view (axial+coronal+sagittal) extraction.
+    Uses extract_features_3d for axial slice-wise extraction.
 
     Args:
         volumes: List of [D, H, W] numpy arrays in [0, 1].
@@ -634,7 +633,7 @@ def extract_generated_features(
         chunk_size: Slices per extraction batch.
 
     Returns:
-        Feature tensor [total_features, feat_dim] with multi-view features.
+        Feature tensor [total_features, feat_dim] with axial slice features.
     """
     from medgen.metrics.generation_3d import extract_features_3d
 
@@ -642,7 +641,7 @@ def extract_generated_features(
     for vol_np in volumes:
         if trim_slices > 0:
             vol_np = vol_np[:-trim_slices]
-        # [D, H, W] -> [1, 1, D, H, W] for multi-view extraction
+        # [D, H, W] -> [1, 1, D, H, W] for slice-wise extraction
         vol_tensor = torch.from_numpy(vol_np).unsqueeze(0).unsqueeze(0)
         features = extract_features_3d(vol_tensor, extractor, chunk_size)
         all_features.append(features.cpu())
@@ -985,9 +984,9 @@ def _run_smoke_test(args) -> None:
     save_conditioning(cond_list, output_dir, voxel_size, trim_slices)
 
     # ── Fake reference features (random — metrics will be meaningless but code paths exercised)
-    # Multi-view: axial(D-trim) + coronal(H) + sagittal(W) per volume
+    # Axial slices only: (D - trim_slices) per volume
     effective_depth = depth - trim_slices
-    num_features_per_vol = effective_depth + image_size + image_size  # D' + H + W
+    num_features_per_vol = effective_depth
     total_features = num_volumes * num_features_per_vol
     ref_features = {
         'fake_split': {
