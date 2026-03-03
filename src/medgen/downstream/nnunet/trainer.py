@@ -81,7 +81,7 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
         with torch.autocast(self.device.type, dtype=torch.bfloat16):
             output = self.network(data)
             del data
-            l = self.loss(output, target)
+            val_loss = self.loss(output, target)
 
         # Only need full-resolution output (if deep supervision enabled)
         if self.enable_deep_supervision:
@@ -127,7 +127,7 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
             fn_hard = fn_hard[1:]
 
         return {
-            'loss': l.detach().cpu().numpy(),
+            'loss': val_loss.detach().cpu().numpy(),
             'tp_hard': tp_hard,
             'fp_hard': fp_hard,
             'fn_hard': fn_hard,
@@ -142,13 +142,13 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
         log = self.logger.my_fantastic_logging
 
         # Training loss (logged by parent as last entry in train_losses)
-        if 'train_losses' in log and log['train_losses']:
+        if log.get('train_losses'):
             self._tb_writer.add_scalar(
                 'train/loss', log['train_losses'][-1], epoch,
             )
 
         # Learning rate
-        if 'lrs' in log and log['lrs']:
+        if log.get('lrs'):
             self._tb_writer.add_scalar(
                 'train/learning_rate', log['lrs'][-1], epoch,
             )
@@ -162,25 +162,25 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
         log = self.logger.my_fantastic_logging
 
         # Validation loss
-        if 'val_losses' in log and log['val_losses']:
+        if log.get('val_losses'):
             self._tb_writer.add_scalar(
                 'val/loss', log['val_losses'][-1], epoch,
             )
 
         # Mean foreground Dice
-        if 'mean_fg_dice' in log and log['mean_fg_dice']:
+        if log.get('mean_fg_dice'):
             self._tb_writer.add_scalar(
                 'val/mean_fg_dice', log['mean_fg_dice'][-1], epoch,
             )
 
         # EMA foreground Dice (used for best checkpoint selection)
-        if 'ema_fg_dice' in log and log['ema_fg_dice']:
+        if log.get('ema_fg_dice'):
             self._tb_writer.add_scalar(
                 'val/ema_fg_dice', log['ema_fg_dice'][-1], epoch,
             )
 
         # Per-class Dice (we have 1 foreground class: tumor)
-        if 'dice_per_class_or_region' in log and log['dice_per_class_or_region']:
+        if log.get('dice_per_class_or_region'):
             dice_per_class = log['dice_per_class_or_region'][-1]
             if hasattr(dice_per_class, '__iter__'):
                 for i, dice_val in enumerate(dice_per_class):

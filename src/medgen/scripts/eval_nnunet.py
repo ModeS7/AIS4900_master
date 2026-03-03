@@ -21,9 +21,9 @@ import os
 
 def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
     """Set nnU-Net environment variables."""
-    os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')
-    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')
-    os.environ['nnUNet_results'] = os.path.join(
+    os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')  # noqa: SIM112
+    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
+    os.environ['nnUNet_results'] = os.path.join(  # noqa: SIM112
         nnunet_results, experiment_name,
     )
 
@@ -59,7 +59,7 @@ def _find_model_dir(
     plans: str,
 ) -> str:
     """Find the nnU-Net model directory for a dataset."""
-    results_dir = os.environ['nnUNet_results']
+    results_dir = os.environ['nnUNet_results']  # noqa: SIM112
     for entry in os.listdir(results_dir):
         if entry.startswith(f'Dataset{dataset_id}_'):
             model_dir = os.path.join(
@@ -172,7 +172,7 @@ def main() -> None:
         experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
         _setup_env(args.nnunet_base, args.nnunet_results, experiment_name)
 
-        nnunet_raw = os.environ['nnUNet_raw']
+        nnunet_raw = os.environ['nnUNet_raw']  # noqa: SIM112
         dataset_dir = _find_dataset_dir(nnunet_raw, args.dataset_id)
         gt_dir = os.path.join(dataset_dir, 'labelsTs')
         input_dir = os.path.join(dataset_dir, 'imagesTs')
@@ -187,7 +187,7 @@ def main() -> None:
             trainer=args.trainer,
             plans=args.plans,
             output_dir=os.path.join(
-                os.environ['nnUNet_results'], f'eval_{experiment_name}',
+                os.environ['nnUNet_results'], f'eval_{experiment_name}',  # noqa: SIM112
             ),
             input_dir=input_dir,
             folds=tuple(args.folds),
@@ -206,7 +206,7 @@ def main() -> None:
     if output_path is None and args.experiment:
         experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
         output_path = os.path.join(
-            os.environ.get('nnUNet_results', '.'),
+            os.environ.get('nnUNet_results', '.'),  # noqa: SIM112
             f'eval_{experiment_name}.json',
         )
 
@@ -230,7 +230,7 @@ def main() -> None:
                     args.experiment, args.n_synthetic,
                 )
                 tensorboard_dir = os.path.join(
-                    os.environ['nnUNet_results'],
+                    os.environ['nnUNet_results'],  # noqa: SIM112
                     f'eval_{experiment_name}', 'tensorboard',
                 )
         except FileNotFoundError:
