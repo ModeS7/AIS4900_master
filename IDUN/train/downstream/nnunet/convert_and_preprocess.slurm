@@ -55,21 +55,19 @@ python -m medgen.downstream.nnunet.convert_dataset \
     --dataset-id 501 \
     --modality bravo
 
-# Dataset 502: Dual (2 channels: t1_pre + t1_gd)
-# Uncomment when dual synthetic data is available:
-# echo "--- Dataset 502: Dual ---"
-# python -m medgen.downstream.nnunet.convert_dataset \
-#     --real-dir "${REAL_DIR}" \
-#     --synthetic-dir "${SYNTHETIC_DUAL_DIR}" \
-#     --nnunet-raw "${nnUNet_raw}" \
-#     --dataset-id 502 \
-#     --modality dual
+# Dataset 502: Dual (2 channels: t1_pre + t1_gd), real-only
+echo "--- Dataset 502: Dual ---"
+python -m medgen.downstream.nnunet.convert_dataset \
+    --real-dir "${REAL_DIR}" \
+    --nnunet-raw "${nnUNet_raw}" \
+    --dataset-id 502 \
+    --modality dual
 
 # === Step 2: Plan and preprocess ===
 echo ""
 echo "=== Step 2: nnU-Net plan and preprocess ==="
 nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres
-# nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres  # when dual ready
+nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres
 
 echo ""
 echo "=== Done! ==="

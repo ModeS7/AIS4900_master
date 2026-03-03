@@ -251,14 +251,14 @@ def _write_dataset_json(
 
 def create_dataset(
     real_dir: str,
-    synthetic_dir: str,
+    synthetic_dir: str | None,
     nnunet_raw: str,
     dataset_id: int = DATASET_ID,
     modality: str | list[str] = 'bravo',
 ) -> dict:
     """Create ONE nnU-Net raw dataset with all real + synthetic data.
 
-    imagesTr: 105 real train patients + all synthetic samples
+    imagesTr: 105 real train patients + synthetic samples (if provided)
     imagesTs: 51 test patients (val/ + test_new/)
 
     Experiment-specific training subsets are controlled via splits_final.json
@@ -266,7 +266,7 @@ def create_dataset(
 
     Args:
         real_dir: Root of brainmetshare-3 dataset.
-        synthetic_dir: Path to generated 3D samples.
+        synthetic_dir: Path to generated 3D samples, or None for real-only.
         nnunet_raw: nnU-Net raw data root (nnUNet_raw/).
         dataset_id: Dataset ID (default: 501).
         modality: Modality preset ('bravo', 'dual') or explicit list
@@ -284,14 +284,16 @@ def create_dataset(
     logger.info(f"Creating dataset in {output_dir}")
     logger.info(f"Modalities: {modalities} ({len(modalities)} channels)")
 
-    # imagesTr: 105 real train + all synthetic
+    # imagesTr: real train + synthetic (if provided)
     real_train_cases = _add_real_patients(
         real_dir, 'train', output_dir, 'Tr', modalities,
     )
     logger.info(f"Added {len(real_train_cases)} real train patients to imagesTr")
 
-    synthetic_cases = _add_synthetic_samples(synthetic_dir, output_dir, modalities)
-    logger.info(f"Added {len(synthetic_cases)} synthetic samples to imagesTr")
+    synthetic_cases = []
+    if synthetic_dir:
+        synthetic_cases = _add_synthetic_samples(synthetic_dir, output_dir, modalities)
+        logger.info(f"Added {len(synthetic_cases)} synthetic samples to imagesTr")
 
     # imagesTs: val (25) + test_new (26) = 51 test patients
     test_cases = []
@@ -337,8 +339,8 @@ def main() -> None:
     )
     parser.add_argument('--real-dir', required=True,
                         help='Root of brainmetshare-3 dataset')
-    parser.add_argument('--synthetic-dir', required=True,
-                        help='Path to generated 3D samples')
+    parser.add_argument('--synthetic-dir', default=None,
+                        help='Path to generated 3D samples (omit for real-only)')
     parser.add_argument('--nnunet-raw', required=True,
                         help='nnU-Net raw data directory')
     parser.add_argument('--dataset-id', type=int, default=DATASET_ID,
