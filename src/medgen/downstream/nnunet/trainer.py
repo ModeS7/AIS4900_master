@@ -9,7 +9,10 @@ Uses absolute imports only (no relative imports) because this file gets
 symlinked into the nnunetv2 package for trainer discovery.
 """
 import os
+from datetime import datetime, timedelta
+from time import time
 
+import numpy as np
 import torch
 from nnunetv2.training.loss.dice import get_tp_fp_fn_tn
 from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
@@ -186,7 +189,60 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
                     )
 
     def on_epoch_end(self):
-        super().on_epoch_end()
+        # Full override of nnUNetTrainer.on_epoch_end() to control output.
+        # Replicates all checkpointing logic, replaces verbose prints with
+        # a compact progress line.
+        self.logger.log('epoch_end_timestamps', time(), self.current_epoch)
+
+        log = self.logger.my_fantastic_logging
+        epoch = self.current_epoch
+        pct = 100.0 * epoch / self.num_epochs
+        now = datetime.now().strftime('%H:%M:%S')
+
+        train_loss = log['train_losses'][-1] if log.get('train_losses') else float('nan')
+        val_dice = log['mean_fg_dice'][-1] if log.get('mean_fg_dice') else float('nan')
+        ema_dice = log['ema_fg_dice'][-1] if log.get('ema_fg_dice') else float('nan')
+
+        # Epoch time and ETA
+        t_start = log.get('epoch_start_timestamps', [None])[-1]
+        t_end = log.get('epoch_end_timestamps', [None])[-1]
+        if t_start is not None and t_end is not None:
+            epoch_time = t_end - t_start
+            remaining = (self.num_epochs - epoch) * epoch_time
+            eta = (datetime.now() + timedelta(seconds=remaining)).strftime('%H:%M')
+            h, m = int(remaining // 3600), int((remaining % 3600) // 60)
+            time_str = f" | Time: {epoch_time:.1f}s | ETA: {h}h {m}m"
+        else:
+            epoch_time = None
+            time_str = ""
+            eta = ""
+
+        self.print_to_log_file(
+            f"[{now}] Epoch {epoch}/{self.num_epochs} ({pct:5.1f}%) | "
+            f"Loss: {train_loss:.4f} | Val Dice: {val_dice:.4f} | "
+            f"EMA Dice: {ema_dice:.4f}{time_str}",
+            add_timestamp=False,
+        )
+        if eta:
+            self.print_to_log_file(f"  ({eta})", add_timestamp=False)
+
+        # Periodic checkpoint
+        if (epoch + 1) % self.save_every == 0 and epoch != (self.num_epochs - 1):
+            self.save_checkpoint(os.path.join(self.output_folder, 'checkpoint_latest.pth'))
+
+        # Best checkpoint (EMA Dice)
+        if self._best_ema is None or ema_dice > self._best_ema:
+            self._best_ema = ema_dice
+            self.print_to_log_file(
+                f"Yayy! New best EMA pseudo Dice: {np.round(self._best_ema, decimals=4)}",
+            )
+            self.save_checkpoint(os.path.join(self.output_folder, 'checkpoint_best.pth'))
+
+        if self.local_rank == 0:
+            self.logger.plot_progress_png(self.output_folder)
+
+        self.current_epoch += 1
+
         if self._tb_writer is not None:
             self._tb_writer.flush()
 
