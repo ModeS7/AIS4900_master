@@ -37,9 +37,9 @@ def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> N
     Raw and preprocessed are under nnunet_base (dataset storage).
     Results are under nnunet_results (per-experiment).
     """
-    os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')
-    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')
-    os.environ['nnUNet_results'] = os.path.join(
+    os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')  # noqa: SIM112
+    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
+    os.environ['nnUNet_results'] = os.path.join(  # noqa: SIM112
         nnunet_results, experiment_name,
     )
 
@@ -137,19 +137,19 @@ def main() -> None:
     # 2. Install experiment-specific splits
     print("\nInstalling splits:")
     from medgen.downstream.nnunet.splits import (
+        _load_case_info,
         generate_experiment_splits,
         install_splits,
-        _load_case_info,
     )
 
-    case_info = _load_case_info(os.environ['nnUNet_raw'], args.dataset_id)
+    case_info = _load_case_info(os.environ['nnUNet_raw'], args.dataset_id)  # noqa: SIM112
     splits = generate_experiment_splits(
         experiment=args.experiment,
         real_train_cases=case_info['real_train_cases'],
         synthetic_cases=case_info['synthetic_cases'],
         n_synthetic=args.n_synthetic,
     )
-    install_splits(splits, os.environ['nnUNet_preprocessed'], args.dataset_id)
+    install_splits(splits, os.environ['nnUNet_preprocessed'], args.dataset_id)  # noqa: SIM112
 
     # 3. Register custom trainer
     print("\nRegistering trainer:")
