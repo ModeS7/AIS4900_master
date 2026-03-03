@@ -34,9 +34,8 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
     """
 
     def __init__(self, plans, configuration, fold, dataset_json,
-                 unpack_dataset=True, device=None):
-        super().__init__(plans, configuration, fold, dataset_json,
-                         unpack_dataset, device)
+                 device=torch.device('cuda')):
+        super().__init__(plans, configuration, fold, dataset_json, device)
         self._tb_writer = None
 
     def on_train_start(self):
