@@ -19,12 +19,12 @@ import argparse
 import os
 
 
-def _setup_env(nnunet_base: str, experiment_name: str) -> None:
+def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
     """Set nnU-Net environment variables."""
     os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')
     os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')
     os.environ['nnUNet_results'] = os.path.join(
-        nnunet_base, 'nnUNet_results', experiment_name,
+        nnunet_results, experiment_name,
     )
 
 
@@ -141,7 +141,9 @@ def main() -> None:
     parser.add_argument('--dataset-id', type=int, default=501)
     parser.add_argument('--configuration', default='3d_fullres')
     parser.add_argument('--nnunet-base',
-                        help='Base directory for nnU-Net data/results')
+                        help='Base directory for nnU-Net data (raw + preprocessed)')
+    parser.add_argument('--nnunet-results',
+                        help='Base directory for nnU-Net results/checkpoints')
     parser.add_argument('--trainer', default='nnUNetTrainerTensorBoard')
     parser.add_argument('--plans', default='nnUNetPlans')
     parser.add_argument('--folds', type=int, nargs='+', default=[0, 1, 2, 3, 4],
@@ -165,10 +167,10 @@ def main() -> None:
         # Mode 2: evaluate existing predictions
         pred_dir = args.pred_dir
         gt_dir = args.gt_dir
-    elif args.experiment and args.nnunet_base:
+    elif args.experiment and args.nnunet_base and args.nnunet_results:
         # Mode 1: run inference then evaluate
         experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
-        _setup_env(args.nnunet_base, experiment_name)
+        _setup_env(args.nnunet_base, args.nnunet_results, experiment_name)
 
         nnunet_raw = os.environ['nnUNet_raw']
         dataset_dir = _find_dataset_dir(nnunet_raw, args.dataset_id)
@@ -192,7 +194,7 @@ def main() -> None:
         )
     else:
         parser.error(
-            "Provide either (--experiment + --nnunet-base) or "
+            "Provide either (--experiment + --nnunet-base + --nnunet-results) or "
             "(--pred-dir + --gt-dir)"
         )
 

@@ -29,13 +29,14 @@ module load Anaconda3/2024.02-1
 conda activate nnunet
 
 # === Paths ===
-NNUNET_BASE="/cluster/work/modestas/nnunet"
+NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
+NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
 REAL_DIR="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 SYNTHETIC_DIR="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_3d_256_525_baseline"
 
 export nnUNet_raw="${NNUNET_BASE}/nnUNet_raw"
 export nnUNet_preprocessed="${NNUNET_BASE}/nnUNet_preprocessed"
-export nnUNet_results="${NNUNET_BASE}/nnUNet_results"
+export nnUNet_results="${NNUNET_RESULTS}"
 
 mkdir -p "${nnUNet_raw}" "${nnUNet_preprocessed}" "${nnUNet_results}"
 

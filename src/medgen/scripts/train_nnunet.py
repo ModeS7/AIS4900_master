@@ -31,16 +31,16 @@ import os
 import shutil
 
 
-def _setup_env(nnunet_base: str, experiment_name: str) -> None:
+def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
     """Set nnU-Net environment variables.
 
-    Raw and preprocessed are shared across experiments.
-    Results are per-experiment to avoid overwriting.
+    Raw and preprocessed are under nnunet_base (dataset storage).
+    Results are under nnunet_results (per-experiment).
     """
     os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')
     os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')
     os.environ['nnUNet_results'] = os.path.join(
-        nnunet_base, 'nnUNet_results', experiment_name,
+        nnunet_results, experiment_name,
     )
 
     for key in ('nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results'):
@@ -109,7 +109,9 @@ def main() -> None:
     parser.add_argument('--fold', type=int, default=None,
                         help='Fold number 0-4 (default: all 5 folds)')
     parser.add_argument('--nnunet-base', required=True,
-                        help='Base directory for nnU-Net data/results')
+                        help='Base directory for nnU-Net data (raw + preprocessed)')
+    parser.add_argument('--nnunet-results', required=True,
+                        help='Base directory for nnU-Net results/checkpoints')
     parser.add_argument('--trainer', default='nnUNetTrainerTensorBoard',
                         help='Trainer class name')
     parser.add_argument('--plans', default='nnUNetPlans',
@@ -130,7 +132,7 @@ def main() -> None:
 
     # 1. Set environment variables (per-experiment results dir)
     print("\nEnvironment:")
-    _setup_env(args.nnunet_base, experiment_name)
+    _setup_env(args.nnunet_base, args.nnunet_results, experiment_name)
 
     # 2. Install experiment-specific splits
     print("\nInstalling splits:")

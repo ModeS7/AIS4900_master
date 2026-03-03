@@ -51,7 +51,8 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate nnunet
 
-NNUNET_BASE="/cluster/work/modestas/nnunet"
+NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
+NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
 CONTINUE_FLAG=""
 if [ "$CHAIN_COUNT" -gt 0 ]; then
     CONTINUE_FLAG="--continue-training"
@@ -62,6 +63,7 @@ time python -m medgen.scripts.train_nnunet \
     --n-synthetic 315 \
     --fold ${FOLD} \
     --nnunet-base "${NNUNET_BASE}" \
+    --nnunet-results "${NNUNET_RESULTS}" \
     ${CONTINUE_FLAG} &
 
 PID=$!
@@ -76,5 +78,6 @@ if [ $TRAIN_EXIT -eq 0 ]; then
         --n-synthetic 315 \
         --folds ${FOLD} \
         --nnunet-base "${NNUNET_BASE}" \
+        --nnunet-results "${NNUNET_RESULTS}" \
         || echo "WARNING: Evaluation failed"
 fi
