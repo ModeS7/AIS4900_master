@@ -1,13 +1,11 @@
 #!/bin/sh
-#SBATCH --partition=GPUQ
+#SBATCH --partition=CPUQ
 #SBATCH --account=share-ie-idi
 #SBATCH --time=0-06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g"
 #SBATCH --exclude=idun-06-02
 #SBATCH --job-name="nnunet_prep"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/prep_%j.out
