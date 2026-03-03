@@ -10,8 +10,8 @@
 #SBATCH --constraint="gpu80g"
 #SBATCH --exclude=idun-06-02
 #SBATCH --job-name="nn_mix210"
-#SBATCH --output=IDUN/output/train/downstream/nnunet/exp7_2_%j.out
-#SBATCH --error=IDUN/output/train/downstream/nnunet/exp7_2_%j.err
+#SBATCH --output=IDUN/output/train/downstream/nnunet/exp7_2/%j.out
+#SBATCH --error=IDUN/output/train/downstream/nnunet/exp7_2/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
