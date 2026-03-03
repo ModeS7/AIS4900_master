@@ -101,11 +101,15 @@ def _convert_label(src_path: str, dst_path: str) -> None:
     binary = (data > 0.5).astype(np.uint8)
     out = nib.Nifti1Image(binary, nii.affine, nii.header)
     out.header.set_data_dtype(np.uint8)
+    if os.path.exists(dst_path):
+        os.remove(dst_path)
     nib.save(out, dst_path)
 
 
 def _symlink_or_copy(src: str, dst: str) -> None:
     """Create symlink, falling back to copy if symlink fails."""
+    if os.path.exists(dst) or os.path.islink(dst):
+        os.remove(dst)
     src_abs = os.path.abspath(src)
     try:
         os.symlink(src_abs, dst)
