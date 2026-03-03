@@ -168,7 +168,7 @@ def main() -> None:
         print(f"{'='*50}\n")
 
         run_training(
-            dataset_name_or_id=args.dataset_id,
+            dataset_name_or_id=str(args.dataset_id),
             configuration=args.configuration,
             fold=fold,
             trainer_class_name=args.trainer,
