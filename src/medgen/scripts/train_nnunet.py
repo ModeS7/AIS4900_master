@@ -30,6 +30,8 @@ import argparse
 import os
 import shutil
 
+import torch
+
 
 def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
     """Set nnU-Net environment variables.
@@ -169,16 +171,15 @@ def main() -> None:
             dataset_name_or_id=args.dataset_id,
             configuration=args.configuration,
             fold=fold,
-            trainer_name=args.trainer,
+            trainer_class_name=args.trainer,
             plans_identifier=args.plans,
             num_gpus=1,
             pretrained_weights=None,
-            use_compressed_data=False,
             export_validation_probabilities=False,
             continue_training=args.continue_training,
             only_run_validation=False,
             disable_checkpointing=False,
-            device=args.device,
+            device=torch.device(args.device),
         )
 
     print(f"\n=== Training complete: {experiment_name} ===")
