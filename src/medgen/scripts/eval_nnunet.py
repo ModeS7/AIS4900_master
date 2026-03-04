@@ -97,6 +97,19 @@ def _run_inference(
 
     model_dir = _find_model_dir(dataset_id, configuration, trainer, plans)
 
+    # Auto-detect available folds (only use folds that have checkpoint_best.pth)
+    available_folds = tuple(
+        f for f in folds
+        if os.path.isfile(os.path.join(model_dir, f'fold_{f}', 'checkpoint_best.pth'))
+    )
+    if not available_folds:
+        raise FileNotFoundError(
+            f"No trained folds found with checkpoint_best.pth in {model_dir}"
+        )
+    if available_folds != folds:
+        print(f"Note: requested folds {folds}, but only {available_folds} have checkpoints")
+    folds = available_folds
+
     print(f"Model directory: {model_dir}")
     print(f"Folds: {folds}")
     print(f"Input: {input_dir}")
