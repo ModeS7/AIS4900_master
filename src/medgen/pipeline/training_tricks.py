@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 if TYPE_CHECKING:
+    from medgen.diffusion.strategies import DiffusionStrategy
     from medgen.pipeline.trainer import DiffusionTrainer
 
 logger = logging.getLogger(__name__)
