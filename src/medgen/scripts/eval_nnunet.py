@@ -120,7 +120,7 @@ def _run_inference(
         use_gaussian=True,
         use_mirroring=True,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-        verbose=True,
+        verbose=False,
         verbose_preprocessing=False,
     )
 

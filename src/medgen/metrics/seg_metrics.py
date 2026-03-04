@@ -57,8 +57,8 @@ class GlobalSegMetrics:
         target_binary = target.bool()
 
         # Flatten spatial dims for TP/FP/FN counting
-        pred_flat = pred_binary.view(pred_binary.shape[0], -1)
-        tgt_flat = target_binary.view(target_binary.shape[0], -1)
+        pred_flat = pred_binary.reshape(pred_binary.shape[0], -1)
+        tgt_flat = target_binary.reshape(target_binary.shape[0], -1)
 
         self._tp += (pred_flat & tgt_flat).sum().item()
         self._fp += (pred_flat & ~tgt_flat).sum().item()
