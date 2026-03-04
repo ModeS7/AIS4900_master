@@ -36,8 +36,14 @@ def check_raw_labels(nnunet_raw: str, dataset_id: int = 501) -> None:
     label_files = sorted(f for f in os.listdir(labels_dir) if f.endswith('.nii.gz'))
     print(f"Found {len(label_files)} label files")
 
-    # Check first 5 labels
-    for fname in label_files[:5]:
+    # Separate real vs synthetic
+    real_labels = [f for f in label_files if not f.startswith('BrainMetSyn')]
+    syn_labels = [f for f in label_files if f.startswith('BrainMetSyn')]
+    print(f"  Real: {len(real_labels)}, Synthetic: {len(syn_labels)}")
+
+    # Check first 3 real + first 2 synthetic
+    check_labels = real_labels[:3] + syn_labels[:2]
+    for fname in check_labels:
         path = os.path.join(labels_dir, fname)
         nii = nib.load(path)
 
@@ -106,12 +112,46 @@ def check_preprocessed(nnunet_preprocessed: str, dataset_id: int = 501) -> None:
     else:
         print("WARNING: No splits_final.json found!")
 
-    # Check preprocessed samples (npz files)
+    # Check gt_segmentations (nnU-Net stores labels separately)
+    gt_dir = os.path.join(pp_dir, 'gt_segmentations')
+    if os.path.isdir(gt_dir):
+        gt_files = sorted(f for f in os.listdir(gt_dir) if f.endswith('.nii.gz'))
+        print(f"\n  gt_segmentations: {len(gt_files)} files")
+        n_empty = 0
+        for fname in gt_files[:5]:
+            path = os.path.join(gt_dir, fname)
+            nii = nib.load(path)
+            data = np.asanyarray(nii.dataobj)
+            tumor_count = (data > 0).sum()
+            if tumor_count == 0:
+                n_empty += 1
+            print(f"    {fname}: shape={data.shape}, dtype={data.dtype}, "
+                  f"unique={np.unique(data)}, tumor_voxels={tumor_count}")
+        # Count total empty
+        for fname in gt_files[5:]:
+            data = np.asanyarray(nib.load(os.path.join(gt_dir, fname)).dataobj)
+            if (data > 0).sum() == 0:
+                n_empty += 1
+        print(f"  Empty labels (no tumor): {n_empty}/{len(gt_files)}")
+    else:
+        print("\n  WARNING: No gt_segmentations directory!")
+
+    # Check dataset_fingerprint.json
+    fp_path = os.path.join(pp_dir, 'dataset_fingerprint.json')
+    if os.path.exists(fp_path):
+        with open(fp_path) as f:
+            fp = json.load(f)
+        print(f"\n  Dataset fingerprint:")
+        for k, v in fp.items():
+            print(f"    {k}: {json.dumps(v)[:120]}")
+
+    # Check preprocessed samples (npz/npy files)
     for config_dir_name in os.listdir(pp_dir):
         config_path = os.path.join(pp_dir, config_dir_name)
         if not os.path.isdir(config_path) or config_dir_name.startswith('.'):
             continue
-        npz_files = [f for f in os.listdir(config_path) if f.endswith('.npz')]
+        npz_files = [f for f in os.listdir(config_path)
+                     if f.endswith('.npz') or f.endswith('.npy')]
         if not npz_files:
             continue
 
