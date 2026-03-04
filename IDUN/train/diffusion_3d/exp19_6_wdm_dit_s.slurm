@@ -15,12 +15,12 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
-# Exp19_6: Wavelet DiT-S — RFlow velocity prediction
-# DiT-S on wavelet space instead of WDM UNet.
-# Wavelet: 256x256x160 → [B,16,80,128,128] (bravo: 2ch × 8 subbands)
-# DiT-S: hidden=384, depth=12, heads=6, patch=2 → 163,840 tokens
-# Profiled: ~46GB without grad ckpt on A100 80GB
-# Per-subband N(0,1) normalization (like exp19_1)
+# Exp19_6: Wavelet DiT-S — DDPM x₀ prediction (based on exp19_2)
+# Same as exp19_2 but with DiT-S architecture instead of WDM UNet.
+# DDPM, x₀ prediction, linear_beta schedule, batch=1, LR=1e-4
+# Wavelet: 256x256x160 → [B,8,80,128,128] (bravo: 1ch × 8 subbands)
+# DiT-S: hidden=384, depth=12, heads=6, patch=2
+# Per-subband N(0,1) normalization
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -63,7 +63,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp19_6 Wavelet DiT-S RFlow: Bravo 256x256x160 ==="
+echo "=== Exp19_6 Wavelet DiT-S DDPM x0: Bravo 256x256x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -71,13 +71,13 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate AIS4900
 
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
-
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
-    strategy=rflow \
+    strategy=ddpm \
+    strategy.prediction_type=sample \
+    strategy.schedule=linear_beta \
     mode=bravo \
     model=dit_3d \
     model.variant=S \
