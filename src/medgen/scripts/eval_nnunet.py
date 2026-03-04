@@ -201,6 +201,9 @@ def main() -> None:
         )
 
     # Evaluate
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
     print("\n=== Running MedGen Evaluation ===")
     from medgen.downstream.nnunet.evaluate import evaluate_predictions
 
