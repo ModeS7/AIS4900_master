@@ -312,6 +312,11 @@ def generate_samples(
         noise = torch.randn_like(masks)
 
         if out_channels == 2:  # Dual mode
+            if encode_cond:
+                raise ValueError(
+                    "Dual mode metrics do not support latent-encoded conditioning. "
+                    "Use bravo_seg_cond mode for latent conditioning."
+                )
             noise_pre = torch.randn_like(masks)
             noise_gd = torch.randn_like(masks)
             model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
@@ -443,6 +448,11 @@ def generate_and_extract_features_3d_streaming(
 
         # Build model input based on mode
         if out_channels == 2:  # Dual mode
+            if encode_cond:
+                raise ValueError(
+                    "Dual mode metrics do not support latent-encoded conditioning. "
+                    "Use bravo_seg_cond mode for latent conditioning."
+                )
             noise_pre = torch.randn_like(masks)
             noise_gd = torch.randn_like(masks)
             model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)

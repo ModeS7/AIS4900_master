@@ -119,6 +119,20 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # RFlow loss shape: pseudo_huber or lpips_huber (exp1g / exp1h)
         self.velocity_loss_type: str = sc.loss_type if self.strategy_name == 'rflow' else 'mse'
 
+        # Validate mutual exclusivity of loss modifiers
+        loss_modifiers = []
+        if self.use_min_snr:
+            loss_modifiers.append('min_snr')
+        if self.rflow_snr_gamma > 0:
+            loss_modifiers.append('rflow_snr_gamma')
+        if self.velocity_loss_type != 'mse':
+            loss_modifiers.append(f'velocity_loss_type={self.velocity_loss_type}')
+        if len(loss_modifiers) > 1:
+            raise ValueError(
+                f"Mutually exclusive loss modifiers enabled: {loss_modifiers}. "
+                "Only one can be active at a time."
+            )
+
         # ─────────────────────────────────────────────────────────────────────
         # DC-AE 1.5: Augmented Diffusion Training (from AugmentedDiffusionConfig)
         # ─────────────────────────────────────────────────────────────────────

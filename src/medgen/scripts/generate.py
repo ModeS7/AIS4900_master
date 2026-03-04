@@ -258,11 +258,30 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         strategy.ode_atol = cfg.get('ode_atol', 1e-5)
         strategy.ode_rtol = cfg.get('ode_rtol', 1e-5)
 
-    # EDM preconditioning (loaded from image model checkpoint)
+    # EDM preconditioning + pixel normalization (loaded from image model checkpoint)
     _img_ckpt = torch.load(cfg.image_model, map_location='cpu', weights_only=False)
     _img_cfg = _img_ckpt.get('config', {})
     _sigma_data = _img_cfg.get('sigma_data', 0.0)
     _out_ch = _img_cfg.get('out_channels', 1)
+
+    # Pixel normalization from bravo checkpoint (same as 3D pipeline)
+    _pixel_cfg = _img_cfg.get('pixel', {})
+    _pixel_shift = _pixel_cfg.get('pixel_shift')
+    _pixel_scale = _pixel_cfg.get('pixel_scale')
+    _pixel_rescale = _pixel_cfg.get('rescale', False)
+    bravo_space = None
+    if _pixel_shift is not None or _pixel_rescale:
+        from medgen.diffusion.spaces import PixelSpace
+        bravo_space = PixelSpace(
+            rescale=_pixel_rescale,
+            shift=_pixel_shift,
+            scale=_pixel_scale,
+        )
+        if _pixel_shift is not None:
+            logger.info(f"Bravo pixel normalization: shift={_pixel_shift}, scale={_pixel_scale}")
+        if _pixel_rescale:
+            logger.info("Bravo pixel rescale: [-1, 1]")
+
     del _img_ckpt
     if _sigma_data > 0 and hasattr(strategy, 'set_preconditioning'):
         strategy.set_preconditioning(_sigma_data, _out_ch)
@@ -346,6 +365,10 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 torch.from_numpy(m).unsqueeze(0) for m in batch_masks
             ], dim=0).to(device, dtype=torch.float32)
 
+            # Encode conditioning to match training pixel normalization
+            if bravo_space is not None:
+                masks_tensor = bravo_space.encode(masks_tensor)
+
             # Generate images
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(batch_size, out_ch, 2, cfg.image_size, 0), device=device)
@@ -353,6 +376,10 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 image_model, strategy, noise, steps_bravo, device, masks_tensor,
                 diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
             )
+
+            # Decode from pixel normalization space
+            if bravo_space is not None:
+                images = bravo_space.decode(images)
 
             # Save
             for i, counter in enumerate(batch_counters):
@@ -373,12 +400,16 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     if mask_cache:
         for mask, counter in mask_cache:
             masks_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).to(device, dtype=torch.float32)
+            if bravo_space is not None:
+                masks_tensor = bravo_space.encode(masks_tensor)
             out_ch = 1 if cfg.gen_mode == 'bravo' else 2
             noise = torch.randn(get_noise_shape(1, out_ch, 2, cfg.image_size, 0), device=device)
             images = generate_batch(
                 image_model, strategy, noise, steps_bravo, device, masks_tensor,
                 diffrs_discriminator=diffrs_disc, diffrs_config=diffrs_cfg,
             )
+            if bravo_space is not None:
+                images = bravo_space.decode(images)
 
             output_path = output_dir / f"{counter:05d}.nii.gz"
             if cfg.gen_mode == 'bravo':

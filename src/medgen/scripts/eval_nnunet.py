@@ -130,15 +130,24 @@ def _run_inference(
         checkpoint_name='checkpoint_best.pth',
     )
 
-    predictor.predict_from_files(
-        list_of_lists_or_source_folder=input_dir,
-        output_folder_or_list_of_truncated_output_files=pred_dir,
-        save_probabilities=False,
-        overwrite=True,
-        num_processes_preprocessing=4,
-        num_processes_segmentation_export=4,
-    )
+    # Suppress nnU-Net's hard-coded print() statements during inference
+    import io
+    import sys
+    _stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        predictor.predict_from_files(
+            list_of_lists_or_source_folder=input_dir,
+            output_folder_or_list_of_truncated_output_files=pred_dir,
+            save_probabilities=False,
+            overwrite=True,
+            num_processes_preprocessing=4,
+            num_processes_segmentation_export=4,
+        )
+    finally:
+        sys.stdout = _stdout
 
+    print(f"Inference complete: {len(os.listdir(pred_dir))} predictions")
     return pred_dir
 
 

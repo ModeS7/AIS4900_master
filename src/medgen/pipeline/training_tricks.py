@@ -425,7 +425,7 @@ def _reconstruct_clean(
     aug_noisy: Tensor | dict[str, Tensor],
     prediction: Tensor,
     timesteps: Tensor,
-    strategy_name: str,
+    strategy: 'DiffusionStrategy',
     num_timesteps: int,
     spatial_dims: int = 2,
 ) -> Tensor | dict[str, Tensor]:
@@ -437,14 +437,16 @@ def _reconstruct_clean(
         aug_noisy: Augmented noisy images (tensor or dict of tensors).
         prediction: Model prediction (velocity for RFlow, noise for DDPM).
         timesteps: Timestep tensor.
-        strategy_name: 'rflow' or 'ddpm'.
+        strategy: Diffusion strategy instance (for correct reconstruction formula).
         num_timesteps: Number of training timesteps for normalization.
         spatial_dims: Number of spatial dimensions (2 or 3).
 
     Returns:
         Reconstructed clean images (same type as aug_noisy).
     """
-    if strategy_name == 'rflow':
+    from medgen.diffusion.strategy_rflow import RFlowStrategy
+
+    if isinstance(strategy, RFlowStrategy):
         t_norm = timesteps.float() / float(num_timesteps)
         from medgen.core.spatial_utils import broadcast_to_spatial
         t_exp = broadcast_to_spatial(t_norm, spatial_dims)
@@ -457,15 +459,8 @@ def _reconstruct_clean(
             }
         else:
             return aug_noisy + t_exp * prediction
-    else:  # ddpm
-        if isinstance(aug_noisy, dict):
-            keys = list(aug_noisy.keys())
-            return {
-                k: aug_noisy[k] - prediction[:, i:i+1]
-                for i, k in enumerate(keys)
-            }
-        else:
-            return aug_noisy - prediction
+    else:  # ddpm — use strategy's correct formula with schedule coefficients
+        return strategy.compute_predicted_clean(aug_noisy, prediction, timesteps)
 
 
 def _compute_perceptual_with_inverse(
@@ -517,7 +512,7 @@ def _compute_perceptual_with_inverse(
         # Reconstruct clean from prediction using shared helper
         aug_clean = _reconstruct_clean(
             aug_noisy_dict, prediction, timesteps,
-            trainer.strategy_name, trainer.num_timesteps,
+            trainer.strategy, trainer.num_timesteps,
             spatial_dims=trainer.spatial_dims,
         )
 
@@ -540,7 +535,7 @@ def _compute_perceptual_with_inverse(
         # Reconstruct clean from prediction using shared helper
         aug_clean = _reconstruct_clean(
             aug_noisy, prediction, timesteps,
-            trainer.strategy_name, trainer.num_timesteps,
+            trainer.strategy, trainer.num_timesteps,
             spatial_dims=trainer.spatial_dims,
         )
 
