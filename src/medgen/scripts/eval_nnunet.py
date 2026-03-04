@@ -18,6 +18,8 @@ Usage:
 import argparse
 import os
 
+import torch
+
 
 def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
     """Set nnU-Net environment variables."""
@@ -104,7 +106,7 @@ def _run_inference(
         tile_step_size=0.5,
         use_gaussian=True,
         use_mirroring=True,
-        device=None,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
         verbose=True,
         verbose_preprocessing=False,
     )
