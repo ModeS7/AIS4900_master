@@ -99,8 +99,40 @@ def _convert_label(src_path: str, dst_path: str) -> None:
     nii = nib.load(src_path)
     data = nii.get_fdata()
     binary = (data > 0.5).astype(np.uint8)
-    out = nib.Nifti1Image(binary, nii.affine, nii.header)
-    out.header.set_data_dtype(np.uint8)
+    out = nib.Nifti1Image(binary, nii.affine)
+    if os.path.exists(dst_path):
+        os.remove(dst_path)
+    nib.save(out, dst_path)
+
+
+def _normalize_to_unit(src_path: str, dst_path: str,
+                       lower_pct: float = 0.5, upper_pct: float = 99.5) -> None:
+    """Normalize a NIfTI image to [0, 1] using percentile clipping.
+
+    Clips at lower/upper percentiles of non-zero voxels, then scales to [0, 1].
+    This matches the intensity range of synthetic data from the diffusion model.
+    """
+    nii = nib.load(src_path)
+    data = nii.get_fdata().astype(np.float32)
+
+    # Compute percentiles from non-zero voxels (foreground)
+    nonzero = data[data > 0]
+    if len(nonzero) == 0:
+        # All zeros — save as-is
+        out = nib.Nifti1Image(data, nii.affine)
+        nib.save(out, dst_path)
+        return
+
+    lo = np.percentile(nonzero, lower_pct)
+    hi = np.percentile(nonzero, upper_pct)
+
+    if hi <= lo:
+        hi = lo + 1.0  # Avoid division by zero
+
+    data = np.clip(data, lo, hi)
+    data = (data - lo) / (hi - lo)
+
+    out = nib.Nifti1Image(data, nii.affine)
     if os.path.exists(dst_path):
         os.remove(dst_path)
     nib.save(out, dst_path)
@@ -168,9 +200,10 @@ def _add_real_patients(
         if missing:
             continue
 
-        # Symlink each modality as a separate channel
+        # Normalize and copy each modality (real images need [0,1] normalization)
         for ch_idx, src in enumerate(img_srcs):
-            _symlink_or_copy(src, os.path.join(images_dir, f'{case_id}_{ch_idx:04d}.nii.gz'))
+            dst = os.path.join(images_dir, f'{case_id}_{ch_idx:04d}.nii.gz')
+            _normalize_to_unit(src, dst)
 
         _convert_label(seg_src, os.path.join(labels_dir, f'{case_id}.nii.gz'))
         case_ids.append(case_id)
