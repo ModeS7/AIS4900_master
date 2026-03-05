@@ -64,21 +64,27 @@ def check_raw_labels(nnunet_raw: str, dataset_id: int = 501) -> None:
         print(f"    Tumor voxels (>0.5): {(data > 0.5).sum()} / {data.size} "
               f"({100*(data > 0.5).sum()/data.size:.4f}%)")
 
-    # Check images too
+    # Check images — verify intensity ranges for real vs synthetic
     images_dir = os.path.join(dataset_dir, 'imagesTr')
     if os.path.isdir(images_dir):
         img_files = sorted(f for f in os.listdir(images_dir) if f.endswith('.nii.gz'))
-        print(f"\n  Images: {len(img_files)} files")
-        # Check first image
-        if img_files:
-            path = os.path.join(images_dir, img_files[0])
-            if os.path.islink(path):
-                print(f"    {img_files[0]}: symlink -> {os.readlink(path)}")
+        real_imgs = [f for f in img_files if not f.startswith('BrainMetSyn')]
+        syn_imgs = [f for f in img_files if f.startswith('BrainMetSyn')]
+        print(f"\n  Images: {len(img_files)} files ({len(real_imgs)} real, {len(syn_imgs)} synthetic)")
+
+        # Check first 3 real + first 2 synthetic
+        check_imgs = real_imgs[:3] + syn_imgs[:2]
+        for fname in check_imgs:
+            path = os.path.join(images_dir, fname)
+            is_link = os.path.islink(path)
             nii = nib.load(path)
             data = nii.get_fdata()
-            print(f"    Shape: {data.shape}, dtype: {data.dtype}")
-            print(f"    Range: [{data.min():.4f}, {data.max():.4f}]")
-            print(f"    Mean: {data.mean():.4f}, Std: {data.std():.4f}")
+            print(f"\n    {fname} {'(symlink)' if is_link else '(copy)'}:")
+            print(f"      Shape: {data.shape}, dtype: {data.dtype}")
+            print(f"      Range: [{data.min():.4f}, {data.max():.4f}]")
+            print(f"      Mean: {data.mean():.4f}, Std: {data.std():.4f}")
+            if data.max() > 2.0:
+                print(f"      WARNING: max > 2.0 — normalization may not have been applied!")
 
 
 def check_preprocessed(nnunet_preprocessed: str, dataset_id: int = 501) -> None:
@@ -225,55 +231,66 @@ def check_plans(nnunet_preprocessed: str, dataset_id: int = 501) -> None:
 
 
 def check_training_logs(nnunet_results: str, dataset_id: int = 501) -> None:
-    """Check training logs for exp3_baseline."""
+    """Check training logs for all experiments."""
     print("\n=== 4. TRAINING LOGS ===")
-    exp_dir = os.path.join(nnunet_results, 'exp3_baseline')
-    if not os.path.isdir(exp_dir):
-        print(f"ERROR: No exp3_baseline dir at {exp_dir}")
+    if not os.path.isdir(nnunet_results):
+        print(f"ERROR: Results dir not found: {nnunet_results}")
         return
 
-    # Find dataset dir
-    for entry in os.listdir(exp_dir):
-        if entry.startswith(f'Dataset{dataset_id}_'):
-            model_base = os.path.join(exp_dir, entry)
-            break
-    else:
-        print(f"ERROR: No Dataset{dataset_id} dir in {exp_dir}")
+    # Find all experiment directories
+    exp_dirs = sorted(d for d in os.listdir(nnunet_results)
+                      if os.path.isdir(os.path.join(nnunet_results, d)))
+    if not exp_dirs:
+        print("No experiment directories found")
         return
 
-    # Check each trainer/plans/config combo
-    for trainer_dir_name in os.listdir(model_base):
-        trainer_path = os.path.join(model_base, trainer_dir_name)
-        if not os.path.isdir(trainer_path):
+    for exp_name in exp_dirs:
+        exp_dir = os.path.join(nnunet_results, exp_name)
+        print(f"\n  Experiment: {exp_name}")
+
+        # Find dataset dir
+        model_base = None
+        for entry in os.listdir(exp_dir):
+            if entry.startswith(f'Dataset{dataset_id}_'):
+                model_base = os.path.join(exp_dir, entry)
+                break
+        if not model_base:
+            print(f"    No Dataset{dataset_id} dir")
             continue
 
-        print(f"\n  Trainer: {trainer_dir_name}")
-
-        for fold_name in sorted(os.listdir(trainer_path)):
-            fold_path = os.path.join(trainer_path, fold_name)
-            if not os.path.isdir(fold_path) or not fold_name.startswith('fold_'):
+        # Check each trainer/plans/config combo
+        for trainer_dir_name in os.listdir(model_base):
+            trainer_path = os.path.join(model_base, trainer_dir_name)
+            if not os.path.isdir(trainer_path):
                 continue
 
-            print(f"\n    {fold_name}:")
+            print(f"\n    Trainer: {trainer_dir_name}")
 
-            # Check training log
-            log_files = [f for f in os.listdir(fold_path) if f.startswith('training_log')]
-            for log_file in sorted(log_files):
-                log_path = os.path.join(fold_path, log_file)
-                with open(log_path) as f:
-                    lines = f.readlines()
+            for fold_name in sorted(os.listdir(trainer_path)):
+                fold_path = os.path.join(trainer_path, fold_name)
+                if not os.path.isdir(fold_path) or not fold_name.startswith('fold_'):
+                    continue
 
-                print(f"      Log: {log_file} ({len(lines)} lines)")
+                print(f"\n      {fold_name}:")
 
-                # Show last 20 lines (most recent epochs)
-                print("      Last 20 lines:")
-                for line in lines[-20:]:
-                    print(f"        {line.rstrip()}")
+                # Check training log
+                log_files = [f for f in os.listdir(fold_path) if f.startswith('training_log')]
+                for log_file in sorted(log_files):
+                    log_path = os.path.join(fold_path, log_file)
+                    with open(log_path) as f:
+                        lines = f.readlines()
 
-            # Check checkpoints
-            ckpts = [f for f in os.listdir(fold_path)
-                     if f.endswith('.pth') or f.endswith('.pt')]
-            print(f"      Checkpoints: {sorted(ckpts)}")
+                    print(f"        Log: {log_file} ({len(lines)} lines)")
+
+                    # Show last 20 lines (most recent epochs)
+                    print("        Last 20 lines:")
+                    for line in lines[-20:]:
+                        print(f"          {line.rstrip()}")
+
+                # Check checkpoints
+                ckpts = [f for f in os.listdir(fold_path)
+                         if f.endswith('.pth') or f.endswith('.pt')]
+                print(f"        Checkpoints: {sorted(ckpts)}")
 
 
 def check_registered_trainer(nnunet_results: str) -> None:
