@@ -1134,6 +1134,11 @@ def main():
     else:
         image_size = args.image_size or 256
         depth = args.depth or 160
+    # Extract adjusted offset noise config
+    _offset_cfg = ckpt_cfg.get('offset_noise', {})
+    _offset_adjusted = (_offset_cfg.get('enabled', False)
+                        and _offset_cfg.get('adjusted', False))
+    _offset_strength = _offset_cfg.get('strength', 0.1) if _offset_adjusted else 0.0
     del ckpt
 
     voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
@@ -1222,6 +1227,12 @@ def main():
     noise_list = generate_noise_tensors(
         args.num_volumes, depth, image_size, device, args.seed,
     )
+
+    # Adjusted offset noise: shift generation starting noise to match training
+    if _offset_adjusted:
+        from medgen.pipeline.training_tricks import add_generation_offset
+        logger.info(f"Applying adjusted offset noise: strength={_offset_strength}")
+        noise_list = [add_generation_offset(n, _offset_strength) for n in noise_list]
 
     # ── Load existing results if resuming ────────────────────────────────
     existing_results: list[EvalResult] = []

@@ -237,11 +237,17 @@ class OffsetNoiseConfig:
     generating volumes with shifted global intensity.
 
     noise = randn_like(x) + strength * randn(B, C, 1, ..., 1)
+
+    When adjusted=True (Kutsuna 2024), generation also starts from offset noise
+    N(strength * xi, I) instead of N(0, I), matching the training distribution.
     """
     enabled: bool = False
     strength: float = 0.1
+    adjusted: bool = False
 
     def __post_init__(self):
+        if self.adjusted and not self.enabled:
+            raise ValueError("adjusted=True requires enabled=True")
         if not self.enabled:
             return
         if not 0.0 < self.strength <= 1.0:
@@ -310,6 +316,7 @@ class TrainingTricksConfig:
             offset_noise=OffsetNoiseConfig(
                 enabled=offset_noise_cfg.get('enabled', False),
                 strength=offset_noise_cfg.get('strength', 0.1),
+                adjusted=offset_noise_cfg.get('adjusted', False),
             ),
         )
 

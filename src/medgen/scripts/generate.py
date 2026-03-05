@@ -150,6 +150,34 @@ def get_noise_shape(batch_size: int, channels: int, spatial_dims: int,
         return (batch_size, channels, depth, image_size, image_size)
 
 
+def _get_offset_noise_config(checkpoint_path: str) -> tuple[bool, float]:
+    """Extract adjusted offset noise config from a checkpoint.
+
+    Returns (adjusted, strength). If not configured, returns (False, 0.0).
+    """
+    try:
+        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        cfg = ckpt.get('config', {})
+        offset_cfg = cfg.get('offset_noise', {})
+        enabled = offset_cfg.get('enabled', False)
+        adjusted = offset_cfg.get('adjusted', False)
+        strength = offset_cfg.get('strength', 0.1)
+        del ckpt
+        if enabled and adjusted:
+            return True, strength
+    except Exception:
+        pass
+    return False, 0.0
+
+
+def _maybe_add_generation_offset(noise: torch.Tensor, adjusted: bool, strength: float) -> torch.Tensor:
+    """Apply generation offset noise if adjusted mode is enabled."""
+    if not adjusted:
+        return noise
+    from medgen.pipeline.training_tricks import add_generation_offset
+    return add_generation_offset(noise, strength)
+
+
 def generate_batch(
     model: torch.nn.Module,
     strategy: DiffusionStrategy,
@@ -447,6 +475,8 @@ def _generate_bravo(
     bravo_space: object | None,
     diffrs_disc: object | None = None,
     diffrs_cfg: dict | None = None,
+    offset_adjusted: bool = False,
+    offset_strength: float = 0.0,
 ) -> np.ndarray:
     """Generate a BRAVO volume conditioned on a binary seg mask.
 
@@ -460,6 +490,7 @@ def _generate_bravo(
         seg_tensor = bravo_space.encode(seg_tensor)
 
     noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+    noise = _maybe_add_generation_offset(noise, offset_adjusted, offset_strength)
     bravo = generate_batch(bravo_model, strategy, noise, steps_bravo, device,
                            conditioning=seg_tensor,
                            cfg_scale=cfg.cfg_scale_bravo,
@@ -663,10 +694,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
         )
 
-        # Pixel normalization from bravo checkpoint (exp1b rescale, exp1c shift/scale)
+        # Config from bravo checkpoint
         bravo_ckpt = torch.load(cfg.image_model, map_location='cpu', weights_only=False)
-        bravo_pixel_cfg = bravo_ckpt.get('config', {}).get('pixel', {})
-        del bravo_ckpt
+        _bravo_train_cfg = bravo_ckpt.get('config', {})
+        bravo_pixel_cfg = _bravo_train_cfg.get('pixel', {})
+        # Adjusted offset noise: generation must start from N(strength*xi, I)
+        _bravo_offset_cfg = _bravo_train_cfg.get('offset_noise', {})
+        _bravo_offset_adjusted = (_bravo_offset_cfg.get('enabled', False)
+                                  and _bravo_offset_cfg.get('adjusted', False))
+        _bravo_offset_strength = _bravo_offset_cfg.get('strength', 0.1) if _bravo_offset_adjusted else 0.0
+        if _bravo_offset_adjusted:
+            logger.info(f"Adjusted offset noise: strength={_bravo_offset_strength}")
+        del bravo_ckpt, _bravo_train_cfg
         bravo_space = None
         _bravo_pixel_shift = bravo_pixel_cfg.get('pixel_shift')
         _bravo_pixel_scale = bravo_pixel_cfg.get('pixel_scale')
@@ -774,6 +813,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             bravo_np = _generate_bravo(
                 seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
                 bravo_space, diffrs_disc, diffrs_cfg,
+                offset_adjusted=_bravo_offset_adjusted,
+                offset_strength=_bravo_offset_strength,
             )
 
             # Stage 2 — BRAVO brain mask check (per-tumor cleanup)

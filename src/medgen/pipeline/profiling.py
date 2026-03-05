@@ -141,6 +141,15 @@ def get_model_config(trainer: 'DiffusionTrainer') -> dict[str, Any]:
     if sc.snr_gamma > 0:
         config['snr_gamma'] = sc.snr_gamma
 
+    # Offset noise config (for adjusted generation)
+    tt = trainer._training_tricks
+    if tt.offset_noise.enabled:
+        config['offset_noise'] = {
+            'enabled': True,
+            'strength': tt.offset_noise.strength,
+            'adjusted': tt.offset_noise.adjusted,
+        }
+
     # Size bin config (for seg_conditioned mode)
     if getattr(trainer, 'use_size_bin_embedding', False):
         config['size_bin'] = {

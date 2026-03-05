@@ -88,6 +88,7 @@ def visualize_samples_3d(
             trainer.volume_width,
             device=trainer.device
         )
+        noise = trainer._apply_generation_offset(noise)
         model_input = noise
         size_bins = None
         bin_maps = None
@@ -110,6 +111,9 @@ def visualize_samples_3d(
         else:
             # Pixel space diffusion
             noise = torch.randn_like(cached_images[:batch_size])
+
+        # Adjusted offset noise: shift generation starting noise to match training
+        noise = trainer._apply_generation_offset(noise)
 
         # Build model input with real conditioning
         # Initialize bin_maps for seg_conditioned_input mode (None for other modes)
@@ -247,6 +251,9 @@ def visualize_denoising_trajectory_3d(
     else:
         # Pixel space diffusion
         noise = torch.randn_like(cached_images[:1])
+
+    # Adjusted offset noise: shift generation starting noise to match training
+    noise = trainer._apply_generation_offset(noise)
 
     # Extract parameters for decoupled generation functions
     num_train_timesteps = trainer.scheduler.num_train_timesteps

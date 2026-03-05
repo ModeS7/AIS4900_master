@@ -270,6 +270,7 @@ noise_augmentation:
 offset_noise:
   enabled: false             # Enable offset noise
   strength: 0.1              # Strength of low-frequency offset (typical: 0.05-0.1)
+  adjusted: false            # Adjusted offset noise (Kutsuna 2024): also offset generation start noise
 
 # Optimizer settings
 optimizer:

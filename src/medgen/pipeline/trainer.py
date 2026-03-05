@@ -456,6 +456,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .training_tricks import apply_offset_noise
         return apply_offset_noise(self, noise)
 
+    def _apply_generation_offset(self, noise: torch.Tensor) -> torch.Tensor:
+        """Apply offset to generation starting noise (adjusted offset noise only).
+
+        When offset_noise.adjusted=True, generation must start from
+        N(strength * xi, I) to match the training-time noise distribution.
+        """
+        tt = self._training_tricks
+        if not tt.offset_noise.enabled or not tt.offset_noise.adjusted:
+            return noise
+        from .training_tricks import add_generation_offset
+        return add_generation_offset(noise, tt.offset_noise.strength)
+
     def _apply_conditioning_dropout(
         self,
         conditioning: torch.Tensor | None,

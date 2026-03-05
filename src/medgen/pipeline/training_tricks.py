@@ -194,6 +194,23 @@ def _add_offset(noise: Tensor, strength: float) -> Tensor:
     return noise + strength * offset
 
 
+def add_generation_offset(noise: Tensor, strength: float) -> Tensor:
+    """Add offset to generation starting noise (adjusted offset noise).
+
+    For adjusted offset noise (Kutsuna 2024), generation must start from
+    N(strength * xi, I) instead of N(0, I) to match the training distribution.
+    This is the generation-side counterpart to training-time offset noise.
+
+    Args:
+        noise: Starting noise tensor [B, C, ...].
+        strength: Offset noise strength (same as training).
+
+    Returns:
+        Noise with added spatially-constant offset.
+    """
+    return _add_offset(noise, strength)
+
+
 def apply_conditioning_dropout(
     trainer: 'DiffusionTrainer',
     conditioning: Tensor | None,
