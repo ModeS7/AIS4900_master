@@ -64,6 +64,9 @@ python -m medgen.downstream.nnunet.convert_dataset \
 # === Step 2: Plan and preprocess ===
 echo ""
 echo "=== Step 2: nnU-Net plan and preprocess ==="
+# Remove old preprocessed data (fingerprint was corrupted by mixed intensity ranges)
+rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
+rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
 nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres
 nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres
 
