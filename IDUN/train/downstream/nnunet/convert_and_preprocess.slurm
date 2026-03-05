@@ -67,8 +67,9 @@ echo "=== Step 2: nnU-Net plan and preprocess ==="
 # Remove old preprocessed data (fingerprint was corrupted by mixed intensity ranges)
 rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
 rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
-nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres
-nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres
+# Use -np 4 to reduce blosc2 concurrency issues on cluster filesystem
+nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres -np 4
+nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres -np 4
 
 echo ""
 echo "=== Done! ==="
