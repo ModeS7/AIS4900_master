@@ -26,6 +26,10 @@ module purge
 module load Anaconda3/2024.02-1
 conda activate nnunet
 
+# Pin blosc2 to avoid "Error while creating the NDArray" on cluster filesystem
+# See: https://github.com/MIC-DKFZ/nnUNet/issues/2838
+pip install -q blosc2==3.5.1
+
 # === Paths ===
 NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
 NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
