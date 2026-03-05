@@ -44,6 +44,10 @@ echo "=== Step 1: Converting dataset ==="
 echo "imagesTr: 105 real train + all synthetic"
 echo "imagesTs: 25 val + 26 test_new = 51 test"
 
+# Clean up any corrupted files from previous quota-exceeded run
+rm -rf "${nnUNet_raw}/Dataset501_BrainMet"
+rm -rf "${nnUNet_raw}/Dataset502_BrainMet"
+
 # Dataset 501: BRAVO (1 channel)
 echo "--- Dataset 501: BRAVO ---"
 python -m medgen.downstream.nnunet.convert_dataset \
