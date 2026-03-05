@@ -229,6 +229,26 @@ class NoiseAugConfig:
 
 
 @dataclass
+class OffsetNoiseConfig:
+    """Offset noise: adds low-frequency (spatially-constant) noise component.
+
+    Addresses the high-dimensional Gaussian mean concentration problem where
+    randn() noise has near-zero spatial mean, preventing the model from
+    generating volumes with shifted global intensity.
+
+    noise = randn_like(x) + strength * randn(B, C, 1, ..., 1)
+    """
+    enabled: bool = False
+    strength: float = 0.1
+
+    def __post_init__(self):
+        if not self.enabled:
+            return
+        if not 0.0 < self.strength <= 1.0:
+            raise ValueError(f"strength must be in (0, 1], got {self.strength}")
+
+
+@dataclass
 class TrainingTricksConfig:
     """Training tricks configuration with nested sub-configs."""
     gradient_noise: GradientNoiseConfig = field(default_factory=GradientNoiseConfig)
@@ -238,6 +258,7 @@ class TrainingTricksConfig:
     self_cond: SelfCondConfig = field(default_factory=SelfCondConfig)
     feature_perturbation: FeaturePerturbationConfig = field(default_factory=FeaturePerturbationConfig)
     noise_augmentation: NoiseAugConfig = field(default_factory=NoiseAugConfig)
+    offset_noise: OffsetNoiseConfig = field(default_factory=OffsetNoiseConfig)
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig) -> 'TrainingTricksConfig':
@@ -248,6 +269,7 @@ class TrainingTricksConfig:
         self_cond_cfg = cfg.training.get('self_conditioning', {})
         feat_cfg = cfg.training.get('feature_perturbation', {})
         noise_aug_cfg = cfg.training.get('noise_augmentation', {})
+        offset_noise_cfg = cfg.training.get('offset_noise', {})
 
         return cls(
             gradient_noise=GradientNoiseConfig(
@@ -284,6 +306,10 @@ class TrainingTricksConfig:
             noise_augmentation=NoiseAugConfig(
                 enabled=noise_aug_cfg.get('enabled', False),
                 std=noise_aug_cfg.get('std', 0.1),
+            ),
+            offset_noise=OffsetNoiseConfig(
+                enabled=offset_noise_cfg.get('enabled', False),
+                strength=offset_noise_cfg.get('strength', 0.1),
             ),
         )
 

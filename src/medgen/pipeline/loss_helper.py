@@ -66,6 +66,21 @@ class DiffusionLossHelper:
         from .training_tricks import apply_noise_augmentation
         return apply_noise_augmentation(self.trainer, noise)
 
+    def apply_offset_noise(
+        self,
+        noise: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Apply spatially-constant low-frequency offset to noise.
+
+        Args:
+            noise: Noise tensor or dict of noise tensors.
+
+        Returns:
+            Noise with low-frequency offset.
+        """
+        from .training_tricks import apply_offset_noise
+        return apply_offset_noise(self.trainer, noise)
+
     def apply_timestep_jitter(self, timesteps: torch.Tensor) -> torch.Tensor:
         """Add Gaussian noise to timesteps for regularization.
 

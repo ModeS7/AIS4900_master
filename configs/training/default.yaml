@@ -263,6 +263,14 @@ noise_augmentation:
   enabled: false             # Enable noise augmentation
   std: 0.1                   # Std of perturbation added to noise vector
 
+# Offset Noise - adds spatially-constant (low-frequency) noise component
+# Addresses high-dimensional Gaussian mean concentration: randn() has near-zero
+# spatial mean, preventing generation of volumes with shifted global intensity.
+# noise = randn_like(x) + strength * randn(B, C, 1, ..., 1)
+offset_noise:
+  enabled: false             # Enable offset noise
+  strength: 0.1              # Strength of low-frequency offset (typical: 0.05-0.1)
+
 # Optimizer settings
 optimizer:
   betas: [0.9, 0.999]        # AdamW momentum parameters (beta1, beta2)

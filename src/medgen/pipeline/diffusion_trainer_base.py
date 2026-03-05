@@ -258,6 +258,13 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         """Apply noise augmentation. Override in subclass to enable."""
         return noise
 
+    def _apply_offset_noise(
+        self,
+        noise: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Apply offset noise. Override in subclass to enable."""
+        return noise
+
     # ─────────────────────────────────────────────────────────────────────────
     # Shared Methods: Gradient Noise
     # ─────────────────────────────────────────────────────────────────────────
@@ -496,6 +503,9 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
 
         if tt.noise_augmentation.enabled:
             logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation.std}")
+
+        if tt.offset_noise.enabled:
+            logger.info(f"Offset noise enabled: strength={tt.offset_noise.strength}")
 
         if tt.self_cond.enabled:
             logger.info(f"Self-conditioning enabled: prob={tt.self_cond.prob}")

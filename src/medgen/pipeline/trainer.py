@@ -448,6 +448,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .training_tricks import apply_noise_augmentation
         return apply_noise_augmentation(self, noise)
 
+    def _apply_offset_noise(
+        self,
+        noise: torch.Tensor | dict[str, torch.Tensor],
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Add spatially-constant low-frequency offset to noise."""
+        from .training_tricks import apply_offset_noise
+        return apply_offset_noise(self, noise)
+
     def _apply_conditioning_dropout(
         self,
         conditioning: torch.Tensor | None,
@@ -576,6 +584,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
             else:
                 noise = torch.randn_like(images).to(self.device)
+
+            # Apply offset noise (low-frequency spatially-constant component)
+            noise = self._apply_offset_noise(noise)
 
             # Apply noise augmentation (perturb noise vector for diversity)
             noise = self._apply_noise_augmentation(noise)

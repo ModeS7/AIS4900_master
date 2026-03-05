@@ -153,6 +153,47 @@ def apply_noise_augmentation(
         return perturbed / (perturbed.std() + 1e-8) * noise.std()
 
 
+def apply_offset_noise(
+    trainer: 'DiffusionTrainer',
+    noise: Tensor | dict[str, Tensor],
+) -> Tensor | dict[str, Tensor]:
+    """Add spatially-constant (low-frequency) offset to noise.
+
+    Standard randn() in high dimensions has near-zero spatial mean,
+    preventing the model from generating volumes with shifted global
+    intensity. Offset noise adds a per-channel constant:
+
+        noise = noise + strength * randn(B, C, 1, ..., 1)
+
+    Args:
+        trainer: The DiffusionTrainer instance.
+        noise: Original noise tensor [B, C, ...] or dict of tensors.
+
+    Returns:
+        Noise with added low-frequency offset.
+    """
+    tt = trainer._training_tricks
+    if not tt.offset_noise.enabled:
+        return noise
+
+    strength = tt.offset_noise.strength
+
+    if isinstance(noise, dict):
+        return {
+            k: _add_offset(v, strength) for k, v in noise.items()
+        }
+    else:
+        return _add_offset(noise, strength)
+
+
+def _add_offset(noise: Tensor, strength: float) -> Tensor:
+    """Add spatially-constant offset to a single noise tensor."""
+    # Create shape [B, C, 1, 1] for 4D or [B, C, 1, 1, 1] for 5D
+    offset_shape = list(noise.shape[:2]) + [1] * (noise.ndim - 2)
+    offset = torch.randn(offset_shape, device=noise.device, dtype=noise.dtype)
+    return noise + strength * offset
+
+
 def apply_conditioning_dropout(
     trainer: 'DiffusionTrainer',
     conditioning: Tensor | None,

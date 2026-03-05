@@ -62,6 +62,8 @@ feature_perturbation:
   enabled: false
 noise_augmentation:
   enabled: false
+offset_noise:
+  enabled: false
 augmented_diffusion:
   enabled: false
 regional_weighting:

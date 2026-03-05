@@ -335,3 +335,6 @@ def log_training_tricks_config(trainer: DiffusionTrainer) -> None:
 
     if tt.noise_augmentation.enabled:
         logger.info(f"Noise augmentation enabled: std={tt.noise_augmentation.std}")
+
+    if tt.offset_noise.enabled:
+        logger.info(f"Offset noise enabled: strength={tt.offset_noise.strength}")
