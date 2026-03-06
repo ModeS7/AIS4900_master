@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --job-name="nn_diag"
-#SBATCH --output=IDUN/output/debug/%j.out
-#SBATCH --error=IDUN/output/debug/%j.err
+#SBATCH --output=IDUN/output/debug/nnunet_diagnose_%j.out
+#SBATCH --error=IDUN/output/debug/nnunet_diagnose_%j.err
 
 cd ${SLURM_SUBMIT_DIR}
 

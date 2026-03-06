@@ -1,8 +1,10 @@
-"""nnU-Net trainer with TensorBoard logging.
+"""nnU-Net trainer with TensorBoard logging and aggressive foreground oversampling.
 
-Subclass of nnUNetTrainer that adds TensorBoard logging for all
-training/validation metrics. Uses the parent's fp16 mixed precision
-and GradScaler unchanged.
+Subclass of nnUNetTrainer that adds:
+    - TensorBoard logging for all training/validation metrics
+    - 100% foreground oversampling (default is 33%, too low for tiny tumors)
+
+Uses the parent's fp16 mixed precision and GradScaler unchanged.
 
 Uses absolute imports only (no relative imports) because this file gets
 symlinked into the nnunetv2 package for trainer discovery.
@@ -14,10 +16,13 @@ from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 
 
 class nnUNetTrainerTensorBoard(nnUNetTrainer):
-    """nnUNetTrainer with TensorBoard logging.
+    """nnUNetTrainer with TensorBoard logging and aggressive foreground oversampling.
 
     Changes from base nnUNetTrainer:
         - TensorBoard: logs train/val loss, Dice, LR per epoch
+        - oversample_foreground_percent: 1.0 (default 0.33)
+          Brain metastases occupy 0.002-0.06% of volume — with 33% oversampling
+          most patches contain zero tumor voxels, giving near-zero loss gradient.
 
     Training and validation steps are inherited unchanged from the parent
     (fp16 mixed precision with GradScaler).
@@ -33,6 +38,7 @@ class nnUNetTrainerTensorBoard(nnUNetTrainer):
     def __init__(self, plans, configuration, fold, dataset_json,
                  device=torch.device('cuda')):
         super().__init__(plans, configuration, fold, dataset_json, device)
+        self.oversample_foreground_percent = 1.0
         self._tb_writer = None
 
     def on_train_start(self):

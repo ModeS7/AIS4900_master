@@ -45,6 +45,16 @@ MODALITY_PRESETS = {
     'dual': ['t1_pre', 't1_gd'],
 }
 
+# Per-modality clip_max values (brain-only p99.5 of raw intensities).
+# Must match diffusion training config (configs/volume/default.yaml).
+# Real data is clipped to [0, clip_max] then divided by clip_max → [0, 1].
+# Synthetic data from the diffusion model is already in [0, 1].
+CLIP_MAX = {
+    'bravo': 5898,
+    't1_pre': 1257,
+    't1_gd': 1353,
+}
+
 def _resolve_modalities(modality: str | list[str]) -> list[str]:
     """Resolve modality argument to list of NIfTI file stems.
 
@@ -105,32 +115,14 @@ def _convert_label(src_path: str, dst_path: str) -> None:
     nib.save(out, dst_path)
 
 
-def _normalize_to_unit(src_path: str, dst_path: str,
-                       lower_pct: float = 0.5, upper_pct: float = 99.5) -> None:
-    """Normalize a NIfTI image to [0, 1] using percentile clipping.
+def _normalize_to_unit(src_path: str, dst_path: str, clip_max: float) -> None:
+    """Normalize a NIfTI image to [0, 1] using fixed clip_max.
 
-    Clips at lower/upper percentiles of non-zero voxels, then scales to [0, 1].
-    This matches the intensity range of synthetic data from the diffusion model.
+    Matches the diffusion training normalization: clip(0, clip_max) / clip_max.
+    See configs/volume/default.yaml for the per-modality clip_max values.
     """
     nii = nib.load(src_path)
-    data = nii.get_fdata().astype(np.float32)
-
-    # Compute percentiles from non-zero voxels (foreground)
-    nonzero = data[data > 0]
-    if len(nonzero) == 0:
-        # All zeros — save as-is
-        out = nib.Nifti1Image(data, nii.affine)
-        nib.save(out, dst_path)
-        return
-
-    lo = np.percentile(nonzero, lower_pct)
-    hi = np.percentile(nonzero, upper_pct)
-
-    if hi <= lo:
-        hi = lo + 1.0  # Avoid division by zero
-
-    data = np.clip(data, lo, hi)
-    data = (data - lo) / (hi - lo)
+    data = np.clip(nii.get_fdata().astype(np.float32), 0.0, clip_max) / clip_max
 
     out = nib.Nifti1Image(data, nii.affine)
     if os.path.exists(dst_path):
@@ -201,9 +193,9 @@ def _add_real_patients(
             continue
 
         # Normalize and copy each modality (real images need [0,1] normalization)
-        for ch_idx, src in enumerate(img_srcs):
+        for ch_idx, (mod, src) in enumerate(zip(modalities, img_srcs)):
             dst = os.path.join(images_dir, f'{case_id}_{ch_idx:04d}.nii.gz')
-            _normalize_to_unit(src, dst)
+            _normalize_to_unit(src, dst, clip_max=CLIP_MAX[mod])
 
         _convert_label(seg_src, os.path.join(labels_dir, f'{case_id}.nii.gz'))
         case_ids.append(case_id)
