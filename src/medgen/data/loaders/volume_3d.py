@@ -1182,7 +1182,7 @@ def _build_intensity_transform(cfg, modality: str) -> Any | None:
         if clip_max_cfg is None:
             clip_max_cfg = {}
 
-        clip_max = clip_max_cfg.get(modality, None)
+        clip_max = clip_max_cfg.get(modality)
         if clip_max is None:
             raise ValueError(
                 f"volume.normalization.clip_max.{modality} is required for global_percentile method. "

@@ -145,7 +145,7 @@ def compute_raw_percentiles(files: list[Path], background_threshold: float = 50.
     logger.info("=" * 60)
     logger.info("RECOMMENDED CONFIG (copy-paste):")
     logger.info("=" * 60)
-    logger.info(f"  volume.normalization.method=global_percentile")
+    logger.info("  volume.normalization.method=global_percentile")
     logger.info(f"  volume.normalization.clip_max={p995_all:.0f}  # p99.5 all voxels")
     logger.info(f"  # Alternative: clip_max={p995_brain:.0f}  # p99.5 brain-only")
     logger.info("")
