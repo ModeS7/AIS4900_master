@@ -14,6 +14,11 @@ Usage:
         --data-root /path/to/brainmetshare-3 \
         --image-size 256 --depth 160 \
         --modalities bravo seg
+
+    # Raw mode: compute global percentiles for global_percentile normalization
+    python -m medgen.scripts.compute_pixel_stats --raw \
+        --data-root /path/to/brainmetshare-3 \
+        --modalities bravo
 """
 import argparse
 import logging
@@ -92,6 +97,60 @@ def compute_stats(volumes: list[torch.Tensor]) -> tuple[list[float], list[float]
     return mean.tolist(), std.tolist()
 
 
+def compute_raw_percentiles(files: list[Path], background_threshold: float = 50.0) -> None:
+    """Compute global percentiles from raw (unnormalized) NIfTI volumes.
+
+    Collects all voxel values across volumes and computes percentiles for
+    determining clip_max for global_percentile normalization.
+
+    Args:
+        files: List of NIfTI file paths.
+        background_threshold: Voxels above this value are considered brain tissue.
+    """
+    all_vals = []
+    brain_vals = []
+
+    for i, path in enumerate(files):
+        vol = nib.load(str(path)).get_fdata().astype(np.float32).ravel()
+        all_vals.append(vol)
+        brain_vals.append(vol[vol > background_threshold])
+        if (i + 1) % 50 == 0:
+            logger.info(f"  Loaded {i + 1}/{len(files)} volumes...")
+
+    all_vals = np.concatenate(all_vals)
+    brain_vals = np.concatenate(brain_vals)
+
+    percentiles = [0.5, 1.0, 50.0, 95.0, 99.0, 99.5, 99.9, 100.0]
+
+    logger.info("")
+    logger.info("--- ALL VOXELS (including background) ---")
+    logger.info(f"  Total voxels: {len(all_vals):,}")
+    for p in percentiles:
+        val = np.percentile(all_vals, p)
+        label = f"p{p}" if p != 100.0 else "max"
+        logger.info(f"  {label:>6s}: {val:.1f}")
+
+    logger.info("")
+    logger.info(f"--- BRAIN VOXELS (> {background_threshold}) ---")
+    logger.info(f"  Total voxels: {len(brain_vals):,} ({100*len(brain_vals)/len(all_vals):.1f}%)")
+    for p in percentiles:
+        val = np.percentile(brain_vals, p)
+        label = f"p{p}" if p != 100.0 else "max"
+        logger.info(f"  {label:>6s}: {val:.1f}")
+
+    p995_all = np.percentile(all_vals, 99.5)
+    p995_brain = np.percentile(brain_vals, 99.5)
+
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("RECOMMENDED CONFIG (copy-paste):")
+    logger.info("=" * 60)
+    logger.info(f"  volume.normalization.method=global_percentile")
+    logger.info(f"  volume.normalization.clip_max={p995_all:.0f}  # p99.5 all voxels")
+    logger.info(f"  # Alternative: clip_max={p995_brain:.0f}  # p99.5 brain-only")
+    logger.info("")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compute pixel-space normalization stats")
     parser.add_argument('--data-root', required=True, help='Dataset root')
@@ -100,6 +159,8 @@ def main():
     parser.add_argument('--modalities', nargs='+', default=['bravo', 'seg', 't1_pre', 't1_gd'],
                         help='Modalities to compute stats for')
     parser.add_argument('--max-volumes', type=int, default=200)
+    parser.add_argument('--raw', action='store_true',
+                        help='Compute global percentiles from raw (unnormalized) intensities')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -112,8 +173,21 @@ def main():
 
     logger.info(f"Data root: {data_root}")
     logger.info(f"Train dir: {train_dir}")
-    logger.info(f"Resolution: {args.image_size}x{args.image_size}x{args.depth}")
     logger.info(f"Max volumes: {args.max_volumes}")
+
+    if args.raw:
+        logger.info("Mode: RAW (global percentiles, no per-volume normalization)")
+        logger.info("")
+        for modality in args.modalities:
+            files = sorted(train_dir.glob(f"*/{modality}.nii.gz"))[:args.max_volumes]
+            if not files:
+                logger.warning(f"  {modality}: no files found, skipping")
+                continue
+            logger.info(f"=== {modality} ({len(files)} volumes) ===")
+            compute_raw_percentiles(files)
+        return
+
+    logger.info(f"Resolution: {args.image_size}x{args.image_size}x{args.depth}")
     logger.info("")
 
     all_stats = {}

@@ -31,6 +31,7 @@ from monai.transforms import (
     RandFlipd,
     RandRotate90d,
     ScaleIntensity,
+    ScaleIntensityRange,
 )
 from torch.utils.data import DataLoader, Dataset
 
@@ -192,6 +193,7 @@ class Base3DVolumeDataset(Dataset):
         slice_step: int = 1,
         load_seg: bool = False,
         augmentation: Callable | None = None,
+        intensity_transform: Any | None = None,
     ) -> None:
         # Validate data directory exists
         if not os.path.isdir(data_dir):
@@ -216,7 +218,14 @@ class Base3DVolumeDataset(Dataset):
         self.load_seg = load_seg
         self.augmentation = augmentation
 
-        self.transform = build_3d_transform(height, width)
+        self.transform = build_3d_transform(height, width, intensity_transform)
+
+        # Seg masks must always use per-volume normalization (values are {0,1}).
+        # Global percentile clipping would destroy them (e.g., clip_max=3000 maps 1→0.0003→0).
+        if intensity_transform is not None:
+            self._seg_transform = build_3d_transform(height, width)
+        else:
+            self._seg_transform = self.transform
 
     def _pad_depth(self, volume: torch.Tensor) -> torch.Tensor:
         """Pad volume depth to target size.
@@ -260,16 +269,17 @@ class Base3DVolumeDataset(Dataset):
             return f"Depth padding enabled: pad to {self.pad_depth_to} slices (mode={self.pad_mode})"
         return "No depth padding configured"
 
-    def _load_volume(self, nifti_path: str) -> torch.Tensor:
+    def _load_volume(self, nifti_path: str, transform: Compose | None = None) -> torch.Tensor:
         """Load and preprocess a 3D volume from NIfTI file.
 
         Args:
             nifti_path: Path to NIfTI file.
+            transform: Optional transform override (e.g., seg uses per-volume norm).
 
         Returns:
             Tensor of shape [C, D, H, W] with depth padding applied.
         """
-        volume = self.transform(nifti_path)
+        volume = (transform or self.transform)(nifti_path)
 
         if not isinstance(volume, torch.Tensor):
             volume = torch.from_numpy(volume).float()
@@ -322,27 +332,36 @@ class Base3DVolumeDataset(Dataset):
         if not os.path.exists(seg_path):
             return None
 
-        seg = self._load_volume(seg_path)
+        seg = self._load_volume(seg_path, transform=self._seg_transform)
         seg = (seg > 0.5).float()  # Binarize
         return seg
 
 
-def build_3d_transform(height: int, width: int) -> Compose:
+def build_3d_transform(
+    height: int,
+    width: int,
+    intensity_transform: Any | None = None,
+) -> Compose:
     """Build transform pipeline for 3D volumes.
 
     Args:
         height: Target height.
         width: Target width.
+        intensity_transform: Optional MONAI transform for intensity normalization.
+            If None, uses per-volume ScaleIntensity(0, 1) (default behavior).
 
     Returns:
         MONAI Compose transform.
     """
     from monai.transforms import Resize
 
+    if intensity_transform is None:
+        intensity_transform = ScaleIntensity(minv=0.0, maxv=1.0)
+
     return Compose([
         LoadImage(image_only=True),
         EnsureChannelFirst(channel_dim="no_channel"),  # NIfTI has no channel dim
-        ScaleIntensity(minv=0.0, maxv=1.0),
+        intensity_transform,
         Resize(spatial_size=(height, width, -1)),  # Preserve depth
     ])
 
@@ -870,6 +889,7 @@ class SingleModality3DDatasetWithSeg(Base3DVolumeDataset):
         pad_depth_to: Target depth after padding.
         pad_mode: Padding mode ('replicate' or 'constant').
         slice_step: Take every nth slice (1=all, 2=every 2nd, 3=every 3rd).
+        intensity_transform: Optional MONAI transform for intensity normalization.
     """
 
     def __init__(
@@ -881,8 +901,9 @@ class SingleModality3DDatasetWithSeg(Base3DVolumeDataset):
         pad_depth_to: int = 160,
         pad_mode: str = 'replicate',
         slice_step: int = 1,
+        intensity_transform: Any | None = None,
     ) -> None:
-        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True, intensity_transform=intensity_transform)
         self.modality = modality
 
         # Build index of patients that have modality (track which have seg)
@@ -1015,8 +1036,9 @@ class SingleModality3DDatasetWithSegDropout(Base3DVolumeDataset):
         slice_step: int = 1,
         cfg_dropout_prob: float = 0.0,
         augmentation: Callable | None = None,
+        intensity_transform: Any | None = None,
     ) -> None:
-        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True, augmentation=augmentation)
+        super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg=True, augmentation=augmentation, intensity_transform=intensity_transform)
         self.modality = modality
         self.cfg_dropout_prob = cfg_dropout_prob
 
@@ -1138,6 +1160,42 @@ def create_segmentation_validation_dataloader(
     return loader, dataset
 
 
+def _build_intensity_transform(cfg, modality: str) -> Any | None:
+    """Build intensity transform from volume normalization config.
+
+    Args:
+        cfg: Hydra configuration object with optional volume.normalization block.
+        modality: Modality name (e.g., 'bravo', 't1_pre', 't1_gd') for per-modality clip_max.
+
+    Returns:
+        MONAI transform for global percentile normalization, or None for default
+        per-volume ScaleIntensity(0, 1).
+    """
+    norm_cfg = cfg.get('volume', {}).get('normalization', {})
+    method = norm_cfg.get('method', 'per_volume')
+
+    if method == 'per_volume':
+        return None
+
+    if method == 'global_percentile':
+        clip_max_cfg = norm_cfg.get('clip_max', {})
+        if clip_max_cfg is None:
+            clip_max_cfg = {}
+
+        clip_max = clip_max_cfg.get(modality, None)
+        if clip_max is None:
+            raise ValueError(
+                f"volume.normalization.clip_max.{modality} is required for global_percentile method. "
+                f"Run: python -m medgen.scripts.compute_pixel_stats --raw --data-root <path> --modalities {modality}"
+            )
+        logger.info(f"Using global percentile normalization for {modality}: clip_max={clip_max}")
+        return ScaleIntensityRange(
+            a_min=0.0, a_max=float(clip_max), b_min=0.0, b_max=1.0, clip=True,
+        )
+
+    raise ValueError(f"Unknown normalization method: {method}. Use 'per_volume' or 'global_percentile'.")
+
+
 def create_single_modality_dataloader_with_seg(
     cfg,
     vol_cfg: VolumeConfig,
@@ -1166,6 +1224,8 @@ def create_single_modality_dataloader_with_seg(
     # include_seg=True ensures both image and seg are augmented consistently
     aug = build_3d_augmentation(seg_mode=False, include_seg=True) if augment else None
 
+    intensity_transform = _build_intensity_transform(cfg, modality)
+
     dataset = SingleModality3DDatasetWithSegDropout(
         data_dir=data_dir,
         modality=modality,
@@ -1176,6 +1236,7 @@ def create_single_modality_dataloader_with_seg(
         slice_step=vol_cfg.slice_step,
         cfg_dropout_prob=cfg_dropout_prob,
         augmentation=aug,
+        intensity_transform=intensity_transform,
     )
 
     logger.info(f"Created 3D {modality} dataset with seg conditioning: {len(dataset)} volumes, "
@@ -1208,6 +1269,8 @@ def create_single_modality_validation_dataloader_with_seg(
     if val_dir is None:
         return None
 
+    intensity_transform = _build_intensity_transform(cfg, modality)
+
     # No CFG dropout during validation
     dataset = SingleModality3DDatasetWithSegDropout(
         data_dir=val_dir,
@@ -1218,6 +1281,7 @@ def create_single_modality_validation_dataloader_with_seg(
         pad_mode=vol_cfg.pad_mode,
         slice_step=vol_cfg.slice_step,
         cfg_dropout_prob=0.0,  # No dropout during validation
+        intensity_transform=intensity_transform,
     )
 
     loader = _create_loader(dataset, vol_cfg, shuffle=False)
