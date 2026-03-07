@@ -1139,6 +1139,24 @@ def main():
     _offset_adjusted = (_offset_cfg.get('enabled', False)
                         and _offset_cfg.get('adjusted', False))
     _offset_strength = _offset_cfg.get('strength', 0.1) if _offset_adjusted else 0.0
+
+    # Extract pixel space config (rescale, shift/scale) for proper decode
+    encode_cond_fn = None
+    decode_fn = None
+    pixel_cfg = ckpt_cfg.get('pixel', {})
+    pixel_shift = pixel_cfg.get('pixel_shift')
+    pixel_scale = pixel_cfg.get('pixel_scale')
+    pixel_rescale = pixel_cfg.get('rescale', False)
+    if pixel_shift is not None or pixel_rescale:
+        from medgen.diffusion.spaces import PixelSpace
+        space = PixelSpace(rescale=pixel_rescale, shift=pixel_shift, scale=pixel_scale)
+        decode_fn = space.decode
+        encode_cond_fn = space.encode
+        if pixel_shift is not None:
+            logger.info(f"Pixel normalization from checkpoint: shift={pixel_shift}, scale={pixel_scale}")
+        if pixel_rescale:
+            logger.info("Pixel rescale from checkpoint: [-1, 1]")
+
     del ckpt
 
     voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
@@ -1259,6 +1277,8 @@ def main():
         logger.info(f"  Generating {args.num_volumes} volumes...")
         volumes, total_nfe, wall_time = generate_volumes(
             bravo_model, strategy, noise_list, cond_list, solver_cfg, device,
+            encode_cond_fn=encode_cond_fn,
+            decode_fn=decode_fn,
         )
         nfe_per_vol = total_nfe / args.num_volumes
         logger.info(f"  Done: {wall_time:.1f}s total, {wall_time/args.num_volumes:.1f}s/vol, "

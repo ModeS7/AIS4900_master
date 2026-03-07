@@ -1175,7 +1175,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if ref_val_loader is not None:
                 import hashlib
                 data_dir = str(self._paths_config.data_dir)
-                cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}"
+                norm_method = self.cfg.get('volume', {}).get('normalization', {}).get('method', 'per_volume')
+                cache_key = f"{data_dir}_{self.mode_name}_{self.image_size}_{norm_method}"
                 cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
                 cache_id = f"{self.mode_name}_{self.image_size}_{cache_hash}"
                 self._gen_metrics.cache_reference_features(

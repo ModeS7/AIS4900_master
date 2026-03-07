@@ -43,6 +43,7 @@ import csv
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -242,6 +243,8 @@ def generate_volumes(
     cond_list: list[tuple[str, torch.Tensor]],
     eval_cfg: EvalConfig,
     device: torch.device,
+    encode_cond_fn: Callable | None = None,
+    decode_fn: Callable | None = None,
 ) -> tuple[list[np.ndarray], int, float]:
     """Generate BRAVO volumes for one evaluation configuration.
 
@@ -252,6 +255,8 @@ def generate_volumes(
         cond_list: (patient_id, seg_tensor) pairs.
         eval_cfg: Evaluation configuration.
         device: CUDA device.
+        encode_cond_fn: Optional function to encode conditioning to model space.
+        decode_fn: Optional function to decode model output to pixel space.
 
     Returns:
         (volumes_list, total_nfe, wall_time_seconds)
@@ -274,6 +279,9 @@ def generate_volumes(
 
     for i, (noise, (_patient_id, seg_tensor)) in enumerate(zip(noise_list, cond_list)):
         seg_on_device = seg_tensor.to(device)
+        if encode_cond_fn is not None:
+            with torch.no_grad():
+                seg_on_device = encode_cond_fn(seg_on_device)
         model_input = torch.cat([noise, seg_on_device], dim=1)  # [1, 2, D, H, W]
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
@@ -282,6 +290,10 @@ def generate_volumes(
                     counter, model_input, eval_cfg.steps, device,
                     **gen_kwargs,
                 )
+
+        if decode_fn is not None:
+            with torch.no_grad():
+                result = decode_fn(result)
 
         vol_np = torch.clamp(result[0, 0], 0, 1).cpu().float().numpy()  # [D, H, W]
         volumes.append(vol_np)
@@ -567,6 +579,24 @@ def main():
     else:
         image_size = args.image_size or 256
         depth = args.depth or 160
+
+    # Extract pixel space config (rescale, shift/scale) for proper decode
+    encode_cond_fn = None
+    decode_fn = None
+    pixel_cfg = ckpt_cfg.get('pixel', {})
+    pixel_shift = pixel_cfg.get('pixel_shift')
+    pixel_scale = pixel_cfg.get('pixel_scale')
+    pixel_rescale = pixel_cfg.get('rescale', False)
+    if pixel_shift is not None or pixel_rescale:
+        from medgen.diffusion.spaces import PixelSpace
+        space = PixelSpace(rescale=pixel_rescale, shift=pixel_shift, scale=pixel_scale)
+        decode_fn = space.decode
+        encode_cond_fn = space.encode
+        if pixel_shift is not None:
+            logger.info(f"Pixel normalization from checkpoint: shift={pixel_shift}, scale={pixel_scale}")
+        if pixel_rescale:
+            logger.info("Pixel rescale from checkpoint: [-1, 1]")
+
     del ckpt
 
     voxel_size = (args.fov_mm / image_size, args.fov_mm / image_size, 1.0)
@@ -686,6 +716,8 @@ def main():
         volumes, total_nfe, wall_time = generate_volumes(
             bravo_model, strategy, noise_list, cond_list,
             eval_cfg, device,
+            encode_cond_fn=encode_cond_fn,
+            decode_fn=decode_fn,
         )
         nfe_per_vol = total_nfe / args.num_volumes
         logger.info("  Done: %.1fs total, %.1fs/vol, NFE=%d (%.0f/vol)",
