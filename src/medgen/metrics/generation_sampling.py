@@ -360,6 +360,7 @@ def generate_samples(
                 bin_maps=batch_bin_maps,
                 cfg_scale=self_.config.cfg_scale,
                 latent_channels=latent_ch,
+                cfg_mode=self_.config.cfg_mode,
             )
 
         # Move to CPU immediately to free GPU memory
@@ -498,6 +499,7 @@ def generate_and_extract_features_3d_streaming(
                 bin_maps=batch_bin_maps,
                 cfg_scale=self_.config.cfg_scale,
                 latent_channels=latent_ch,
+                cfg_mode=self_.config.cfg_mode,
             )
 
         # Decode from latent/wavelet space, then clamp in pixel space

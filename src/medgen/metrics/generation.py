@@ -83,6 +83,7 @@ class GenerationMetricsConfig:
     cache_dir: str = ".cache/generation_features"
     feature_batch_size: int = 16  # Set by trainer to match training.batch_size
     cfg_scale: float = 2.0  # CFG scale for generation (requires CFG dropout during training)
+    cfg_mode: str = 'standard'  # 'standard' or 'zero_star' (CFG-Zero*)
     original_depth: int | None = None  # Original depth before padding (for 3D metrics)
     # Size bin adherence config (for seg_conditioned mode)
     size_bin_edges: list[float] | None = None  # Bin edges in mm (default from loader)
@@ -167,6 +168,7 @@ class GenerationMetricsConfig:
             cache_dir=cache_dir,
             feature_batch_size=feature_batch_size,
             cfg_scale=gen_cfg.get('cfg_scale', 2.0),
+            cfg_mode=gen_cfg.get('cfg_mode', 'standard'),
             original_depth=original_depth,
             size_bin_edges=size_bin_edges,
             size_bin_fov_mm=size_bin_fov_mm,

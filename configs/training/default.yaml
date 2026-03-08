@@ -364,6 +364,7 @@ generation_metrics:
   cache_dir: ".cache/generation_features"  # Feature cache location
   # feature_batch_size: null   # Defaults to training.batch_size for torch.compile consistency
   cfg_scale: 2.0              # CFG scale for generation (requires CFG dropout during training)
+  cfg_mode: standard          # 'standard' or 'zero_star' (CFG-Zero*, Fan et al. 2025)
 
 # Region-Weighted Loss (Diffusion only - conditional modes)
 # Applies per-pixel loss weighting based on tumor size using RANO-BM thresholds.

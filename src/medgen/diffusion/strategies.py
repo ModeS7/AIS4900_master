@@ -94,6 +94,7 @@ class DiffusionStrategy(ABC):
         bin_maps: torch.Tensor | None,
         conditioning: torch.Tensor | None,
         is_dual: bool,
+        cfg_mode: str = 'standard',
     ) -> dict[str, Any]:
         """Prepare CFG context flags and unconditional tensors.
 
@@ -123,6 +124,7 @@ class DiffusionStrategy(ABC):
             'uncond_size_bins': None,
             'uncond_bin_maps': None,
             'uncond_conditioning': None,
+            'cfg_mode': cfg_mode,
         }
 
         # Warn if image conditioning CFG is disabled due to dual mode
@@ -168,6 +170,45 @@ class DiffusionStrategy(ABC):
         """
         return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
 
+    def _apply_cfg_zero_star(
+        self,
+        pred_uncond: torch.Tensor,
+        pred_cond: torch.Tensor,
+        cfg_scale: float,
+    ) -> torch.Tensor:
+        """Apply CFG-Zero* guidance formula (Fan et al., 2025).
+
+        Projects unconditional velocity onto conditional direction via
+        optimal scale s*. Better than standard CFG for flow-matching
+        velocity prediction where v_uncond is poorly estimated.
+
+        Formula: (1 - w) * s* * v_uncond + w * v_cond
+        where s* = dot(v_uncond, v_cond) / (||v_uncond||^2 + eps)
+
+        Args:
+            pred_uncond: Unconditional model prediction [B, C, ...].
+            pred_cond: Conditional model prediction [B, C, ...].
+            cfg_scale: Guidance scale (w).
+
+        Returns:
+            Guided prediction.
+        """
+        B = pred_uncond.shape[0]
+        # Flatten spatial dims per sample: [B, C*spatial]
+        flat_uncond = pred_uncond.reshape(B, -1)
+        flat_cond = pred_cond.reshape(B, -1)
+
+        # s* = dot(v_uncond, v_cond) / (||v_uncond||^2 + eps)  per sample
+        dot_product = (flat_uncond * flat_cond).sum(dim=1)  # [B]
+        norm_sq = (flat_uncond * flat_uncond).sum(dim=1)  # [B]
+        s_star = dot_product / (norm_sq + 1e-8)  # [B]
+
+        # Reshape s_star to broadcast: [B, 1, 1, ...] matching pred shape
+        broadcast_shape = (B,) + (1,) * (pred_uncond.dim() - 1)
+        s_star = s_star.view(*broadcast_shape)
+
+        return (1 - cfg_scale) * s_star * pred_uncond + cfg_scale * pred_cond
+
     def _compute_cfg_prediction(
         self,
         model: DiffusionModel,
@@ -210,6 +251,13 @@ class DiffusionStrategy(ABC):
         uncond_size_bins = cfg_ctx['uncond_size_bins']
         uncond_bin_maps = cfg_ctx['uncond_bin_maps']
         uncond_conditioning = cfg_ctx['uncond_conditioning']
+        cfg_mode = cfg_ctx.get('cfg_mode', 'standard')
+
+        # Dispatch CFG formula based on mode
+        def _apply_cfg(pred_uncond: torch.Tensor, pred_cond: torch.Tensor) -> torch.Tensor:
+            if cfg_mode == 'zero_star':
+                return self._apply_cfg_zero_star(pred_uncond, pred_cond, current_cfg)
+            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
 
         if use_cfg_bin_maps:
             # CFG for bin_maps input conditioning (seg_conditioned_input mode)
@@ -223,7 +271,7 @@ class DiffusionStrategy(ABC):
             pred_uncond = self._call_model(
                 model, input_uncond, timesteps_batch, omega, mode_id, None
             )
-            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+            return _apply_cfg(pred_uncond, pred_cond)
         elif bin_maps is not None:
             # bin_maps provided but no CFG - just concatenate and call model
             input_with_bin_maps = torch.cat([noisy_images, bin_maps], dim=1)
@@ -238,7 +286,7 @@ class DiffusionStrategy(ABC):
             pred_uncond = self._call_model(
                 model, current_model_input, timesteps_batch, omega, mode_id, uncond_size_bins
             )
-            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+            return _apply_cfg(pred_uncond, pred_cond)
         elif use_cfg_conditioning:
             # CFG for image conditioning (seg mask)
             assert uncond_conditioning is not None
@@ -249,7 +297,7 @@ class DiffusionStrategy(ABC):
             pred_uncond = self._call_model(
                 model, uncond_model_input, timesteps_batch, omega, mode_id, size_bins
             )
-            return self._apply_cfg_guidance(pred_uncond, pred_cond, current_cfg)
+            return _apply_cfg(pred_uncond, pred_cond)
         else:
             return self._call_model(
                 model, current_model_input, timesteps_batch, omega, mode_id, size_bins

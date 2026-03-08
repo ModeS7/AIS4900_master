@@ -411,6 +411,14 @@ class RFlowStrategy(DiffusionStrategy):
             assert parsed.noisy_images is not None
             y0 = parsed.noisy_images  # [B, C, ...]
 
+        # Zero-init state for torchdiffeq (track calls via counter)
+        _zero_init_active = (
+            conditioning.cfg_mode == 'zero_star'
+            and conditioning.cfg_zero_init_steps > 0
+            and conditioning.use_cfg
+        )
+        _ode_call_count = [0]  # mutable for closure
+
         def ode_fn(s: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
             """ODE function: dx/ds = v(x, t) where t = T*(1-s).
 
@@ -425,6 +433,13 @@ class RFlowStrategy(DiffusionStrategy):
             Returns:
                 dx/ds = v(x, t).
             """
+            call_idx = _ode_call_count[0]
+            _ode_call_count[0] += 1
+
+            # Zero-init: return zero velocity for first K calls (CFG-Zero*)
+            if _zero_init_active and call_idx < conditioning.cfg_zero_init_steps:
+                return torch.zeros_like(x)
+
             # Convert s -> t (model timestep space)
             t_val = T * (1.0 - s.item())
             timesteps_batch = torch.full((batch_size,), t_val, device=device)
@@ -770,6 +785,8 @@ class RFlowStrategy(DiffusionStrategy):
         cfg_scale: float = 1.0,
         cfg_scale_end: float | None = None,
         latent_channels: int = 1,
+        cfg_mode: str = 'standard',
+        cfg_zero_init_steps: int = 1,
         # DiffRS (opt-in)
         diffrs_discriminator: Any | None = None,
         diffrs_config: dict[str, Any] | None = None,
@@ -829,6 +846,8 @@ class RFlowStrategy(DiffusionStrategy):
                 bin_maps=bin_maps,
                 cfg_scale=cfg_scale,
                 cfg_scale_end=cfg_scale_end,
+                cfg_mode=cfg_mode,
+                cfg_zero_init_steps=cfg_zero_init_steps,
                 latent_channels=latent_channels,
             )
 
@@ -862,7 +881,10 @@ class RFlowStrategy(DiffusionStrategy):
         is_dual = parsed.is_dual
 
         # Prepare CFG context (flags and unconditional tensors)
-        cfg_ctx = self._prepare_cfg_context(cfg_scale, size_bins, bin_maps, image_conditioning, is_dual)
+        cfg_ctx = self._prepare_cfg_context(
+            cfg_scale, size_bins, bin_maps, image_conditioning, is_dual,
+            cfg_mode=conditioning.cfg_mode,
+        )
 
         # Branch: Restart Sampling (opt-in)
         if restart_config is not None:
@@ -902,6 +924,13 @@ class RFlowStrategy(DiffusionStrategy):
         if use_progress_bars:
             timestep_pairs = tqdm(timestep_pairs, desc="RFlow sampling")  # type: ignore[assignment]
 
+        # CFG-Zero* zero-init: skip model prediction for first K steps
+        use_zero_init = (
+            conditioning.cfg_mode == 'zero_star'
+            and conditioning.cfg_zero_init_steps > 0
+            and conditioning.use_cfg
+        )
+
         for step_idx, (t, next_t) in enumerate(timestep_pairs):
             # Compute current CFG scale (dynamic or constant)
             # Note: For single-step (num_steps=1), progress=0 so cfg_scale_end is ignored
@@ -916,6 +945,19 @@ class RFlowStrategy(DiffusionStrategy):
             timesteps_batch = t.unsqueeze(0).repeat(batch_size).to(device)
             next_timestep = next_t.to(device) if isinstance(next_t, torch.Tensor) else torch.tensor(next_t,
                                                                                                     device=device)
+
+            # Zero-init: use zero velocity for first K steps (CFG-Zero*)
+            if use_zero_init and step_idx < conditioning.cfg_zero_init_steps:
+                if is_dual:
+                    assert noisy_pre is not None and noisy_gd is not None
+                    zero_vel = torch.zeros_like(noisy_pre)
+                    noisy_pre, _ = self.scheduler.step(zero_vel, t, noisy_pre, next_timestep)
+                    noisy_gd, _ = self.scheduler.step(zero_vel, t, noisy_gd, next_timestep)
+                else:
+                    assert noisy_images is not None
+                    zero_vel = torch.zeros_like(noisy_images)
+                    noisy_images, _ = self.scheduler.step(zero_vel, t, noisy_images, next_timestep)
+                continue
 
             if is_dual:
                 # Dual-image: process each channel through model together

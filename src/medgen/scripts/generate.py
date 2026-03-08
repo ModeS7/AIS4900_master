@@ -193,6 +193,8 @@ def generate_batch(
     latent_channels: int = 1,
     diffrs_discriminator: object | None = None,
     diffrs_config: dict | None = None,
+    cfg_mode: str = 'standard',
+    cfg_zero_init_steps: int = 1,
 ) -> torch.Tensor:
     """Generate a batch using diffusion model.
 
@@ -213,6 +215,8 @@ def generate_batch(
         latent_channels: Number of noise channels (1 for pixel, 4 for latent space).
         diffrs_discriminator: Optional DiffRSDiscriminator for rejection sampling.
         diffrs_config: Optional DiffRS config dict (rej_percentile, backsteps, etc.).
+        cfg_mode: CFG mode ('standard' or 'zero_star' for CFG-Zero*).
+        cfg_zero_init_steps: Zero-velocity steps for zero_star mode.
 
     Returns:
         Generated tensor.
@@ -230,6 +234,8 @@ def generate_batch(
         cfg_scale_end=cfg_scale_end,
         use_progress_bars=use_progress,
         latent_channels=latent_channels,
+        cfg_mode=cfg_mode,
+        cfg_zero_init_steps=cfg_zero_init_steps,
     )
     if diffrs_discriminator is not None:
         gen_kwargs['diffrs_discriminator'] = diffrs_discriminator
@@ -496,7 +502,9 @@ def _generate_bravo(
                            cfg_scale=cfg.cfg_scale_bravo,
                            cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
                            diffrs_discriminator=diffrs_disc,
-                           diffrs_config=diffrs_cfg)
+                           diffrs_config=diffrs_cfg,
+                           cfg_mode=cfg.get('cfg_mode', 'standard'),
+                           cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
     # Decode from diffusion space to pixel space, then clamp
     if bravo_space is not None:
         bravo = bravo_space.decode(bravo)
@@ -624,7 +632,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
                                      cfg_scale=cfg.cfg_scale_seg,
-                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None),
+                                     cfg_mode=cfg.get('cfg_mode', 'standard'),
+                                     cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
 
                 # Binarize
                 seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
@@ -768,7 +778,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
                                      cfg_scale=cfg.cfg_scale_seg,
-                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None),
+                                     cfg_mode=cfg.get('cfg_mode', 'standard'),
+                                     cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
 
                 # Binarize seg
                 seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
@@ -926,7 +938,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      bin_maps=bin_maps,
                                      cfg_scale=cfg.cfg_scale_seg,
-                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None))
+                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None),
+                                     cfg_mode=cfg.get('cfg_mode', 'standard'),
+                                     cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
 
                 # Binarize
                 seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()

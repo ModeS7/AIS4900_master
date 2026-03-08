@@ -59,6 +59,11 @@ cfg_scale_bravo: 1.0      # CFG for bravo generation (seg mask conditioning)
 cfg_scale_seg_end: null   # Ending CFG for seg (null = constant)
 cfg_scale_bravo_end: null # Ending CFG for bravo (null = constant)
 
+# CFG mode: 'standard' (Ho & Salimans) or 'zero_star' (CFG-Zero*, Fan et al. 2025)
+# zero_star uses optimized scale s* and zero-init for first K steps
+cfg_mode: standard
+cfg_zero_init_steps: 1    # Zero-velocity steps for zero_star mode
+
 # ODE solver for generation (requires torchdiffeq for non-euler solvers)
 # Options: euler (default), midpoint, rk4, dopri5
 ode_solver: euler

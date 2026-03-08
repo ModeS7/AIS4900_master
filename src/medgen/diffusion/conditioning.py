@@ -61,6 +61,8 @@ class ConditioningContext:
     # CFG settings
     cfg_scale: float = 1.0
     cfg_scale_end: float | None = None
+    cfg_mode: str = 'standard'  # 'standard' or 'zero_star' (CFG-Zero*, Fan et al. 2025)
+    cfg_zero_init_steps: int = 1  # Zero-velocity steps for zero_star mode
 
     # Space settings
     latent_channels: int = 1
@@ -81,6 +83,8 @@ class ConditioningContext:
         latent_channels: int = 1,
         image_conditioning: Tensor | None = None,
         omega: Tensor | None = None,
+        cfg_mode: str = 'standard',
+        cfg_zero_init_steps: int = 1,
     ) -> ConditioningContext:
         """Create context from BatchData.
 
@@ -91,6 +95,8 @@ class ConditioningContext:
             latent_channels: Noise channels (1=pixel, 4=latent).
             image_conditioning: Override image conditioning (default: batch_data.labels).
             omega: ScoreAug omega parameters.
+            cfg_mode: CFG mode ('standard' or 'zero_star').
+            cfg_zero_init_steps: Zero-velocity steps for zero_star mode.
 
         Returns:
             ConditioningContext with fields populated from batch_data.
@@ -105,6 +111,8 @@ class ConditioningContext:
             else batch_data.labels,
             cfg_scale=cfg_scale,
             cfg_scale_end=cfg_scale_end,
+            cfg_mode=cfg_mode,
+            cfg_zero_init_steps=cfg_zero_init_steps,
             latent_channels=latent_channels,
         )
 
@@ -198,11 +206,17 @@ class ConditioningContext:
             image_conditioning=_move(self.image_conditioning),
             cfg_scale=self.cfg_scale,
             cfg_scale_end=self.cfg_scale_end,
+            cfg_mode=self.cfg_mode,
+            cfg_zero_init_steps=self.cfg_zero_init_steps,
             latent_channels=self.latent_channels,
         )
 
     def with_cfg(
-        self, cfg_scale: float, cfg_scale_end: float | None = None
+        self,
+        cfg_scale: float,
+        cfg_scale_end: float | None = None,
+        cfg_mode: str | None = None,
+        cfg_zero_init_steps: int | None = None,
     ) -> ConditioningContext:
         """Create new context with different CFG settings.
 
@@ -212,6 +226,8 @@ class ConditioningContext:
         Args:
             cfg_scale: New CFG scale.
             cfg_scale_end: New CFG end scale (None for constant).
+            cfg_mode: New CFG mode (None = keep current).
+            cfg_zero_init_steps: New zero-init steps (None = keep current).
 
         Returns:
             New ConditioningContext with updated CFG settings.
@@ -224,6 +240,8 @@ class ConditioningContext:
             image_conditioning=self.image_conditioning,
             cfg_scale=cfg_scale,
             cfg_scale_end=cfg_scale_end,
+            cfg_mode=cfg_mode if cfg_mode is not None else self.cfg_mode,
+            cfg_zero_init_steps=cfg_zero_init_steps if cfg_zero_init_steps is not None else self.cfg_zero_init_steps,
             latent_channels=self.latent_channels,
         )
 
@@ -244,5 +262,7 @@ class ConditioningContext:
             image_conditioning=self.image_conditioning,
             cfg_scale=self.cfg_scale,
             cfg_scale_end=self.cfg_scale_end,
+            cfg_mode=self.cfg_mode,
+            cfg_zero_init_steps=self.cfg_zero_init_steps,
             latent_channels=latent_channels,
         )
