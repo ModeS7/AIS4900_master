@@ -7,23 +7,21 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp1n_test_genmetrics_v5"
+#SBATCH --job-name="exp1n_test_genmetrics_v6"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp1n/%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1n/%j.err
 
-# Test v5: OOM fix — two-phase generation/extraction
-# Root cause: 3 feature extractors (~2.2 GB) stayed loaded on GPU during
-# strategy.generate(), eating memory needed for Conv3d workspace (~18 GiB).
-# Fix: Phase 1 generates all samples with extractors unloaded (max GPU memory),
-#      Phase 2 loads extractors one at a time for feature extraction.
-# Also: unload extractors after cache_reference_features + before defrag.
+# Test v6: Fix OOM in diversity LPIPS + CUDA Graph pool accumulation
+# v5 fixed generation (Phase 1 succeeded) but diversity LPIPS created 9.59 GiB
+# of CUDA Graph private pools via torch.compile(mode="reduce-overhead").
+# Fix: use_compile=False for 3D diversity LPIPS + clear_metric_caches before defrag
 # IMPORTANT: Must sync code to cluster before submitting!
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Test v5: Two-Phase 3D Gen Metrics ==="
+echo "=== Test v6: Diversity LPIPS + CUDA Graph Fix ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -33,12 +31,22 @@ conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
-# Verify two-phase fix is deployed: check for Phase 1 log message
+# Verify fixes are deployed
 python -c "
-import inspect, medgen.metrics.generation_sampling as m
-src = inspect.getsource(m.generate_and_extract_features_3d_streaming)
-assert 'Phase 1' in src and 'Phase 2' in src, 'ERROR: Two-phase fix not deployed! Sync code first.'
-print('OK: Two-phase generation/extraction verified')
+import inspect
+# Check two-phase streaming
+import medgen.metrics.generation_sampling as gs
+src = inspect.getsource(gs.generate_and_extract_features_3d_streaming)
+assert 'Phase 1' in src and 'Phase 2' in src, 'ERROR: Two-phase fix not deployed!'
+# Check diversity LPIPS use_compile=False default
+import medgen.metrics.quality as q
+src = inspect.getsource(q.compute_lpips_diversity_3d)
+assert 'use_compile: bool = False' in src, 'ERROR: Diversity LPIPS use_compile=False not deployed!'
+# Check clear_metric_caches in validation
+import medgen.pipeline.validation as v
+src = inspect.getsource(v.run_validation)
+assert 'clear_metric_caches' in src, 'ERROR: clear_metric_caches not deployed!'
+print('OK: All v6 fixes verified')
 "
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
@@ -59,4 +67,4 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.conditioning_dropout.prob=0.15 \
     training.generation_metrics.cfg_scale=2.0 \
     training.generation_metrics.cfg_mode=zero_star \
-    training.name=exp1n_test_genmetrics_v5_
+    training.name=exp1n_test_genmetrics_v6_

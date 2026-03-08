@@ -631,6 +631,7 @@ def compute_lpips_diversity(
     samples: torch.Tensor,
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
+    use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
     """Compute mean pairwise LPIPS diversity between generated samples.
 
@@ -641,6 +642,8 @@ def compute_lpips_diversity(
         samples: Generated images [N, C, H, W] in [0, 1] range.
         device: Device for computation (defaults to input tensor device).
         network_type: Pretrained network type (default: radimagenet_resnet50).
+        use_compile: Whether to use torch.compile for LPIPS (default: True).
+            Set False for 3D to avoid CUDA Graph private pools.
 
     Returns:
         Mean pairwise LPIPS distance (higher = more diverse).
@@ -663,7 +666,7 @@ def compute_lpips_diversity(
             img_i = samples[i:i+1]  # [1, C, H, W]
             img_j = samples[j:j+1]  # [1, C, H, W]
 
-            lpips_dist = compute_lpips(img_i, img_j, device=device, network_type=network_type)
+            lpips_dist = compute_lpips(img_i, img_j, device=device, network_type=network_type, use_compile=use_compile)
             total_lpips += lpips_dist
             num_pairs += 1
 
@@ -715,6 +718,7 @@ def compute_lpips_diversity_3d(
     volumes: torch.Tensor,
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
+    use_compile: bool = False,
 ) -> float:
     """Compute mean pairwise LPIPS diversity for 3D volumes (same-slice comparison).
 
@@ -730,6 +734,9 @@ def compute_lpips_diversity_3d(
         volumes: Generated volumes [B, C, D, H, W] in [0, 1] range.
         device: Device for computation (defaults to input tensor device).
         network_type: Pretrained network type (default: radimagenet_resnet50).
+        use_compile: Whether to use torch.compile for LPIPS (default: False for 3D).
+            3D diversity iterates D slices — creating CUDA Graphs would allocate
+            permanent private pools that block subsequent generation.
 
     Returns:
         Mean pairwise LPIPS distance across same-slice comparisons (higher = more diverse).
@@ -750,7 +757,7 @@ def compute_lpips_diversity_3d(
         slices = volumes[:, :, d, :, :]
 
         # Compute pairwise LPIPS for this slice across volumes
-        slice_diversity = compute_lpips_diversity(slices, device=device, network_type=network_type)
+        slice_diversity = compute_lpips_diversity(slices, device=device, network_type=network_type, use_compile=use_compile)
         total_diversity += slice_diversity
         num_slices += 1
 

@@ -462,6 +462,10 @@ def compute_validation_losses(
                 # Unload feature extractors first (may still be loaded from cache_reference_features
                 # or a previous epoch) to maximize free memory for defrag.
                 trainer._gen_metrics.unload_extractors()
+                # Clear cached LPIPS/MS-SSIM metrics from validation loop to free GPU memory.
+                # These are held by @lru_cache and won't be freed by empty_cache alone.
+                from medgen.metrics.quality import clear_metric_caches
+                clear_metric_caches()
                 gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
                 _mb = lambda: torch.cuda.memory_allocated() / 1e9
                 _res = lambda: torch.cuda.memory_reserved() / 1e9
