@@ -43,9 +43,9 @@ echo "=========================================="
 echo "  exp1_1 (run 0129): Time-Shift Eval"
 echo "=========================================="
 
-CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260129-233435/checkpoint_best.pt"
+CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_best.pt"
 if [ ! -f "$CKPT_0129" ]; then
-    CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260129-233435/checkpoint_latest.pt"
+    CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"
 fi
 OUT_0129="/cluster/work/modestas/MedicalDataSets/eval_time_shift_exp1_1_0129"
 
