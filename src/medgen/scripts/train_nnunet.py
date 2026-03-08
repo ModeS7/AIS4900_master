@@ -102,6 +102,8 @@ def main() -> None:
     parser.add_argument('--experiment', required=True,
                         choices=['baseline', 'baseline_dual', 'synthetic', 'mixed'],
                         help='Experiment type')
+    parser.add_argument('--experiment-name', default=None,
+                        help='Override auto-generated experiment name (results subdir)')
     parser.add_argument('--n-synthetic', type=int, default=None,
                         help='Number of synthetic samples for mixed (default: all 525)')
     parser.add_argument('--dataset-id', type=int, default=501,
@@ -125,7 +127,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
+    experiment_name = args.experiment_name or _get_experiment_name(args.experiment, args.n_synthetic)
     folds = [args.fold] if args.fold is not None else list(range(5))
 
     print("=== nnU-Net Training Setup ===")

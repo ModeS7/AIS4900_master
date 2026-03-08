@@ -85,8 +85,12 @@ echo "=== Step 3: nnU-Net plan and preprocess ==="
 rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
 rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
 # Use -np 4 to reduce blosc2 concurrency issues on cluster filesystem
+# Default planner
 nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres -np 4
 nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres -np 4
+# ResEnc L planner (residual encoder, no batch size cap, better for small lesions)
+nnUNetv2_plan_and_preprocess -d 501 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
+nnUNetv2_plan_and_preprocess -d 502 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
 
 # === Step 4: Validate preprocessed data ===
 echo ""
@@ -107,13 +111,16 @@ for did in [501, 502]:
 
     print(f'=== Dataset {did} preprocessed ===')
 
-    # Check plans
-    plans_path = os.path.join(pp_dir, 'nnUNetPlans.json')
-    if os.path.exists(plans_path):
+    # Check plans (default + ResEncL)
+    for plans_name in ['nnUNetPlans.json', 'nnUNetResEncUNetLPlans.json']:
+        plans_path = os.path.join(pp_dir, plans_name)
+        if not os.path.exists(plans_path):
+            continue
         with open(plans_path) as f:
             plans = json.load(f)
+        print(f'  Plans: {plans_name}')
         for cfg_name, cfg in plans.get('configurations', {}).items():
-            print(f'  {cfg_name}: patch={cfg.get(\"patch_size\")}, '
+            print(f'    {cfg_name}: patch={cfg.get(\"patch_size\")}, '
                   f'batch={cfg.get(\"batch_size\")}, spacing={cfg.get(\"spacing\")}')
 
     # Check preprocessed npz files

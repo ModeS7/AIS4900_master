@@ -160,6 +160,8 @@ def main() -> None:
     parser.add_argument('--experiment',
                         choices=['baseline', 'baseline_dual', 'synthetic', 'mixed'],
                         help='Experiment type (runs inference + eval)')
+    parser.add_argument('--experiment-name', default=None,
+                        help='Override auto-generated experiment name (results subdir)')
     parser.add_argument('--n-synthetic', type=int, default=None,
                         help='Number of synthetic samples (for mixed)')
     parser.add_argument('--dataset-id', type=int, default=501)
@@ -193,7 +195,7 @@ def main() -> None:
         gt_dir = args.gt_dir
     elif args.experiment and args.nnunet_base and args.nnunet_results:
         # Mode 1: run inference then evaluate
-        experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
+        experiment_name = args.experiment_name or _get_experiment_name(args.experiment, args.n_synthetic)
         _setup_env(args.nnunet_base, args.nnunet_results, experiment_name)
 
         nnunet_raw = os.environ['nnUNet_raw']  # noqa: SIM112
@@ -231,7 +233,7 @@ def main() -> None:
 
     output_path = args.output
     if output_path is None and args.experiment:
-        experiment_name = _get_experiment_name(args.experiment, args.n_synthetic)
+        experiment_name = args.experiment_name or _get_experiment_name(args.experiment, args.n_synthetic)
         output_path = os.path.join(
             os.environ.get('nnUNet_results', '.'),  # noqa: SIM112
             f'eval_{experiment_name}.json',
@@ -253,7 +255,7 @@ def main() -> None:
                 )
             else:
                 # Multi-fold ensemble: log to eval output dir
-                experiment_name = _get_experiment_name(
+                experiment_name = args.experiment_name or _get_experiment_name(
                     args.experiment, args.n_synthetic,
                 )
                 tensorboard_dir = os.path.join(
