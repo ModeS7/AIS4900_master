@@ -21,7 +21,6 @@ import numpy as np
 import torch
 from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 
-
 # =============================================================================
 # TensorBoard mixin (shared by all trainers)
 # =============================================================================

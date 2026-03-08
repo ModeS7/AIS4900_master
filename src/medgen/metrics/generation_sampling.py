@@ -442,8 +442,11 @@ def generate_and_extract_features_3d_streaming(
     # Check if conditioning must be encoded (latent/wavelet/pixel normalization)
     encode_cond = self_.space is not None and self_.space.encode_conditioning
 
-    _mb = lambda: torch.cuda.memory_allocated() / 1e9
-    _free = lambda: torch.cuda.mem_get_info()[0] / 1e9
+    def _mb() -> float:
+        return torch.cuda.memory_allocated() / 1e9
+
+    def _free() -> float:
+        return torch.cuda.mem_get_info()[0] / 1e9
 
     # =====================================================================
     # Phase 1: Generate all samples (extractors unloaded for max GPU memory)

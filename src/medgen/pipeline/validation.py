@@ -467,8 +467,11 @@ def compute_validation_losses(
                 from medgen.metrics.quality import clear_metric_caches
                 clear_metric_caches()
                 gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
-                _mb = lambda: torch.cuda.memory_allocated() / 1e9
-                _res = lambda: torch.cuda.memory_reserved() / 1e9
+                def _mb() -> float:
+                    return torch.cuda.memory_allocated() / 1e9
+
+                def _res() -> float:
+                    return torch.cuda.memory_reserved() / 1e9
                 logger.info(f"[GenMetrics] Start: {_mb():.2f} GiB allocated, {_res():.2f} GiB reserved")
 
                 # 1. Move optimizer state to CPU
