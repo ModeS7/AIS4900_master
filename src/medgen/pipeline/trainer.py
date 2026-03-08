@@ -1184,6 +1184,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     ref_val_loader,
                     experiment_id=cache_id,
                 )
+                # Unload extractors to free ~2.2 GB GPU memory for training.
+                # They were loaded during feature caching and will lazy-reload
+                # when needed for generation metrics.
+                self._gen_metrics.unload_extractors()
 
         if self.is_main_process:
             n_batches = len(self._train_loader) if hasattr(self, '_train_loader') else 0

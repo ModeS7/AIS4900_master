@@ -403,10 +403,14 @@ def generate_and_extract_features_3d_streaming(
     num_steps: int,
     keep_samples_for_diversity: bool = False,
 ) -> StreamingFeatures:
-    """Generate 3D samples and extract features in a streaming fashion.
+    """Generate 3D samples and extract features in two memory-efficient phases.
 
-    Generates one sample at a time and extracts both axial-only and
-    tri-planar features immediately to avoid memory accumulation.
+    Phase 1 (Generation): All feature extractors are unloaded to maximize GPU
+    memory for Conv3d workspace (~18 GiB at 256x256x160). Samples stored on CPU.
+
+    Phase 2 (Feature extraction): Extractors loaded one at a time to minimize
+    GPU footprint. Each extractor processes all samples then is unloaded before
+    loading the next.
 
     Args:
         self_: GenerationMetrics instance.
@@ -433,38 +437,32 @@ def generate_and_extract_features_3d_streaming(
     num_available = self_.fixed_conditioning_masks.shape[0]
     num_to_generate = min(num_samples, num_available)
 
-    model.eval()
-    all_resnet_features = []
-    all_resnet_rin_features = []
-    all_biomed_features = []
-    # Tri-planar feature lists
-    all_resnet_3d_features = []
-    all_resnet_rin_3d_features = []
-    all_biomed_3d_features = []
-    samples_for_diversity = [] if keep_samples_for_diversity else None
     has_resnet_rin = self_.resnet_rin is not None
-
-    # Limit diversity samples to 2 for 3D to avoid OOM
-    max_diversity_samples = 2
 
     # Check if conditioning must be encoded (latent/wavelet/pixel normalization)
     encode_cond = self_.space is not None and self_.space.encode_conditioning
 
+    # =====================================================================
+    # Phase 1: Generate all samples (extractors unloaded for max GPU memory)
+    # =====================================================================
+    # Unload any extractors loaded from cache_reference_features or prior epochs
+    self_.unload_extractors()
+    torch.cuda.empty_cache()
+
+    logger.info(f"[3D GenMetrics] Phase 1: Generating {num_to_generate} samples (extractors unloaded)")
+    model.eval()
+    cpu_samples = []
+
     for idx in range(num_to_generate):
-        # Get conditioning for this sample (pixel-space from dataset)
         masks_pixel = self_.fixed_conditioning_masks[idx:idx+1]
 
-        # Encode conditioning to match training (pixel norm, latent, wavelet)
         if encode_cond:
-            with torch.no_grad():
-                masks = self_.space.encode(masks_pixel)
+            masks = self_.space.encode(masks_pixel)
         else:
             masks = masks_pixel
 
-        # Generate noise matching the (possibly encoded) masks shape
         noise = torch.randn_like(masks)
 
-        # Build model input based on mode
         if out_channels == 2:  # Dual mode
             if encode_cond:
                 raise ValueError(
@@ -485,13 +483,10 @@ def generate_and_extract_features_3d_streaming(
             model_input = torch.cat([noise, masks], dim=1)
             batch_bin_maps = None
 
-        # Get size_bins if available
         batch_size_bins = None
         if self_.fixed_size_bins is not None:
             batch_size_bins = self_.fixed_size_bins[idx:idx+1]
 
-        # Generate sample
-        # Get latent channels for proper parsing of conditional input
         latent_ch = self_.space.latent_channels if self_.space is not None else 1
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             sample = strategy.generate(
@@ -503,7 +498,7 @@ def generate_and_extract_features_3d_streaming(
                 cfg_mode=self_.config.cfg_mode,
             )
 
-        # Decode from latent/wavelet space, then clamp in pixel space
+        # Decode and normalize in pixel space
         sample = sample.float()
         if self_.space is not None and self_.space.needs_decode:
             sample = self_.space.decode(sample)
@@ -512,62 +507,79 @@ def generate_and_extract_features_3d_streaming(
         else:
             sample = torch.clamp(sample, 0, 1)
 
-        # Keep sample for diversity if requested and within limit
-        if samples_for_diversity is not None and len(samples_for_diversity) < max_diversity_samples:
-            samples_for_diversity.append(sample.cpu())
-
-        # Extract axial features immediately
-        from .generation_computation import extract_features_batched
-        resnet_feat = extract_features_batched(self_, sample, self_.resnet)
-        all_resnet_features.append(resnet_feat.cpu())
-        if has_resnet_rin:
-            resnet_rin_feat = extract_features_batched(self_, sample, self_.resnet_rin)
-            all_resnet_rin_features.append(resnet_rin_feat.cpu())
-            del resnet_rin_feat
-        biomed_feat = extract_features_batched(self_, sample, self_.biomed)
-        all_biomed_features.append(biomed_feat.cpu())
-
-        # Extract tri-planar features
-        from .generation_3d import extract_features_3d_triplanar
-        chunk_sz = self_.config.feature_batch_size
-        orig_d = self_.config.original_depth
-        resnet_3d_feat = extract_features_3d_triplanar(sample, self_.resnet, chunk_sz, orig_d)
-        all_resnet_3d_features.append(resnet_3d_feat.cpu())
-        del resnet_3d_feat
-        if has_resnet_rin:
-            rin_3d_feat = extract_features_3d_triplanar(sample, self_.resnet_rin, chunk_sz, orig_d)
-            all_resnet_rin_3d_features.append(rin_3d_feat.cpu())
-            del rin_3d_feat
-        biomed_3d_feat = extract_features_3d_triplanar(sample, self_.biomed, chunk_sz, orig_d)
-        all_biomed_3d_features.append(biomed_3d_feat.cpu())
-        del biomed_3d_feat
-
-        # Clear GPU memory before next iteration
-        del sample, model_input, noise, masks, resnet_feat, biomed_feat
+        cpu_samples.append(sample.cpu())
+        del sample, model_input, noise, masks
         if out_channels == 2:
             del noise_pre, noise_gd
         torch.cuda.empty_cache()
 
-    # Concatenate all features
-    gen_resnet = torch.cat(all_resnet_features, dim=0)
-    gen_resnet_rin = torch.cat(all_resnet_rin_features, dim=0) if all_resnet_rin_features else None
-    gen_biomed = torch.cat(all_biomed_features, dim=0)
+    logger.info(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU")
 
-    # Concatenate tri-planar features
-    gen_resnet_3d = torch.cat(all_resnet_3d_features, dim=0)
-    gen_resnet_rin_3d = torch.cat(all_resnet_rin_3d_features, dim=0) if all_resnet_rin_3d_features else None
-    gen_biomed_3d = torch.cat(all_biomed_3d_features, dim=0)
-
-    # Concatenate diversity samples if kept
+    # Diversity samples (keep first 2 on CPU)
+    max_diversity_samples = 2
     diversity_tensor = None
-    if samples_for_diversity:
-        diversity_tensor = torch.cat(samples_for_diversity, dim=0)
-        # Explicitly clear list to free memory immediately
-        samples_for_diversity.clear()
-        del samples_for_diversity
+    if keep_samples_for_diversity and cpu_samples:
+        kept = cpu_samples[:max_diversity_samples]
+        diversity_tensor = torch.cat(kept, dim=0)
 
-    del all_resnet_features, all_resnet_rin_features, all_biomed_features
-    del all_resnet_3d_features, all_resnet_rin_3d_features, all_biomed_3d_features
+    # =====================================================================
+    # Phase 2: Extract features one extractor at a time
+    # =====================================================================
+    from .generation_3d import extract_features_3d_triplanar
+    from .generation_computation import extract_features_batched
+
+    chunk_sz = self_.config.feature_batch_size
+    orig_d = self_.config.original_depth
+
+    # --- ResNet50 (ImageNet) ---
+    logger.info("[3D GenMetrics] Phase 2a: ResNet50 (ImageNet) features")
+    all_resnet = []
+    all_resnet_3d = []
+    for sample_cpu in cpu_samples:
+        sample_gpu = sample_cpu.to(self_.device)
+        all_resnet.append(extract_features_batched(self_, sample_gpu, self_.resnet).cpu())
+        all_resnet_3d.append(extract_features_3d_triplanar(sample_gpu, self_.resnet, chunk_sz, orig_d).cpu())
+        del sample_gpu
+    self_.resnet.unload()
+    torch.cuda.empty_cache()
+
+    # --- ResNet50 (RadImageNet) ---
+    all_resnet_rin = []
+    all_resnet_rin_3d = []
+    if has_resnet_rin:
+        logger.info("[3D GenMetrics] Phase 2b: ResNet50 (RadImageNet) features")
+        for sample_cpu in cpu_samples:
+            sample_gpu = sample_cpu.to(self_.device)
+            all_resnet_rin.append(extract_features_batched(self_, sample_gpu, self_.resnet_rin).cpu())
+            all_resnet_rin_3d.append(extract_features_3d_triplanar(sample_gpu, self_.resnet_rin, chunk_sz, orig_d).cpu())
+            del sample_gpu
+        self_.resnet_rin.unload()
+        torch.cuda.empty_cache()
+
+    # --- BiomedCLIP ---
+    logger.info("[3D GenMetrics] Phase 2c: BiomedCLIP features")
+    all_biomed = []
+    all_biomed_3d = []
+    for sample_cpu in cpu_samples:
+        sample_gpu = sample_cpu.to(self_.device)
+        all_biomed.append(extract_features_batched(self_, sample_gpu, self_.biomed).cpu())
+        all_biomed_3d.append(extract_features_3d_triplanar(sample_gpu, self_.biomed, chunk_sz, orig_d).cpu())
+        del sample_gpu
+    self_.biomed.unload()
+    torch.cuda.empty_cache()
+
+    del cpu_samples
+
+    # Concatenate all features
+    gen_resnet = torch.cat(all_resnet, dim=0)
+    gen_resnet_rin = torch.cat(all_resnet_rin, dim=0) if all_resnet_rin else None
+    gen_biomed = torch.cat(all_biomed, dim=0)
+    gen_resnet_3d = torch.cat(all_resnet_3d, dim=0)
+    gen_resnet_rin_3d = torch.cat(all_resnet_rin_3d, dim=0) if all_resnet_rin_3d else None
+    gen_biomed_3d = torch.cat(all_biomed_3d, dim=0)
+
+    del all_resnet, all_resnet_rin, all_biomed
+    del all_resnet_3d, all_resnet_rin_3d, all_biomed_3d
     torch.cuda.empty_cache()
 
     return StreamingFeatures(

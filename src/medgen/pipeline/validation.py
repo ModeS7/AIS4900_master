@@ -285,7 +285,9 @@ def compute_validation_losses(
                 if trainer.log_lpips:
                     if trainer.spatial_dims == 3:
                         # 3D: use center-slice LPIPS (2.5D approach)
-                        lpips_val = compute_lpips_3d(metrics_pred, metrics_gt, trainer.device)
+                        # Disable torch.compile for 3D to avoid CUDA Graph pools (~8 GiB)
+                        # that permanently fragment GPU memory and block generation metrics
+                        lpips_val = compute_lpips_3d(metrics_pred, metrics_gt, trainer.device, use_compile=False)
                     else:
                         lpips_val = compute_lpips(metrics_pred, metrics_gt, trainer.device)
                 else:
@@ -457,7 +459,13 @@ def compute_validation_losses(
                 # The Conv3d im2col workspace at 256x256x160 needs ~18 GiB contiguous, which can't
                 # be allocated from fragmented free blocks. Fix: move everything to CPU, release all
                 # GPU segments, then move model back (fresh contiguous allocation).
+                # Unload feature extractors first (may still be loaded from cache_reference_features
+                # or a previous epoch) to maximize free memory for defrag.
+                trainer._gen_metrics.unload_extractors()
                 gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
+                _mb = lambda: torch.cuda.memory_allocated() / 1e9
+                _res = lambda: torch.cuda.memory_reserved() / 1e9
+                logger.info(f"[GenMetrics] Start: {_mb():.2f} GiB allocated, {_res():.2f} GiB reserved")
 
                 # 1. Move optimizer state to CPU
                 optimizer_offloaded = False
@@ -470,19 +478,23 @@ def compute_validation_losses(
                         optimizer_offloaded = True
                 except Exception:
                     pass
+                logger.info(f"[GenMetrics] After optimizer offload: {_mb():.2f} GiB allocated")
 
                 # 2. Move model to CPU to free all scattered GPU allocations
                 model_device = next(gen_model.parameters()).device
                 gen_model.cpu()
+                logger.info(f"[GenMetrics] After model to CPU: {_mb():.2f} GiB allocated")
 
                 # 3. Release ALL GPU memory (only CUDA Graph pools remain)
                 torch.cuda.synchronize()
                 gc.collect()
                 torch.cuda.empty_cache()
+                logger.info(f"[GenMetrics] After empty_cache: {_mb():.2f} GiB allocated, {_res():.2f} GiB reserved, {torch.cuda.mem_get_info()[0]/1e9:.2f} GiB free")
 
                 # 4. Move model back — allocates in fresh contiguous block
                 gen_model.to(model_device)
                 gen_model.eval()
+                logger.info(f"[GenMetrics] After model back to GPU: {_mb():.2f} GiB allocated, {torch.cuda.mem_get_info()[0]/1e9:.2f} GiB free")
 
                 try:
                     # Quick metrics every epoch
