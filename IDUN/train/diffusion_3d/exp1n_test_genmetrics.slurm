@@ -7,14 +7,14 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp1n_test_genmetrics_v2"
+#SBATCH --job-name="exp1n_test_genmetrics_v3"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp1n/%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1n/%j.err
 
-# Test v2: OOM fix for 3D generation metrics
-# Fix: @torch.no_grad on generate() + optimizer CPU offload during gen metrics
+# Test v3: OOM fix for 3D generation metrics
+# Fix: GPU memory defragmentation — model+optimizer to CPU, empty_cache, model back
 # Short run: 3 epochs, should see generation metrics succeed (not OOM)
 # IMPORTANT: Must sync code to cluster before submitting!
 
@@ -56,4 +56,4 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.conditioning_dropout.prob=0.15 \
     training.generation_metrics.cfg_scale=2.0 \
     training.generation_metrics.cfg_mode=zero_star \
-    training.name=exp1n_test_genmetrics_v2_
+    training.name=exp1n_test_genmetrics_v3_

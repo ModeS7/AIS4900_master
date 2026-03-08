@@ -452,8 +452,14 @@ def compute_validation_losses(
 
             # Compute generation quality metrics (KID, CMMD)
             if trainer._gen_metrics is not None:
-                # Offload optimizer to CPU to free scattered GPU allocations
-                # (prevents memory fragmentation from blocking 3D generation)
+                # Defragment GPU memory before generation.
+                # After training, model/optimizer tensors are scattered across the GPU address space.
+                # The Conv3d im2col workspace at 256x256x160 needs ~18 GiB contiguous, which can't
+                # be allocated from fragmented free blocks. Fix: move everything to CPU, release all
+                # GPU segments, then move model back (fresh contiguous allocation).
+                gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
+
+                # 1. Move optimizer state to CPU
                 optimizer_offloaded = False
                 try:
                     if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
@@ -463,17 +469,22 @@ def compute_validation_losses(
                                     state[k] = v.cpu()
                         optimizer_offloaded = True
                 except Exception:
-                    pass  # Non-critical optimization
+                    pass
 
-                # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
+                # 2. Move model to CPU to free all scattered GPU allocations
+                model_device = next(gen_model.parameters()).device
+                gen_model.cpu()
+
+                # 3. Release ALL GPU memory (only CUDA Graph pools remain)
                 torch.cuda.synchronize()
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                try:
-                    gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
-                    gen_model.eval()
+                # 4. Move model back — allocates in fresh contiguous block
+                gen_model.to(model_device)
+                gen_model.eval()
 
+                try:
                     # Quick metrics every epoch
                     gen_results = trainer._gen_metrics.compute_epoch_metrics(
                         gen_model, trainer.strategy, trainer.mode
@@ -495,7 +506,6 @@ def compute_validation_losses(
                     logger.exception(f"Generation metrics computation failed at epoch {epoch}: {e}")
                 finally:
                     # Unload feature extractors to free VRAM for next training backward pass
-                    # (prevents OOM at 256x256x160 where extractors + training compete for memory)
                     trainer._gen_metrics.unload_extractors()
                     # Reload optimizer state back to GPU
                     if optimizer_offloaded:
@@ -505,7 +515,7 @@ def compute_validation_losses(
                                     if isinstance(v, torch.Tensor) and not v.is_cuda:
                                         state[k] = v.to(trainer.device)
                         except Exception:
-                            pass  # Will be recreated on next backward if needed
+                            pass
                     gc.collect()
                     torch.cuda.empty_cache()
 
