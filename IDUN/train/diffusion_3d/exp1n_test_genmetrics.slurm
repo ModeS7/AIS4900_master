@@ -7,18 +7,20 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp1n_test_genmetrics"
+#SBATCH --job-name="exp1n_test_genmetrics_v2"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp1n/%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1n/%j.err
 
-# Test: Verify generation metrics OOM fix (@torch.no_grad on 3D streaming)
+# Test v2: OOM fix for 3D generation metrics
+# Fix: @torch.no_grad on generate() + optimizer CPU offload during gen metrics
 # Short run: 3 epochs, should see generation metrics succeed (not OOM)
+# IMPORTANT: Must sync code to cluster before submitting!
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Test: 3D Gen Metrics OOM Fix ==="
+echo "=== Test v2: 3D Gen Metrics OOM Fix ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -27,6 +29,14 @@ module load Anaconda3/2024.02-1
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
+
+# Verify fix is deployed: check for @torch.no_grad on generate()
+python -c "
+import inspect, medgen.diffusion.strategy_rflow as m
+src = inspect.getsource(m.RFlowStrategy.generate)
+assert 'no_grad' in inspect.getsource(m.RFlowStrategy.generate) or hasattr(m.RFlowStrategy.generate, '__wrapped__'), 'ERROR: @torch.no_grad not on generate()! Sync code first.'
+print('OK: @torch.no_grad verified on RFlowStrategy.generate()')
+"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
@@ -46,4 +56,4 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.conditioning_dropout.prob=0.15 \
     training.generation_metrics.cfg_scale=2.0 \
     training.generation_metrics.cfg_mode=zero_star \
-    training.name=exp1n_test_genmetrics_
+    training.name=exp1n_test_genmetrics_v2_

@@ -768,6 +768,7 @@ class RFlowStrategy(DiffusionStrategy):
 
         return noisy_images
 
+    @torch.no_grad()
     def generate(
         self,
         model: nn.Module,

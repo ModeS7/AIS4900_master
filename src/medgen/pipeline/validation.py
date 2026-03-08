@@ -452,8 +452,22 @@ def compute_validation_losses(
 
             # Compute generation quality metrics (KID, CMMD)
             if trainer._gen_metrics is not None:
+                # Offload optimizer to CPU to free scattered GPU allocations
+                # (prevents memory fragmentation from blocking 3D generation)
+                optimizer_offloaded = False
+                try:
+                    if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                        for state in trainer.optimizer.state.values():
+                            for k, v in state.items():
+                                if isinstance(v, torch.Tensor) and v.is_cuda:
+                                    state[k] = v.cpu()
+                        optimizer_offloaded = True
+                except Exception:
+                    pass  # Non-critical optimization
+
                 # Clear fragmented memory before generation (prevents OOM from reserved-but-unused memory)
                 torch.cuda.synchronize()
+                gc.collect()
                 torch.cuda.empty_cache()
 
                 try:
@@ -483,6 +497,15 @@ def compute_validation_losses(
                     # Unload feature extractors to free VRAM for next training backward pass
                     # (prevents OOM at 256x256x160 where extractors + training compete for memory)
                     trainer._gen_metrics.unload_extractors()
+                    # Reload optimizer state back to GPU
+                    if optimizer_offloaded:
+                        try:
+                            for state in trainer.optimizer.state.values():
+                                for k, v in state.items():
+                                    if isinstance(v, torch.Tensor) and not v.is_cuda:
+                                        state[k] = v.to(trainer.device)
+                        except Exception:
+                            pass  # Will be recreated on next backward if needed
                     gc.collect()
                     torch.cuda.empty_cache()
 

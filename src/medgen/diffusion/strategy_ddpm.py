@@ -227,6 +227,7 @@ class DDPMStrategy(DiffusionStrategy):
             (batch_size,), device=device
         ).long()
 
+    @torch.no_grad()
     def generate(
         self,
         model: nn.Module,
