@@ -7,21 +7,23 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp1n_test_genmetrics_v6"
+#SBATCH --job-name="exp1n_test_genmetrics_v7"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp1n/%j.out
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1n/%j.err
 
-# Test v6: Fix OOM in diversity LPIPS + CUDA Graph pool accumulation
-# v5 fixed generation (Phase 1 succeeded) but diversity LPIPS created 9.59 GiB
-# of CUDA Graph private pools via torch.compile(mode="reduce-overhead").
-# Fix: use_compile=False for 3D diversity LPIPS + clear_metric_caches before defrag
+# Test v7: Fix CMMD O(N²) kernel matrix OOM for tri-planar features
+# v6 fixed CUDA Graph pools. But compute_cmmd creates [N,N] kernel matrices;
+# for 69,510 tri-planar features (105 vols × 662 slices), K(ref,ref) = 18 GiB.
+# Computing distances = xx+yy.T-2*xy needs 4×18 = 72 GiB simultaneously.
+# Epoch 1: 80 GiB free → fits. Epoch 2: 62 GiB free → OOM.
+# Fix: (1) Subsample CMMD to max_samples=10K  (2) Move cond masks to CPU during defrag
 # IMPORTANT: Must sync code to cluster before submitting!
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Test v6: Diversity LPIPS + CUDA Graph Fix ==="
+echo "=== Test v7: CMMD Subsample + Defrag Conditioning Fix ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -47,6 +49,14 @@ import medgen.pipeline.validation as v
 src = inspect.getsource(v.run_validation)
 assert 'clear_metric_caches' in src, 'ERROR: clear_metric_caches not deployed!'
 print('OK: All v6 fixes verified')
+# Check v7: CMMD subsampling
+import medgen.metrics.generation as gen
+src = inspect.getsource(gen.compute_cmmd)
+assert 'max_samples' in src, 'ERROR: CMMD max_samples subsampling not deployed!'
+# Check v7: Conditioning masks CPU offload during defrag
+src = inspect.getsource(v.run_validation)
+assert '_cond_tensors' in src, 'ERROR: Cond masks CPU offload not deployed!'
+print('OK: All v7 fixes verified')
 "
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
@@ -67,4 +77,4 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.conditioning_dropout.prob=0.15 \
     training.generation_metrics.cfg_scale=2.0 \
     training.generation_metrics.cfg_mode=zero_star \
-    training.name=exp1n_test_genmetrics_v6_
+    training.name=exp1n_test_genmetrics_v7_

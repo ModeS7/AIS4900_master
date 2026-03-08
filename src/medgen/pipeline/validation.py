@@ -489,6 +489,18 @@ def compute_validation_losses(
                 gen_model.cpu()
                 logger.info(f"[GenMetrics] After model to CPU: {_mb():.2f} GiB allocated")
 
+                # 2b. Move conditioning masks to CPU so their allocations don't pin
+                # large expandable_segments, preventing empty_cache from freeing them.
+                gm = trainer._gen_metrics
+                _cond_tensors: list[tuple[str, torch.Tensor | None]] = []
+                for attr in ('fixed_conditioning_masks', 'fixed_gt_images',
+                             'fixed_size_bins', 'fixed_bin_maps'):
+                    t = getattr(gm, attr, None)
+                    if t is not None and t.is_cuda:
+                        _cond_tensors.append((attr, t))
+                        setattr(gm, attr, t.cpu())
+                logger.info(f"[GenMetrics] After cond to CPU: {_mb():.2f} GiB allocated")
+
                 # 3. Release ALL GPU memory (only CUDA Graph pools remain)
                 torch.cuda.synchronize()
                 gc.collect()
@@ -498,6 +510,10 @@ def compute_validation_losses(
                 # 4. Move model back — allocates in fresh contiguous block
                 gen_model.to(model_device)
                 gen_model.eval()
+                # Move conditioning masks back to GPU
+                for attr, _ in _cond_tensors:
+                    t = getattr(gm, attr)
+                    setattr(gm, attr, t.to(model_device))
                 logger.info(f"[GenMetrics] After model back to GPU: {_mb():.2f} GiB allocated, {torch.cuda.mem_get_info()[0]/1e9:.2f} GiB free")
 
                 try:

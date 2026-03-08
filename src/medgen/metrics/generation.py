@@ -262,22 +262,37 @@ def compute_cmmd(
     real_features: torch.Tensor,
     generated_features: torch.Tensor,
     kernel_bandwidth: float | None = None,
+    max_samples: int = 10_000,
 ) -> float:
     """Compute CLIP Maximum Mean Discrepancy with RBF kernel.
 
     CMMD uses an RBF (Gaussian) kernel on CLIP embeddings. The bandwidth
     is set using the median heuristic if not provided.
 
+    When feature count exceeds max_samples, random subsampling avoids O(N²)
+    memory for kernel matrices. For example, 70K tri-planar 3D features would
+    create 18 GiB kernel matrices without subsampling.
+
     Args:
         real_features: Real image CLIP features [N, D].
         generated_features: Generated image CLIP features [M, D].
         kernel_bandwidth: RBF kernel bandwidth (sigma). If None, uses median heuristic.
+        max_samples: Cap feature count to avoid O(N²) OOM. 0 disables subsampling.
 
     Returns:
         CMMD value (lower is better).
     """
     real_features = real_features.float()
     generated_features = generated_features.float()
+
+    # Subsample to avoid O(N²) OOM on large feature sets (e.g., 3D tri-planar)
+    if max_samples > 0:
+        if real_features.shape[0] > max_samples:
+            idx = torch.randperm(real_features.shape[0])[:max_samples]
+            real_features = real_features[idx]
+        if generated_features.shape[0] > max_samples:
+            idx = torch.randperm(generated_features.shape[0])[:max_samples]
+            generated_features = generated_features[idx]
 
     # L2 normalize features (CLIP embeddings are typically normalized)
     real_features = F.normalize(real_features, p=2, dim=1)
@@ -306,6 +321,7 @@ def compute_cmmd(
         yy = (y ** 2).sum(dim=1, keepdim=True)
         xy = x @ y.T
         distances = xx + yy.T - 2 * xy
+        del xy  # Free 18 GiB early for large N
         return torch.exp(-distances / (2 * sigma ** 2))
 
     # Compute kernel matrices
@@ -321,15 +337,10 @@ def compute_cmmd(
         logger.warning(f"CMMD requires >= 2 samples (got real={n}, gen={m})")
         return 0.0
 
-    # Zero diagonal for unbiased estimate
-    k_rr_no_diag = k_rr.clone()
-    k_rr_no_diag.fill_diagonal_(0)
-    k_gg_no_diag = k_gg.clone()
-    k_gg_no_diag.fill_diagonal_(0)
-
+    # Compute diagonal-excluded sums directly (avoids cloning N² matrices)
     mmd_squared = (
-        k_rr_no_diag.sum() / (n * (n - 1)) +
-        k_gg_no_diag.sum() / (m * (m - 1)) -
+        (k_rr.sum() - k_rr.trace()) / (n * (n - 1)) +
+        (k_gg.sum() - k_gg.trace()) / (m * (m - 1)) -
         2 * k_rg.sum() / (n * m)
     )
 
