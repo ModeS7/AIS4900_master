@@ -393,6 +393,7 @@ def generate_samples(
     return result
 
 
+@torch.no_grad()
 def generate_and_extract_features_3d_streaming(
     self_: GenerationMetrics,
     model: nn.Module,
