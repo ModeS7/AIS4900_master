@@ -63,6 +63,8 @@ evaluate_experiment() {
         --folds $FOLDS \
         --nnunet-base "${NNUNET_BASE}" \
         --nnunet-results "${NNUNET_RESULTS}" \
+        --trainer nnUNetTrainerBrainMets \
+        --plans nnUNetResEncUNetLPlans \
         $syn_flag \
         || echo "WARNING: Evaluation failed for $experiment"
 }

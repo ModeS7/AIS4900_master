@@ -63,6 +63,8 @@ time python -m medgen.scripts.train_nnunet \
     --fold ${FOLD} \
     --nnunet-base "${NNUNET_BASE}" \
     --nnunet-results "${NNUNET_RESULTS}" \
+    --trainer nnUNetTrainerBrainMets \
+    --plans nnUNetResEncUNetLPlans \
     ${CONTINUE_FLAG} &
 
 PID=$!
@@ -77,5 +79,7 @@ if [ $TRAIN_EXIT -eq 0 ]; then
         --folds ${FOLD} \
         --nnunet-base "${NNUNET_BASE}" \
         --nnunet-results "${NNUNET_RESULTS}" \
+        --trainer nnUNetTrainerBrainMets \
+        --plans nnUNetResEncUNetLPlans \
         || echo "WARNING: Evaluation failed"
 fi
