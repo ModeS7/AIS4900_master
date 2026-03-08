@@ -20,7 +20,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
-from ema_pytorch import EMA
+from ema_pytorch import EMA, PostHocEMA
 from omegaconf import DictConfig
 from torch import nn
 from torch.amp import autocast
@@ -58,6 +58,45 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PostHocEMAWrapper:
+    """Thin adapter for PostHocEMA exposing the same interface as ema_pytorch.EMA.
+
+    This wrapper allows the rest of the codebase (validation, evaluation,
+    checkpoint_manager) to use ``wrapper.ema_model``, ``wrapper.update()``,
+    ``wrapper.state_dict()``, and ``wrapper.load_state_dict()`` identically
+    to the standard ``EMA`` class — zero downstream changes needed.
+
+    The ``.ema_model`` property returns the first KarrasEMA's model copy,
+    which is continuously updated during training and serves as the "live"
+    EMA model for validation/generation.
+    """
+
+    def __init__(self, phema: PostHocEMA) -> None:
+        self._phema = phema
+
+    @property
+    def ema_model(self) -> nn.Module:
+        """Return the first KarrasEMA's model for inference (same role as EMA.ema_model)."""
+        return self._phema.ema_models[0].model
+
+    def update(self) -> None:
+        """Update all internal KarrasEMA models + auto-checkpoint."""
+        self._phema.update()
+
+    def state_dict(self) -> dict:
+        """Delegate to PostHocEMA.state_dict() for checkpoint saving."""
+        return self._phema.state_dict()
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """Delegate to PostHocEMA.load_state_dict() for checkpoint loading."""
+        self._phema.load_state_dict(state_dict)
+
+    @property
+    def phema(self) -> PostHocEMA:
+        """Access the underlying PostHocEMA for synthesis and advanced operations."""
+        return self._phema
 
 
 class DiffusionTrainer(DiffusionTrainerBase):
@@ -408,9 +447,44 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self._setup_checkpoint_manager()
 
     def _setup_ema(self) -> None:
-        """Setup EMA wrapper if enabled."""
-        if self.use_ema:
-            ema_cfg = self.cfg.training.get('ema', {})
+        """Setup EMA wrapper if enabled.
+
+        Supports two modes:
+        - 'standard': Classical EMA with fixed decay (ema_pytorch.EMA)
+        - 'post_hoc': Karras EDM2 PostHocEMA with multiple sigma_rel profiles,
+          enabling post-training reconstruction of any decay rate.
+        """
+        if not self.use_ema:
+            return
+
+        ema_cfg = self.cfg.training.get('ema', {})
+        ema_mode = ema_cfg.get('mode', 'standard')
+
+        if ema_mode == 'post_hoc':
+            sigma_rels = tuple(ema_cfg.get('sigma_rels', [0.05, 0.28]))
+            checkpoint_every = int(ema_cfg.get('checkpoint_every_num_steps', 5000))
+            update_every = int(ema_cfg.get('update_every', 10))
+
+            # PostHocEMA checkpoint folder inside the run directory
+            checkpoint_folder = str(self.save_dir / 'phema_checkpoints')
+
+            phema = PostHocEMA(
+                self.model_raw,
+                sigma_rels=sigma_rels,
+                update_after_step=int(ema_cfg.get('update_after_step', 100)),
+                update_every=update_every,
+                checkpoint_every_num_steps=checkpoint_every,
+                checkpoint_folder=checkpoint_folder,
+            )
+            self.ema = PostHocEMAWrapper(phema)
+
+            if self.is_main_process:
+                logger.info(
+                    f"Post-hoc EMA enabled: sigma_rels={list(sigma_rels)}, "
+                    f"checkpoint_every={checkpoint_every} steps, "
+                    f"folder={checkpoint_folder}"
+                )
+        else:
             self.ema = EMA(
                 self.model_raw,
                 beta=self.ema_decay,

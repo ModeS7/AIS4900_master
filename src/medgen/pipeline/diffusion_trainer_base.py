@@ -25,11 +25,14 @@ Dimension-specific functionality (implemented in subclasses):
 import logging
 import random
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from ema_pytorch import EMA
 from omegaconf import DictConfig
+
+if TYPE_CHECKING:
+    from .trainer import PostHocEMAWrapper
 from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
@@ -88,7 +91,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # EMA configuration (shared)
         self.use_ema: bool = cfg.training.get('use_ema', False)
         self.ema_decay: float = cfg.training.get('ema', {}).get('decay', 0.9999)
-        self.ema: EMA | None = None
+        self.ema: EMA | PostHocEMAWrapper | None = None
 
         # Global step counter
         self._global_step: int = 0

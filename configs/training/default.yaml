@@ -136,6 +136,11 @@ ema:
   decay: 0.9999            # EMA decay rate (0.999-0.9999)
   update_after_step: 100   # Start EMA after this many steps
   update_every: 10         # Update EMA every N steps
+  mode: standard           # 'standard' (ema_pytorch.EMA) or 'post_hoc' (Karras EDM2 PostHocEMA)
+  # Post-hoc EMA settings (only used when mode=post_hoc)
+  # Reference: Karras et al., "Analyzing and Improving the Training Dynamics of Diffusion Models" (EDM2, CVPR 2024)
+  sigma_rels: [0.05, 0.28] # Power-function profiles (need ≥2 distinct values)
+  checkpoint_every_num_steps: 5000  # Snapshot interval for post-hoc synthesis
 
 # Min-SNR Loss Weighting (DDPM ONLY)
 # Reweights per-sample loss by timestep to prevent high-noise step domination.
