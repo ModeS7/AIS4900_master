@@ -375,11 +375,7 @@ def main():
         model, str(phema_folder), sigma_rels=training_sigma_rels,
     )
 
-    # ─── Setup validation dataloader for conditioning ─────────────────────
-    logger.info("Setting up validation dataloader...")
-    from medgen.data.loaders import create_bravo_3d_dataloader
-
-    # Load config from checkpoint to get data params
+    # ─── Load config from checkpoint to get data params ─────────────────
     ckpt = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
     cfg = ckpt.get('config', {})
 
