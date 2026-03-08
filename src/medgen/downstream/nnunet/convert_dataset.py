@@ -55,6 +55,14 @@ CLIP_MAX = {
     't1_gd': 1353,
 }
 
+# Canonical affine for 256x256x150 brain volumes (240mm FOV).
+# In-plane: 240mm / 256px = 0.9375mm. Through-plane: 1.0mm.
+# Real data NIfTI headers incorrectly report [1, 1, 1] spacing;
+# synthetic data correctly reports [0.9375, 0.9375, 1.0].
+# All output files use this affine so nnU-Net sees consistent spacing
+# and does not resample between real and synthetic data.
+CANONICAL_AFFINE = np.diag([0.9375, 0.9375, 1.0, 1.0])
+
 def _resolve_modalities(modality: str | list[str]) -> list[str]:
     """Resolve modality argument to list of NIfTI file stems.
 
@@ -109,7 +117,7 @@ def _convert_label(src_path: str, dst_path: str) -> None:
     nii = nib.load(src_path)
     data = nii.get_fdata()
     binary = (data > 0.5).astype(np.uint8)
-    out = nib.Nifti1Image(binary, nii.affine)
+    out = nib.Nifti1Image(binary, CANONICAL_AFFINE)
     if os.path.exists(dst_path):
         os.remove(dst_path)
     nib.save(out, dst_path)
@@ -124,7 +132,7 @@ def _normalize_to_unit(src_path: str, dst_path: str, clip_max: float) -> None:
     nii = nib.load(src_path)
     data = np.clip(nii.get_fdata().astype(np.float32), 0.0, clip_max) / clip_max
 
-    out = nib.Nifti1Image(data, nii.affine)
+    out = nib.Nifti1Image(data, CANONICAL_AFFINE)
     if os.path.exists(dst_path):
         os.remove(dst_path)
     nib.save(out, dst_path)
