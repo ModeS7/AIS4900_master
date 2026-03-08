@@ -442,21 +442,12 @@ def generate_and_extract_features_3d_streaming(
     # Check if conditioning must be encoded (latent/wavelet/pixel normalization)
     encode_cond = self_.space is not None and self_.space.encode_conditioning
 
-    def _mb() -> float:
-        return torch.cuda.memory_allocated() / 1e9
-
-    def _free() -> float:
-        return torch.cuda.mem_get_info()[0] / 1e9
-
     # =====================================================================
     # Phase 1: Generate all samples (extractors unloaded for max GPU memory)
     # =====================================================================
     # Unload any extractors loaded from cache_reference_features or prior epochs
     self_.unload_extractors()
     torch.cuda.empty_cache()
-
-    logger.info(f"[3D GenMetrics] Phase 1: Generating {num_to_generate} samples "
-                f"(extractors unloaded, {_mb():.2f} GiB allocated, {_free():.2f} GiB free)")
     model.eval()
     cpu_samples = []
 
@@ -520,8 +511,7 @@ def generate_and_extract_features_3d_streaming(
             del noise_pre, noise_gd
         torch.cuda.empty_cache()
 
-    logger.info(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU "
-                f"({_mb():.2f} GiB allocated, {_free():.2f} GiB free)")
+    logger.info(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU")
 
     # Diversity samples (keep first 2 on CPU)
     max_diversity_samples = 2
@@ -540,7 +530,7 @@ def generate_and_extract_features_3d_streaming(
     orig_d = self_.config.original_depth
 
     # --- ResNet50 (ImageNet) ---
-    logger.info(f"[3D GenMetrics] Phase 2a: ResNet50 (ImageNet) features ({_mb():.2f} GiB allocated)")
+    logger.info("[3D GenMetrics] Phase 2a: ResNet50 (ImageNet) features")
     all_resnet = []
     all_resnet_3d = []
     for sample_cpu in cpu_samples:
@@ -555,7 +545,7 @@ def generate_and_extract_features_3d_streaming(
     all_resnet_rin = []
     all_resnet_rin_3d = []
     if has_resnet_rin:
-        logger.info(f"[3D GenMetrics] Phase 2b: ResNet50 (RadImageNet) features ({_mb():.2f} GiB allocated)")
+        logger.info("[3D GenMetrics] Phase 2b: ResNet50 (RadImageNet) features")
         for sample_cpu in cpu_samples:
             sample_gpu = sample_cpu.to(self_.device)
             all_resnet_rin.append(extract_features_batched(self_, sample_gpu, self_.resnet_rin).cpu())
@@ -565,7 +555,7 @@ def generate_and_extract_features_3d_streaming(
         torch.cuda.empty_cache()
 
     # --- BiomedCLIP ---
-    logger.info(f"[3D GenMetrics] Phase 2c: BiomedCLIP features ({_mb():.2f} GiB allocated)")
+    logger.info("[3D GenMetrics] Phase 2c: BiomedCLIP features")
     all_biomed = []
     all_biomed_3d = []
     for sample_cpu in cpu_samples:

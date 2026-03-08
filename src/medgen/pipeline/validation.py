@@ -467,12 +467,6 @@ def compute_validation_losses(
                 from medgen.metrics.quality import clear_metric_caches
                 clear_metric_caches()
                 gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
-                def _mb() -> float:
-                    return torch.cuda.memory_allocated() / 1e9
-
-                def _res() -> float:
-                    return torch.cuda.memory_reserved() / 1e9
-                logger.info(f"[GenMetrics] Start: {_mb():.2f} GiB allocated, {_res():.2f} GiB reserved")
 
                 # 1. Move optimizer state to CPU
                 optimizer_offloaded = False
@@ -485,12 +479,10 @@ def compute_validation_losses(
                         optimizer_offloaded = True
                 except Exception:
                     pass
-                logger.info(f"[GenMetrics] After optimizer offload: {_mb():.2f} GiB allocated")
 
                 # 2. Move model to CPU to free all scattered GPU allocations
                 model_device = next(gen_model.parameters()).device
                 gen_model.cpu()
-                logger.info(f"[GenMetrics] After model to CPU: {_mb():.2f} GiB allocated")
 
                 # 2b. Move conditioning masks to CPU so their allocations don't pin
                 # large expandable_segments, preventing empty_cache from freeing them.
@@ -502,13 +494,11 @@ def compute_validation_losses(
                     if t is not None and t.is_cuda:
                         _cond_tensors.append((attr, t))
                         setattr(gm, attr, t.cpu())
-                logger.info(f"[GenMetrics] After cond to CPU: {_mb():.2f} GiB allocated")
 
                 # 3. Release ALL GPU memory (only CUDA Graph pools remain)
                 torch.cuda.synchronize()
                 gc.collect()
                 torch.cuda.empty_cache()
-                logger.info(f"[GenMetrics] After empty_cache: {_mb():.2f} GiB allocated, {_res():.2f} GiB reserved, {torch.cuda.mem_get_info()[0]/1e9:.2f} GiB free")
 
                 # 4. Move model back — allocates in fresh contiguous block
                 gen_model.to(model_device)
@@ -517,7 +507,6 @@ def compute_validation_losses(
                 for attr, _ in _cond_tensors:
                     t = getattr(gm, attr)
                     setattr(gm, attr, t.to(model_device))
-                logger.info(f"[GenMetrics] After model back to GPU: {_mb():.2f} GiB allocated, {torch.cuda.mem_get_info()[0]/1e9:.2f} GiB free")
 
                 try:
                     # Quick metrics every epoch
