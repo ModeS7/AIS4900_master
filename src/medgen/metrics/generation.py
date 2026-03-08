@@ -417,18 +417,32 @@ class ReferenceFeatureCache:
         cache_dir: Path,
         device: torch.device,
         batch_size: int = 32,
+        resnet_rin_extractor: ResNet50Features | None = None,
+        original_depth: int | None = None,
     ) -> None:
         self.resnet = resnet_extractor
+        self.resnet_rin = resnet_rin_extractor
         self.biomed = biomed_extractor
         self.cache_dir = Path(cache_dir)
         self.device = device
         self.batch_size = batch_size
+        self.original_depth = original_depth
 
-        # Feature storage
+        # Feature storage (axial-only)
         self.train_resnet: torch.Tensor | None = None
         self.train_biomed: torch.Tensor | None = None
         self.val_resnet: torch.Tensor | None = None
         self.val_biomed: torch.Tensor | None = None
+        self.train_resnet_rin: torch.Tensor | None = None
+        self.val_resnet_rin: torch.Tensor | None = None
+
+        # Tri-planar feature storage (3D only)
+        self.train_resnet_3d: torch.Tensor | None = None
+        self.train_biomed_3d: torch.Tensor | None = None
+        self.val_resnet_3d: torch.Tensor | None = None
+        self.val_biomed_3d: torch.Tensor | None = None
+        self.train_resnet_rin_3d: torch.Tensor | None = None
+        self.val_resnet_rin_3d: torch.Tensor | None = None
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -438,6 +452,7 @@ class ReferenceFeatureCache:
         extractor: nn.Module,
         name: str,
         max_samples: int | None = None,
+        triplanar: bool = False,
     ) -> torch.Tensor:
         """Extract features from a dataloader, filtering for positive masks.
 
@@ -497,8 +512,14 @@ class ReferenceFeatureCache:
                 images = images[positive_mask]
 
             if is_3d:
-                # 3D: extract slice-wise features
-                features = extract_features_3d(images, extractor, chunk_size=self.batch_size)
+                # 3D: extract slice-wise features (axial-only or tri-planar)
+                if triplanar:
+                    features = extract_features_3d_triplanar(
+                        images, extractor, chunk_size=self.batch_size,
+                        original_depth=self.original_depth,
+                    )
+                else:
+                    features = extract_features_3d(images, extractor, chunk_size=self.batch_size)
                 all_features.append(features.cpu())
                 # For 3D, sample_count is number of slices
                 sample_count += features.shape[0]
@@ -524,6 +545,46 @@ class ReferenceFeatureCache:
         logger.info(f"Extracted {features.shape[0]} {name} features")
         return features
 
+    def _extract_triplanar_features(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        cache_data: dict[str, torch.Tensor],
+    ) -> None:
+        """Extract tri-planar features for all extractors and store in cache_data."""
+        logger.info("  Extracting tri-planar train ResNet50 (ImageNet) features...")
+        self.train_resnet_3d = self._extract_features_from_loader(
+            train_loader, self.resnet, "train_resnet_3d", triplanar=True,
+        )
+        logger.info("  Extracting tri-planar train BiomedCLIP features...")
+        self.train_biomed_3d = self._extract_features_from_loader(
+            train_loader, self.biomed, "train_biomed_3d", triplanar=True,
+        )
+        logger.info("  Extracting tri-planar val ResNet50 (ImageNet) features...")
+        self.val_resnet_3d = self._extract_features_from_loader(
+            val_loader, self.resnet, "val_resnet_3d", triplanar=True,
+        )
+        logger.info("  Extracting tri-planar val BiomedCLIP features...")
+        self.val_biomed_3d = self._extract_features_from_loader(
+            val_loader, self.biomed, "val_biomed_3d", triplanar=True,
+        )
+        cache_data['train_resnet_3d'] = self.train_resnet_3d
+        cache_data['train_biomed_3d'] = self.train_biomed_3d
+        cache_data['val_resnet_3d'] = self.val_resnet_3d
+        cache_data['val_biomed_3d'] = self.val_biomed_3d
+
+        if self.resnet_rin is not None:
+            logger.info("  Extracting tri-planar train ResNet50 (RadImageNet) features...")
+            self.train_resnet_rin_3d = self._extract_features_from_loader(
+                train_loader, self.resnet_rin, "train_resnet_rin_3d", triplanar=True,
+            )
+            logger.info("  Extracting tri-planar val ResNet50 (RadImageNet) features...")
+            self.val_resnet_rin_3d = self._extract_features_from_loader(
+                val_loader, self.resnet_rin, "val_resnet_rin_3d", triplanar=True,
+            )
+            cache_data['train_resnet_rin_3d'] = self.train_resnet_rin_3d
+            cache_data['val_resnet_rin_3d'] = self.val_resnet_rin_3d
+
     def extract_and_cache(
         self,
         train_loader: DataLoader,
@@ -547,16 +608,51 @@ class ReferenceFeatureCache:
             self.train_biomed = cached['train_biomed']
             self.val_resnet = get_with_fallbacks(cached, 'val_resnet', 'val_inception')
             self.val_biomed = cached['val_biomed']
+            self.train_resnet_rin = cached.get('train_resnet_rin')
+            self.val_resnet_rin = cached.get('val_resnet_rin')
+            # Load tri-planar features (may be missing from old caches)
+            self.train_resnet_3d = cached.get('train_resnet_3d')
+            self.val_resnet_3d = cached.get('val_resnet_3d')
+            self.train_biomed_3d = cached.get('train_biomed_3d')
+            self.val_biomed_3d = cached.get('val_biomed_3d')
+            self.train_resnet_rin_3d = cached.get('train_resnet_rin_3d')
+            self.val_resnet_rin_3d = cached.get('val_resnet_rin_3d')
             logger.info(
                 f"Loaded: train={self.train_resnet.shape[0]}, "
                 f"val={self.val_resnet.shape[0]} samples"
             )
+
+            updated = False
+
+            # Backfill RadImageNet features if missing from old cache
+            if self.resnet_rin is not None and self.train_resnet_rin is None:
+                logger.info("  RadImageNet features missing from cache, extracting...")
+                self.train_resnet_rin = self._extract_features_from_loader(
+                    train_loader, self.resnet_rin, "train_resnet_rin"
+                )
+                self.val_resnet_rin = self._extract_features_from_loader(
+                    val_loader, self.resnet_rin, "val_resnet_rin"
+                )
+                cached['train_resnet_rin'] = self.train_resnet_rin
+                cached['val_resnet_rin'] = self.val_resnet_rin
+                updated = True
+                logger.info("  Updated cache with RadImageNet features")
+
+            # Backfill tri-planar features if missing from old cache
+            if self.original_depth is not None and self.train_resnet_3d is None:
+                logger.info("  Tri-planar features missing from cache, extracting...")
+                self._extract_triplanar_features(train_loader, val_loader, cached)
+                updated = True
+                logger.info("  Updated cache with tri-planar features")
+
+            if updated:
+                torch.save(cached, cache_file)
             return
 
         logger.info("Extracting reference features (this happens once per experiment)...")
 
         # Extract train features
-        logger.info("  Extracting train ResNet50 features...")
+        logger.info("  Extracting train ResNet50 (ImageNet) features...")
         self.train_resnet = self._extract_features_from_loader(
             train_loader, self.resnet, "train_resnet"
         )
@@ -567,7 +663,7 @@ class ReferenceFeatureCache:
         )
 
         # Extract val features
-        logger.info("  Extracting val ResNet50 features...")
+        logger.info("  Extracting val ResNet50 (ImageNet) features...")
         self.val_resnet = self._extract_features_from_loader(
             val_loader, self.resnet, "val_resnet"
         )
@@ -577,13 +673,32 @@ class ReferenceFeatureCache:
             val_loader, self.biomed, "val_biomed"
         )
 
-        # Cache to disk
-        torch.save({
+        cache_data = {
             'train_resnet': self.train_resnet,
             'train_biomed': self.train_biomed,
             'val_resnet': self.val_resnet,
             'val_biomed': self.val_biomed,
-        }, cache_file)
+        }
+
+        # Extract RadImageNet features
+        if self.resnet_rin is not None:
+            logger.info("  Extracting train ResNet50 (RadImageNet) features...")
+            self.train_resnet_rin = self._extract_features_from_loader(
+                train_loader, self.resnet_rin, "train_resnet_rin"
+            )
+            logger.info("  Extracting val ResNet50 (RadImageNet) features...")
+            self.val_resnet_rin = self._extract_features_from_loader(
+                val_loader, self.resnet_rin, "val_resnet_rin"
+            )
+            cache_data['train_resnet_rin'] = self.train_resnet_rin
+            cache_data['val_resnet_rin'] = self.val_resnet_rin
+
+        # Extract tri-planar features for 3D data
+        if self.original_depth is not None:
+            self._extract_triplanar_features(train_loader, val_loader, cache_data)
+
+        # Cache to disk
+        torch.save(cache_data, cache_file)
         logger.info(f"Cached features to {cache_file}")
 
 
@@ -652,7 +767,8 @@ class GenerationMetrics:
 
         # Initialize feature extractors (lazy-loaded)
         # For 3D: compile_extractors=False saves ~10GB VRAM from CUDA Graph pools
-        self.resnet = ResNet50Features(device, network_type=config.resnet_network_type, cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
+        self.resnet = ResNet50Features(device, network_type='imagenet', cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
+        self.resnet_rin = ResNet50Features(device, network_type='radimagenet', cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
         self.biomed = BiomedCLIPFeatures(device, cache_dir=config.cache_dir, compile_model=config.compile_extractors)
 
         # Reference feature cache
@@ -662,6 +778,8 @@ class GenerationMetrics:
             Path(config.cache_dir),
             device,
             config.feature_batch_size,
+            resnet_rin_extractor=self.resnet_rin,
+            original_depth=config.original_depth,
         )
 
         # Fixed conditioning masks (loaded once, used every epoch)
@@ -691,8 +809,8 @@ class GenerationMetrics:
     def _extract_features_batched(self, samples, extractor, batch_size=None):
         return extract_features_batched(self, samples, extractor, batch_size)
 
-    def _compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix=""):
-        return compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix)
+    def _compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix="", gen_resnet_rin=None, ref_resnet_rin=None):
+        return compute_metrics_against_reference(self, gen_resnet, gen_biomed, ref_resnet, ref_biomed, prefix, gen_resnet_rin=gen_resnet_rin, ref_resnet_rin=ref_resnet_rin)
 
     def _compute_diversity_metrics(self, samples, prefix=""):
         return compute_diversity_metrics(self, samples, prefix)
@@ -720,6 +838,7 @@ class GenerationMetrics:
         Extractors are lazy-loaded, so they'll reload on next use.
         """
         self.resnet.unload()
+        self.resnet_rin.unload()
         self.biomed.unload()
 
 
@@ -732,5 +851,6 @@ from .generation_3d import (  # noqa: F401
     compute_fid_3d,
     compute_kid_3d,
     extract_features_3d,
+    extract_features_3d_triplanar,
     volumes_to_slices,
 )

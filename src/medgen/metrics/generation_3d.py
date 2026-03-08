@@ -38,6 +38,32 @@ def volumes_to_slices(volumes: torch.Tensor) -> torch.Tensor:
     return volumes.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
 
 
+def _extract_chunks(
+    slices: torch.Tensor,
+    extractor: ResNet50Features | BiomedCLIPFeatures,
+    chunk_size: int,
+) -> torch.Tensor:
+    """Extract features from 2D slices in chunks to avoid GPU OOM.
+
+    Args:
+        slices: 4D tensor [N, C, H, W] of 2D slices.
+        extractor: 2D feature extractor.
+        chunk_size: Number of slices per forward pass.
+
+    Returns:
+        Feature tensor [N, feat_dim].
+    """
+    total_slices = slices.shape[0]
+    all_features = []
+    for start in range(0, total_slices, chunk_size):
+        end = min(start + chunk_size, total_slices)
+        chunk = slices[start:end]
+        features = extractor.extract_features(chunk)
+        all_features.append(features.cpu())
+        del features, chunk
+    return torch.cat(all_features, dim=0)
+
+
 def extract_features_3d(
     volumes: torch.Tensor,
     extractor: ResNet50Features | BiomedCLIPFeatures,
@@ -65,15 +91,57 @@ def extract_features_3d(
     """
     # Reshape to axial slices
     slices = volumes_to_slices(volumes)  # [B*D, C, H, W]
-    total_slices = slices.shape[0]
+    return _extract_chunks(slices, extractor, chunk_size)
 
+
+def extract_features_3d_triplanar(
+    volumes: torch.Tensor,
+    extractor: ResNet50Features | BiomedCLIPFeatures,
+    chunk_size: int = 64,
+    original_depth: int | None = None,
+) -> torch.Tensor:
+    """Extract features from 3D volumes using all three anatomical planes.
+
+    Extracts axial, coronal, and sagittal slices from each volume and
+    computes features on all slices. This captures inter-plane consistency
+    that axial-only extraction misses.
+
+    Args:
+        volumes: 5D tensor [B, C, D, H, W] in [0, 1] range.
+        extractor: 2D feature extractor (ResNet50Features or BiomedCLIPFeatures).
+        chunk_size: Number of slices per forward pass.
+        original_depth: Original depth before padding. If provided, padded
+            slices are removed from the axial dimension before extraction.
+
+    Returns:
+        Feature tensor [B*(D+H+W), feat_dim] with features from all planes.
+    """
+    if volumes.dim() != 5:
+        raise ValueError(f"Expected 5D tensor [B,C,D,H,W], got {volumes.dim()}D")
+
+    # Remove padded slices (axial depth only)
+    if original_depth is not None:
+        current_depth = volumes.shape[2]
+        if current_depth > original_depth:
+            volumes = volumes[:, :, :original_depth, :, :]
+
+    B, C, D, H, W = volumes.shape
     all_features = []
-    for start in range(0, total_slices, chunk_size):
-        end = min(start + chunk_size, total_slices)
-        chunk = slices[start:end]
-        features = extractor.extract_features(chunk)
-        all_features.append(features.cpu())
-        del features, chunk
+
+    # Axial: [B,C,D,H,W] → [B*D, C, H, W]
+    axial = volumes.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+    all_features.append(_extract_chunks(axial, extractor, chunk_size))
+    del axial
+
+    # Coronal: [B,C,D,H,W] → [B*H, C, D, W]
+    coronal = volumes.permute(0, 3, 1, 2, 4).reshape(B * H, C, D, W)
+    all_features.append(_extract_chunks(coronal, extractor, chunk_size))
+    del coronal
+
+    # Sagittal: [B,C,D,H,W] → [B*W, C, D, H]
+    sagittal = volumes.permute(0, 4, 1, 2, 3).reshape(B * W, C, D, H)
+    all_features.append(_extract_chunks(sagittal, extractor, chunk_size))
+    del sagittal
 
     return torch.cat(all_features, dim=0)
 

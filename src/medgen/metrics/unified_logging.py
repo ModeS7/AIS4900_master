@@ -133,6 +133,9 @@ def log_generation(metrics: UnifiedMetrics, epoch: int, results: dict[str, float
         if key.startswith('Diversity/'):
             metric_name = key[len('Diversity/'):]
             metrics.writer.add_scalar(f'Generation_Diversity/{metric_name}', value, epoch)
+        elif key.startswith('3d_'):
+            metric_name = key[3:]
+            metrics.writer.add_scalar(f'Generation_3d/{metric_name}', value, epoch)
         else:
             metrics.writer.add_scalar(f'Generation/{key}', value, epoch)
 
@@ -163,6 +166,10 @@ def log_test_generation(
             metric_name = key[len('Diversity/'):]
             metrics.writer.add_scalar(f'{prefix}_diversity/{metric_name}{suffix}', value, 0)
             exported[f'gen_diversity_{metric_name.lower()}'] = value
+        elif key.startswith('3d_'):
+            metric_name = key[3:]
+            metrics.writer.add_scalar(f'{prefix}_generation_3d/{metric_name}{suffix}', value, 0)
+            exported[f'gen_3d_{metric_name.lower()}'] = value
         else:
             metrics.writer.add_scalar(f'{prefix}_generation/{key}{suffix}', value, 0)
             exported[f'gen_{key.lower()}'] = value

@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .generation import compute_cmmd, compute_fid, compute_kid
-from .generation_3d import extract_features_3d
+from .generation_3d import extract_features_3d, extract_features_3d_triplanar
 from .quality import (
     compute_lpips_diversity,
     compute_lpips_diversity_3d,
@@ -95,29 +95,42 @@ def compute_metrics_against_reference(
     ref_resnet: torch.Tensor,
     ref_biomed: torch.Tensor,
     prefix: str = "",
+    gen_resnet_rin: torch.Tensor | None = None,
+    ref_resnet_rin: torch.Tensor | None = None,
 ) -> dict[str, float]:
-    """Compute KID and CMMD against reference features.
+    """Compute KID, KID_RIN, and CMMD against reference features.
 
     Args:
         self_: GenerationMetrics instance.
-        gen_resnet: Generated ResNet50 features.
+        gen_resnet: Generated ResNet50 (ImageNet) features.
         gen_biomed: Generated BiomedCLIP features.
-        ref_resnet: Reference ResNet50 features.
+        ref_resnet: Reference ResNet50 (ImageNet) features.
         ref_biomed: Reference BiomedCLIP features.
         prefix: Prefix for metric names (e.g., "extended_").
+        gen_resnet_rin: Generated ResNet50 (RadImageNet) features.
+        ref_resnet_rin: Reference ResNet50 (RadImageNet) features.
 
     Returns:
         Dictionary of metric values.
     """
     results = {}
 
-    # KID
+    # KID (ImageNet)
     kid_mean, kid_std = compute_kid(
         ref_resnet.to(self_.device),
         gen_resnet.to(self_.device),
     )
     results[f'{prefix}KID_mean'] = kid_mean
     results[f'{prefix}KID_std'] = kid_std
+
+    # KID_RIN (RadImageNet)
+    if gen_resnet_rin is not None and ref_resnet_rin is not None:
+        kid_rin_mean, kid_rin_std = compute_kid(
+            ref_resnet_rin.to(self_.device),
+            gen_resnet_rin.to(self_.device),
+        )
+        results[f'{prefix}KID_RIN_mean'] = kid_rin_mean
+        results[f'{prefix}KID_RIN_std'] = kid_rin_std
 
     # CMMD
     cmmd = compute_cmmd(
@@ -127,6 +140,47 @@ def compute_metrics_against_reference(
     results[f'{prefix}CMMD'] = cmmd
 
     return results
+
+
+def _compute_triplanar_metrics(
+    self_: GenerationMetrics,
+    streaming: Any,
+    results: dict[str, float],
+    prefix: str = "",
+) -> None:
+    """Compute tri-planar metrics from StreamingFeatures and append to results.
+
+    Args:
+        self_: GenerationMetrics instance.
+        streaming: StreamingFeatures with resnet_3d/biomed_3d/resnet_rin_3d.
+        results: Dictionary to append results to (modified in-place).
+        prefix: Prefix for metric names (e.g., "extended_").
+    """
+    if streaming.resnet_3d is None or self_.cache.train_resnet_3d is None:
+        return
+
+    # Tri-planar vs train
+    train_3d = compute_metrics_against_reference(
+        self_, streaming.resnet_3d, streaming.biomed_3d,
+        self_.cache.train_resnet_3d, self_.cache.train_biomed_3d,
+        prefix=f"3d_{prefix}",
+        gen_resnet_rin=streaming.resnet_rin_3d,
+        ref_resnet_rin=self_.cache.train_resnet_rin_3d,
+    )
+    for key, value in train_3d.items():
+        results[f'{key}_train'] = value
+
+    # Tri-planar vs val
+    if self_.cache.val_resnet_3d is not None:
+        val_3d = compute_metrics_against_reference(
+            self_, streaming.resnet_3d, streaming.biomed_3d,
+            self_.cache.val_resnet_3d, self_.cache.val_biomed_3d,
+            prefix=f"3d_{prefix}",
+            gen_resnet_rin=streaming.resnet_rin_3d,
+            ref_resnet_rin=self_.cache.val_resnet_rin_3d,
+        )
+        for key, value in val_3d.items():
+            results[f'{key}_val'] = value
 
 
 def compute_diversity_metrics(
@@ -281,18 +335,20 @@ def compute_epoch_metrics(
 
         if is_3d:
             # 3D: Generate and extract features one at a time (streaming)
-            gen_resnet, gen_biomed, diversity_samples = generate_and_extract_features_3d_streaming(
+            streaming = generate_and_extract_features_3d_streaming(
                 self_, model, strategy, mode,
                 self_.config.samples_per_epoch,
                 self_.config.steps_per_epoch,
                 keep_samples_for_diversity=True,
             )
+            gen_resnet = streaming.resnet
+            gen_biomed = streaming.biomed
+            gen_resnet_rin = streaming.resnet_rin
 
             # Compute diversity metrics from kept samples (limited to 2 for 3D)
             diversity_metrics = {}
-            if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-                diversity_metrics = compute_diversity_metrics(self_, diversity_samples, prefix="")
-                del diversity_samples
+            if streaming.diversity_samples is not None and streaming.diversity_samples.shape[0] >= 2:
+                diversity_metrics = compute_diversity_metrics(self_, streaming.diversity_samples, prefix="")
 
             # Size bin metrics not supported in streaming mode for 3D
             size_bin_metrics = {}
@@ -306,6 +362,7 @@ def compute_epoch_metrics(
 
             # Extract features in batches
             gen_resnet = extract_features_batched(self_, samples, self_.resnet)
+            gen_resnet_rin = extract_features_batched(self_, samples, self_.resnet_rin)
             gen_biomed = extract_features_batched(self_, samples, self_.biomed)
 
             # Compute diversity metrics (2D - every epoch)
@@ -335,6 +392,8 @@ def compute_epoch_metrics(
             self_, gen_resnet, gen_biomed,
             self_.cache.train_resnet, self_.cache.train_biomed,
             prefix="",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.train_resnet_rin,
         )
         for key, value in train_metrics.items():
             results[f'{key}_train'] = value
@@ -344,9 +403,15 @@ def compute_epoch_metrics(
             self_, gen_resnet, gen_biomed,
             self_.cache.val_resnet, self_.cache.val_biomed,
             prefix="",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.val_resnet_rin,
         )
         for key, value in val_metrics.items():
             results[f'{key}_val'] = value
+
+        # Tri-planar metrics (3D only)
+        if is_3d:
+            _compute_triplanar_metrics(self_, streaming, results, prefix="")
 
         return results
 
@@ -386,18 +451,20 @@ def compute_extended_metrics(
 
         if is_3d:
             # 3D: Generate and extract features one at a time (streaming)
-            gen_resnet, gen_biomed, diversity_samples = generate_and_extract_features_3d_streaming(
+            streaming = generate_and_extract_features_3d_streaming(
                 self_, model, strategy, mode,
                 self_.config.samples_extended,
                 self_.config.steps_extended,
                 keep_samples_for_diversity=True,
             )
+            gen_resnet = streaming.resnet
+            gen_biomed = streaming.biomed
+            gen_resnet_rin = streaming.resnet_rin
 
             # Compute diversity metrics from kept samples (limited to 2 for 3D)
             diversity_metrics = {}
-            if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-                diversity_metrics = compute_diversity_metrics(self_, diversity_samples, prefix="extended_")
-                del diversity_samples
+            if streaming.diversity_samples is not None and streaming.diversity_samples.shape[0] >= 2:
+                diversity_metrics = compute_diversity_metrics(self_, streaming.diversity_samples, prefix="extended_")
 
             # Size bin metrics not supported in streaming mode for 3D
             size_bin_metrics = {}
@@ -411,6 +478,7 @@ def compute_extended_metrics(
 
             # Extract features in batches
             gen_resnet = extract_features_batched(self_, samples, self_.resnet)
+            gen_resnet_rin = extract_features_batched(self_, samples, self_.resnet_rin)
             gen_biomed = extract_features_batched(self_, samples, self_.biomed)
 
             # Compute diversity metrics (2D - extended)
@@ -440,6 +508,8 @@ def compute_extended_metrics(
             self_, gen_resnet, gen_biomed,
             self_.cache.train_resnet, self_.cache.train_biomed,
             prefix="extended_",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.train_resnet_rin,
         )
         for key, value in train_metrics.items():
             results[f'{key}_train'] = value
@@ -449,9 +519,15 @@ def compute_extended_metrics(
             self_, gen_resnet, gen_biomed,
             self_.cache.val_resnet, self_.cache.val_biomed,
             prefix="extended_",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.val_resnet_rin,
         )
         for key, value in val_metrics.items():
             results[f'{key}_val'] = value
+
+        # Tri-planar metrics (3D only)
+        if is_3d:
+            _compute_triplanar_metrics(self_, streaming, results, prefix="extended_")
 
         return results
 
@@ -489,10 +565,19 @@ def compute_metrics_from_samples(
 
     # Extract features
     if is_3d:
-        gen_resnet = extract_features_3d(samples, self_.resnet, chunk_size=self_.config.feature_batch_size)
-        gen_biomed = extract_features_3d(samples, self_.biomed, chunk_size=self_.config.feature_batch_size)
+        chunk_sz = self_.config.feature_batch_size
+        gen_resnet = extract_features_3d(samples, self_.resnet, chunk_size=chunk_sz)
+        gen_resnet_rin = extract_features_3d(samples, self_.resnet_rin, chunk_size=chunk_sz)
+        gen_biomed = extract_features_3d(samples, self_.biomed, chunk_size=chunk_sz)
+
+        # Tri-planar features
+        orig_d = self_.config.original_depth
+        gen_resnet_3d = extract_features_3d_triplanar(samples, self_.resnet, chunk_sz, orig_d)
+        gen_resnet_rin_3d = extract_features_3d_triplanar(samples, self_.resnet_rin, chunk_sz, orig_d)
+        gen_biomed_3d = extract_features_3d_triplanar(samples, self_.biomed, chunk_sz, orig_d)
     else:
         gen_resnet = extract_features_batched(self_, samples, self_.resnet)
+        gen_resnet_rin = extract_features_batched(self_, samples, self_.resnet_rin)
         gen_biomed = extract_features_batched(self_, samples, self_.biomed)
 
     # Compute diversity metrics (3D: only when 2+ volumes, typically 4+ for extended/test)
@@ -515,6 +600,8 @@ def compute_metrics_from_samples(
         self_, gen_resnet, gen_biomed,
         self_.cache.train_resnet, self_.cache.train_biomed,
         prefix=prefix,
+        gen_resnet_rin=gen_resnet_rin,
+        ref_resnet_rin=self_.cache.train_resnet_rin,
     )
     for key, value in train_metrics.items():
         results[f'{key}_train'] = value
@@ -525,9 +612,21 @@ def compute_metrics_from_samples(
             self_, gen_resnet, gen_biomed,
             self_.cache.val_resnet, self_.cache.val_biomed,
             prefix=prefix,
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.val_resnet_rin,
         )
         for key, value in val_metrics.items():
             results[f'{key}_val'] = value
+
+    # Tri-planar metrics (3D only)
+    if is_3d and self_.cache.train_resnet_3d is not None:
+        from .generation_sampling import StreamingFeatures
+        tri = StreamingFeatures(
+            resnet=gen_resnet, biomed=gen_biomed, resnet_rin=gen_resnet_rin,
+            resnet_3d=gen_resnet_3d, biomed_3d=gen_biomed_3d,
+            resnet_rin_3d=gen_resnet_rin_3d, diversity_samples=None,
+        )
+        _compute_triplanar_metrics(self_, tri, results, prefix=prefix)
 
     return results
 
@@ -560,18 +659,20 @@ def compute_test_metrics(
 
     if is_3d:
         # 3D: Generate and extract features one at a time (streaming)
-        gen_resnet, gen_biomed, diversity_samples = generate_and_extract_features_3d_streaming(
+        streaming = generate_and_extract_features_3d_streaming(
             self_, model, strategy, mode,
             self_.config.samples_test,
             self_.config.steps_test,
             keep_samples_for_diversity=True,
         )
+        gen_resnet = streaming.resnet
+        gen_biomed = streaming.biomed
+        gen_resnet_rin = streaming.resnet_rin
 
         # Compute diversity metrics from kept samples (limited to 2 for 3D)
         diversity_metrics = {}
-        if diversity_samples is not None and diversity_samples.shape[0] >= 2:
-            diversity_metrics = compute_diversity_metrics(self_, diversity_samples, prefix="")
-            del diversity_samples
+        if streaming.diversity_samples is not None and streaming.diversity_samples.shape[0] >= 2:
+            diversity_metrics = compute_diversity_metrics(self_, streaming.diversity_samples, prefix="")
     else:
         # 2D: Use batched approach (more efficient for small samples)
         samples = generate_samples(
@@ -582,6 +683,7 @@ def compute_test_metrics(
 
         # Extract features in batches
         gen_resnet = extract_features_batched(self_, samples, self_.resnet)
+        gen_resnet_rin = extract_features_batched(self_, samples, self_.resnet_rin)
         gen_biomed = extract_features_batched(self_, samples, self_.biomed)
 
         # Compute diversity metrics (2D - test)
@@ -603,6 +705,12 @@ def compute_test_metrics(
             test_loader, self_.resnet, "test_resnet",
             max_samples=self_.config.samples_test,
         )
+        test_resnet_rin = None
+        if self_.resnet_rin is not None:
+            test_resnet_rin = self_.cache._extract_features_from_loader(
+                test_loader, self_.resnet_rin, "test_resnet_rin",
+                max_samples=self_.config.samples_test,
+            )
         test_biomed = self_.cache._extract_features_from_loader(
             test_loader, self_.biomed, "test_biomed",
             max_samples=self_.config.samples_test,
@@ -616,17 +724,20 @@ def compute_test_metrics(
                 "falling back to val reference for FID/KID/CMMD"
             )
             test_resnet = self_.cache.val_resnet
+            test_resnet_rin = self_.cache.val_resnet_rin
             test_biomed = self_.cache.val_biomed
 
         # FID (only for test)
         fid = compute_fid(test_resnet, gen_resnet)
         results['FID'] = fid
 
-        # KID and CMMD vs test
+        # KID, KID_RIN, and CMMD vs test
         test_metrics = compute_metrics_against_reference(
             self_, gen_resnet, gen_biomed,
             test_resnet, test_biomed,
             prefix="",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=test_resnet_rin,
         )
         results.update(test_metrics)
     else:
@@ -635,6 +746,8 @@ def compute_test_metrics(
             self_, gen_resnet, gen_biomed,
             self_.cache.val_resnet, self_.cache.val_biomed,
             prefix="",
+            gen_resnet_rin=gen_resnet_rin,
+            ref_resnet_rin=self_.cache.val_resnet_rin,
         )
         results.update(val_metrics)
 
@@ -644,5 +757,50 @@ def compute_test_metrics(
             gen_resnet,
         )
         results['FID'] = fid
+
+    # Tri-planar metrics (3D only)
+    if is_3d and streaming.resnet_3d is not None:
+        # Determine tri-planar reference features
+        if test_loader is not None:
+            # Extract tri-planar test reference features
+            test_resnet_3d = self_.cache._extract_features_from_loader(
+                test_loader, self_.resnet, "test_resnet_3d",
+                max_samples=self_.config.samples_test, triplanar=True,
+            )
+            test_biomed_3d = self_.cache._extract_features_from_loader(
+                test_loader, self_.biomed, "test_biomed_3d",
+                max_samples=self_.config.samples_test, triplanar=True,
+            )
+            test_resnet_rin_3d = None
+            if self_.resnet_rin is not None:
+                test_resnet_rin_3d = self_.cache._extract_features_from_loader(
+                    test_loader, self_.resnet_rin, "test_resnet_rin_3d",
+                    max_samples=self_.config.samples_test, triplanar=True,
+                )
+
+            # Fall back to val if test features empty
+            if test_resnet_3d.numel() == 0 or test_biomed_3d.numel() == 0:
+                test_resnet_3d = self_.cache.val_resnet_3d
+                test_biomed_3d = self_.cache.val_biomed_3d
+                test_resnet_rin_3d = self_.cache.val_resnet_rin_3d
+
+            if test_resnet_3d is not None:
+                tri_test = compute_metrics_against_reference(
+                    self_, streaming.resnet_3d, streaming.biomed_3d,
+                    test_resnet_3d, test_biomed_3d,
+                    prefix="3d_",
+                    gen_resnet_rin=streaming.resnet_rin_3d,
+                    ref_resnet_rin=test_resnet_rin_3d,
+                )
+                results.update(tri_test)
+        elif self_.cache.val_resnet_3d is not None:
+            tri_val = compute_metrics_against_reference(
+                self_, streaming.resnet_3d, streaming.biomed_3d,
+                self_.cache.val_resnet_3d, self_.cache.val_biomed_3d,
+                prefix="3d_",
+                gen_resnet_rin=streaming.resnet_rin_3d,
+                ref_resnet_rin=self_.cache.val_resnet_rin_3d,
+            )
+            results.update(tri_val)
 
     return results

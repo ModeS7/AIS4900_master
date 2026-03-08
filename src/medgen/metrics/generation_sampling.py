@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 import torch
@@ -24,6 +24,18 @@ if TYPE_CHECKING:
     from .generation import GenerationMetrics
 
 logger = logging.getLogger(__name__)
+
+
+class StreamingFeatures(NamedTuple):
+    """Features extracted during streaming 3D generation."""
+
+    resnet: torch.Tensor
+    biomed: torch.Tensor
+    resnet_rin: torch.Tensor | None
+    resnet_3d: torch.Tensor | None  # tri-planar
+    biomed_3d: torch.Tensor | None  # tri-planar
+    resnet_rin_3d: torch.Tensor | None  # tri-planar
+    diversity_samples: torch.Tensor | None
 
 
 def set_fixed_conditioning(
@@ -388,12 +400,11 @@ def generate_and_extract_features_3d_streaming(
     num_samples: int,
     num_steps: int,
     keep_samples_for_diversity: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+) -> StreamingFeatures:
     """Generate 3D samples and extract features in a streaming fashion.
 
-    Generates one sample at a time and extracts features immediately to
-    avoid memory accumulation. This prevents OOM from keeping all generated
-    volumes in memory simultaneously.
+    Generates one sample at a time and extracts both axial-only and
+    tri-planar features immediately to avoid memory accumulation.
 
     Args:
         self_: GenerationMetrics instance.
@@ -406,8 +417,7 @@ def generate_and_extract_features_3d_streaming(
             Only keeps first 2 samples to limit memory usage.
 
     Returns:
-        Tuple of (resnet_features, biomed_features, samples_for_diversity).
-        samples_for_diversity is None if keep_samples_for_diversity is False.
+        StreamingFeatures with axial and tri-planar features.
     """
     if self_.fixed_conditioning_masks is None:
         raise RuntimeError("Must call set_fixed_conditioning() first")
@@ -423,8 +433,14 @@ def generate_and_extract_features_3d_streaming(
 
     model.eval()
     all_resnet_features = []
+    all_resnet_rin_features = []
     all_biomed_features = []
+    # Tri-planar feature lists
+    all_resnet_3d_features = []
+    all_resnet_rin_3d_features = []
+    all_biomed_3d_features = []
     samples_for_diversity = [] if keep_samples_for_diversity else None
+    has_resnet_rin = self_.resnet_rin is not None
 
     # Limit diversity samples to 2 for 3D to avoid OOM
     max_diversity_samples = 2
@@ -497,12 +513,31 @@ def generate_and_extract_features_3d_streaming(
         if samples_for_diversity is not None and len(samples_for_diversity) < max_diversity_samples:
             samples_for_diversity.append(sample.cpu())
 
-        # Extract features immediately
+        # Extract axial features immediately
         from .generation_computation import extract_features_batched
         resnet_feat = extract_features_batched(self_, sample, self_.resnet)
-        biomed_feat = extract_features_batched(self_, sample, self_.biomed)
         all_resnet_features.append(resnet_feat.cpu())
+        if has_resnet_rin:
+            resnet_rin_feat = extract_features_batched(self_, sample, self_.resnet_rin)
+            all_resnet_rin_features.append(resnet_rin_feat.cpu())
+            del resnet_rin_feat
+        biomed_feat = extract_features_batched(self_, sample, self_.biomed)
         all_biomed_features.append(biomed_feat.cpu())
+
+        # Extract tri-planar features
+        from .generation_3d import extract_features_3d_triplanar
+        chunk_sz = self_.config.feature_batch_size
+        orig_d = self_.config.original_depth
+        resnet_3d_feat = extract_features_3d_triplanar(sample, self_.resnet, chunk_sz, orig_d)
+        all_resnet_3d_features.append(resnet_3d_feat.cpu())
+        del resnet_3d_feat
+        if has_resnet_rin:
+            rin_3d_feat = extract_features_3d_triplanar(sample, self_.resnet_rin, chunk_sz, orig_d)
+            all_resnet_rin_3d_features.append(rin_3d_feat.cpu())
+            del rin_3d_feat
+        biomed_3d_feat = extract_features_3d_triplanar(sample, self_.biomed, chunk_sz, orig_d)
+        all_biomed_3d_features.append(biomed_3d_feat.cpu())
+        del biomed_3d_feat
 
         # Clear GPU memory before next iteration
         del sample, model_input, noise, masks, resnet_feat, biomed_feat
@@ -512,7 +547,13 @@ def generate_and_extract_features_3d_streaming(
 
     # Concatenate all features
     gen_resnet = torch.cat(all_resnet_features, dim=0)
+    gen_resnet_rin = torch.cat(all_resnet_rin_features, dim=0) if all_resnet_rin_features else None
     gen_biomed = torch.cat(all_biomed_features, dim=0)
+
+    # Concatenate tri-planar features
+    gen_resnet_3d = torch.cat(all_resnet_3d_features, dim=0)
+    gen_resnet_rin_3d = torch.cat(all_resnet_rin_3d_features, dim=0) if all_resnet_rin_3d_features else None
+    gen_biomed_3d = torch.cat(all_biomed_3d_features, dim=0)
 
     # Concatenate diversity samples if kept
     diversity_tensor = None
@@ -522,7 +563,16 @@ def generate_and_extract_features_3d_streaming(
         samples_for_diversity.clear()
         del samples_for_diversity
 
-    del all_resnet_features, all_biomed_features
+    del all_resnet_features, all_resnet_rin_features, all_biomed_features
+    del all_resnet_3d_features, all_resnet_rin_3d_features, all_biomed_3d_features
     torch.cuda.empty_cache()
 
-    return gen_resnet, gen_biomed, diversity_tensor
+    return StreamingFeatures(
+        resnet=gen_resnet,
+        biomed=gen_biomed,
+        resnet_rin=gen_resnet_rin,
+        resnet_3d=gen_resnet_3d,
+        biomed_3d=gen_biomed_3d,
+        resnet_rin_3d=gen_resnet_rin_3d,
+        diversity_samples=diversity_tensor,
+    )
