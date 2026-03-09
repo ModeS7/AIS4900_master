@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-08:00:00
+#SBATCH --time=0-06:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -17,7 +17,7 @@
 # Architecture: UNet 270M (default_3d), channels [16,32,64,256,512,512]
 # Mode: bravo (in=2 [noisy_bravo, seg], out=1), raw [0,1] normalization
 # Strategy: RFlow (continuous timesteps)
-# Two checkpoints: earlier run (0119) and later run (0129)
+# Two checkpoints: 0301 (500 epochs) and 1000-epoch run (0301)
 
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
@@ -38,55 +38,55 @@ DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 COMMON_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --metric fid --ref-split test --seed 42"
 
 # ============================================================
-# exp1_1 (run 0119): earlier training run
+# exp1_1 (run 0301): 500-epoch pixel bravo
 # ============================================================
 echo ""
 echo "=========================================="
-echo "  exp1_1 (run 0119): Pixel RFlow 256x160"
+echo "  exp1_1 (run 0301): Pixel RFlow 256x160"
 echo "=========================================="
 
-CKPT_0119="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_best.pt"
-if [ ! -f "$CKPT_0119" ]; then
-    CKPT_0119="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
+CKPT_0301="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_best.pt"
+if [ ! -f "$CKPT_0301" ]; then
+    CKPT_0301="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"
 fi
-OUT_0119="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_0119"
+OUT_0301="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_0301"
 
-if [ -f "$CKPT_0119" ]; then
-    echo "Checkpoint: $CKPT_0119"
+if [ -f "$CKPT_0301" ]; then
+    echo "Checkpoint: $CKPT_0301"
     time python -m medgen.scripts.find_optimal_steps \
-        --checkpoint "${CKPT_0119}" \
-        --output-dir "${OUT_0119}" \
+        --checkpoint "${CKPT_0301}" \
+        --output-dir "${OUT_0301}" \
         ${COMMON_ARGS}
-    echo "--- exp1_1 (0119) results ---"
-    cat "${OUT_0119}/search_results.json"
+    echo "--- exp1_1 (0301) results ---"
+    cat "${OUT_0301}/search_results.json"
 else
-    echo "WARNING: No checkpoint found for exp1_1 run 0119, skipping"
+    echo "WARNING: No checkpoint found for exp1_1 run 0301, skipping"
 fi
 
 # ============================================================
-# exp1_1 (run 0129): later training run
+# exp1_1_1000 (run 0301): 1000-epoch pixel bravo
 # ============================================================
 echo ""
 echo "=========================================="
-echo "  exp1_1 (run 0129): Pixel RFlow 256x160"
+echo "  exp1_1_1000 (run 0301): Pixel RFlow 256x160 (1000 epochs)"
 echo "=========================================="
 
-CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260129-233435/checkpoint_best.pt"
-if [ ! -f "$CKPT_0129" ]; then
-    CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260129-233435/checkpoint_latest.pt"
+CKPT_1000="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_best.pt"
+if [ ! -f "$CKPT_1000" ]; then
+    CKPT_1000="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_latest.pt"
 fi
-OUT_0129="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_0129"
+OUT_1000="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_1000_0301"
 
-if [ -f "$CKPT_0129" ]; then
-    echo "Checkpoint: $CKPT_0129"
+if [ -f "$CKPT_1000" ]; then
+    echo "Checkpoint: $CKPT_1000"
     time python -m medgen.scripts.find_optimal_steps \
-        --checkpoint "${CKPT_0129}" \
-        --output-dir "${OUT_0129}" \
+        --checkpoint "${CKPT_1000}" \
+        --output-dir "${OUT_1000}" \
         ${COMMON_ARGS}
-    echo "--- exp1_1 (0129) results ---"
-    cat "${OUT_0129}/search_results.json"
+    echo "--- exp1_1_1000 (0301) results ---"
+    cat "${OUT_1000}/search_results.json"
 else
-    echo "WARNING: No checkpoint found for exp1_1 run 0129, skipping"
+    echo "WARNING: No checkpoint found for exp1_1_1000 run 0301, skipping"
 fi
 
 # ============================================================
@@ -96,10 +96,10 @@ echo ""
 echo "=========================================="
 echo "  ALL RESULTS SUMMARY"
 echo "=========================================="
-for RUN in 0119 0129; do
-    RESULT="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_${RUN}/search_results.json"
+for LABEL in 0301 1000_0301; do
+    RESULT="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_${LABEL}/search_results.json"
     if [ -f "$RESULT" ]; then
-        echo "--- exp1_1 (${RUN}) ---"
+        echo "--- exp1_1 (${LABEL}) ---"
         cat "$RESULT"
         echo ""
     fi
