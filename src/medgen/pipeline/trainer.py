@@ -472,7 +472,6 @@ class DiffusionTrainer(DiffusionTrainerBase):
             phema = PostHocEMA(
                 self.model_raw,
                 sigma_rels=sigma_rels,
-                update_after_step=int(ema_cfg.get('update_after_step', 100)),
                 update_every=update_every,
                 checkpoint_every_num_steps=checkpoint_every,
                 checkpoint_folder=checkpoint_folder,
