@@ -10,6 +10,7 @@ and implements 2D-specific diffusion training functionality:
 - Compiled forward paths for performance
 """
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import matplotlib
@@ -466,7 +467,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             update_every = int(ema_cfg.get('update_every', 10))
 
             # PostHocEMA checkpoint folder inside the run directory
-            checkpoint_folder = str(self.save_dir / 'phema_checkpoints')
+            checkpoint_folder = str(Path(self.save_dir) / 'phema_checkpoints')
 
             phema = PostHocEMA(
                 self.model_raw,
