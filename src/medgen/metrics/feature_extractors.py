@@ -73,7 +73,7 @@ class ResNet50Features(nn.Module):
                 model = models.resnet50(weights=None)
                 state_dict = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
                 model.load_state_dict(state_dict, strict=False)
-                logger.info(f"Loaded RadImageNet weights from {checkpoint_path}")
+                logger.debug(f"Loaded RadImageNet weights from {checkpoint_path}")
             else:
                 # Fallback to torch.hub
                 try:
@@ -82,7 +82,7 @@ class ResNet50Features(nn.Module):
                         model="radimagenet_resnet50",
                         verbose=False,
                     )
-                    logger.info("Loaded RadImageNet weights from torch.hub")
+                    logger.debug("Loaded RadImageNet weights from torch.hub")
                 except (FileNotFoundError, RuntimeError, ImportError) as e:
                     logger.error(
                         f"RadImageNet not available ({e}), falling back to ImageNet. "

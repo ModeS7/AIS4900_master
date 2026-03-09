@@ -511,7 +511,7 @@ def generate_and_extract_features_3d_streaming(
             del noise_pre, noise_gd
         torch.cuda.empty_cache()
 
-    logger.info(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU")
+    logger.debug(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU")
 
     # Diversity samples (keep first 2 on CPU)
     max_diversity_samples = 2
@@ -530,7 +530,7 @@ def generate_and_extract_features_3d_streaming(
     orig_d = self_.config.original_depth
 
     # --- ResNet50 (ImageNet) ---
-    logger.info("[3D GenMetrics] Phase 2a: ResNet50 (ImageNet) features")
+    logger.debug("[3D GenMetrics] Phase 2a: ResNet50 (ImageNet) features")
     all_resnet = []
     all_resnet_3d = []
     for sample_cpu in cpu_samples:
@@ -545,7 +545,7 @@ def generate_and_extract_features_3d_streaming(
     all_resnet_rin = []
     all_resnet_rin_3d = []
     if has_resnet_rin:
-        logger.info("[3D GenMetrics] Phase 2b: ResNet50 (RadImageNet) features")
+        logger.debug("[3D GenMetrics] Phase 2b: ResNet50 (RadImageNet) features")
         for sample_cpu in cpu_samples:
             sample_gpu = sample_cpu.to(self_.device)
             all_resnet_rin.append(extract_features_batched(self_, sample_gpu, self_.resnet_rin).cpu())
@@ -555,7 +555,7 @@ def generate_and_extract_features_3d_streaming(
         torch.cuda.empty_cache()
 
     # --- BiomedCLIP ---
-    logger.info("[3D GenMetrics] Phase 2c: BiomedCLIP features")
+    logger.debug("[3D GenMetrics] Phase 2c: BiomedCLIP features")
     all_biomed = []
     all_biomed_3d = []
     for sample_cpu in cpu_samples:
