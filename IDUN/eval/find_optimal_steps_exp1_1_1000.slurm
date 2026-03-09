@@ -7,13 +7,13 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="optim_exp1_1"
-#SBATCH --output=IDUN/output/eval/find_optimal_steps_exp1_1_%j.out
-#SBATCH --error=IDUN/output/eval/find_optimal_steps_exp1_1_%j.err
+#SBATCH --job-name="optim_exp1_1_1k"
+#SBATCH --output=IDUN/output/eval/find_optimal_steps_exp1_1_1000_%j.out
+#SBATCH --error=IDUN/output/eval/find_optimal_steps_exp1_1_1000_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# exp1_1: Pixel-space RFlow bravo (256x256x160)
+# exp1_1_1000: Pixel-space RFlow bravo (256x256x160), 1000 epochs
 # Architecture: UNet 270M (default_3d), channels [16,32,64,256,512,512]
 # Mode: bravo (in=2 [noisy_bravo, seg], out=1), raw [0,1] normalization
 # Strategy: RFlow (continuous timesteps)
@@ -22,7 +22,7 @@
 # === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Find Optimal Steps: exp1_1 (Pixel RFlow bravo 256x256x160) ==="
+echo "=== Find Optimal Steps: exp1_1_1000 (Pixel RFlow bravo 256x256x160, 1000 epochs) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 nvidia-smi
 
@@ -37,13 +37,13 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42"
 
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_best.pt"
+CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_best.pt"
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"
+    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_latest.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then
-    echo "ERROR: No checkpoint found for exp1_1, aborting"
+    echo "ERROR: No checkpoint found for exp1_1_1000, aborting"
     exit 1
 fi
 
@@ -54,10 +54,10 @@ echo "Checkpoint: $CKPT"
 # ============================================================
 echo ""
 echo "=========================================="
-echo "  exp1_1: Optimal steps by ImageNet FID"
+echo "  exp1_1_1000: Optimal steps by ImageNet FID"
 echo "=========================================="
 
-OUT_FID="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_fid"
+OUT_FID="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_1000_fid"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
@@ -73,10 +73,10 @@ cat "${OUT_FID}/search_results.json"
 # ============================================================
 echo ""
 echo "=========================================="
-echo "  exp1_1: Optimal steps by RadImageNet FID"
+echo "  exp1_1_1000: Optimal steps by RadImageNet FID"
 echo "=========================================="
 
-OUT_FID_RIN="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_fid_rin"
+OUT_FID_RIN="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_1000_fid_rin"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
@@ -92,7 +92,7 @@ cat "${OUT_FID_RIN}/search_results.json"
 # ============================================================
 echo ""
 echo "=========================================="
-echo "  RESULTS SUMMARY: exp1_1"
+echo "  RESULTS SUMMARY: exp1_1_1000"
 echo "=========================================="
 echo "--- ImageNet FID ---"
 cat "${OUT_FID}/search_results.json" 2>/dev/null
