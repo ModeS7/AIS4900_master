@@ -7,37 +7,25 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp6b_cn_s2"
+#SBATCH --job-name="exp6a_1_cn_s1"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp6b/%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp6b/%j.err
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp6a_1/%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp6a_1/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# Exp6b: 3D Pixel-Space Diffusion — Bravo ControlNet Stage 2 (128x128x160)
-# Architecture:
-#   - UNet: 270M (FROZEN from exp6a Stage 1)
-#   - ControlNet: Mirrors UNet encoder (~135M trainable params)
-# Mode: bravo — UNet in=1 (unconditional), ControlNet injects seg via residuals
+# Exp6a_1: 3D Pixel-Space Diffusion — Bravo ControlNet Stage 1 (256x256x160)
+# Architecture: 270M UNet (default_3d)
+#   - channels: [16, 32, 64, 256, 512, 512]
+#   - attention_levels: [false, false, false, false, true, true]
+#   - num_res_blocks: [1, 1, 1, 2, 2, 2]
+# Mode: bravo UNCONDITIONAL (in=1, out=1) — no seg mask input
 # Strategy: RFlow
-# Purpose: Train ControlNet for seg-conditioned bravo generation
-#
-# Prerequisites: exp6a Stage 1 checkpoint (unconditional UNet)
+# Purpose: Train unconditional UNet for ControlNet Stage 2
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp6b_pixel_bravo_controlnet_stage2_"
-
-STAGE1_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp6a_pixel_bravo_controlnet_stage1_rflow_128x160_20260130-033231/checkpoint_best.pt"
-
-if [ ! -f "$STAGE1_CHECKPOINT" ]; then
-    STAGE1_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp6a_pixel_bravo_controlnet_stage1_rflow_128x160_20260130-033231/checkpoint_latest.pt"
-fi
-
-if [ ! -f "$STAGE1_CHECKPOINT" ]; then
-    echo "ERROR: Stage 1 checkpoint not found for exp6a"
-    exit 1
-fi
+EXP_NAME="exp6a_1_pixel_bravo_controlnet_stage1_"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -76,10 +64,9 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp6b 3D Pixel Diffusion: Bravo ControlNet Stage 2 128x128x160 ==="
+echo "=== Exp6a_1 3D Pixel Diffusion: Bravo ControlNet Stage 1 256x256x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 echo "Run dir: ${CHAIN_RUN_DIR}"
-echo "Stage 1 checkpoint: ${STAGE1_CHECKPOINT}"
 nvidia-smi
 
 module purge
@@ -95,17 +82,14 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     strategy=rflow \
     mode=bravo \
     model=default_3d \
-    volume.height=128 \
-    volume.width=128 \
+    volume.height=256 \
+    volume.width=256 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
-    controlnet.enabled=true \
-    controlnet.freeze_unet=true \
-    controlnet.gradient_checkpointing=true \
-    pretrained_checkpoint=${STAGE1_CHECKPOINT} \
+    controlnet.stage1=true \
     training.name=${EXP_NAME} \
     ${CHAIN_ARGS} &
 
