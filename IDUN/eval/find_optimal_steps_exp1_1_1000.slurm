@@ -37,9 +37,9 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42"
 
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_best.pt"
+CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_latest.pt"
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_latest.pt"
+    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_best.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then
