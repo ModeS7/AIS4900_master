@@ -34,6 +34,10 @@ defaults:
   - paths: local      # local.yaml or cluster.yaml (AFTER training so it can override verbose)
   - _self_
 
+# Path to pretrained checkpoint for weight initialization (model weights only, no optimizer/scheduler).
+# Used for ControlNet Stage 2: load unconditional UNet from Stage 1.
+pretrained_checkpoint: null
+
 # Hydra configuration
 # Output structure: runs/diffusion_2d/{mode}/{exp_name}{strategy}_{size}_{timestamp}
 # Use training.name to add experiment prefix: training.name=exp1_ -> exp1_rflow_128_...

@@ -39,6 +39,10 @@ defaults:
   - optional controlnet: default     # ControlNet conditioning
   - _self_
 
+# Path to pretrained checkpoint for weight initialization (model weights only, no optimizer/scheduler).
+# Used for ControlNet Stage 2: load unconditional UNet from Stage 1.
+pretrained_checkpoint: null
+
 # 3D-specific training overrides
 training:
   batch_size: 1                    # 3D volumes need small batch

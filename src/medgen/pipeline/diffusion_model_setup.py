@@ -271,6 +271,17 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
                         f"weight={trainer.size_bin_aux_loss_weight}"
                     )
 
+    # Load pretrained UNet weights (e.g., Stage 1 checkpoint for ControlNet Stage 2)
+    # Must happen BEFORE ControlNet wrapping so model_raw gets the weights.
+    pretrained_ckpt = trainer.cfg.get('pretrained_checkpoint', None)
+    if pretrained_ckpt:
+        if trainer.is_main_process:
+            logger.info(f"Loading pretrained UNet weights from: {pretrained_ckpt}")
+        ckpt = torch.load(pretrained_ckpt, map_location=trainer.device, weights_only=False)
+        trainer.model_raw.load_state_dict(ckpt['model_state_dict'])
+        if trainer.is_main_process:
+            logger.info("Pretrained UNet weights loaded (optimizer/scheduler not restored)")
+
     # Setup ControlNet for pixel-resolution conditioning in latent diffusion
     if trainer.use_controlnet:
         if trainer.is_transformer:

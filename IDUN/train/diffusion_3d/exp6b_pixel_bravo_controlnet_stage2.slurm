@@ -105,7 +105,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     controlnet.enabled=true \
     controlnet.freeze_unet=true \
     controlnet.gradient_checkpointing=true \
-    pretrained_checkpoint=${STAGE1_CHECKPOINT} \
+    pretrained_checkpoint="${STAGE1_CHECKPOINT}" \
     training.name=${EXP_NAME} \
     ${CHAIN_ARGS} &
 
