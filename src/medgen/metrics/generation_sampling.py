@@ -303,6 +303,12 @@ def generate_samples(
     out_channels = model_config['out_channels']
     in_channels = model_config['in_channels']
 
+    # Override in_channels from actual model (handles ControlNet stage1 where
+    # mode says in=2 but model was built with in=1)
+    actual_model = model.module if hasattr(model, 'module') else model
+    if hasattr(actual_model, 'conv_in'):
+        in_channels = actual_model.conv_in[0].in_channels
+
     model.eval()
     all_samples = []
 
@@ -432,6 +438,12 @@ def generate_and_extract_features_3d_streaming(
     model_config = mode.get_model_config()
     out_channels = model_config['out_channels']
     in_channels = model_config['in_channels']
+
+    # Override in_channels from actual model (handles ControlNet stage1 where
+    # mode says in=2 but model was built with in=1)
+    actual_model = model.module if hasattr(model, 'module') else model
+    if hasattr(actual_model, 'conv_in'):
+        in_channels = actual_model.conv_in[0].in_channels
 
     # Cap at available masks
     num_available = self_.fixed_conditioning_masks.shape[0]
