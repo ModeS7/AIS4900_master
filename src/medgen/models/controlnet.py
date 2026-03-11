@@ -84,13 +84,15 @@ def create_controlnet_for_unet(
     logger.info(f"  num_res_blocks: {num_res_blocks}")
     logger.info(f"  conditioning_embedding: {cond_in_channels} -> {cond_num_channels}")
 
+    norm_num_groups = getattr(cfg.model, 'norm_num_groups', 32)
+
     controlnet = ControlNet(
         spatial_dims=spatial_dims,
         in_channels=latent_channels,  # Matches UNet input (latent space)
         num_res_blocks=num_res_blocks,
         channels=tuple(channels),
         attention_levels=tuple(attention_levels),
-        norm_num_groups=32,
+        norm_num_groups=norm_num_groups,
         num_head_channels=num_head_channels,
         conditioning_embedding_in_channels=cond_in_channels,
         conditioning_embedding_num_channels=cond_num_channels,
