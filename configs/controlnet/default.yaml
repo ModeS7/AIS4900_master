@@ -38,10 +38,13 @@ attention_levels: null              # Auto-match UNet attention_levels
 num_res_blocks: null                # Auto-match UNet num_res_blocks
 num_head_channels: null             # Auto-match UNet num_head_channels
 
-# Conditioning embedding: encodes pixel-space conditioning to latent resolution
-# Default (16, 32, 96, 256) = 3 stride-2 convs = 8x downsampling (matches 8x VAE)
+# Conditioning embedding: encodes conditioning to model input resolution
+# Each pair of channels creates a stride-2 conv, so len(channels)-1 = number of 2x downsamples.
+# - Latent diffusion (8x VAE): [16, 32, 96, 256] = 3 stride-2 = 8x downsample (conditioning at pixel res → latent res)
+# - Pixel-space diffusion: [16] = 0 stride-2 = no downsample (conditioning already at model input res)
+# Set to null for auto-detection based on latent.enabled
 conditioning_embedding_in_channels: 1       # Seg mask channels
-conditioning_embedding_num_channels: [16, 32, 96, 256]
+conditioning_embedding_num_channels: null    # null = auto-detect (pixel: [16], latent: [16, 32, 96, 256])
 
 # Training configuration
 freeze_unet: true                   # Freeze UNet weights (Stage 2 training)

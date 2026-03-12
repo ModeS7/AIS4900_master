@@ -72,7 +72,21 @@ def create_controlnet_for_unet(
 
     # Conditioning embedding config
     cond_in_channels = controlnet_cfg.get('conditioning_embedding_in_channels', 1)
-    cond_num_channels = controlnet_cfg.get('conditioning_embedding_num_channels', [16, 32, 96, 256])
+    cond_num_channels = controlnet_cfg.get('conditioning_embedding_num_channels', None)
+
+    # Auto-detect conditioning embedding based on pixel vs latent space
+    # Each pair of channels = 1 stride-2 conv. len(channels)-1 = number of 2x downsamples.
+    # - Pixel-space: conditioning is at model input resolution → no downsampling needed → [16]
+    # - Latent-space (8x VAE): conditioning at pixel res, model at latent res → 8x downsample → [16, 32, 96, 256]
+    if cond_num_channels is None:
+        latent_cfg = cfg.get('latent', {})
+        is_latent = latent_cfg.get('enabled', False) if latent_cfg else False
+        if is_latent:
+            cond_num_channels = (16, 32, 96, 256)  # 3 stride-2 = 8x downsample
+            logger.info("  conditioning_embedding: auto-detected LATENT space → 8x downsample [16, 32, 96, 256]")
+        else:
+            cond_num_channels = (16,)  # 0 stride-2 = no downsample
+            logger.info("  conditioning_embedding: auto-detected PIXEL space → no downsample [16]")
 
     # Ensure cond_num_channels is a tuple
     if isinstance(cond_num_channels, (list, tuple)):
