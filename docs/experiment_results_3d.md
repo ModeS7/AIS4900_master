@@ -25,6 +25,18 @@ Last updated: February 20, 2026. Data extracted from IDUN logs and TensorBoard r
 | exp1 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp1_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1_chained | Pixel | 128x128x160 | UNet 5L | 270M | rflow | bravo |
+| exp1c/1c_1 | Pixel+BrainNorm | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1e/1e_1 | Pixel+MinSNR | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1f/1f_1 | Pixel+EDMPrecond | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1g/1g_1 | Pixel+PseudoHuber | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1h/1h_1 | Pixel+LPIPSHuber | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1i/1i_1 | Pixel+ScoreAug | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1j/1j_1 | Pixel+GradAccum | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1k/1k_1 | Pixel+OffsetNoise | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1l/1l_1 | Pixel+AdjOffset | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1m/1m_1 | Pixel+GlobalNorm | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1o/1o_1 | Pixel+PosthocEMA | 128/256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1p_1 | Pixel+UniformT | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp2 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2b | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_cond_input |
@@ -51,6 +63,7 @@ Last updated: February 20, 2026. Data extracted from IDUN logs and TensorBoard r
 | exp12_4 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | ddpm x0 | bravo |
 | exp13 | LDM DiT 4x | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
 | exp14_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg (unconditional) |
+| exp23 | Pixel+ScoreAug | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 
 ---
 
