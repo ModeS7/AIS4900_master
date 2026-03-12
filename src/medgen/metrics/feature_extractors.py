@@ -75,18 +75,34 @@ class ResNet50Features(nn.Module):
                 model.load_state_dict(state_dict, strict=False)
                 logger.debug(f"Loaded RadImageNet weights from {checkpoint_path}")
             else:
-                # Fallback to torch.hub
-                try:
-                    model = torch.hub.load(
-                        "Warvito/radimagenet-models",
-                        model="radimagenet_resnet50",
-                        verbose=False,
-                    )
-                    logger.debug("Loaded RadImageNet weights from torch.hub")
-                except (FileNotFoundError, RuntimeError, ImportError) as e:
+                # Fallback to torch.hub with retry for transient network errors
+                import time
+                import urllib.error
+
+                model = None
+                for attempt in range(3):
+                    try:
+                        model = torch.hub.load(
+                            "Warvito/radimagenet-models",
+                            model="radimagenet_resnet50",
+                            verbose=False,
+                        )
+                        logger.debug("Loaded RadImageNet weights from torch.hub")
+                        break
+                    except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError) as e:
+                        if attempt < 2:
+                            logger.warning(f"torch.hub network error (attempt {attempt + 1}/3): {e}. Retrying in 10s...")
+                            time.sleep(10)
+                        else:
+                            logger.error(f"torch.hub failed after 3 attempts: {e}")
+                    except (FileNotFoundError, RuntimeError, ImportError) as e:
+                        logger.error(f"RadImageNet not available: {e}")
+                        break
+
+                if model is None:
                     logger.error(
-                        f"RadImageNet not available ({e}), falling back to ImageNet. "
-                        f"Metrics will NOT be comparable with RadImageNet-based runs."
+                        "RadImageNet not available, falling back to ImageNet. "
+                        "Metrics will NOT be comparable with RadImageNet-based runs."
                     )
                     model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
         else:
