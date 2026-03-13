@@ -90,6 +90,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.learning_rate=1e-4 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
+    training.gradient_checkpointing=false \
+    training.use_compile=true \
     training.name=${EXP_NAME} \
     ${CHAIN_ARGS} &
 
