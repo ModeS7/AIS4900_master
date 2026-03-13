@@ -15,3 +15,4 @@ channels: [128, 256, 256]            # Channels at each encoder level
 attention_levels: [false, true, true]  # Where to apply self-attention
 num_res_blocks: 1                    # ResBlocks per encoder/decoder level
 num_head_channels: 256               # Attention head dimension
+dropout_cattn: 0.0                   # Cross-attention dropout (0.0 = disabled)
