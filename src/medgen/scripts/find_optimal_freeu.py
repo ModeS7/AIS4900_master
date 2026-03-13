@@ -38,7 +38,6 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -53,7 +52,6 @@ from medgen.scripts.eval_ode_solvers import (
     generate_volumes,
     get_or_cache_reference_features,
     load_conditioning,
-    save_volumes,
 )
 
 logging.basicConfig(
@@ -733,7 +731,8 @@ def main():
 
     # Print grid table
     logger.info(f"\n{args.metric.upper()} grid (rows=b, cols=s):")
-    header = f"{'b \\ s':>8}" + "".join(f"{s:>10.2f}" for s in args.s_values)
+    col_label = "b \\ s"
+    header = f"{col_label:>8}" + "".join(f"{s:>10.2f}" for s in args.s_values)
     logger.info(header)
     logger.info("-" * len(header))
 
