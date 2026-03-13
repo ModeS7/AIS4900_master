@@ -895,3 +895,127 @@ All variants fit comfortably at both patch=4 and patch=8. U-ViT-L at patch=4 is 
    - HDiT gets 2.5x more parameters at the same VRAM by doing most compute at reduced token counts
 
 9. **Comparison with 3D UNet at 256x256x160**: The pixel-space UNet profiling showed that only a crippled [16,32,64,256,512,512] config fits (36.5 GB). HDiT-XL [4,6,8,6,4] has 937M params at 22.9 GB — more capable and cheaper.
+
+---
+
+# Small 3D UNet VRAM Profiling
+
+Profiled on IDUN cluster, March 13, 2026.
+
+Motivation: exp20_4 (67M) and exp20_5 (152M) show faster convergence than the 270M baseline with 105 training volumes. This sweep explores the small model design space to find optimal architectures that can also drop gradient checkpointing in favor of torch.compile.
+
+## Hardware
+- **GPU**: NVIDIA A100 80GB PCIe
+- **Driver**: 575.57.08
+- **CUDA**: 12.8
+- **PyTorch**: 2.9.0+cu128
+
+## Test Configuration
+- **Input**: 128x128x160 (bravo mode: in=2, out=1)
+- **Batch size**: 1
+- **Precision**: AMP BF16 + AdamW optimizer
+- **Configs tested**: 30 x 2 (with/without gradient checkpointing) = 60 runs
+- **Spatial grids per level (6L)**: L0=128x128x160, L1=64x64x80, L2=32x32x40, L3=16x16x20, L4=8x8x10, L5=4x4x5
+
+## Results — No Gradient Checkpointing (compile-compatible)
+
+### Group 1: Reference (current experiments)
+
+| Config | Params | VRAM | Free |
+|--------|--------|------|------|
+| REF [16,32,64,256,512,512] r=1,1,1,2,2,2 h=16 g=16 | 270M | 13.0G | 66.2G |
+| exp20_5 [12,24,48,192,384,384] r=1,1,1,2,2,2 h=12 g=12 | 152M | 9.6G | 69.6G |
+| exp20_4 [8,16,32,128,256,256] r=1,1,1,2,2,2 | 67M | 6.4G | 72.9G |
+| exp20_6 [8,16,32,64,128,128] r=1,1,1,2,2,2 | 17M | 5.8G | 73.4G |
+
+### Group 2: More Attention Levels
+
+L3 attention (16x16x20 = 5,120 tokens) is affordable. L2 attention (32x32x40 = 40,960 tokens) causes OOM.
+
+| Config | Params | VRAM | Notes |
+|--------|--------|------|-------|
+| 67M attn-L345 [8,16,32,128,256,256] | 68M | 18.2G | +11.8G vs L45-only |
+| 67M attn-L2345 [8,16,32,128,256,256] | - | OOM (63.5G) | L2 attention too expensive |
+| ~20M attn-L345 [8,16,32,64,128,128] | 17M | 11.7G | +5.9G vs L45-only |
+| ~20M attn-L2345 [8,16,32,64,128,128] | - | OOM (69.6G) | L2 attention too expensive |
+| 152M attn-L345 [12,24,48,192,384,384] h=12 g=12 | 152M | 21.4G | +11.8G vs L45-only |
+
+### Group 3: Fewer Levels (4L and 5L)
+
+Fewer levels = wider channels at higher spatial resolutions = much more VRAM.
+
+| Config | Params | VRAM | Notes |
+|--------|--------|------|-------|
+| 5L [8,16,64,128,128] r=1,1,2,2,2 | 17M | 18.0G | Wide L2 (64ch@32x32x40) expensive |
+| 4L [8,32,128,256] r=1,2,2,2 attn-L23 | - | OOM (51.3G) | |
+| 5L [8,32,128,256,256] r=1,1,2,2,2 | 67M | 34.2G | L2=128ch@32x32x40 very expensive |
+| 4L [8,64,256,384] r=1,2,2,2 attn-L23 | - | OOM (2.8G) | Failed to construct |
+| 5L [8,32,128,256,256] r=1,1,2,2,2 attn-L234 | - | OOM (51.2G) | |
+
+### Group 4: Res Block Distributions
+
+Uniform and front-loaded distributions have minimal VRAM impact compared to baseline.
+
+| Config | Params | VRAM | Notes |
+|--------|--------|------|-------|
+| 67M uniform r=2,2,2,2,2,2 | 68M | 7.4G | +1.0G vs baseline |
+| ~20M uniform r=2,2,2,2,2,2 | 17M | 6.8G | +1.0G vs baseline |
+| 67M front-loaded r=2,2,2,1,1,1 | 46M | 7.0G | Fewer deep params |
+| ~20M deep r=1,1,1,3,3,3 | 23M | 6.0G | More deep params, barely more VRAM |
+
+### Group 5: Mid-Range (10M-50M)
+
+All fit comfortably with minimal VRAM differences.
+
+| Config | Params | VRAM |
+|--------|--------|------|
+| ~40M [8,16,32,96,192,192] r=1,1,1,2,2,2 | 38M | 6.1G |
+| ~40M wider-shallow [8,16,48,128,256,128] r=1,1,1,1,1,1 | 28M | 6.1G |
+| ~40M deep-narrow [8,16,32,64,192,192] r=1,1,2,2,3,3 | 47M | 6.3G |
+| ~10M [8,16,24,48,96,96] r=1,1,1,2,2,2 | 10M | 5.7G |
+
+### Group 6: Tiny First Channels (4ch)
+
+Starting with 4 channels minimizes early-level VRAM, but full-attention still OOMs at L0/L1.
+
+| Config | Params | VRAM | Notes |
+|--------|--------|------|-------|
+| 4ch [4,8,32,64,128,128] attn-L45 | 17M | 3.5G | Cheapest viable config |
+| 4ch [4,8,32,64,128,128] attn-L345 | 17M | 16.8G | |
+| 4ch [4,8,32,64,128,128] attn-ALL | - | OOM (1.0G) | Failed to construct |
+| 4ch [4,8,32,128,256,256] attn-L45 | 67M | 4.2G | |
+| 4ch [4,8,32,128,256,256] attn-L345 | 68M | 33.1G | |
+| 4ch [4,8,32,128,256,256] attn-ALL | - | OOM (1.2G) | Failed to construct |
+| 4ch 5L [4,16,64,128,256] attn-ALL | - | OOM (1.1G) | Failed to construct |
+| 4ch 4L [4,32,128,256] attn-ALL | - | OOM (1.1G) | Failed to construct |
+
+## Gradient Checkpointing Savings
+
+| Config | No GC | With GC | Saved |
+|--------|-------|---------|-------|
+| REF 270M | 13.0G | 9.9G | 3.1G |
+| 152M | 9.6G | 7.3G | 2.3G |
+| 67M | 6.4G | 4.8G | 1.6G |
+| ~20M | 5.8G | 4.6G | 1.2G |
+| 67M attn-L345 | 18.2G | 11.8G | 6.4G |
+| ~20M attn-L345 | 11.7G | 6.0G | 5.7G |
+| 152M attn-L345 | 21.4G | 12.3G | 9.1G |
+| 4ch 67M attn-L345 | 33.1G | 22.6G | 10.6G |
+
+## Key Findings
+
+1. **All small models fit without gradient checkpointing**: The 67M baseline uses only 6.4G without GC, leaving 73G free on an 80G GPU. This means torch.compile is viable for all small model configs, giving ~10-30% training speedup.
+
+2. **L3 attention is the sweet spot**: Adding attention at L3 (16x16x20 = 5,120 tokens) costs 6-12G extra VRAM but is affordable for all model sizes. L2 attention (32x32x40 = 40,960 tokens) causes OOM even for 20M models — the 8x token count increase makes it prohibitive.
+
+3. **Fewer levels are NOT more efficient**: 5L and 4L configs use *more* VRAM than 6L despite fewer levels, because they put wider channels at higher spatial resolutions. The 6-level design with tiny first channels is already the right approach.
+
+4. **Res block distribution barely matters for VRAM**: Uniform r=2,2,2,2,2,2 adds only ~1G vs r=1,1,1,2,2,2. This is a free knob for capacity tuning without VRAM concerns.
+
+5. **4-channel first level saves ~2G**: Going from 8ch to 4ch at L0 saves ~2G (6.4G → 4.2G for 67M). Negligible parameter impact since L0 has very few params anyway.
+
+6. **Full attention on all levels is impossible at 128x128x160**: Even with 4 channels at L0, the model fails to construct. The L0 spatial grid (128x128x160 = 2.6M voxels) and L1 (64x64x80 = 328K voxels) are far too large for self-attention.
+
+7. **GC savings scale with attention**: Models with attention at L3+ save 5-11G from gradient checkpointing (vs 1-3G for L4-L5 only). If using L3 attention, GC becomes more valuable.
+
+8. **The 10M-70M range is a "flat VRAM zone"**: All configs in this range use 5.7-7.4G without GC. VRAM is dominated by activations at L0-L2 (convolutions), which are similar across all configs. The deep attention layers contribute minimally to VRAM at these small channel widths.

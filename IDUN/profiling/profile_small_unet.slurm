@@ -10,8 +10,8 @@
 #SBATCH --job-name="profile_small"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/train/diffusion_3d/profile_small_%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/profile_small_%j.err
+#SBATCH --output=IDUN/output/profiling/profile_small_%j.out
+#SBATCH --error=IDUN/output/profiling/profile_small_%j.err
 
 # Profile small 3D UNet architectures — VRAM sweep
 # ~30 configs x 2 (with/without GC) = ~60 runs, ~1 min each
