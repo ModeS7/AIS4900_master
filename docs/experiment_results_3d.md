@@ -1,20 +1,20 @@
 # 3D Diffusion Experiment Results
 
-Last updated: February 20, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: March 13, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
 ## Quick Reference: Best Results
 
-| Category | Experiment | Val Loss | Train MSE | Epochs | Notes |
-|----------|-----------|----------|-----------|--------|-------|
-| **Bravo pixel 128** | exp8 (EMA) | 0.00227 | 0.00129 | 500 | Best 128x128 |
-| **Bravo pixel 256** | exp1_1 (run2) | 0.00211 | 0.00284 | 500 | Best 256x256 |
-| **Bravo DiT pixel** | exp7 (2000ep) | 0.00234 | 0.00312 | 2000 | DiT-B patch=8, 134M |
-| **Seg pixel 128** | exp2 (run1) | 0.000373 | 0.000351 | 500 | Only stable 128 seg run |
-| **Seg pixel 256** | exp2b_1 (input) | 0.000336 | 0.000289 | 500 | Best seg overall |
-| **LDM 4x** | exp9_1 (mid UNet) | 0.0764 | 0.025 | 354 | **Still improving**, hit time limit |
-| **LDM 8x** | exp9_ldm_8x (run1) | 0.177 | 1.009 | 500 | Collapsed late training |
+| Category | Experiment | Val Loss | FID (latest) | Epochs | Notes |
+|----------|-----------|----------|-------------|--------|-------|
+| **Bravo pixel 256 (gen)** | exp1_1 (1000ep) | 0.00230 | **19.12** | 1000 | Post-hoc eval, 27 Euler steps |
+| **Bravo pixel 256 (loss)** | exp1l_1 (adj.offset) | **0.00209** | 72.52 | 500 | Best val loss |
+| **Bravo pixel 256 (FID)** | exp1o_1 (PosthocEMA) | 0.00235 | **62.64** | 500 | Best in-training FID |
+| **Bravo 128 ControlNet** | exp6b (Stage 2) | 0.00304 | **49.62** | 500 | Best seg-conditioned gen |
+| **Bravo pixel 128** | exp8 (EMA) | 0.00227 | N/A | 500 | Best 128x128 |
+| **Seg pixel 256** | exp2b_1 (input) | 0.000336 | N/A | 500 | Best seg overall |
+| **LDM 4x** | exp9_1 (mid UNet) | 0.0764 | N/A | 354 | Hit time limit |
 
 ---
 
@@ -37,6 +37,12 @@ Last updated: February 20, 2026. Data extracted from IDUN logs and TensorBoard r
 | exp1m/1m_1 | Pixel+GlobalNorm | 128/256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1o/1o_1 | Pixel+PosthocEMA | 128/256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1p_1 | Pixel+UniformT | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1n | Pixel+CFGZero* | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1r | Pixel+AttnDropout | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1s | Pixel+WeightDecay | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp6a_1 | ControlNet S1 | 256x256x160 | UNet 5L | 270M | rflow | bravo (uncond) |
+| exp6b | ControlNet S2 | 128x128x160 | UNet 5L | 270M | rflow | bravo |
+| exp6b_1 | ControlNet S2 | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp2 | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg_conditioned |
 | exp2b | Pixel | 128x128x160 | UNet 5L | 270M | rflow | seg_cond_input |
@@ -489,24 +495,292 @@ Three 2D SLURM jobs ready for submission (exp9_1/2/3 with structured latent enab
 
 ---
 
-## Key Takeaways
+## Part 11: Training Technique Ablations — 256x256x160 (March 2026)
+
+All experiments use 270M UNet unless otherwise noted. Baseline: **exp1_1** @ 500 epochs.
+In-training generation metrics: 25 Euler steps, 4 volumes, val conditioning.
+
+### exp1_1 Baseline (reference)
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (500ep) | 0.00211 | 0.003122 | 33.24 | 0.5616 | 91.46 | 0.0862 | 0.2347 |
+| Latest (500ep) | — | — | — | — | — | — | — |
+| Best (1000ep) | 0.00230 | 0.002886 | 33.12 | 0.7589 | 111.86 | 0.0921 | 0.3259 |
+
+Post-hoc eval (25 volumes, test split): **FID=23.85 @ 23 steps** (500ep), **FID=19.12 @ 27 steps** (1000ep).
+
+---
+
+### exp1b_1: [-1,1] Rescaling
+
+**Config**: Same as exp1_1 but pixel normalization to [-1, 1] instead of [0, 1].
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00675 | 0.009399 | 34.99 | 0.5624 | 116.55 | 0.1107 | 0.2171 |
+| Latest (500ep) | — | 0.015131 | 31.27 | 0.4882 | 72.00 | 0.0689 | 0.1667 |
+
+MSE ~3x higher due to [-1,1] scale. Latest model FID (72.00) is competitive. 31 gradient spikes — higher instability than [0,1] baseline.
+
+---
+
+### exp1k_1: Offset Noise (σ=0.1)
+
+**Config**: Standard offset noise (Lin et al., 2024), strength=0.1.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep 403) | 0.00261 | 0.003326 | 32.67 | 0.8495 | — | — | — |
+
+58 gradient spikes. Generation metrics not computed in output. Val loss slightly worse than baseline.
+
+---
+
+### exp1l_1: Adjusted Offset Noise (σ=0.1)
+
+**Config**: Adjusted offset noise (Everett, 2024), strength=0.1. Noise magnitude rescaled to preserve variance.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep 443) | **0.00209** | 0.002532 | 32.36 | 0.8944 | 92.49 | 0.1024 | 0.2773 |
+| Latest (500ep) | — | — | — | — | 72.52 | 0.0704 | 0.2260 |
+
+**Best val loss of any experiment (0.00209).** 13 gradient spikes. Latest FID 72.52 shows good generation quality. Training completed in 5.81h (fastest 270M run).
+
+---
+
+### exp1n: CFG-Zero* (Fan et al., 2025)
+
+**Config**: Conditioning dropout prob=0.15, CFG-Zero* guidance during validation (cfg_scale=2.0).
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00232 | 0.002761 | 32.69 | 0.8929 | 165.65 | 0.2147 | 0.3337 |
+| Latest (500ep) | — | 0.004248 | 31.18 | 0.4949 | 132.83 | 0.1739 | 0.2477 |
+
+**Poor FID despite good reconstruction.** FID 132-165 is much worse than baseline (91). CFG-Zero* guidance at scale=2.0 may be too aggressive, or the in-training eval is misconfigured. Needs post-hoc CFG scale sweep to find optimal scale. Only 1 gradient spike — very stable training.
+
+---
+
+### exp1o_1: Post-hoc EMA (Karras EDM2)
+
+**Config**: PostHocEMA with sigma_rels=[0.05, 0.28], checkpoint every 5000 steps.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep 350) | 0.00235 | 0.002897 | 32.68 | 0.8119 | 80.55 | 0.0889 | 0.2226 |
+| Latest (500ep) | — | 0.003812 | **33.36** | **0.5329** | **62.64** | **0.0537** | **0.1898** |
+
+**Best in-training generation metrics across all 270M experiments.** Latest checkpoint: FID 62.64, KID 0.0537, CMMD 0.1898 — all significantly better than baseline. Best PSNR (33.36) and best LPIPS (0.5329). Only 6 gradient spikes. Training took 11.01h (extra overhead from EMA checkpointing).
+
+---
+
+### exp1p_1: Uniform Timestep Sampling
+
+**Status**: Still running (338/500 epochs). Chain 3/20.
+
+| Checkpoint | Val Loss | Notes |
+|-----------|----------|-------|
+| Best (ep 336) | 0.00266 | Training still in progress |
+
+Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to complete for full evaluation.
+
+---
+
+### exp1r: Cross-Attention Dropout (p=0.1)
+
+**Status**: Still running (323/500 epochs).
+
+| Checkpoint | Val Loss | Notes |
+|-----------|----------|-------|
+| Best (ep 155) | 0.00246 | Plateaued early |
+
+25 gradient spikes. ~101s/epoch. Val loss plateaued at epoch 155 with no improvement since.
+
+---
+
+### exp1s: Weight Decay (0.05)
+
+**Status**: Still running (347/500 epochs).
+
+| Checkpoint | Val Loss | Notes |
+|-----------|----------|-------|
+| Best (ep 244) | **0.00231** | Good val loss but unstable |
+
+37 gradient spikes — 17 consecutive rapid spikes at epochs 36-44 suggest weight decay interacts poorly with optimizer early in training. Despite instability, achieved competitive val loss.
+
+---
+
+### exp23: ScoreAug @ 256x256x160 (1000 epochs)
+
+**Status**: Still running (869/1000 epochs).
+
+| Checkpoint | Val Loss | Notes |
+|-----------|----------|-------|
+| Best (ep 750) | **0.00200** | Still improving after 500ep |
+
+**Best val loss of any experiment when allowed to train longer.** ScoreAug prevents the overfitting that plagues standard 270M training beyond 500 epochs. 6 gradient spikes — stable.
+
+---
+
+### 270M Technique Comparison (256x256x160, 500ep completed)
+
+| Experiment | Technique | Val Loss | FID (latest) | KID | CMMD | Grad Spikes |
+|-----------|-----------|----------|-------------|-----|------|-------------|
+| exp1_1 | Baseline | 0.00211 | 91.46* | 0.0862 | 0.2347 | — |
+| exp1b_1 | [-1,1] rescale | 0.00675 | 72.00 | 0.0689 | 0.1667 | 31 |
+| exp1k_1 | Offset noise | 0.00261 | — | — | — | 58 |
+| **exp1l_1** | **Adj. offset** | **0.00209** | **72.52** | **0.0704** | **0.2260** | 13 |
+| exp1n | CFG-Zero* | 0.00232 | 132.83 | 0.1739 | 0.2477 | 1 |
+| **exp1o_1** | **PosthocEMA** | 0.00235 | **62.64** | **0.0537** | **0.1898** | 6 |
+| exp23 | ScoreAug | 0.00200† | — | — | — | 6 |
+
+*Best checkpoint FID, not latest. †At 750 epochs, still improving.
+
+**Winners**: PosthocEMA (best generation metrics), adjusted offset noise (best val loss), ScoreAug (best long-training val loss).
+
+---
+
+---
+
+## Part 13: ControlNet Experiments (March 2026)
+
+### exp6a_1: Stage 1 — Unconditional UNet @ 256x256x160
+
+**Config**: 270M UNet, in=1 out=1, no seg conditioning. Train unconditional bravo generation.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS |
+|-----------|----------|----------|-----------|-----------|
+| Best (ep 368) | 0.00202 | 0.003448 | 33.57 | 0.5714 |
+
+500 epochs complete. 19 gradient spikes. Best val loss 0.00202 — competitive with best techniques. Generation metrics were computing at end of log.
+
+---
+
+### exp6b: Stage 2 — ControlNet @ 128x128x160
+
+**Config**: Frozen UNet from exp6a (128x128), ControlNet encoder (~135M trainable). Seg mask injected via ControlNet residuals.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00304 | 0.006818 | 31.67 | 0.5036 | 52.98 | 0.0520 | 0.1799 |
+| Latest (500ep) | — | 0.005155 | 31.26 | 0.5373 | **49.62** | **0.0470** | **0.1624** |
+
+**Strong generation metrics (FID 49.62)** — ControlNet seg conditioning helps produce more realistic images.
+
+---
+
+### exp6b_1: Stage 2 — ControlNet @ 256x256x160
+
+**Status**: Just started (39/500 epochs).
+
+**Config**: Frozen UNet from exp6a_1 (256x256), ~135M trainable.
+
+| Checkpoint | Val Loss | Notes |
+|-----------|----------|-------|
+| Best (ep 16) | 0.00211 | ~220s/epoch, still training |
+
+Very early. Val loss 0.00211 at epoch 16 is promising.
+
+---
+
+## Part 14: Post-hoc Evaluation Results (March 2026)
+
+### Optimal Steps (Golden Section Search, 25 vol, test split)
+
+| Experiment | Metric | Best Steps | Best Value | Notes |
+|-----------|--------|-----------|-----------|-------|
+| exp1_1 (500ep) | FID | 23 | 23.85 | |
+| exp1_1 (500ep) | FID_RIN | 46 | 0.674 | |
+| exp1_1 (1000ep) | FID | 27 | **19.12** | Best overall |
+| exp1_1 (1000ep) | FID_RIN | 49 | 0.714 | |
+| exp1b (128, [-1,1]) | FID | 28 | 51.90 | |
+| exp1c (128, N(0,1)) | FID | 50 | 142.36 | Gaussian norm fails |
+
+### Time-Shift Evaluation (exp1_1, Euler/25)
+
+| Shift Ratio | FID | Notes |
+|------------|-----|-------|
+| 1.0 (none) | 54.78 | No shift |
+| 1.5 | 50.18 | |
+| **2.0** | **49.25** | **Optimal** |
+| 3.0 | 49.94 | |
+| 4.0 | 53.74 | |
+| 6.84 (MONAI default) | 70.90 | MONAI default is harmful |
+
+### FreeU Grid Search (exp1_1 1000ep, Euler/25)
+
+**Best**: backbone=1.0, skip=0.9, FID=19.87 (baseline FID=19.12 at optimal steps).
+FreeU provides <1 FID point improvement — marginal benefit.
+
+### Normalization Comparison (128x128x160)
+
+| Normalization | Best Steps | FID |
+|--------------|-----------|-----|
+| [0, 1] (exp1) | 35 | 52.00 |
+| [-1, 1] (exp1b) | 28 | 51.90 |
+| N(0, 1) (exp1c) | 50 | 142.36 |
+
+[0,1] and [-1,1] are equivalent. Gaussian normalization catastrophically fails.
+
+---
+
+## Part 15: Downstream Segmentation (March 2026)
+
+### SegResNet Experiments
+
+Downstream segmentation on real + synthetic bravo images using SegResNet.
+
+| Experiment | Data | Resolution | Description |
+|-----------|------|-----------|-------------|
+| exp1 | Real only | 2D & 3D | Baseline |
+| exp2 | Real dual | 2D & 3D | Two modalities |
+| exp3 | Real + aug | 2D & 3D | Standard augmentation |
+| exp4 | Real dual + aug | 2D & 3D | Combined |
+| exp5 | 105 synthetic | 3D | Synthetic only |
+| exp6 | All synthetic | 3D | Full synthetic training |
+| exp7_1–7_6 | Mixed ratios | 3D | 25–315 synthetic volumes |
+
+### nnU-Net Experiments
+
+| Experiment | Training Data | Status |
+|-----------|--------------|--------|
+| exp3_baseline | Real only | Complete |
+| exp4_baseline_dual | Real dual modality | Complete |
+| exp6_synthetic | Synthetic only | Complete |
+| exp7_mixed_25syn | 105 real + 25 synthetic | Chain running |
+| exp7_mixed_50syn | 105 real + 50 synthetic | Chain running |
+| exp7_mixed_75syn | 105 real + 75 synthetic | Chain running |
+| exp7_mixed_105syn | 105 real + 105 synthetic | Chain running |
+| exp7_mixed_210syn | 105 real + 210 synthetic | Chain running |
+| exp7_mixed_315syn | 105 real + 315 synthetic | Chain running |
+| exp7_mixed_525syn | 105 real + 525 synthetic | Chain running |
+
+Downstream results pending completion of nnU-Net chains.
+
+---
+
+## Key Takeaways (Updated March 2026)
 
 1. **Pixel-space works reliably**: All pixel UNet runs converge. Best results at 256x256 (val loss 0.0021 bravo, 0.000337 seg).
 
-2. **Latent diffusion has promise but is fragile**: exp9_1 (666M mid UNet, warmup+grad clip) achieved 0.076 val loss and was still improving. The 3.48B large UNets are unstable.
+2. **PosthocEMA is the best single technique**: exp1o_1 achieves FID 62.64 — 31% better than baseline (91.46). Best PSNR, LPIPS, KID, and CMMD.
 
-3. **S2D/Wavelet is completely broken**: All runs collapsed to mean prediction. Needs fundamental rethinking: lower LR, warmup, possibly different loss function for wavelet space.
+3. **Adjusted offset noise improves val loss**: exp1l_1 achieves the best validation loss (0.00209) and good FID (72.52).
 
-4. **DC-AE latent space doesn't work with current DiT/SiT**: 3/5 configs crash, the one that works (8x8x32) has very poor quality.
+4. **ScoreAug prevents overfitting beyond 500 epochs**: exp23 continues improving at 869 epochs (val loss 0.00200) while baseline overfits after ~300 epochs.
 
-5. **DiT needs more epochs**: DiT-B at patch=8 needs ~2000 epochs to match UNet at 500. But it's 2x cheaper per epoch and uses 3x less VRAM.
+5. **ControlNet works well**: exp6b (128x128, FID 49.62) demonstrates that seg-conditioned generation via ControlNet is competitive.
 
-6. **128x128 seg_conditioned at LR=1e-4 is unstable**: 3/4 runs diverge. Use LR=5e-5 or use 256x256.
+6. **1000 epochs + optimal steps gives best post-hoc FID**: exp1_1 at 1000ep evaluated with 27 Euler steps achieves FID 19.12 — the best absolute score.
 
-7. **EMA helps**: exp8 (EMA) achieved the best 128x128 bravo result (val loss 0.00227).
+7. **CFG-Zero* needs tuning**: exp1n shows poor in-training FID (132-165) despite good reconstruction. The default cfg_scale=2.0 may be suboptimal. Pending CFG scale sweep.
 
-8. **Infrastructure is a bigger problem than algorithms**: Checkpoint corruption, OOM kills, disk quota exhaustion, and torch.load bugs have wasted more GPU hours than bad hyperparameters.
+8. **FreeU and sampling tricks provide marginal gains**: FreeU (<1 FID point), Restart Sampling (no improvement), DiffRS (negative impact). The quality ceiling is model/data limited.
 
-9. **25 Euler steps is optimal**: FID 27.50. Beyond 25, quality degrades from error accumulation.
+9. **Time-shift ratio 2.0 is optimal**: MONAI's default time-shift (ratio ~6.84) is harmful. Ratio 2.0 gives 5.5 FID points improvement over no shift.
 
-10. **Sampling improvements don't help for small datasets**: DiffRS (discriminator-based) and Restart Sampling (stochastic) both fail to improve over plain Euler. The quality ceiling is model-limited, not solver-limited.
+10. **Latent diffusion has promise but is fragile**: exp9_1 (666M mid UNet, warmup+grad clip) achieved 0.076 val loss and was still improving. Large UNets are unstable.
+
+11. **Infrastructure is a bigger problem than algorithms**: Checkpoint corruption, OOM kills, disk quota exhaustion, and torch.load bugs have wasted more GPU hours than bad hyperparameters.
