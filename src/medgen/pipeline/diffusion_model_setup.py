@@ -100,8 +100,6 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         num_res_blocks = mc.num_res_blocks
         num_head_channels = mc.num_head_channels
 
-        dropout_cattn = getattr(trainer.cfg.model, 'dropout_cattn', 0.0)
-
         raw_model = DiffusionModelUNet(
             spatial_dims=mc.spatial_dims,
             in_channels=in_channels,
@@ -111,11 +109,11 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             num_res_blocks=num_res_blocks,
             num_head_channels=num_head_channels,
             norm_num_groups=getattr(trainer.cfg.model, 'norm_num_groups', 32),
-            dropout_cattn=dropout_cattn,
+            dropout_cattn=mc.dropout_cattn,
         ).to(trainer.device)
 
-        if dropout_cattn > 0 and trainer.is_main_process:
-            logger.info(f"Attention dropout enabled: dropout_cattn={dropout_cattn}")
+        if mc.dropout_cattn > 0 and trainer.is_main_process:
+            logger.info(f"Attention dropout enabled: dropout_cattn={mc.dropout_cattn}")
 
     # Enable gradient checkpointing (required to fit large models in GPU memory)
     # Must be applied BEFORE torch.compile or DDP wrapping

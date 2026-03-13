@@ -64,6 +64,7 @@ class ModelConfig:
     attention_levels: list[bool] = field(default_factory=lambda: [False, True, True])
     num_res_blocks: int = 1
     num_head_channels: int = 256
+    dropout_cattn: float = 0.0
     # DiT/U-ViT/HDiT-specific
     variant: str = "B"
     patch_size: int = 2
@@ -100,6 +101,7 @@ class ModelConfig:
             attention_levels=list(model_cfg.get('attention_levels', [False, True, True])),
             num_res_blocks=model_cfg.get('num_res_blocks', 1),
             num_head_channels=model_cfg.get('num_head_channels', 256),
+            dropout_cattn=model_cfg.get('dropout_cattn', 0.0),
             variant=model_cfg.get('variant', 'B'),
             patch_size=model_cfg.get('patch_size', 2),
             conditioning=model_cfg.get('conditioning', 'concat'),
