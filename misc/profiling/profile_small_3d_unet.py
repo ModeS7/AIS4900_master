@@ -184,10 +184,10 @@ def profile_one(
 def get_configs() -> list[dict]:
     """Small architecture configs to profile.
 
-    Spatial grids at each level for 128x128x160:
-      6L: L0=128x128x160  L1=64x64x80  L2=32x32x40  L3=16x16x20  L4=8x8x10  L5=4x4x5
-      5L: L0=128x128x160  L1=64x64x80  L2=32x32x40  L3=16x16x20  L4=8x8x10
-      4L: L0=128x128x160  L1=64x64x80  L2=32x32x40  L3=16x16x20
+    Spatial grids at each level for 256x256x160:
+      6L: L0=256x256x160  L1=128x128x80  L2=64x64x40  L3=32x32x20  L4=16x16x10  L5=8x8x5
+      5L: L0=256x256x160  L1=128x128x80  L2=64x64x40  L3=32x32x20  L4=16x16x10
+      4L: L0=256x256x160  L1=128x128x80  L2=64x64x40  L3=32x32x20
     """
     configs = []
 
@@ -232,7 +232,7 @@ def get_configs() -> list[dict]:
 
     # =================================================================
     # GROUP 2: MORE ATTENTION LEVELS (cheap at small sizes)
-    # At 128x128x160: L3=16x16x20=5120, L2=32x32x40=40960, L1=64x64x80=327680
+    # At 256x256x160: L3=32x32x20=20480, L2=64x64x40=163840, L1=128x128x80=1310720
     # =================================================================
     configs.append(dict(
         group="2_more_attention",
@@ -560,19 +560,19 @@ def main():
     print(f"  Mode: bravo (in=2, out=1)")
     print("=" * 90)
 
-    input_shape = (1, 1, 160, 128, 128)
+    input_shape = (1, 1, 160, 256, 256)
 
     # Run WITHOUT gradient checkpointing (torch.compile compatible)
     results_no_gc = run_suite(
         configs, input_shape,
-        "128x128x160 — NO gradient checkpointing (compile-compatible)",
+        "256x256x160 — NO gradient checkpointing (compile-compatible)",
         use_grad_ckpt=False,
     )
 
     # Run WITH gradient checkpointing for comparison
     results_gc = run_suite(
         configs, input_shape,
-        "128x128x160 — WITH gradient checkpointing",
+        "256x256x160 — WITH gradient checkpointing",
         use_grad_ckpt=True,
     )
 
@@ -581,8 +581,8 @@ def main():
     print("  FINAL SUMMARY")
     print("=" * 90)
 
-    print_summary_table(results_no_gc, "128x128x160 — NO gradient checkpointing")
-    print_summary_table(results_gc, "128x128x160 — WITH gradient checkpointing")
+    print_summary_table(results_no_gc, "256x256x160 — NO gradient checkpointing")
+    print_summary_table(results_gc, "256x256x160 — WITH gradient checkpointing")
 
     # ── Comparison: GC on vs off ──
     print(f"\n{'=' * 90}")
