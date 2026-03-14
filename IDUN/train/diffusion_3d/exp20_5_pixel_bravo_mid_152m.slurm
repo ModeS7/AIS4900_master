@@ -60,7 +60,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp20_5 3D Pixel Diffusion: Mid UNet 152M 128x128x160 ==="
+echo "=== Exp20_5 3D Pixel Diffusion: Mid UNet 152M 256x256x160 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 echo "Run dir: ${CHAIN_RUN_DIR}"
 nvidia-smi
@@ -83,13 +83,15 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     'model.num_res_blocks=[1, 1, 1, 2, 2, 2]' \
     model.num_head_channels=12 \
     model.norm_num_groups=12 \
-    volume.height=128 \
-    volume.width=128 \
+    volume.height=256 \
+    volume.width=256 \
     volume.pad_depth_to=160 \
     training.epochs=500 \
     training.learning_rate=1e-4 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
+    training.gradient_checkpointing=false \
+    training.use_compile=true \
     training.name=${EXP_NAME} \
     ${CHAIN_ARGS} &
 
