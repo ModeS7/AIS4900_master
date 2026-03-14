@@ -839,6 +839,8 @@ Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to 
 
 25 gradient spikes. ~101s/epoch. Val loss plateaued at epoch 155 with no improvement since.
 
+**Overfitting is worse than baseline**: Lower training loss but wider train/val gap than exp1_1. Dropout helps the optimizer escape shallow minima and find deeper training loss basins, but on 105 volumes deeper minima = more memorization. The train/inference gap (no dropout at test time → full capacity) amplifies this. Generation metrics are still decent (KID 0.048, CMMD 0.191) but the technique fails as a regularizer.
+
 ---
 
 ### exp1s: Weight Decay (0.05)
@@ -851,6 +853,8 @@ Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to 
 
 37 gradient spikes — 17 consecutive rapid spikes at epochs 36-44 suggest weight decay interacts poorly with optimizer early in training. Despite instability, achieved competitive val loss.
 
+**Overfitting is worse than baseline**: Weight decay (AdamW-decoupled) keeps weights small and the loss landscape smooth, letting the optimizer slide into deeper training minima faster. But deeper minima on 105 volumes = more memorization. The regularization pressure is far too weak to compensate for the 2500:1 parameter-to-sample ratio. Generation metrics are still reasonable (KID 0.041, CMMD 0.190) but the technique fails as a regularizer.
+
 ---
 
 ### exp23: ScoreAug @ 256x256x160 (1000 epochs)
@@ -861,7 +865,7 @@ Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to 
 |-----------|----------|-------|
 | Best (ep 750) | **0.00200** | Still improving after 500ep |
 
-**Best val loss of any experiment when allowed to train longer.** ScoreAug prevents the overfitting that plagues standard 270M training beyond 500 epochs. 6 gradient spikes — stable.
+**Best val loss of any experiment when allowed to train longer.** ScoreAug is the only technique that prevents overfitting beyond 500 epochs — unlike weight decay and dropout (exp1r/1s), which only change how the model fits the same 105 volumes, ScoreAug adds genuinely new training signal via augmented volumes with known transformations, effectively increasing dataset size. 6 gradient spikes — stable.
 
 ---
 
