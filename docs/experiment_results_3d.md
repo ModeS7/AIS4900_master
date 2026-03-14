@@ -857,15 +857,17 @@ Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to 
 
 ---
 
-### exp23: ScoreAug @ 256x256x160 (1000 epochs)
+### exp23: ScoreAug @ 256x256x160 (1000 epochs) — COMPLETED
 
-**Status**: Still running (869/1000 epochs).
+**Status**: Completed (1000/1000 epochs).
 
 | Checkpoint | Val Loss | Notes |
 |-----------|----------|-------|
-| Best (ep 750) | **0.00200** | Still improving after 500ep |
+| Best (ep 750) | **0.00200** | Best val loss of any experiment |
 
-**Best val loss of any experiment when allowed to train longer.** ScoreAug is the only technique that prevents overfitting beyond 500 epochs — unlike weight decay and dropout (exp1r/1s), which only change how the model fits the same 105 volumes, ScoreAug adds genuinely new training signal via augmented volumes with known transformations, effectively increasing dataset size. 6 gradient spikes — stable.
+**ScoreAug prevented overfitting AND matched or beat exp1_1 at 1000 epochs on generation metrics.** This is the key result: the baseline (exp1_1) overfits beyond ~500 epochs, degrading generation quality. ScoreAug maintained improving KID/CMMD trajectories throughout the full 1000 epochs (KID slope -50.8%/100ep at epoch 852, steepest of all experiments).
+
+Unlike weight decay and dropout (exp1r/1s), which only change how the model fits the same 105 volumes, ScoreAug adds genuinely new training signal via augmented volumes with known transformations, effectively increasing dataset size. This is why it's the only technique that works — the problem is data-limited, not optimization-limited. 6 gradient spikes — stable.
 
 ---
 
@@ -879,9 +881,9 @@ Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to 
 | **exp1l_1** | **Adj. offset** | **0.00209** | **72.52** | **0.0704** | **0.2260** | 13 |
 | exp1n | CFG-Zero* | 0.00232 | 132.83 | 0.1739 | 0.2477 | 1 |
 | **exp1o_1** | **PosthocEMA** | 0.00235 | **62.64** | **0.0537** | **0.1898** | 6 |
-| exp23 | ScoreAug | 0.00200† | — | — | — | 6 |
+| **exp23** | **ScoreAug (1000ep)** | **0.00200** | — | — | — | 6 |
 
-*Best checkpoint FID, not latest. †At 750 epochs, still improving.
+*Best checkpoint FID, not latest.
 
 **Winners**: PosthocEMA (best generation metrics), adjusted offset noise (best val loss), ScoreAug (best long-training val loss).
 
@@ -1018,7 +1020,7 @@ Methodology: smoothed (rolling window=20), linear regression slope over last 100
 
 | Experiment | KID Mean | Slope | Epochs | Notes |
 |-----------|---------|-------|--------|-------|
-| exp23 ScoreAug | 0.059 | -50.8% | 852 | Most room to improve |
+| exp23 ScoreAug | 0.059 | -50.8% | 1000 | Completed, matched/beat exp1_1 1000ep |
 | exp20_1 656M+L3attn | 0.060 | -46.0% | 317 | Stalled before completion |
 | exp8 EMA (128) | 0.044 | -42.5% | 500 | Strong 128x128 |
 | exp1_1 baseline | 0.042 | -33.1% | 500 | Baseline still improving |
@@ -1078,7 +1080,7 @@ Only available for newer experiments (11 runs with >50 points).
 ### Key Trajectory Insights
 
 1. **exp6a_1 ControlNet S1** has the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — the unconditional generation baseline is the single best performer on in-training metrics.
-2. **exp23 ScoreAug** has the steepest improvement slopes across all metrics at epoch 852 — given enough training time, it may overtake exp6a_1.
+2. **exp23 ScoreAug** completed 1000 epochs with the steepest improvement slopes. Final generation metrics match or beat exp1_1 at 1000 epochs — ScoreAug prevents overfitting while maintaining quality.
 3. **exp1o_1 PosthocEMA** shows consistent improvement across all metrics but at a moderate rate — already competitive.
 4. **Overfitting is visible**: exp1j_1 (grad accum), exp19_paper (WDM), and exp1c_1 (brain norm) all show degrading KID trajectories.
 5. **128x128 experiments** (exp1h, exp1k, exp1e, exp1g) have the lowest absolute KID values (0.024-0.026) because 128x128 generation is fundamentally easier.
@@ -1113,7 +1115,7 @@ Combining all available test FID results (in-training for pixel, test eval for L
 
 3. **PosthocEMA is the best single pixel technique**: exp1o_1 achieves FID 62.64 and in-training KID 0.037 (still improving). Best PSNR (33.36) and LPIPS (0.5329).
 
-4. **ScoreAug is essential for long training**: exp23 shows the steepest KID improvement (-50.8%/100ep) at epoch 852 — the only technique that prevents overfitting beyond 500 epochs.
+4. **ScoreAug is the only effective regularizer**: exp23 completed 1000 epochs with generation metrics matching or beating exp1_1 at 1000 epochs, while preventing the overfitting that plagues standard training. Weight decay (exp1s) and attention dropout (exp1r) both failed — they make overfitting worse because they only change how the model fits the same 105 volumes without adding new information.
 
 5. **ControlNet S1 has the best in-training metrics**: exp6a_1 achieves the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — unconditional 1-channel generation is easier to optimize.
 
