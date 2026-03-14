@@ -419,8 +419,9 @@ def compute_lpips(
 
             return float(result.item()) if isinstance(result, torch.Tensor) else float(result)
 
-    except (RuntimeError, ValueError, torch.cuda.OutOfMemoryError) as e:
-        # Log full traceback at debug level for debugging, summary at warning level
+    except (RuntimeError, ValueError, OSError, torch.cuda.OutOfMemoryError) as e:
+        # OSError catches network errors (RemoteDisconnected, ConnectionError)
+        # when torch.hub can't download RadImageNet on compute nodes
         logger.warning(f"LPIPS computation failed: {e}")
         logger.debug(f"LPIPS traceback:\n{traceback.format_exc()}")
         return 0.0
