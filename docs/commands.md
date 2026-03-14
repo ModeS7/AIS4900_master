@@ -445,6 +445,69 @@ python -m medgen.scripts.train_segmentation model.spatial_dims=3
 
 ---
 
+## Downstream nnU-Net Training
+
+```bash
+# Train baseline (real-only), all 5 folds
+python -m medgen.scripts.train_nnunet \
+    --experiment baseline \
+    --nnunet-base /cluster/work/modestas/nnunet
+
+# Train mixed with 210 synthetic volumes, fold 0 only
+python -m medgen.scripts.train_nnunet \
+    --experiment mixed --n-synthetic 210 \
+    --fold 0 \
+    --nnunet-base /cluster/work/modestas/nnunet
+
+# Continue interrupted training
+python -m medgen.scripts.train_nnunet \
+    --experiment baseline --fold 0 \
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --continue-training
+
+# Evaluate nnU-Net (5-fold ensemble inference + metrics)
+python -m medgen.scripts.eval_nnunet \
+    --experiment baseline \
+    --nnunet-base /cluster/work/modestas/nnunet
+
+# Evaluate existing predictions only
+python -m medgen.scripts.eval_nnunet \
+    --pred-dir /path/to/predictions \
+    --gt-dir /path/to/labelsTs \
+    --output results.json
+```
+
+---
+
+## Post-hoc Evaluation Scripts
+
+```bash
+# FreeU grid search (inference-only, no retraining)
+python -m medgen.scripts.find_optimal_freeu \
+    --checkpoint runs/checkpoint_latest.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --num-volumes 25 --output-dir eval_freeu
+
+# CFG scale sweep
+python -m medgen.scripts.find_optimal_cfg \
+    --checkpoint runs/checkpoint_latest.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --num-volumes 25 --output-dir eval_cfg
+
+# Time-shift ratio evaluation
+python -m medgen.scripts.eval_time_shift \
+    --checkpoint runs/checkpoint_bravo.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --num-volumes 25 --output-dir eval_time_shift
+
+# Post-hoc EMA synthesis (Karras EDM2)
+python -m medgen.scripts.synthesize_phema \
+    --run-dir runs/diffusion_3d/bravo/exp1o_1_... \
+    --data-root ~/MedicalDataSets/brainmetshare-3
+```
+
+---
+
 ## Pixel Normalization Statistics
 
 ```bash

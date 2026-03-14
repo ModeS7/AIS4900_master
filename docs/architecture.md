@@ -174,6 +174,13 @@ src/medgen/
     ├── measure_distinguishability.py  # Measure real vs synthetic distinguishability
     ├── plot_tumor_detection.py  # Plot tumor detection results
     ├── recompute_latent_stats.py # Recompute latent space statistics
+    ├── train_nnunet.py          # nnU-Net v2 training with TensorBoard (argparse)
+    ├── eval_nnunet.py           # nnU-Net 5-fold ensemble evaluation
+    ├── find_optimal_freeu.py    # Grid search for optimal FreeU parameters
+    ├── find_optimal_cfg.py      # Grid search for optimal CFG scale
+    ├── synthesize_phema.py      # Post-hoc EMA synthesis sweep (Karras EDM2)
+    ├── eval_time_shift.py       # Evaluate time-shifted sampling schedules
+    ├── compute_brain_atlas.py   # Compute brain atlas (union of training brain masks)
     ├── verify_ldm_pipeline.py   # Verify latent diffusion pipeline
     └── verify_wdm_pipeline.py   # Verify wavelet diffusion pipeline
 
@@ -255,6 +262,12 @@ configs/
 | `plot_tumor_detection.py` | Plot tumor detection visualization | N/A | |
 | `verify_ldm_pipeline.py` | Verify latent diffusion pipeline | N/A | |
 | `verify_wdm_pipeline.py` | Verify wavelet diffusion pipeline | N/A | |
+| `train_nnunet.py` | nnU-Net v2 training with TensorBoard logging | N/A | Argparse (not Hydra) |
+| `eval_nnunet.py` | nnU-Net 5-fold ensemble inference + evaluation | N/A | Argparse (not Hydra) |
+| `find_optimal_freeu.py` | Grid search for optimal FreeU (b, s) parameters | N/A | Argparse (not Hydra) |
+| `find_optimal_cfg.py` | Grid search for optimal CFG scale | N/A | Argparse (not Hydra) |
+| `synthesize_phema.py` | Post-hoc EMA synthesis sweep for optimal sigma_rel | N/A | Argparse (not Hydra) |
+| `eval_time_shift.py` | Evaluate time-shifted sampling ratios | N/A | Argparse (not Hydra) |
 
 ### Compression Training Config Names
 
@@ -1427,6 +1440,12 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/scripts/verify_wdm_pipeline.py`: Verify wavelet diffusion pipeline
 - `src/medgen/scripts/plot_tumor_detection.py`: Plot tumor detection visualization
 - `src/medgen/scripts/visualize_augmentations.py`: Debug augmentation pipelines
+- `src/medgen/scripts/train_nnunet.py`: nnU-Net v2 training with TensorBoard (argparse)
+- `src/medgen/scripts/eval_nnunet.py`: nnU-Net 5-fold ensemble evaluation (argparse)
+- `src/medgen/scripts/find_optimal_freeu.py`: Grid search for optimal FreeU parameters (argparse)
+- `src/medgen/scripts/find_optimal_cfg.py`: Grid search for optimal CFG scale (argparse)
+- `src/medgen/scripts/synthesize_phema.py`: Post-hoc EMA synthesis sweep (argparse)
+- `src/medgen/scripts/eval_time_shift.py`: Evaluate time-shifted sampling schedules (argparse)
 - `src/medgen/scripts/common.py`: Shared utilities
 
 ---

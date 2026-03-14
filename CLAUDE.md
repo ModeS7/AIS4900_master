@@ -118,12 +118,15 @@ This catches:
 | Doc | Contents |
 |-----|----------|
 | `@docs/architecture.md` | File locations, trainer hierarchy, config structure, TensorBoard metrics |
-| `@docs/common-pitfalls.md` | 82 known issues, bug fixes, and gotchas (numbered 1-82, #43 skipped) |
+| `@docs/common-pitfalls.md` | 81 known issues, bug fixes, and gotchas (numbered 1-82, #43 skipped) |
 | `@docs/commands.md` | Full command reference with all options |
 | `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |
-| `@docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression) |
+| `@docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |
 | `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
+| `@docs/proven_techniques.md` | Confirmed positive/negative techniques for 3D brain MRI generation |
+| `@docs/future_work_v2.md` | 125 diffusion tricks inventory (67 implemented, 58+ not) |
+| `@docs/notes_for_report.txt` | Historical design notes (Dec 2025) — VAE features, ScoreAug, DiT, VQ-VAE |
 | `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) — **check here FIRST before web search** |
 
 ---

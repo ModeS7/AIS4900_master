@@ -1,20 +1,22 @@
 # 3D Diffusion Experiment Results
 
-Last updated: March 13, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: March 14, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
 ## Quick Reference: Best Results
 
-| Category | Experiment | Val Loss | FID (latest) | Epochs | Notes |
-|----------|-----------|----------|-------------|--------|-------|
-| **Bravo pixel 256 (gen)** | exp1_1 (1000ep) | 0.00230 | **19.12** | 1000 | Post-hoc eval, 27 Euler steps |
+| Category | Experiment | Val Loss | FID | Epochs | Notes |
+|----------|-----------|----------|-----|--------|-------|
+| **Bravo pixel 256 (post-hoc)** | exp1_1 (1000ep) | 0.00230 | **19.12** | 1000 | Post-hoc eval, 27 Euler steps |
 | **Bravo pixel 256 (loss)** | exp1l_1 (adj.offset) | **0.00209** | 72.52 | 500 | Best val loss |
-| **Bravo pixel 256 (FID)** | exp1o_1 (PosthocEMA) | 0.00235 | **62.64** | 500 | Best in-training FID |
+| **Bravo pixel 256 (in-train)** | exp1o_1 (PosthocEMA) | 0.00235 | **62.64** | 500 | Best in-training FID (pixel) |
+| **Bravo LDM 4x (FID)** | exp22_2 (DiT-L) | 0.0847 | **47.41** | 500 | Best test FID overall |
+| **Bravo LDM 4x (UNet)** | exp21_2 (MAISI 167M) | 0.0767 | **50.89** | 500 | Best LDM UNet |
+| **Bravo WDM** | exp19_2 (270M DDPM) | 0.178 | **67.32** | 500 | Best wavelet |
 | **Bravo 128 ControlNet** | exp6b (Stage 2) | 0.00304 | **49.62** | 500 | Best seg-conditioned gen |
 | **Bravo pixel 128** | exp8 (EMA) | 0.00227 | N/A | 500 | Best 128x128 |
 | **Seg pixel 256** | exp2b_1 (input) | 0.000336 | N/A | 500 | Best seg overall |
-| **LDM 4x** | exp9_1 (mid UNet) | 0.0764 | N/A | 354 | Hit time limit |
 
 ---
 
@@ -69,6 +71,23 @@ Last updated: March 13, 2026. Data extracted from IDUN logs and TensorBoard runs
 | exp12_4 | Wavelet WDM | 128x128x160 | WDM 5L+attn | ~77M | ddpm x0 | bravo |
 | exp13 | LDM DiT 4x | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
 | exp14_1 | Pixel | 256x256x160 | UNet 5L | 270M | rflow | seg (unconditional) |
+| exp19_paper | WDM paper | wavelet 256x160 | WDM 5L | 74M | ddpm x0 | bravo |
+| exp19_0 | WDM+N(0,1) | wavelet 256x160 | WDM 5L | 74M | ddpm x0 | bravo |
+| exp19_1 | WDM+RFlow | wavelet 256x160 | WDM 5L | 74M | rflow | bravo |
+| exp19_2 | WDM default | wavelet 256x160 | UNet 5L | 270M | ddpm x0 | bravo |
+| exp19_3 | WDM large | wavelet 256x160 | UNet 5L | 662M | ddpm x0 | bravo |
+| exp19_4 | WDM+RFlow x0 | wavelet 256x160 | WDM 5L | 74M | rflow x0 | bravo |
+| exp19_5 | WDM+BrainNorm | wavelet 256x160 | WDM 5L | 74M | ddpm x0 | bravo |
+| exp19_6 | WDM+DiT-S | wavelet 256x160 | DiT-S p=2 | ~40M | ddpm x0 | bravo |
+| exp20_1 | Pixel+L3Attn | 256x256x160 | UNet 6L | 656M | rflow | bravo |
+| exp20_2 | Pixel+DeepWide | 256x256x160 | UNet 6L | 855M | rflow | bravo |
+| exp20_3 | Pixel+DW+L3 | 256x256x160 | UNet 6L | 855M | rflow | bravo |
+| exp21_1 | LDM 4x large | latent 64x64x40 | UNet 4L | 666M | rflow | bravo_seg_cond |
+| exp21_2 | LDM 4x MAISI | latent 64x64x40 | UNet 4L | 167M | rflow | bravo_seg_cond |
+| exp21_3 | LDM 4x small | latent 64x64x40 | UNet 4L | 42M | rflow | bravo_seg_cond |
+| exp22_1 | LDM 4x DiT-B | latent 64x64x40 | DiT-B p=2 | 136M | rflow | bravo_seg_cond |
+| exp22_2 | LDM 4x DiT-L | latent 64x64x40 | DiT-L p=2 | 478M | rflow | bravo_seg_cond |
+| exp22_3 | LDM 4x DiT-S | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
 | exp23 | Pixel+ScoreAug | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 
 ---
@@ -375,6 +394,228 @@ The 1.42B param UNet 5L model (r=2,2,3,3,3 with [64,128,512,1024,1024]) is opera
 ### exp12_2/12_3/12_4: WDM-style Wavelet (Not yet run)
 
 These use the smaller WDM model (~77M params) with DDPM x0 prediction or rflow + attention. Not yet submitted.
+
+---
+
+## Part 5b: WDM Wavelet Diffusion (exp19 family, 256x256x160)
+
+All experiments operate on wavelet-decomposed volumes [B,8,80,128,128] — 8 subbands at half resolution.
+
+### exp19_paper: WDM True to Paper (Friedrich et al. 2024)
+
+**Config**: 74M WDM, attention-free, channels [64,128,128,256,256], DDPM x0, LR=1e-5 (paper value), rescale [-1,1] before DWT, NO per-subband normalization, NO warmup/grad clip.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|----------|-----------|-----|-----|------|--------|------|--------|
+| 0.00210 | 0.00193 | 81.22 | 0.0446 | 0.2846 | 9 | 20.2GB | Completed |
+
+Low MSE but high FID. KID trajectory is **degrading** (+13.0%/100ep) — overfitting in late training.
+
+### exp19_0: WDM DDPM N(0,1) Normalized
+
+**Config**: 74M WDM, DDPM x0, per-subband N(0,1) normalization, gradient_clip=0.5, warmup=10.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | Status |
+|----------|-----------|-----|-----|------|--------|--------|
+| 0.154 | 0.323 | 131.75 | 0.120 | 0.446 | 3 | Completed |
+
+N(0,1) normalization hurts generation quality (FID 132). KID trajectory improving (-6.3%/100ep) but absolute values poor.
+
+### exp19_1: WDM RFlow Velocity
+
+**Config**: Same as exp19_0 but RFlow velocity prediction instead of DDPM x0.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | Status |
+|----------|-----------|-----|-----|------|--------|--------|
+| 0.198 | 0.209 | 235.27 | 0.248 | 0.490 | 22 | Completed |
+
+**Worst experiment.** RFlow velocity prediction in wavelet domain is catastrophic. KID flat (+1.5%/100ep).
+
+### exp19_2: WDM Default UNet (270M, DDPM x0)
+
+**Config**: Standard UNet [32,64,256,512,512], 270M params, DDPM x0, per-subband N(0,1), gradient_clip=0.5, warmup=10.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | Status |
+|----------|-----------|-----|-----|------|--------|--------|
+| 0.178 | 0.310 | **67.32** | **0.0437** | **0.235** | 1 | Completed |
+
+**Best WDM experiment.** The standard UNet architecture (same as pixel baseline) outperforms the paper's WDM architecture at 270M vs 74M. KID flat (-0.07%/100ep) — fully converged. Post-hoc eval found 10 DDPM steps optimal (FID=114.65).
+
+### exp19_3: WDM Large UNet (662M, DDPM x0)
+
+**Config**: Larger UNet [64,128,256,512,1024], 662M params, DDPM x0.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|----------|-----------|-----|-----|------|--------|------|--------|
+| 0.176 | 0.316 | 123.96 | 0.0999 | 0.374 | 0 | 27.7GB | Completed |
+
+Bigger model but worse FID than exp19_2 (270M). KID trajectory still **strongly improving** (-16.4%/100ep) — undertrained at 500 epochs.
+
+### exp19_4: WDM RFlow x0-prediction
+
+**Config**: 74M WDM, RFlow with x0-prediction target (not velocity).
+
+| Val Loss | Final MSE | Epochs | Spikes | Status |
+|----------|-----------|--------|--------|--------|
+| 0.0184 | 0.047 | 372/500 | 0 | **Timed out** |
+
+Hit wall time at epoch 372. No generation metrics available. KID flat (-0.3%/100ep).
+
+### exp19_5: WDM DDPM Brain-only Norm
+
+**Config**: 74M WDM, DDPM x0, brain-only N(0,1) normalization (threshold=0.01).
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | Status |
+|----------|-----------|-----|-----|------|--------|--------|
+| 0.0359 | 0.0449 | 92.77 | 0.0722 | 0.255 | 57 | Completed |
+
+Brain-only norm improves MSE vs full N(0,1) but worse FID than exp19_2. 57 spikes — most unstable WDM variant. KID flat (+0.1%/100ep).
+
+### exp19_6: Wavelet DiT-S (DDPM x0)
+
+**Config**: DiT-S replacing WDM backbone, hidden=384, depth=12, patch=2, gradient_checkpointing=true.
+
+| Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|----------|-----------|-----|-----|------|--------|------|--------|
+| 0.280 | 0.392 | 110.88 | 0.0938 | 0.409 | 3 | 7.2GB | Completed |
+
+DiT-S underperforms UNet in wavelet domain. Very low VRAM (7.2GB). KID flat (-0.2%/100ep).
+
+### WDM Summary
+
+| Experiment | Architecture | Strategy | FID | KID | CMMD | KID Trend |
+|-----------|-------------|----------|-----|-----|------|-----------|
+| **exp19_2** | **UNet 270M** | **DDPM x0** | **67.32** | **0.0437** | **0.235** | flat |
+| exp19_paper | WDM 74M | DDPM x0 | 81.22 | 0.0446 | 0.285 | degrading |
+| exp19_5 | WDM 74M | DDPM x0 | 92.77 | 0.0722 | 0.255 | flat |
+| exp19_6 | DiT-S ~40M | DDPM x0 | 110.88 | 0.0938 | 0.409 | flat |
+| exp19_3 | UNet 662M | DDPM x0 | 123.96 | 0.0999 | 0.374 | strong improve |
+| exp19_0 | WDM 74M | DDPM x0 | 131.75 | 0.1200 | 0.446 | improving |
+| exp19_1 | WDM 74M | RFlow vel | 235.27 | 0.2484 | 0.490 | flat |
+
+**Key findings**: Standard UNet architecture outperforms WDM architecture in wavelet domain. DDPM x0 prediction is essential — RFlow velocity prediction fails catastrophically in wavelet space. Per-subband N(0,1) normalization generally hurts.
+
+---
+
+## Part 5c: Larger Pixel UNet Experiments (exp20_1/2/3, 256x256x160)
+
+### exp20_1: 656M UNet + L3 Attention
+
+**Config**: UNet 6L [16,32,64,256,512,1024], L3+L4+L5 attention, 656M params, gradient_checkpointing, warmup=10, gradient_clip=0.5.
+
+| Epochs | Val Loss | Final MSE | Spikes | VRAM | Status |
+|--------|----------|-----------|--------|------|--------|
+| 318/500 | 0.00240 | 0.00248 | 2 | 55.3GB | **Stalled** (1 ep/resubmit) |
+
+Never completed — kept resubmitting but only ran 1 epoch per job (likely memory pressure or time limit at 8 min/epoch). KID trajectory **strongly improving** (-46.0%/100ep) at KID 0.060 — was still converging fast when it stalled.
+
+### exp20_2: 855M Deep/Wide Bottleneck
+
+**Config**: UNet 6L [16,32,64,256,512,1024], L4+L5 attention, res_blocks=[1,1,1,2,3,3], 855M params, LR=5e-5, warmup=20, gradient_clip=0.1.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | 0.00239 | 0.00199 | 99.62 | 0.114 | **0.160** | 10 | 77.4GB | Completed |
+
+**Best CMMD (0.160) of ALL experiments.** KID trajectory strong improve (-10.9%/100ep) but KID absolute still high (0.035). High FID (99.6) despite good CMMD — may need more training or different evaluation.
+
+### exp20_3: 855M Deep/Wide + L3 Attention
+
+**Config**: Same as exp20_2 but L3+L4+L5 attention, num_head_channels=128.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | **0.00209** | 0.00203 | 98.00 | 0.110 | 0.190 | 8 | 46.3GB | Completed |
+
+Slightly better FID than exp20_2 but worse CMMD. L3 attention adds 20K-token self-attention but uses less VRAM (46 vs 77GB) with gradient_checkpointing. KID trajectory **flat** (+0.08%/100ep) — converged.
+
+### Large Pixel UNet Summary
+
+These 6L UNets (656M-855M) achieve competitive val loss but poor in-training FID/KID compared to the 270M 5L baseline. The CMMD results (exp20_2: 0.160) suggest they may produce more diverse outputs. However, the huge VRAM cost (46-77GB) and long training time (~8-12 min/epoch) make them impractical for iterative experimentation.
+
+---
+
+## Part 5d: LDM UNet Experiments (exp21, VQ-VAE 4x)
+
+All experiments use VQ-VAE 4x compression (exp8_1), latent shape [B,8,40,64,64], bravo_seg_cond mode (in=8 bravo+seg, out=4 bravo velocity).
+
+### exp21_1: 666M UNet Large
+
+**Config**: UNet 4L [128,256,512,1024], L2+L3 attention, warmup=10, gradient_clip=0.5.
+
+| Epochs | Val Loss | Final MSE | Spikes | VRAM | Status |
+|--------|----------|-----------|--------|------|--------|
+| 175/500 | 0.0767 | 0.0582 | 8 | 75.1GB | **Disk quota exceeded** |
+
+Hit disk quota at epoch 175. Similar val loss trajectory to exp21_2 before crash. Too large for available storage.
+
+### exp21_2: 167M MAISI-style UNet
+
+**Config**: UNet 4L [64,128,256,512], L2+L3 attention, warmup=10, gradient_clip=0.5.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | 0.0767 | 0.0374 | **50.89** | **0.0413** | **0.174** | 38 | 19.1GB | Completed |
+
+**Best LDM UNet.** Competitive with pixel baseline on FID/KID at only 19.1GB VRAM (vs 43GB for pixel 256x256). 38 gradient spikes — more unstable than pixel but manageable.
+
+### exp21_3: 42M Small UNet
+
+**Config**: UNet 4L [32,64,128,256], L2+L3 attention, warmup=10, gradient_clip=0.5.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | 0.0817 | 0.0720 | 83.90 | 0.0852 | 0.256 | **170** | 6.1GB | Completed |
+
+170 gradient spikes — most unstable experiment. Small model underfits latent space. Low VRAM (6.1GB).
+
+---
+
+## Part 5e: LDM DiT Experiments (exp22, VQ-VAE 4x)
+
+Same compression as exp21. DiT architecture operates on 20,480 tokens (patch=2 on 64x64x40 latent).
+
+### exp22_1: DiT-B (136M)
+
+**Config**: DiT-B (768 hidden, 12 depth, 12 heads), patch=2, use_compile=true.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | Time | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | 0.0851 | 0.0763 | 48.99 | 0.0376 | 0.266 | 14 | 2.74h | Completed |
+
+Strong generation metrics at very fast training (2.74h total, ~20s/epoch). FID nearly identical to exp21_2 MAISI UNet.
+
+### exp22_2: DiT-L (478M)
+
+**Config**: DiT-L (1024 hidden, 24 depth, 16 heads), patch=2, LR=5e-5, warmup=20, use_compile=true.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | Time | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 500 | 0.0847 | 0.0638 | **47.41** | **0.0355** | 0.252 | 4 | 3.53h | Completed |
+
+**Best FID (47.41) and KID (0.0355) of ALL experiments.** Only 4 gradient spikes — very stable. 3.53h total training time — 10x faster than pixel 256x256.
+
+### exp22_3: DiT-S Long (40M, 2000 epochs)
+
+**Config**: DiT-S (384 hidden, 12 depth, 6 heads), patch=2, 2000 epochs, use_compile=true.
+
+| Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | Time | Status |
+|--------|----------|-----------|-----|-----|------|--------|------|--------|
+| 2000 | 0.0823 | 0.0461 | 61.14 | 0.0521 | 0.283 | 3 | 11.21h | Completed |
+
+Small model needs more epochs but still underperforms DiT-L at 500ep. Lowest final MSE in DiT group but worse generation metrics — reconstruction quality doesn't translate to generation quality.
+
+### LDM Architecture Comparison (VQ-VAE 4x, 500ep unless noted)
+
+| Experiment | Architecture | Params | FID | KID | CMMD | VRAM | Time |
+|-----------|-------------|--------|-----|-----|------|------|------|
+| **exp22_2** | **DiT-L** | **478M** | **47.41** | **0.0355** | **0.252** | ~32GB | 3.53h |
+| exp22_1 | DiT-B | 136M | 48.99 | 0.0376 | 0.266 | ~12GB | 2.74h |
+| exp21_2 | UNet MAISI | 167M | 50.89 | 0.0413 | 0.174 | 19.1GB | 10.03h |
+| exp22_3 | DiT-S (2000ep) | 40M | 61.14 | 0.0521 | 0.283 | ~6GB | 11.21h |
+| exp21_3 | UNet Small | 42M | 83.90 | 0.0852 | 0.256 | 6.1GB | 6.56h |
+
+DiT models train 3-4x faster than UNet equivalents in latent space. DiT-L achieves the best FID/KID, while MAISI UNet has the best CMMD.
 
 ---
 
@@ -761,26 +1002,127 @@ Downstream results pending completion of nnU-Net chains.
 
 ---
 
-## Key Takeaways (Updated March 2026)
+## Part 16: Generation Metric Trajectory Analysis (March 14, 2026)
 
-1. **Pixel-space works reliably**: All pixel UNet runs converge. Best results at 256x256 (val loss 0.0021 bravo, 0.000337 seg).
+In-training generation metrics (KID, CMMD) are computed every epoch using 4 generated volumes at 25 Euler steps. While noisy, the **trajectory direction** over the last 100+ epochs reveals whether an experiment has converged, is still improving, or is overfitting.
 
-2. **PosthocEMA is the best single technique**: exp1o_1 achieves FID 62.64 — 31% better than baseline (91.46). Best PSNR, LPIPS, KID, and CMMD.
+Methodology: smoothed (rolling window=20), linear regression slope over last 100 data points, expressed as % change per 100 epochs.
 
-3. **Adjusted offset noise improves val loss**: exp1l_1 achieves the best validation loss (0.00209) and good FID (72.52).
+### 2D KID Trajectory Rankings (Generation/KID_mean_val)
 
-4. **ScoreAug prevents overfitting beyond 500 epochs**: exp23 continues improving at 869 epochs (val loss 0.00200) while baseline overfits after ~300 epochs.
+**Top tier — still strongly improving (slope < -10%):**
 
-5. **ControlNet works well**: exp6b (128x128, FID 49.62) demonstrates that seg-conditioned generation via ControlNet is competitive.
+| Experiment | KID Mean | Slope | Epochs | Notes |
+|-----------|---------|-------|--------|-------|
+| exp23 ScoreAug | 0.059 | -50.8% | 852 | Most room to improve |
+| exp20_1 656M+L3attn | 0.060 | -46.0% | 317 | Stalled before completion |
+| exp8 EMA (128) | 0.044 | -42.5% | 500 | Strong 128x128 |
+| exp1_1 baseline | 0.042 | -33.1% | 500 | Baseline still improving |
+| exp6a_1 CtrlNet S1 | 0.026 | -27.8% | 500 | **Lowest absolute KID + improving** |
+| exp1l_1 adj.offset | 0.034 | -23.6% | 500 | |
+| exp6b CtrlNet S2 | 0.039 | -17.8% | 500 | |
+| exp1o_1 PosthocEMA | 0.037 | -13.3% | 500 | |
 
-6. **1000 epochs + optimal steps gives best post-hoc FID**: exp1_1 at 1000ep evaluated with 27 Euler steps achieves FID 19.12 — the best absolute score.
+**Converged — flat (-3% to +3%):**
 
-7. **CFG-Zero* needs tuning**: exp1n shows poor in-training FID (132-165) despite good reconstruction. The default cfg_scale=2.0 may be suboptimal. Pending CFG scale sweep.
+| Experiment | KID Mean | Slope | Notes |
+|-----------|---------|-------|-------|
+| exp20_3 855M+L3 | 0.035 | +0.1% | Converged at 500ep |
+| exp1h LPIPS+Huber (128) | 0.025 | +1.2% | Best converged 128x128 |
+| exp1k offset noise (128) | 0.026 | +1.3% | |
+| exp19_2 WDM 270M | 0.053 | -0.1% | Best WDM, converged |
 
-8. **FreeU and sampling tricks provide marginal gains**: FreeU (<1 FID point), Restart Sampling (no improvement), DiffRS (negative impact). The quality ceiling is model/data limited.
+**Degrading (slope > +10%):**
 
-9. **Time-shift ratio 2.0 is optimal**: MONAI's default time-shift (ratio ~6.84) is harmful. Ratio 2.0 gives 5.5 FID points improvement over no shift.
+| Experiment | KID Mean | Slope | Notes |
+|-----------|---------|-------|-------|
+| exp1j_1 grad.accum | 0.057 | +11.6% | Overfitting |
+| exp19_paper WDM | 0.070 | +13.0% | Overfitting |
+| exp1c_1 brain norm | 0.458 | +28.0% | Catastrophic |
 
-10. **Latent diffusion has promise but is fragile**: exp9_1 (666M mid UNet, warmup+grad clip) achieved 0.076 val loss and was still improving. Large UNets are unstable.
+### 3D KID Trajectory Rankings (Generation_3d/KID_mean_val)
 
-11. **Infrastructure is a bigger problem than algorithms**: Checkpoint corruption, OOM kills, disk quota exhaustion, and torch.load bugs have wasted more GPU hours than bad hyperparameters.
+Only available for newer experiments (11 runs with >50 points).
+
+| Experiment | 3D KID Mean | Slope | Trend |
+|-----------|------------|-------|-------|
+| exp6a_1 CtrlNet S1 | 0.026 | -43.3% | strong improve |
+| exp23 ScoreAug | 0.061 | -41.6% | strong improve |
+| exp1l_1 adj.offset | 0.031 | -26.5% | strong improve |
+| exp1k_1 offset noise | 0.037 | -20.5% | strong improve |
+| exp6b CtrlNet S2 | 0.040 | -19.2% | strong improve |
+| exp1o_1 PosthocEMA | 0.037 | -9.6% | improving |
+| exp1p_1 uniform T | 0.054 | -0.2% | flat |
+| exp1s weight decay | 0.042 | +1.1% | flat |
+| exp1r attn dropout | 0.051 | +2.8% | flat |
+
+### CMMD Trajectory Rankings (Generation/CMMD_val, top 10)
+
+| Experiment | CMMD Mean | Slope | Trend |
+|-----------|----------|-------|-------|
+| exp23 ScoreAug | 0.235 | -32.6% | strong improve |
+| exp1p_1 uniform T | 0.243 | -22.9% | strong improve |
+| exp20_1 656M+L3 | 0.260 | -22.5% | strong improve |
+| exp1_1 baseline | 0.250 | -12.5% | strong improve |
+| exp6a_1 CtrlNet S1 | 0.175 | -1.5% | flat (lowest absolute) |
+| exp1o_1 PosthocEMA | 0.182 | -8.9% | improving |
+| exp1r attn dropout | 0.191 | -7.2% | improving |
+| exp6b CtrlNet S2 | 0.189 | +1.6% | flat |
+| exp1s weight decay | 0.190 | -3.4% | improving |
+| exp1l_1 adj.offset | 0.207 | -3.0% | flat |
+
+### Key Trajectory Insights
+
+1. **exp6a_1 ControlNet S1** has the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — the unconditional generation baseline is the single best performer on in-training metrics.
+2. **exp23 ScoreAug** has the steepest improvement slopes across all metrics at epoch 852 — given enough training time, it may overtake exp6a_1.
+3. **exp1o_1 PosthocEMA** shows consistent improvement across all metrics but at a moderate rate — already competitive.
+4. **Overfitting is visible**: exp1j_1 (grad accum), exp19_paper (WDM), and exp1c_1 (brain norm) all show degrading KID trajectories.
+5. **128x128 experiments** (exp1h, exp1k, exp1e, exp1g) have the lowest absolute KID values (0.024-0.026) because 128x128 generation is fundamentally easier.
+6. **No in-training generation metrics exist for LDM experiments** (exp21/22) — those results come only from test-time evaluation.
+
+### Cross-Domain Comparison: Test FID Rankings
+
+Combining all available test FID results (in-training for pixel, test eval for LDM/WDM):
+
+| Rank | Experiment | Type | FID | KID | CMMD |
+|------|-----------|------|-----|-----|------|
+| 1 | exp1_1 (1000ep, post-hoc 27 steps) | Pixel | **19.12** | — | — |
+| 2 | exp22_2 DiT-L | LDM | 47.41 | 0.0355 | 0.252 |
+| 3 | exp22_1 DiT-B | LDM | 48.99 | 0.0376 | 0.266 |
+| 4 | exp6b CtrlNet S2 (128) | Pixel | 49.62 | 0.0470 | 0.162 |
+| 5 | exp21_2 MAISI UNet | LDM | 50.89 | 0.0413 | 0.174 |
+| 6 | exp22_3 DiT-S (2000ep) | LDM | 61.14 | 0.0521 | 0.283 |
+| 7 | exp1o_1 PosthocEMA | Pixel | 62.64 | 0.0537 | 0.190 |
+| 8 | exp19_2 WDM 270M | WDM | 67.32 | 0.0437 | 0.235 |
+| 9 | exp1l_1 adj.offset | Pixel | 72.52 | 0.0704 | 0.226 |
+| 10 | exp19_paper WDM | WDM | 81.22 | 0.0446 | 0.285 |
+
+**Caveat**: FID numbers are NOT directly comparable across evaluation setups. Post-hoc eval uses 25 volumes with optimal Euler steps. In-training eval uses 4 volumes with fixed 25 steps. LDM test eval uses val reference fallback. These rankings should be interpreted with caution.
+
+---
+
+## Key Takeaways (Updated March 14, 2026)
+
+1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep with 27 Euler steps achieves FID 19.12. However, in-training FID (91.46) is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
+
+2. **LDM DiT is the most efficient approach**: exp22_2 (DiT-L 478M) achieves FID 47.41 in only 3.53h of training. DiT models in latent space train 10x faster than pixel UNets while achieving competitive generation quality.
+
+3. **PosthocEMA is the best single pixel technique**: exp1o_1 achieves FID 62.64 and in-training KID 0.037 (still improving). Best PSNR (33.36) and LPIPS (0.5329).
+
+4. **ScoreAug is essential for long training**: exp23 shows the steepest KID improvement (-50.8%/100ep) at epoch 852 — the only technique that prevents overfitting beyond 500 epochs.
+
+5. **ControlNet S1 has the best in-training metrics**: exp6a_1 achieves the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — unconditional 1-channel generation is easier to optimize.
+
+6. **Adjusted offset noise improves val loss**: exp1l_1 achieves val loss 0.00209 with strong KID trajectory (-23.6%/100ep).
+
+7. **Wavelet domain works but pixel is better**: exp19_2 (WDM, FID 67.32) is the best wavelet result. RFlow velocity prediction fails in wavelet space — DDPM x0 is required.
+
+8. **CFG-Zero* needs tuning**: exp1n shows flat KID trajectory and poor FID (132-165). Pending CFG scale sweep.
+
+9. **FreeU and sampling tricks provide marginal gains**: FreeU (<1 FID point), Restart Sampling (no improvement), DiffRS (negative impact).
+
+10. **Time-shift ratio 2.0 is optimal**: MONAI's default (~6.84) is harmful. Ratio 2.0 gives 5.5 FID improvement.
+
+11. **Generation metric trajectories matter more than val loss**: Val loss ranking does not predict generation quality. The best technique by val loss (exp1l_1, 0.00209) is ranked 9th by test FID. Always evaluate with generation metrics.
+
+12. **Infrastructure remains the biggest bottleneck**: Checkpoint corruption, OOM kills, disk quota, torch.load bugs, and stalled chains have wasted more GPU hours than any hyperparameter choice.
