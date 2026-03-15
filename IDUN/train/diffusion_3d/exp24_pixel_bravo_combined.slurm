@@ -20,8 +20,6 @@
 #   - Adjusted offset noise (exp1l): strength=0.1, adjusted=true
 #   - PosthocEMA (exp1o): sigma_rels=[0.05,0.28], checkpoint every 5000 steps
 #   - Uniform timestep (exp1p): sample_method=uniform
-#   - Attention dropout (exp1r): dropout_cattn=0.1
-#   - Weight decay (exp1s): 0.05
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -64,7 +62,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp24 Combined: ScoreAug + AdjOffset + PosthocEMA + Uniform T + Dropout + WD ==="
+echo "=== Exp24 Combined: ScoreAug + AdjOffset + PosthocEMA + Uniform T ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 echo "Run dir: ${CHAIN_RUN_DIR}"
 nvidia-smi
@@ -107,8 +105,6 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.ema.checkpoint_every_num_steps=5000 \
     training.ema.update_every=10 \
     strategy.sample_method=uniform \
-    model.dropout_cattn=0.1 \
-    training.optimizer.weight_decay=0.05 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
