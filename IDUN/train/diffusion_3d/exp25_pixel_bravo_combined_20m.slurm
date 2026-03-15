@@ -22,7 +22,7 @@
 #   - Uniform timestep (exp1p): sample_method=uniform
 #   - Attention dropout (exp1r): dropout_cattn=0.1
 #   - Weight decay (exp1s): 0.05
-# Model: [8,16,32,64,128,128] ~17M params, no GC, torch.compile ON (25.1G VRAM)
+# Model: [8,16,32,64,128,128] ~17M params, GC ON, torch.compile OFF (ScoreAug dynamic shapes break compile)
 
 CHAIN_MAX=40
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -95,8 +95,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.learning_rate=1e-4 \
     training.augment=false \
     training.use_min_snr=false \
-    training.gradient_checkpointing=false \
-    training.use_compile=true \
+    training.gradient_checkpointing=true \
+    training.use_compile=false \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
     training.score_aug.enabled=true \
