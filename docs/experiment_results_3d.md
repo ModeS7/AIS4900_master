@@ -1,6 +1,6 @@
 # 3D Diffusion Experiment Results
 
-Last updated: March 14, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: March 24, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
@@ -9,9 +9,11 @@ Last updated: March 14, 2026. Data extracted from IDUN logs and TensorBoard runs
 | Category | Experiment | Val Loss | FID | Epochs | Notes |
 |----------|-----------|----------|-----|--------|-------|
 | **Bravo pixel 256 (post-hoc)** | exp1_1 (1000ep) | 0.00230 | **19.12** | 1000 | Post-hoc eval, 27 Euler steps |
-| **Bravo pixel 256 (loss)** | exp1l_1 (adj.offset) | **0.00209** | 72.52 | 500 | Best val loss |
-| **Bravo pixel 256 (in-train)** | exp1o_1 (PosthocEMA) | 0.00235 | **62.64** | 500 | Best in-training FID (pixel) |
-| **Bravo LDM 4x (FID)** | exp22_2 (DiT-L) | 0.0847 | **47.41** | 500 | Best test FID overall |
+| **Bravo pixel 256 (post-hoc)** | exp23 (ScoreAug) | **0.00200** | **20.38** | 1000 | Post-hoc, best RadImageNet FID (0.659) |
+| **Bravo pixel 256 (in-train)** | exp1p_1 (uniform T) | 0.00256 | **58.85** | 500 | Best 256x256 in-training FID at 500ep |
+| **Bravo pixel 256 (combined)** | exp24 (all techniques) | 0.00347 | **62.87** | 1000 | ScoreAug+AdjOffset+PHEMA+UniformT |
+| **Bravo pixel 256 (loss)** | exp23 (ScoreAug) | **0.00200** | 62.57 | 1000 | Best val loss of any experiment |
+| **Bravo LDM 4x (FID)** | exp22_2 (DiT-L) | 0.0847 | **47.41** | 500 | Best LDM FID |
 | **Bravo LDM 4x (UNet)** | exp21_2 (MAISI 167M) | 0.0767 | **50.89** | 500 | Best LDM UNet |
 | **Bravo WDM** | exp19_2 (270M DDPM) | 0.178 | **67.32** | 500 | Best wavelet |
 | **Bravo 128 ControlNet** | exp6b (Stage 2) | 0.00304 | **49.62** | 500 | Best seg-conditioned gen |
@@ -40,8 +42,8 @@ Last updated: March 14, 2026. Data extracted from IDUN logs and TensorBoard runs
 | exp1o/1o_1 | Pixel+PosthocEMA | 128/256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1p_1 | Pixel+UniformT | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp1n | Pixel+CFGZero* | 256x256x160 | UNet 5L | 270M | rflow | bravo |
-| exp1r | Pixel+AttnDropout | 256x256x160 | UNet 5L | 270M | rflow | bravo |
-| exp1s | Pixel+WeightDecay | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1r | Pixel+AttnDropout | 128x128x160 | UNet 5L | 270M | rflow | bravo |
+| exp1s | Pixel+WeightDecay | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp6a_1 | ControlNet S1 | 256x256x160 | UNet 5L | 270M | rflow | bravo (uncond) |
 | exp6b | ControlNet S2 | 128x128x160 | UNet 5L | 270M | rflow | bravo |
 | exp6b_1 | ControlNet S2 | 256x256x160 | UNet 5L | 270M | rflow | bravo |
@@ -89,6 +91,12 @@ Last updated: March 14, 2026. Data extracted from IDUN logs and TensorBoard runs
 | exp22_2 | LDM 4x DiT-L | latent 64x64x40 | DiT-L p=2 | 478M | rflow | bravo_seg_cond |
 | exp22_3 | LDM 4x DiT-S | latent 64x64x40 | DiT-S p=2 | 40M | rflow | bravo_seg_cond |
 | exp23 | Pixel+ScoreAug | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp20_4 | Pixel Small+Attn | 256x256x160 | UNet 5L | 67M | rflow | bravo |
+| exp20_5 | Pixel Mid | 256x256x160 | UNet 5L | 152M | rflow | bravo |
+| exp20_6 | Pixel Tiny | 256x256x160 | UNet 4L | ~20M | rflow | bravo |
+| exp20_7 | Pixel 67M NoAttn | 256x256x160 | UNet 5L | 67M | rflow | bravo |
+| exp24 | Pixel Combined 270M | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp25 | Pixel Combined 17M | 256x256x160 | UNet 6L | 17M | rflow | bravo |
 
 ---
 
@@ -817,77 +825,217 @@ MSE ~3x higher due to [-1,1] scale. Latest model FID (72.00) is competitive. 31 
 
 ---
 
-### exp1p_1: Uniform Timestep Sampling
+### exp1p_1: Uniform Timestep Sampling — COMPLETED
 
-**Status**: Still running (338/500 epochs). Chain 3/20.
+**Config**: 270M UNet, rflow, LR=1e-4, sample_method=uniform. A100 80GB.
 
-| Checkpoint | Val Loss | Notes |
-|-----------|----------|-------|
-| Best (ep 336) | 0.00266 | Training still in progress |
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00256 | 0.003009 | 32.84 | 0.8018 | 62.00 | 0.0508 | 0.2228 |
+| Latest (500ep) | — | 0.004160 | 33.16 | 0.6704 | **58.85** | **0.0464** | **0.1977** |
 
-Epoch 338 showed elevated MSE (0.0082) — possible instability spike. Needs to complete for full evaluation.
+34 gradient spikes. Training: 5.81h.
 
----
-
-### exp1r: Cross-Attention Dropout (p=0.1)
-
-**Status**: Still running (323/500 epochs).
-
-| Checkpoint | Val Loss | Notes |
-|-----------|----------|-------|
-| Best (ep 155) | 0.00246 | Plateaued early |
-
-25 gradient spikes. ~101s/epoch. Val loss plateaued at epoch 155 with no improvement since.
-
-**Overfitting is worse than baseline**: Lower training loss but wider train/val gap than exp1_1. Dropout helps the optimizer escape shallow minima and find deeper training loss basins, but on 105 volumes deeper minima = more memorization. The train/inference gap (no dropout at test time → full capacity) amplifies this. Generation metrics are still decent (KID 0.048, CMMD 0.191) but the technique fails as a regularizer.
+Good generation metrics (FID 58.85 latest). CMMD trajectory was strongly improving (-22.9%/100ep) but 3D KID was flat (-0.2%). Simpler than logit-normal with no hyperparameters to tune.
 
 ---
 
-### exp1s: Weight Decay (0.05)
+### exp1r: Cross-Attention Dropout (p=0.1) @ 128x128x160 — COMPLETED
 
-**Status**: Still running (347/500 epochs).
+**Config**: 270M UNet, rflow, LR=1e-4 + cross-attention dropout 0.1. **128x128x160**. H100 80GB.
 
-| Checkpoint | Val Loss | Notes |
-|-----------|----------|-------|
-| Best (ep 244) | **0.00231** | Good val loss but unstable |
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep 112) | 0.00246 | 0.002354 | 32.63 | 0.7802 | 82.21 | 0.0887 | 0.2667 |
+| Latest (500ep) | — | 0.008438 | 30.55 | 0.4523 | 49.32 | 0.0466 | 0.1629 |
 
-37 gradient spikes — 17 consecutive rapid spikes at epochs 36-44 suggest weight decay interacts poorly with optimizer early in training. Despite instability, achieved competitive val loss.
+47 gradient spikes. Training: 2.48h + resume.
 
-**Overfitting is worse than baseline**: Weight decay (AdamW-decoupled) keeps weights small and the loss landscape smooth, letting the optimizer slide into deeper training minima faster. But deeper minima on 105 volumes = more memorization. The regularization pressure is far too weak to compensate for the 2500:1 parameter-to-sample ratio. Generation metrics are still reasonable (KID 0.041, CMMD 0.190) but the technique fails as a regularizer.
+**Note**: 128x128x160 resolution — FID not comparable to 256x256 experiments. Best-checkpoint LPIPS (0.7802) is worst of all experiments, suggesting the dropout creates a large train/inference gap. Val loss plateaued early at epoch 112.
+
+---
+
+### exp1s: Weight Decay (0.05) @ 128x128x160 — COMPLETED
+
+**Config**: 270M UNet, rflow, LR=1e-4 + AdamW weight decay 0.05. **128x128x160**. H100 80GB.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep 142) | 0.00231 | 0.005689 | 33.69 | 0.5217 | 54.60 | 0.0509 | 0.1899 |
+| Latest (500ep) | — | 0.004787 | 30.86 | 0.5152 | 43.45 | 0.0323 | 0.1681 |
+
+38 gradient spikes — 17 consecutive rapid spikes at epochs 36-44 suggest weight decay interacts poorly with optimizer early in training.
+
+**Note**: 128x128x160 resolution — FID not comparable to 256x256 experiments. At 128x128, latest FID 43.45 compares favorably to exp8 (EMA, 128x128, no FID available) and exp5_1 (ScoreAug, 128x128, val loss 0.00213). 3D KID trajectory was flat (+1.1%/100ep).
 
 ---
 
 ### exp23: ScoreAug @ 256x256x160 (1000 epochs) — COMPLETED
 
-**Status**: Completed (1000/1000 epochs).
+**Config**: 270M UNet, rflow, LR=1e-4 + ScoreAug (rotation+flip+translation+cutout, omega conditioning). A100 80GB.
 
-| Checkpoint | Val Loss | Notes |
-|-----------|----------|-------|
-| Best (ep 750) | **0.00200** | Best val loss of any experiment |
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (ep ~750) | **0.00200** | 0.002195 | 33.04 | 0.5915 | 72.39 | 0.0579 | 0.1936 |
+| Latest (1000ep) | — | 0.003152 | 33.34 | 0.5307 | **62.57** | **0.0531** | **0.1850** |
 
-**ScoreAug prevented overfitting AND matched or beat exp1_1 at 1000 epochs on generation metrics.** This is the key result: the baseline (exp1_1) overfits beyond ~500 epochs, degrading generation quality. ScoreAug maintained improving KID/CMMD trajectories throughout the full 1000 epochs (KID slope -50.8%/100ep at epoch 852, steepest of all experiments).
+139 gradient spikes (9 optimizer skips). Training: ~5.15h (final chain segment).
 
-Unlike weight decay and dropout (exp1r/1s), which only change how the model fits the same 105 volumes, ScoreAug adds genuinely new training signal via augmented volumes with known transformations, effectively increasing dataset size. This is why it's the only technique that works — the problem is data-limited, not optimization-limited. 6 gradient spikes — stable.
+**Post-hoc optimal steps (25 volumes, test split):**
+
+| Metric | Best Steps | Best Value | Notes |
+|--------|-----------|-----------|-------|
+| FID (ImageNet) | **27** | **20.38** | Close to baseline's 19.12 at 1000ep |
+| FID (RadImageNet) | 48 | **0.659** | Better than baseline's 0.714 |
+
+**ScoreAug prevented overfitting AND matched or beat exp1_1 at 1000 epochs on generation metrics.** Post-hoc FID 20.38 (27 steps) is within 1.3 points of baseline's 19.12, while RadImageNet FID (0.659) actually beats baseline (0.714). The baseline overfits beyond ~500 epochs; ScoreAug maintained improving KID/CMMD trajectories throughout 1000 epochs (KID slope -50.8%/100ep, steepest of all experiments).
+
+ScoreAug adds genuinely new training signal via augmented volumes with known transformations, effectively increasing dataset size. This is the only regularization technique that works — the problem is data-limited, not optimization-limited.
 
 ---
 
-### 270M Technique Comparison (256x256x160, 500ep completed)
+### 270M Technique Comparison (256x256x160)
 
-| Experiment | Technique | Val Loss | FID (latest) | KID | CMMD | Grad Spikes |
-|-----------|-----------|----------|-------------|-----|------|-------------|
-| exp1_1 | Baseline | 0.00211 | 91.46* | 0.0862 | 0.2347 | — |
-| exp1b_1 | [-1,1] rescale | 0.00675 | 72.00 | 0.0689 | 0.1667 | 31 |
+All 500 epochs unless noted. FID/KID/CMMD are from **latest** checkpoint in-training eval (4 vol, 25 Euler steps) unless marked.
+
+| Experiment | Technique | Val Loss | FID (latest) | KID (latest) | CMMD (latest) | Grad Spikes |
+|-----------|-----------|----------|-------------|-------------|--------------|-------------|
+| exp1_1 | Baseline (500ep) | 0.00211 | 51.17 | 0.033 | 0.193 | — |
+| exp1_1 | Baseline (1000ep) | 0.00230 | 49.53 | 0.035 | 0.149 | — |
+| exp1b_1 | [-1,1] rescale | 0.00675 | 72.00 | 0.069 | 0.167 | 31 |
 | exp1k_1 | Offset noise | 0.00261 | — | — | — | 58 |
-| **exp1l_1** | **Adj. offset** | **0.00209** | **72.52** | **0.0704** | **0.2260** | 13 |
-| exp1n | CFG-Zero* | 0.00232 | 132.83 | 0.1739 | 0.2477 | 1 |
-| **exp1o_1** | **PosthocEMA** | 0.00235 | **62.64** | **0.0537** | **0.1898** | 6 |
-| **exp23** | **ScoreAug (1000ep)** | **0.00200** | — | — | — | 6 |
+| **exp1l_1** | **Adj. offset** | **0.00209** | 72.52† | 0.070 | 0.226 | 13 |
+| exp1n | CFG-Zero* | 0.00265 | 132.83 | 0.174 | 0.248 | 1 |
+| **exp1o_1** | **PosthocEMA** | 0.00235 | **62.64†** | 0.054 | 0.190 | 6 |
+| **exp1p_1** | **Uniform T** | 0.00256 | **58.85** | **0.046** | **0.198** | 34 |
+| **exp23** | **ScoreAug (1000ep)** | **0.00200** | 62.57 | 0.053 | 0.185 | 9 |
+| **exp24** | **Combined (1000ep)** | 0.00347 | 62.87 | 0.053 | 0.259 | 742 |
 
-*Best checkpoint FID, not latest.
+†Best checkpoint FID, not latest.
 
-**Winners**: PosthocEMA (best generation metrics), adjusted offset noise (best val loss), ScoreAug (best long-training val loss).
+**Note**: exp1r (attn dropout) and exp1s (weight decay) ran at **128x128x160** — their FID numbers are not comparable to the 256x256 table above. See individual sections for their results.
+
+### 128x128x160 Technique Comparison
+
+| Experiment | Technique | Val Loss | FID (latest) | KID (latest) | CMMD (latest) | Grad Spikes |
+|-----------|-----------|----------|-------------|-------------|--------------|-------------|
+| exp1s | Weight decay | 0.00231 | **43.45** | **0.032** | **0.168** | 38 |
+| exp1r | Attn dropout | 0.00246 | 49.32 | 0.047 | 0.163 | 47 |
+| exp5_1 | ScoreAug | 0.00213 | — | — | — | — |
+| exp8 | EMA | **0.00227** | — | — | — | — |
+
+**Post-hoc FID rankings (25 vol, optimal Euler steps, 256x256x160 only):**
+
+| Experiment | Best Steps | FID (ImageNet) | FID (RadImageNet) |
+|-----------|-----------|---------------|------------------|
+| exp1_1 (1000ep) | 27 | **19.12** | 0.714 |
+| exp23 ScoreAug (1000ep) | 27 | 20.38 | **0.659** |
+| exp1_1 (500ep) | 23 | 23.85 | 0.674 |
+
+**256x256 in-training winners**: Uniform T (FID 58.85), PosthocEMA (FID 62.64†), ScoreAug (FID 62.57 at 1000ep). **Post-hoc winners**: Baseline 1000ep (FID 19.12), ScoreAug (FID 20.38, best RadImageNet 0.659). **Val loss winner**: ScoreAug (0.00200).
 
 ---
+
+---
+
+## Part 12b: Model Scaling Experiments (March 2026)
+
+Testing how model size affects generation quality at 256x256x160. All use RFlow, LR=1e-4, batch=1, 500 epochs.
+
+### exp20_4: Small UNet 67M (with L5 attention)
+
+**Config**: UNet channels=[16,32,64,128,256], attention at level 5 only.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00262 | 0.003971 | 32.92 | 0.6851 | 95.85 | 0.0944 | 0.2430 |
+| Latest (500ep) | — | 0.004889 | 30.77 | 0.5877 | 99.86 | 0.1104 | 0.2452 |
+
+114 gradient spikes. A100 80GB. 9.96h.
+
+### exp20_5: Mid UNet 152M
+
+**Config**: UNet channels=[32,64,128,256,512], norm_num_groups=32.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00238 | 0.003212 | 33.13 | 0.6350 | 95.00 | 0.0895 | 0.3304 |
+| Latest (500ep) | — | 0.004167 | 30.95 | 0.5574 | **72.11** | **0.0706** | **0.1885** |
+
+76 gradient spikes. H100 80GB.
+
+### exp20_6: Tiny UNet 17M
+
+**Config**: UNet channels=[8,16,32,64,128,128], 6 levels, attention L4+L5.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | **0.00212** | 0.003290 | 33.06 | 0.5910 | 112.87 | 0.1394 | 0.2344 |
+| Latest (500ep) | — | 0.004855 | 32.90 | 0.5191 | 94.75 | 0.1017 | 0.2306 |
+
+254 gradient spikes. A100 80GB. 2.98h.
+
+### exp20_7: 65M UNet (no attention)
+
+**Config**: UNet channels=[8,16,32,128,256,256], no attention layers. Same as exp20_4 but with all attention disabled.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00222 | 0.003105 | 32.63 | 0.6132 | 112.64 | 0.1244 | 0.3127 |
+| Latest (500ep) | — | 0.004998 | 33.26 | 0.5157 | 92.16 | 0.0977 | 0.2342 |
+
+241 gradient spikes. A100 80GB. 10.42h.
+
+### Model Scaling Summary
+
+| Experiment | Channels | Params | Attention | Val Loss | FID (latest) | KID (latest) | CMMD (latest) | Grad Spikes |
+|-----------|----------|--------|-----------|----------|-------------|-------------|--------------|-------------|
+| exp1_1 (baseline) | [32,64,256,512,512] | 270M | L4+L5 | 0.00211 | 51.17 | 0.033 | 0.193 | — |
+| exp20_5 | [12,24,48,192,384,384] | 152M | L4+L5 | 0.00238 | 72.11 | 0.071 | 0.189 | 2 |
+| exp20_4 (w/attn) | [8,16,32,128,256,256] | 67M | L4+L5 | 0.00262 | 99.86 | 0.110 | 0.245 | 64 |
+| exp20_7 (no attn) | [8,16,32,128,256,256] | 65M | none | 0.00222 | 92.16 | 0.098 | 0.234 | 56 |
+| exp20_6 | [8,16,32,64,128,128] | 17M | L4+L5 | 0.00212 | 94.75 | 0.102 | 0.231 | 15 |
+
+**Key findings:**
+1. **270M → 152M drops FID from 51 to 72 (41% worse)**. Further scaling down gives diminishing returns — 67M and 20M are all in the 92-100 FID range.
+2. **Val loss doesn't correlate with generation quality**: exp20_6 (20M) has the second-best val loss (0.00212) but worst FID (94.75). Small models memorize efficiently but generate poorly.
+3. **Attention doesn't help at 67M**: exp20_7 (no attn, FID 92.16) slightly outperforms exp20_4 (with attn, FID 99.86). At this scale, attention parameters may be better spent on more channels.
+4. **Gradient instability roughly scales inversely with model size**: 15-64 spikes (17-67M) vs 2 (152M) vs 0 (270M baseline).
+5. **The 270M UNet is the right size** for this dataset. Scaling down saves VRAM but severely hurts generation quality.
+
+---
+
+## Part 12c: Combined Technique Experiments (March 2026)
+
+### exp24: Combined Techniques @ 270M UNet, 1000 epochs — COMPLETED
+
+**Config**: 270M UNet + ScoreAug + Adj. Offset + PosthocEMA + Uniform T. 256x256x160. Gradient checkpointing ON, torch.compile OFF. H100 80GB. 7 chain segments.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (EMA) | 0.00347 | 0.011215 | 34.24 | 0.7429 | 65.46 | 0.0542 | 0.2549 |
+| Latest (1000ep, EMA) | — | 0.005543 | 32.70 | 0.8810 | **62.87** | **0.0526** | **0.2594** |
+
+742 gradient spikes. Training: ~5 days total.
+
+**Combined techniques ≈ ScoreAug alone.** FID 62.87 vs exp23's 62.57 — essentially identical. Adding adjusted offset noise + PosthocEMA + uniform timestep on top of ScoreAug did not improve generation quality at 1000 epochs. Val loss is worse (0.00347 vs 0.00200) and LPIPS is much worse (0.881 vs 0.531), suggesting the EMA evaluation may hurt reconstruction quality. The 742 gradient spikes (vs 139 for exp23) indicate the combined approach is less stable.
+
+**TB trajectory**: KID still improving at epoch 1000 (min KID 0.027 at ep998, CMMD min 0.177 at ep961). The 3D metrics also improving (3D KID min 0.026 at ep980).
+
+---
+
+### exp25: Combined Techniques @ 17M UNet, 2000 epochs — COMPLETED
+
+**Config**: 17.2M UNet [8,16,32,64,128,128] + ScoreAug + Adj. Offset + PosthocEMA + Uniform T + Attn Dropout + Weight Decay + warmup 10ep + gradient clip 0.5. 256x256x160. H100 80GB. 8 chain segments.
+
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best (EMA) | 0.00209 | 0.008342 | 33.54 | 0.7312 | 72.95 | 0.0579 | 0.3016 |
+| Latest (2000ep, EMA) | — | 0.020070 | 34.20 | 0.6224 | 73.49 | 0.0565 | 0.3082 |
+
+3,626 gradient spikes. Training: ~5 days total.
+
+**The combined approach on a small model (17M) achieves FID ~73** — better than exp20_6 (17M vanilla, FID 95) but far from 270M results (FID 51-63). The massive gradient spike count (3,626 vs 742 for 270M exp24) confirms small models are much harder to train stably, even with gradient clipping at 0.5.
 
 ---
 
@@ -901,7 +1049,7 @@ Unlike weight decay and dropout (exp1r/1s), which only change how the model fits
 |-----------|----------|----------|-----------|-----------|
 | Best (ep 368) | 0.00202 | 0.003448 | 33.57 | 0.5714 |
 
-500 epochs complete. 19 gradient spikes. Best val loss 0.00202 — competitive with best techniques. Generation metrics were computing at end of log.
+500 epochs complete. 72 gradient spikes. Best val loss 0.00247 — competitive with best techniques.
 
 ---
 
@@ -918,17 +1066,18 @@ Unlike weight decay and dropout (exp1r/1s), which only change how the model fits
 
 ---
 
-### exp6b_1: Stage 2 — ControlNet @ 256x256x160
+### exp6b_1: Stage 2 — ControlNet @ 256x256x160 — COMPLETED
 
-**Status**: Just started (39/500 epochs).
+**Config**: Frozen UNet from exp6a_1 (256x256), ~135M trainable ControlNet encoder. Seg mask injected via ControlNet residuals.
 
-**Config**: Frozen UNet from exp6a_1 (256x256), ~135M trainable.
+| Checkpoint | Val Loss | Test MSE | Test PSNR | Test LPIPS | FID | KID | CMMD |
+|-----------|----------|----------|-----------|-----------|-----|-----|------|
+| Best | 0.00195 | 0.002549 | 32.99 | 0.6602 | 76.11 | 0.0749 | 0.2481 |
+| Latest (500ep) | — | 0.002899 | 33.40 | 0.5920 | 82.82 | 0.0896 | 0.2242 |
 
-| Checkpoint | Val Loss | Notes |
-|-----------|----------|-------|
-| Best (ep 16) | 0.00211 | ~220s/epoch, still training |
+0 gradient spikes. 500 epochs complete.
 
-Very early. Val loss 0.00211 at epoch 16 is promising.
+**Worse FID than 128x128 ControlNet (exp6b)**: FID 76-83 vs 50-53. The 256x256 resolution makes the generation task harder for the ControlNet while the frozen UNet backbone (from exp6a_1) may not be strong enough. Best val loss (0.00195) is excellent though.
 
 ---
 
@@ -942,8 +1091,12 @@ Very early. Val loss 0.00211 at epoch 16 is promising.
 | exp1_1 (500ep) | FID_RIN | 46 | 0.674 | |
 | exp1_1 (1000ep) | FID | 27 | **19.12** | Best overall |
 | exp1_1 (1000ep) | FID_RIN | 49 | 0.714 | |
+| **exp23 (1000ep)** | **FID** | **27** | **20.38** | ScoreAug, within 1.3 of baseline |
+| **exp23 (1000ep)** | **FID_RIN** | **48** | **0.659** | **Best RadImageNet FID** |
 | exp1b (128, [-1,1]) | FID | 28 | 51.90 | |
 | exp1c (128, N(0,1)) | FID | 50 | 142.36 | Gaussian norm fails |
+
+**ImageNet FID vs RadImageNet FID disagree on optimal steps**: For exp23, ImageNet prefers 27 steps (FID 20.38) while RadImageNet prefers 48 steps (FID 0.659). ImageNet FID degrades sharply beyond 27 steps (20.38→28.05 at 48 steps) while RadImageNet FID keeps improving. CMMD is flat (~0.110) across all step counts. Practical choice: **27 steps** — best ImageNet FID with acceptable RadImageNet (0.93 vs 0.66).
 
 ### Time-Shift Evaluation (exp1_1, Euler/25)
 
@@ -1059,8 +1212,8 @@ Only available for newer experiments (11 runs with >50 points).
 | exp6b CtrlNet S2 | 0.040 | -19.2% | strong improve |
 | exp1o_1 PosthocEMA | 0.037 | -9.6% | improving |
 | exp1p_1 uniform T | 0.054 | -0.2% | flat |
-| exp1s weight decay | 0.042 | +1.1% | flat |
-| exp1r attn dropout | 0.051 | +2.8% | flat |
+| exp1s weight decay (128) | 0.042 | +1.1% | flat |
+| exp1r attn dropout (128) | 0.051 | +2.8% | flat |
 
 ### CMMD Trajectory Rankings (Generation/CMMD_val, top 10)
 
@@ -1072,63 +1225,89 @@ Only available for newer experiments (11 runs with >50 points).
 | exp1_1 baseline | 0.250 | -12.5% | strong improve |
 | exp6a_1 CtrlNet S1 | 0.175 | -1.5% | flat (lowest absolute) |
 | exp1o_1 PosthocEMA | 0.182 | -8.9% | improving |
-| exp1r attn dropout | 0.191 | -7.2% | improving |
-| exp6b CtrlNet S2 | 0.189 | +1.6% | flat |
-| exp1s weight decay | 0.190 | -3.4% | improving |
+| exp1r attn dropout (128) | 0.191 | -7.2% | improving |
+| exp6b CtrlNet S2 (128) | 0.189 | +1.6% | flat |
+| exp1s weight decay (128) | 0.190 | -3.4% | improving |
 | exp1l_1 adj.offset | 0.207 | -3.0% | flat |
 
 ### Key Trajectory Insights
 
 1. **exp6a_1 ControlNet S1** has the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — the unconditional generation baseline is the single best performer on in-training metrics.
-2. **exp23 ScoreAug** completed 1000 epochs with the steepest improvement slopes. Final generation metrics match or beat exp1_1 at 1000 epochs — ScoreAug prevents overfitting while maintaining quality.
-3. **exp1o_1 PosthocEMA** shows consistent improvement across all metrics but at a moderate rate — already competitive.
-4. **Overfitting is visible**: exp1j_1 (grad accum), exp19_paper (WDM), and exp1c_1 (brain norm) all show degrading KID trajectories.
-5. **128x128 experiments** (exp1h, exp1k, exp1e, exp1g) have the lowest absolute KID values (0.024-0.026) because 128x128 generation is fundamentally easier.
-6. **No in-training generation metrics exist for LDM experiments** (exp21/22) — those results come only from test-time evaluation.
+2. **exp23 ScoreAug** completed 1000 epochs with the steepest improvement slopes. Post-hoc FID 20.38 confirms generation quality matches baseline. ScoreAug prevents overfitting while maintaining quality.
+3. **exp1s/1r ran at 128x128 with flat trajectories**: Weight decay (FID 43.45) and attn dropout (FID 49.32) at 128x128x160. Their KID trajectories are flat (+1.1% and +2.8%), suggesting they've converged. Not tested at 256x256.
+4. **exp1o_1 PosthocEMA** shows consistent improvement across all metrics but at a moderate rate — already competitive.
+5. **Overfitting is visible**: exp1j_1 (grad accum), exp19_paper (WDM), and exp1c_1 (brain norm) all show degrading KID trajectories.
+6. **128x128 experiments** (exp1h, exp1k, exp1e, exp1g) have the lowest absolute KID values (0.024-0.026) because 128x128 generation is fundamentally easier.
+7. **No in-training generation metrics exist for LDM experiments** (exp21/22) — those results come only from test-time evaluation.
 
 ### Cross-Domain Comparison: Test FID Rankings
 
-Combining all available test FID results (in-training for pixel, test eval for LDM/WDM):
+**Post-hoc evaluation (25 volumes, optimal Euler steps, test split):**
+
+| Rank | Experiment | Type | FID | FID_RIN | Steps |
+|------|-----------|------|-----|---------|-------|
+| 1 | exp1_1 (1000ep) | Pixel | **19.12** | 0.714 | 27 |
+| 2 | exp23 ScoreAug (1000ep) | Pixel | **20.38** | **0.659** | 27 |
+| 3 | exp1_1 (500ep) | Pixel | 23.85 | 0.674 | 23 |
+
+**In-training evaluation (4 volumes, 25 Euler steps) — latest checkpoint, 256x256x160 only:**
 
 | Rank | Experiment | Type | FID | KID | CMMD |
 |------|-----------|------|-----|-----|------|
-| 1 | exp1_1 (1000ep, post-hoc 27 steps) | Pixel | **19.12** | — | — |
-| 2 | exp22_2 DiT-L | LDM | 47.41 | 0.0355 | 0.252 |
-| 3 | exp22_1 DiT-B | LDM | 48.99 | 0.0376 | 0.266 |
-| 4 | exp6b CtrlNet S2 (128) | Pixel | 49.62 | 0.0470 | 0.162 |
-| 5 | exp21_2 MAISI UNet | LDM | 50.89 | 0.0413 | 0.174 |
-| 6 | exp22_3 DiT-S (2000ep) | LDM | 61.14 | 0.0521 | 0.283 |
-| 7 | exp1o_1 PosthocEMA | Pixel | 62.64 | 0.0537 | 0.190 |
-| 8 | exp19_2 WDM 270M | WDM | 67.32 | 0.0437 | 0.235 |
-| 9 | exp1l_1 adj.offset | Pixel | 72.52 | 0.0704 | 0.226 |
-| 10 | exp19_paper WDM | WDM | 81.22 | 0.0446 | 0.285 |
+| 1 | exp22_2 DiT-L | LDM | **47.41** | 0.036 | 0.252 |
+| 2 | exp22_1 DiT-B | LDM | 48.99 | 0.038 | 0.266 |
+| 3 | exp1_1 Baseline (1000ep) | Pixel | 49.53 | 0.035 | **0.149** |
+| 4 | exp21_2 MAISI UNet | LDM | 50.89 | 0.041 | 0.174 |
+| 5 | exp1_1 Baseline (500ep) | Pixel | 51.17 | **0.033** | 0.193 |
+| 6 | exp1p_1 Uniform T | Pixel | 58.85 | 0.046 | 0.198 |
+| 7 | exp22_3 DiT-S (2000ep) | LDM | 61.14 | 0.052 | 0.283 |
+| 8 | exp23 ScoreAug (1000ep) | Pixel | 62.57 | 0.053 | 0.185 |
+| 9 | exp1o_1 PosthocEMA | Pixel | 62.64 | 0.054 | 0.190 |
+| 10 | exp24 Combined (1000ep) | Pixel | 62.87 | 0.053 | 0.259 |
+| 11 | exp19_2 WDM 270M | WDM | 67.32 | 0.044 | 0.235 |
 
-**Caveat**: FID numbers are NOT directly comparable across evaluation setups. Post-hoc eval uses 25 volumes with optimal Euler steps. In-training eval uses 4 volumes with fixed 25 steps. LDM test eval uses val reference fallback. These rankings should be interpreted with caution.
+**128x128x160 in-training (separate ranking, not comparable to above):**
+
+| Experiment | FID | KID | CMMD |
+|-----------|-----|-----|------|
+| exp1s Weight decay | 43.45 | 0.032 | 0.168 |
+| exp6b CtrlNet S2 | 49.62 | 0.047 | 0.162 |
+| exp1r Attn dropout | 49.32 | 0.047 | 0.163 |
+
+**Caveat**: FID numbers are NOT directly comparable across evaluation setups or resolutions. Post-hoc eval uses 25 volumes with optimal Euler steps. In-training eval uses 4 volumes with fixed 25 steps. LDM test eval uses val reference fallback. 128x128 FID is fundamentally different from 256x256 FID.
 
 ---
 
-## Key Takeaways (Updated March 14, 2026)
+## Key Takeaways (Updated March 24, 2026)
 
-1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep with 27 Euler steps achieves FID 19.12. However, in-training FID (91.46) is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
+1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep achieves FID 19.12 (27 Euler steps). exp23 (ScoreAug) is close at 20.38, with better RadImageNet FID (0.659 vs 0.714). In-training FID is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
 
 2. **LDM DiT is the most efficient approach**: exp22_2 (DiT-L 478M) achieves FID 47.41 in only 3.53h of training. DiT models in latent space train 10x faster than pixel UNets while achieving competitive generation quality.
 
-3. **PosthocEMA is the best single pixel technique**: exp1o_1 achieves FID 62.64 and in-training KID 0.037 (still improving). Best PSNR (33.36) and LPIPS (0.5329).
+3. **ScoreAug alone ≈ combined techniques**: exp24 (ScoreAug + AdjOffset + PosthocEMA + UniformT, 1000ep) achieved FID 62.87, essentially identical to exp23 (ScoreAug only, FID 62.57). Stacking techniques did not improve generation quality — but added instability (742 vs 9 gradient spikes). ScoreAug is the dominant contributor.
 
-4. **ScoreAug is the only effective regularizer**: exp23 completed 1000 epochs with generation metrics matching or beating exp1_1 at 1000 epochs, while preventing the overfitting that plagues standard training. Weight decay (exp1s) and attention dropout (exp1r) both failed — they make overfitting worse because they only change how the model fits the same 105 volumes without adding new information.
+4. **ScoreAug is the only technique that scales to long training**: exp23 completed 1000 epochs with continued improvement (KID slope -50.8%/100ep). Post-hoc FID 20.38 confirms quality. Other techniques plateau by 500 epochs.
 
-5. **ControlNet S1 has the best in-training metrics**: exp6a_1 achieves the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving — unconditional 1-channel generation is easier to optimize.
+5. **Weight decay and attn dropout ran at 128x128, not 256x256**: exp1r/1s results (FID 43-49) are not comparable to 256x256 experiments.
 
-6. **Adjusted offset noise improves val loss**: exp1l_1 achieves val loss 0.00209 with strong KID trajectory (-23.6%/100ep).
+6. **In-training FID and post-hoc FID tell different stories**: In-training eval (4 vol, 25 steps) gives very different rankings than post-hoc eval (25 vol, optimal steps). Always do post-hoc evaluation for final claims.
 
-7. **Wavelet domain works but pixel is better**: exp19_2 (WDM, FID 67.32) is the best wavelet result. RFlow velocity prediction fails in wavelet space — DDPM x0 is required.
+7. **Model size matters more than techniques**: 270M→152M drops FID from 51→72 (41% worse). 65-67M and 17M models are all FID 92-100. Combined techniques on 17M (exp25, FID 73) can't compensate for the capacity gap.
 
-8. **CFG-Zero* needs tuning**: exp1n shows flat KID trajectory and poor FID (132-165). Pending CFG scale sweep.
+8. **ControlNet S1 has the best in-training trajectory metrics**: exp6a_1 achieves the lowest absolute KID (0.026) and CMMD (0.175) while still strongly improving.
 
-9. **FreeU and sampling tricks provide marginal gains**: FreeU (<1 FID point), Restart Sampling (no improvement), DiffRS (negative impact).
+9. **Adjusted offset noise improves val loss**: exp1l_1 achieves val loss 0.00209 with strong KID trajectory (-23.6%/100ep).
 
-10. **Time-shift ratio 2.0 is optimal**: MONAI's default (~6.84) is harmful. Ratio 2.0 gives 5.5 FID improvement.
+10. **Wavelet domain works but pixel is better**: exp19_2 (WDM, FID 67.32) is the best wavelet result. RFlow velocity prediction fails in wavelet space — DDPM x0 is required.
 
-11. **Generation metric trajectories matter more than val loss**: Val loss ranking does not predict generation quality. The best technique by val loss (exp1l_1, 0.00209) is ranked 9th by test FID. Always evaluate with generation metrics.
+11. **Optimal Euler steps: 27 for ImageNet FID, ~48 for RadImageNet FID**: The two metrics disagree on step count. CMMD is flat across step counts (~0.110). Practical choice: 27 steps.
 
-12. **Infrastructure remains the biggest bottleneck**: Checkpoint corruption, OOM kills, disk quota, torch.load bugs, and stalled chains have wasted more GPU hours than any hyperparameter choice.
+12. **CFG-Zero* doesn't help**: Post-hoc CFG scale sweep shows scale=1.0 (no guidance) is optimal (FID 44.79). All scales >1.0 dramatically worse (FID 155+).
+
+13. **FreeU and sampling tricks provide marginal gains**: FreeU (<1 FID point), Restart Sampling (no improvement), DiffRS (negative impact).
+
+14. **Time-shift ratio 2.0 is optimal**: MONAI's default (~6.84) is harmful. Ratio 2.0 gives 5.5 FID improvement.
+
+15. **Generation metric trajectories matter more than val loss**: Val loss ranking does not predict generation quality. exp20_6 (17M) has val loss 0.00212 (near best) but FID 94.75 (near worst). Always evaluate with generation metrics.
+
+16. **Infrastructure remains the biggest bottleneck**: Checkpoint corruption, OOM kills, disk quota, torch.load bugs, torch.compile+ScoreAug incompatibility, and stalled chains have wasted more GPU hours than any hyperparameter choice.
