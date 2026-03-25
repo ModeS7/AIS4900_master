@@ -254,6 +254,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # SDA (Shifted Data Augmentation) initialization
         self._setup_sda()
 
+        # Diffusion Mixup
+        mixup_cfg = cfg.training.get('diffusion_mixup', {})
+        self._mixup_enabled = mixup_cfg.get('enabled', False)
+        self._mixup_alpha = mixup_cfg.get('alpha', 0.2)
+        self._mixup_prob = mixup_cfg.get('prob', 0.5)
+        self._mixup_buffer: dict | None = None  # Stores previous encoded sample
+        if self._mixup_enabled and self.is_main_process:
+            logger.info(f"Diffusion mixup enabled: alpha={self._mixup_alpha}, prob={self._mixup_prob}")
+
         # Mode embedding and size bin embedding
         self._setup_conditional_embeddings()
 
@@ -552,6 +561,57 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .training_tricks import apply_conditioning_dropout
         return apply_conditioning_dropout(self, conditioning, batch_size)
 
+    def _apply_diffusion_mixup(
+        self,
+        images: torch.Tensor | dict[str, torch.Tensor],
+        labels: torch.Tensor | None,
+    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], torch.Tensor | None]:
+        """Mix current sample with buffered previous sample.
+
+        Interpolates z_mix = λ·z_curr + (1-λ)·z_prev before noise addition.
+        With batch_size=1 (3D), uses cross-batch buffering.
+        Buffer is always updated with current sample (even when mixup is skipped).
+        """
+        import random
+
+        # Store current for buffer update
+        curr_images = images
+        curr_labels = labels
+
+        # Check if we should apply mixup this step
+        buf = self._mixup_buffer
+        should_mix = (
+            buf is not None
+            and random.random() < self._mixup_prob
+        )
+
+        if should_mix:
+            # Sample λ ~ Beta(α, α)
+            lam = torch.distributions.Beta(self._mixup_alpha, self._mixup_alpha).sample().item()
+
+            if isinstance(images, dict):
+                images = {
+                    k: lam * images[k] + (1 - lam) * buf['images'][k]
+                    for k in images
+                }
+            else:
+                images = lam * images + (1 - lam) * buf['images']
+
+            if labels is not None and buf['labels'] is not None:
+                labels = lam * labels + (1 - lam) * buf['labels']
+
+        # Update buffer with current (unmixed) sample
+        if isinstance(curr_images, dict):
+            buf_images = {k: v.detach() for k, v in curr_images.items()}
+        else:
+            buf_images = curr_images.detach()
+        self._mixup_buffer = {
+            'images': buf_images,
+            'labels': curr_labels.detach() if curr_labels is not None else None,
+        }
+
+        return images, labels
+
     def _setup_feature_perturbation(self) -> None:
         """Setup forward hooks for feature perturbation."""
         from .training_tricks import setup_feature_perturbation
@@ -664,6 +724,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Skip if labels are already encoded (bravo_seg_cond mode)
             if labels is not None and not self.use_controlnet and not labels_is_latent:
                 labels = self.space.encode(labels)
+
+            # Diffusion Mixup: interpolate with buffered previous sample
+            if self._mixup_enabled:
+                images, labels = self._apply_diffusion_mixup(images, labels)
 
             labels_dict = {'labels': labels, 'bin_maps': bin_maps}
 

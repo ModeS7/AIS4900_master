@@ -277,6 +277,15 @@ offset_noise:
   strength: 0.1              # Strength of low-frequency offset (typical: 0.05-0.1)
   adjusted: false            # Adjusted offset noise (Kutsuna 2024): also offset generation start noise
 
+# Diffusion Mixup - interpolates pairs of training samples before adding noise
+# Creates genuinely unseen training data to prevent memorization on small datasets
+# z_mix = λ·z_a + (1-λ)·z_b, seg_mix = λ·seg_a + (1-λ)·seg_b, λ ~ Beta(α, α)
+# With batch_size=1 (3D), buffers previous sample for cross-batch mixing
+diffusion_mixup:
+  enabled: false             # Enable diffusion mixup
+  alpha: 0.2                 # Beta distribution parameter (0.2 = mostly near-real, mild mixing)
+  prob: 0.5                  # Probability of applying mixup per step (0.5 = half steps are real)
+
 # Optimizer settings
 optimizer:
   betas: [0.9, 0.999]        # AdamW momentum parameters (beta1, beta2)
