@@ -980,8 +980,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Cache first batch for deterministic visualization (for 3D, uses real conditioning)
             if self._cached_train_batch is None and self.spatial_dims == 3:
                 prepared = self.mode.prepare_batch(batch, self.device)
+                # Handle both tensor images (single mode) and dict images (dual/triple mode)
+                raw_images = prepared['images']
+                if isinstance(raw_images, dict):
+                    cached_images = {k: v.detach().clone() for k, v in raw_images.items()}
+                else:
+                    cached_images = raw_images.detach().clone()
                 self._cached_train_batch = {
-                    'images': prepared['images'].detach().clone(),
+                    'images': cached_images,
                     'labels': prepared.get('labels').detach().clone() if prepared.get('labels') is not None else None,
                     'size_bins': prepared.get('size_bins').detach().clone() if prepared.get('size_bins') is not None else None,
                     'bin_maps': prepared.get('bin_maps').detach().clone() if prepared.get('bin_maps') is not None else None,

@@ -94,6 +94,10 @@ def visualize_samples_3d(
         bin_maps = None
     else:
         cached_images = trainer._cached_train_batch['images']
+        # Dual/triple mode: images is a dict — 3D visualization not yet supported
+        if isinstance(cached_images, dict):
+            logger.debug("Skipping 3D generation visualization for multi-channel mode")
+            return
         cached_labels = trainer._cached_train_batch.get('labels')
         cached_size_bins = trainer._cached_train_batch.get('size_bins')
         batch_size = min(4, cached_images.shape[0])
@@ -235,6 +239,10 @@ def visualize_denoising_trajectory_3d(
         return
 
     cached_images = trainer._cached_train_batch['images']
+    # Dual/triple mode: images is a dict — 3D denoising trajectory not yet supported
+    if isinstance(cached_images, dict):
+        logger.debug("Skipping 3D denoising trajectory for multi-channel mode")
+        return
     cached_labels = trainer._cached_train_batch.get('labels')
     cached_size_bins = trainer._cached_train_batch.get('size_bins')
 
