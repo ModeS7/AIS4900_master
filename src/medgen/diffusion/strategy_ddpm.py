@@ -125,8 +125,6 @@ class DDPMStrategy(DiffusionStrategy):
         if isinstance(noisy_images, dict):
             keys = list(noisy_images.keys())
             assert isinstance(prediction, torch.Tensor)
-            noise_pred_0 = self._slice_channel(prediction, 0, 1)
-            noise_pred_1 = self._slice_channel(prediction, 1, 2)
 
             alphas_cumprod = self.scheduler.alphas_cumprod.to(noisy_images[keys[0]].device)
             alpha_t = self._expand_to_broadcast(alphas_cumprod[timesteps], prediction)
@@ -134,8 +132,8 @@ class DDPMStrategy(DiffusionStrategy):
             sqrt_one_minus_alpha_t = torch.sqrt(1 - alpha_t)
 
             return {
-                keys[0]: (noisy_images[keys[0]] - sqrt_one_minus_alpha_t * noise_pred_0) / sqrt_alpha_t,
-                keys[1]: (noisy_images[keys[1]] - sqrt_one_minus_alpha_t * noise_pred_1) / sqrt_alpha_t,
+                keys[i]: (noisy_images[keys[i]] - sqrt_one_minus_alpha_t * self._slice_channel(prediction, i, i + 1)) / sqrt_alpha_t
+                for i in range(len(keys))
             }
         else:
             assert isinstance(prediction, torch.Tensor)
@@ -176,11 +174,11 @@ class DDPMStrategy(DiffusionStrategy):
         # Compute loss
         if isinstance(target, dict):
             keys = list(target.keys())
-            pred_0 = self._slice_channel(prediction, 0, 1)
-            pred_1 = self._slice_channel(prediction, 1, 2)
-            mse_loss_0 = F.mse_loss(pred_0.float(), target[keys[0]].float())
-            mse_loss_1 = F.mse_loss(pred_1.float(), target[keys[1]].float())
-            mse_loss = (mse_loss_0 + mse_loss_1) / 2
+            n = len(keys)
+            mse_loss = sum(
+                F.mse_loss(self._slice_channel(prediction, i, i + 1).float(), target[keys[i]].float())
+                for i in range(n)
+            ) / n
         else:
             mse_loss = F.mse_loss(prediction.float(), target.float())
 
@@ -349,16 +347,16 @@ class DDPMStrategy(DiffusionStrategy):
             timesteps_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
             if is_dual:
-                assert noisy_pre is not None
-                assert noisy_gd is not None
+                noisy_channels = parsed.noisy_channels
+                assert noisy_channels is not None
                 assert image_conditioning is not None
-                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
+                current_model_input = self._prepare_multi_channel_model_input(noisy_channels, image_conditioning)
                 model_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                pred_pre, pred_gd = self._split_dual_predictions(model_pred)
-
-                noisy_pre, _ = inf_scheduler.step(pred_pre, t, noisy_pre)
-                noisy_gd, _ = inf_scheduler.step(pred_gd, t, noisy_gd)
+                n = len(noisy_channels)
+                preds = self._split_multi_channel_predictions(model_pred, n)
+                for ci in range(n):
+                    noisy_channels[ci], _ = inf_scheduler.step(preds[ci], t, noisy_channels[ci])
 
             else:
                 assert noisy_images is not None
@@ -376,9 +374,9 @@ class DDPMStrategy(DiffusionStrategy):
 
         # Return final denoised images
         if is_dual:
-            assert noisy_pre is not None
-            assert noisy_gd is not None
-            return torch.cat([noisy_pre, noisy_gd], dim=1)  # [B, 2, H, W]
+            noisy_channels = parsed.noisy_channels
+            assert noisy_channels is not None
+            return torch.cat(noisy_channels, dim=1)  # [B, N, ...]
         else:
             assert noisy_images is not None
             return noisy_images

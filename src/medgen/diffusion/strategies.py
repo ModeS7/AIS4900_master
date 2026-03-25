@@ -37,12 +37,28 @@ class ParsedModelInput:
         noisy_gd: torch.Tensor | None,
         conditioning: torch.Tensor | None,
         is_dual: bool,
+        noisy_channels: list[torch.Tensor] | None = None,
     ):
         self.noisy_images = noisy_images
         self.noisy_pre = noisy_pre
         self.noisy_gd = noisy_gd
         self.conditioning = conditioning
         self.is_dual = is_dual
+        # Generalized N-channel support (dual/triple/etc.)
+        # When set, noisy_pre/noisy_gd are views into this list
+        self.noisy_channels = noisy_channels
+
+    @property
+    def is_multi_channel(self) -> bool:
+        """True if multi-channel mode (dual/triple)."""
+        return self.noisy_channels is not None and len(self.noisy_channels) >= 2
+
+    @property
+    def num_noisy_channels(self) -> int:
+        """Number of noisy image channels."""
+        if self.noisy_channels is not None:
+            return len(self.noisy_channels)
+        return 0
 
 
 class DiffusionStrategy(ABC):
@@ -321,6 +337,22 @@ class DiffusionStrategy(ABC):
         """
         return torch.cat([noisy_pre, noisy_gd, conditioning], dim=1)
 
+    def _prepare_multi_channel_model_input(
+        self,
+        noisy_channels: list[torch.Tensor],
+        conditioning: torch.Tensor,
+    ) -> torch.Tensor:
+        """Concatenate N noisy channels + conditioning for model input.
+
+        Args:
+            noisy_channels: List of N noisy image tensors, each [B, 1, ...].
+            conditioning: Conditioning tensor [B, 1, ...].
+
+        Returns:
+            Concatenated model input [B, N+1, ...].
+        """
+        return torch.cat([*noisy_channels, conditioning], dim=1)
+
     def _split_dual_predictions(
         self,
         prediction: torch.Tensor,
@@ -334,6 +366,22 @@ class DiffusionStrategy(ABC):
             Tuple of (pred_pre, pred_gd), each [B, 1, ...].
         """
         return prediction[:, 0:1], prediction[:, 1:2]
+
+    def _split_multi_channel_predictions(
+        self,
+        prediction: torch.Tensor,
+        n: int,
+    ) -> list[torch.Tensor]:
+        """Split N-channel predictions into individual channels.
+
+        Args:
+            prediction: Model prediction [B, N, ...].
+            n: Number of channels to split.
+
+        Returns:
+            List of N tensors, each [B, 1, ...].
+        """
+        return [prediction[:, i:i+1] for i in range(n)]
 
     def _parse_model_input(
         self, model_input: torch.Tensor, latent_channels: int = 1
@@ -402,14 +450,27 @@ class DiffusionStrategy(ABC):
             )
         elif num_channels == 3:
             # Conditional dual: [noise_pre, noise_gd, conditioning]
+            channels = [self._slice_channel(model_input, i, i + 1) for i in range(2)]
             return ParsedModelInput(
                 noisy_images=None,
-                noisy_pre=self._slice_channel(model_input, 0, 1),
-                noisy_gd=self._slice_channel(model_input, 1, 2),
+                noisy_pre=channels[0],
+                noisy_gd=channels[1],
                 conditioning=self._slice_channel(model_input, 2, 3),
                 is_dual=True,
+                noisy_channels=channels,
             )
-        elif num_channels > 3:
+        elif num_channels == 4:
+            # Conditional triple: [noise_pre, noise_gd, noise_flair, conditioning]
+            channels = [self._slice_channel(model_input, i, i + 1) for i in range(3)]
+            return ParsedModelInput(
+                noisy_images=None,
+                noisy_pre=channels[0],
+                noisy_gd=channels[1],
+                conditioning=self._slice_channel(model_input, 3, 4),
+                is_dual=True,  # Reuse dual path for multi-channel generation
+                noisy_channels=channels,
+            )
+        elif num_channels > 4:
             # Multi-channel conditioning: [noise (1 ch), conditioning (remaining)]
             # Handles seg_conditioned_input with variable num_bins
             return ParsedModelInput(

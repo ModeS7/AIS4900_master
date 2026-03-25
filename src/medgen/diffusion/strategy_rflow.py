@@ -253,16 +253,14 @@ class RFlowStrategy(DiffusionStrategy):
         # Velocity: x₀ = x_t + t * v
         t = timesteps.float() / self.scheduler.num_train_timesteps
 
-        # Handle dual-image case
+        # Handle multi-channel dict case (dual/triple)
         if isinstance(noisy_images, dict):
             keys = list(noisy_images.keys())
             assert isinstance(prediction, torch.Tensor)
-            velocity_pred_0 = self._slice_channel(prediction, 0, 1)
-            velocity_pred_1 = self._slice_channel(prediction, 1, 2)
             t_expanded = self._expand_to_broadcast(t, prediction)
             return {
-                keys[0]: noisy_images[keys[0]] + t_expanded * velocity_pred_0,
-                keys[1]: noisy_images[keys[1]] + t_expanded * velocity_pred_1,
+                keys[i]: noisy_images[keys[i]] + t_expanded * self._slice_channel(prediction, i, i + 1)
+                for i in range(len(keys))
             }
         else:
             assert isinstance(prediction, torch.Tensor)
@@ -298,11 +296,11 @@ class RFlowStrategy(DiffusionStrategy):
         # Compute loss
         if isinstance(target, dict):
             keys = list(target.keys())
-            velocity_pred_0 = self._slice_channel(prediction, 0, 1)
-            velocity_pred_1 = self._slice_channel(prediction, 1, 2)
-            mse_loss_0 = F.mse_loss(velocity_pred_0.float(), target[keys[0]].float())
-            mse_loss_1 = F.mse_loss(velocity_pred_1.float(), target[keys[1]].float())
-            mse_loss = (mse_loss_0 + mse_loss_1) / 2
+            n = len(keys)
+            mse_loss = sum(
+                F.mse_loss(self._slice_channel(prediction, i, i + 1).float(), target[keys[i]].float())
+                for i in range(n)
+            ) / n
         else:
             mse_loss = F.mse_loss(prediction.float(), target.float())
 
@@ -397,16 +395,16 @@ class RFlowStrategy(DiffusionStrategy):
         cfg_scale = conditioning.cfg_scale
         cfg_scale_end = conditioning.cfg_scale_end
         use_dynamic_cfg = conditioning.use_dynamic_cfg
-        batch_size = parsed.noisy_images.shape[0] if parsed.noisy_images is not None else parsed.noisy_pre.shape[0]
+        batch_size = parsed.noisy_images.shape[0] if parsed.noisy_images is not None else parsed.noisy_channels[0].shape[0]
 
         is_dual = parsed.is_dual
         image_conditioning = parsed.conditioning
 
         if is_dual:
-            assert parsed.noisy_pre is not None and parsed.noisy_gd is not None
+            assert parsed.noisy_channels is not None
             assert image_conditioning is not None
-            # State vector: concatenate [pre, gd] along channel dim
-            y0 = torch.cat([parsed.noisy_pre, parsed.noisy_gd], dim=1)  # [B, 2, ...]
+            # State vector: concatenate all noisy channels along channel dim
+            y0 = torch.cat(parsed.noisy_channels, dim=1)  # [B, N, ...]
         else:
             assert parsed.noisy_images is not None
             y0 = parsed.noisy_images  # [B, C, ...]
@@ -453,11 +451,11 @@ class RFlowStrategy(DiffusionStrategy):
                 current_cfg = cfg_scale
 
             if is_dual:
-                # Split state vector back into pre and gd
-                noisy_pre = x[:, 0:1]
-                noisy_gd = x[:, 1:2]
-                current_model_input = self._prepare_dual_model_input(
-                    noisy_pre, noisy_gd, image_conditioning
+                # Split state vector back into individual channels
+                n = parsed.num_noisy_channels
+                channels = [x[:, i:i+1] for i in range(n)]
+                current_model_input = self._prepare_multi_channel_model_input(
+                    channels, image_conditioning
                 )
                 model_pred = self._call_model(
                     model, current_model_input, timesteps_batch, omega, mode_id, size_bins
@@ -950,10 +948,11 @@ class RFlowStrategy(DiffusionStrategy):
             # Zero-init: use zero velocity for first K steps (CFG-Zero*)
             if use_zero_init and step_idx < conditioning.cfg_zero_init_steps:
                 if is_dual:
-                    assert noisy_pre is not None and noisy_gd is not None
-                    zero_vel = torch.zeros_like(noisy_pre)
-                    noisy_pre, _ = self.scheduler.step(zero_vel, t, noisy_pre, next_timestep)
-                    noisy_gd, _ = self.scheduler.step(zero_vel, t, noisy_gd, next_timestep)
+                    noisy_channels = parsed.noisy_channels
+                    assert noisy_channels is not None
+                    zero_vel = torch.zeros_like(noisy_channels[0])
+                    for ci in range(len(noisy_channels)):
+                        noisy_channels[ci], _ = self.scheduler.step(zero_vel, t, noisy_channels[ci], next_timestep)
                 else:
                     assert noisy_images is not None
                     zero_vel = torch.zeros_like(noisy_images)
@@ -961,23 +960,25 @@ class RFlowStrategy(DiffusionStrategy):
                 continue
 
             if is_dual:
-                # Dual-image: process each channel through model together
-                assert noisy_pre is not None
-                assert noisy_gd is not None
+                # Multi-channel: process all channels through model together
+                noisy_channels = parsed.noisy_channels
+                assert noisy_channels is not None
                 assert image_conditioning is not None
-                current_model_input = self._prepare_dual_model_input(noisy_pre, noisy_gd, image_conditioning)
+                current_model_input = self._prepare_multi_channel_model_input(noisy_channels, image_conditioning)
                 model_pred = self._call_model(model, current_model_input, timesteps_batch, omega, mode_id, size_bins)
 
-                # Split predictions for each channel (works for both 2D and 3D)
-                pred_pre, pred_gd = self._split_dual_predictions(model_pred)
+                # Split predictions for each channel
+                n = len(noisy_channels)
+                preds = self._split_multi_channel_predictions(model_pred, n)
 
-                # Convert x₀ → velocity if prediction_type='sample'
-                velocity_pred_pre = self._to_velocity(pred_pre, noisy_pre, timesteps_batch)
-                velocity_pred_gd = self._to_velocity(pred_gd, noisy_gd, timesteps_batch)
+                # Convert x₀ → velocity if prediction_type='sample', then step each channel
+                for ci in range(n):
+                    velocity = self._to_velocity(preds[ci], noisy_channels[ci], timesteps_batch)
+                    noisy_channels[ci], _ = self.scheduler.step(velocity, t, noisy_channels[ci], next_timestep)
 
-                # Update each channel SEPARATELY using scheduler
-                noisy_pre, _ = self.scheduler.step(velocity_pred_pre, t, noisy_pre, next_timestep)
-                noisy_gd, _ = self.scheduler.step(velocity_pred_gd, t, noisy_gd, next_timestep)
+                # Keep noisy_pre/noisy_gd in sync (for backward compat in return)
+                noisy_pre = noisy_channels[0]
+                noisy_gd = noisy_channels[1]
 
             else:
                 # Single image or unconditional
@@ -999,9 +1000,9 @@ class RFlowStrategy(DiffusionStrategy):
 
         # Return final denoised images
         if is_dual:
-            assert noisy_pre is not None
-            assert noisy_gd is not None
-            return torch.cat([noisy_pre, noisy_gd], dim=1)  # [B, 2, H, W]
+            noisy_channels = parsed.noisy_channels
+            assert noisy_channels is not None
+            return torch.cat(noisy_channels, dim=1)  # [B, N, ...]
         else:
             assert noisy_images is not None
             return noisy_images

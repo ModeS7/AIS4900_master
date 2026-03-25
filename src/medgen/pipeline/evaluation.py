@@ -671,18 +671,37 @@ def compute_volume_3d_msssim_native(
                     labels = trainer.space.encode(labels)
                     labels_dict = {'labels': labels}
 
-            # Add noise in latent/pixel space (model always operates here)
-            noise = torch.randn_like(volume_latent)
-            noisy_volume = trainer.strategy.add_noise(volume_latent, noise, timesteps)
+            # For dual/triple mode: split stacked volume into per-channel dict
+            # The 3D loader returns {'image': [B, N, D, H, W]} but mode expects
+            # dict of per-channel tensors for add_noise/format_model_input
+            image_keys = getattr(trainer.mode, 'image_keys', None)
+            if image_keys and len(image_keys) >= 2 and volume_latent.shape[1] == len(image_keys):
+                volume_latent_dict = {
+                    image_keys[i]: volume_latent[:, i:i+1]
+                    for i in range(len(image_keys))
+                }
+                noise_dict = {k: torch.randn_like(v) for k, v in volume_latent_dict.items()}
+                noisy_dict = trainer.strategy.add_noise(volume_latent_dict, noise_dict, timesteps)
 
-            # Format input and denoise
-            # For ControlNet (Stage 1 or 2): use only noisy images
-            if trainer.use_controlnet or trainer.controlnet_stage1:
-                model_input = noisy_volume
+                model_input = trainer.mode.format_model_input(noisy_dict, labels_dict)
+                prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                _, predicted_clean = trainer.strategy.compute_loss(
+                    prediction, volume_latent_dict, noise_dict, noisy_dict, timesteps
+                )
+                # Stack predicted_clean dict back to tensor
+                if isinstance(predicted_clean, dict):
+                    predicted_clean = torch.cat(list(predicted_clean.values()), dim=1)
             else:
-                model_input = trainer.mode.format_model_input(noisy_volume, labels_dict)
-            prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
-            _, predicted_clean = trainer.strategy.compute_loss(prediction, volume_latent, noise, noisy_volume, timesteps)
+                # Standard single-channel path
+                noise = torch.randn_like(volume_latent)
+                noisy_volume = trainer.strategy.add_noise(volume_latent, noise, timesteps)
+
+                if trainer.use_controlnet or trainer.controlnet_stage1:
+                    model_input = noisy_volume
+                else:
+                    model_input = trainer.mode.format_model_input(noisy_volume, labels_dict)
+                prediction = trainer.strategy.predict_noise_or_velocity(model_to_use, model_input, timesteps)
+                _, predicted_clean = trainer.strategy.compute_loss(prediction, volume_latent, noise, noisy_volume, timesteps)
 
             # Decode back to pixel space if needed
             if trainer.space.needs_decode:

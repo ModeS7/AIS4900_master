@@ -33,6 +33,12 @@ def log_reconstruction_figure(
 
     from .figures import create_reconstruction_figure
 
+    # Handle dict format from dual/triple modes: stack channels into single tensor
+    if isinstance(original, dict):
+        original = torch.cat(list(original.values()), dim=1)
+    if isinstance(reconstructed, dict):
+        reconstructed = torch.cat(list(reconstructed.values()), dim=1)
+
     # Handle 3D volumes - extract multiple slices for visualization
     if metrics.spatial_dims == 3:
         original = _extract_multiple_slices(metrics, original, num_slices=max_samples)
