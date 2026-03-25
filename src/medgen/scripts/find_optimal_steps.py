@@ -674,9 +674,8 @@ def main():
 
             gen_masks = []
             for vol in volumes:
-                # vol is [1, D, H, W] tensor — binarize and convert to numpy
-                mask_np = binarize_seg(vol).squeeze(0).cpu().numpy()
-                gen_masks.append(mask_np)
+                # vol is [D, H, W] numpy array, already binarized by generate_volumes
+                gen_masks.append((vol > 0.5).astype(np.float32))
 
             morph = compute_morphological_score(ref_masks_3d, gen_masks)
             target = morph.total
