@@ -432,6 +432,7 @@ class ReferenceFeatureCache:
         batch_size: int = 32,
         resnet_rin_extractor: ResNet50Features | None = None,
         original_depth: int | None = None,
+        image_keys: list[str] | None = None,
     ) -> None:
         self.resnet = resnet_extractor
         self.resnet_rin = resnet_rin_extractor
@@ -440,6 +441,7 @@ class ReferenceFeatureCache:
         self.device = device
         self.batch_size = batch_size
         self.original_depth = original_depth
+        self.image_keys = image_keys  # Per-modality keys for dual/triple
 
         # Feature storage (axial-only)
         self.train_resnet: torch.Tensor | None = None
@@ -456,6 +458,10 @@ class ReferenceFeatureCache:
         self.val_biomed_3d: torch.Tensor | None = None
         self.train_resnet_rin_3d: torch.Tensor | None = None
         self.val_resnet_rin_3d: torch.Tensor | None = None
+
+        # Per-modality feature storage (dual/triple modes)
+        # Keys: modality name -> feature tensor
+        self.per_modality: dict[str, dict[str, torch.Tensor]] = {}
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -598,6 +604,85 @@ class ReferenceFeatureCache:
             cache_data['train_resnet_rin_3d'] = self.train_resnet_rin_3d
             cache_data['val_resnet_rin_3d'] = self.val_resnet_rin_3d
 
+    def _extract_per_modality_features(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        cache_data: dict[str, torch.Tensor],
+    ) -> None:
+        """Extract per-modality features for dual/triple modes.
+
+        Splits multi-channel images by channel index and extracts features
+        for each modality independently using ResNet50.
+
+        Args:
+            train_loader: Training data loader.
+            val_loader: Validation data loader.
+            cache_data: Cache dict to store features (modified in-place).
+        """
+        if not self.image_keys:
+            return
+
+        for i, key in enumerate(self.image_keys):
+            logger.info(f"  Extracting per-modality features: {key} (channel {i})...")
+
+            # Create channel-slicing wrapper around dataloader
+            for split_name, loader in [('train', train_loader), ('val', val_loader)]:
+                for extractor, ext_name in [
+                    (self.resnet, 'resnet'),
+                    (self.resnet_rin, 'resnet_rin'),
+                    (self.biomed, 'biomed'),
+                ]:
+                    if extractor is None:
+                        continue
+
+                    all_features = []
+                    for batch in loader:
+                        if isinstance(batch, dict):
+                            images = get_with_fallbacks(batch, 'image', 'images')
+                            if images is None:
+                                continue
+                        else:
+                            continue
+
+                        # Slice single channel: [B, N, ...] -> [B, 1, ...]
+                        if images.shape[1] <= i:
+                            continue
+                        single_ch = images[:, i:i+1].to(self.device)
+
+                        is_3d = single_ch.ndim == 5
+                        if is_3d:
+                            from .generation_3d import extract_features_3d
+                            features = extract_features_3d(
+                                single_ch, extractor, chunk_size=self.batch_size
+                            )
+                        else:
+                            features = extractor.extract_features(single_ch)
+                        all_features.append(features.cpu())
+                        del single_ch
+
+                    if all_features:
+                        feat = torch.cat(all_features, dim=0)
+                        cache_key = f'{split_name}_{ext_name}__{key}'
+                        cache_data[cache_key] = feat
+                        self.per_modality[cache_key] = feat
+                        logger.info(f"  Extracted {feat.shape[0]} {cache_key} features")
+
+    def _load_per_modality_from_cache(self, cached: dict[str, torch.Tensor]) -> bool:
+        """Load per-modality features from cache dict. Returns True if found."""
+        if not self.image_keys:
+            return False
+
+        found = False
+        for key in self.image_keys:
+            for split in ('train', 'val'):
+                for ext in ('resnet', 'resnet_rin', 'biomed'):
+                    cache_key = f'{split}_{ext}__{key}'
+                    if cache_key in cached:
+                        self.per_modality[cache_key] = cached[cache_key]
+                        found = True
+        return found
+
     def extract_and_cache(
         self,
         train_loader: DataLoader,
@@ -658,6 +743,14 @@ class ReferenceFeatureCache:
                 updated = True
                 logger.info("  Updated cache with tri-planar features")
 
+            # Load or backfill per-modality features
+            if self.image_keys:
+                has_per_modality = self._load_per_modality_from_cache(cached)
+                if not has_per_modality:
+                    logger.info("  Per-modality features missing from cache, extracting...")
+                    self._extract_per_modality_features(train_loader, val_loader, cached)
+                    updated = True
+
             if updated:
                 torch.save(cached, cache_file)
             return
@@ -709,6 +802,10 @@ class ReferenceFeatureCache:
         # Extract tri-planar features for 3D data
         if self.original_depth is not None:
             self._extract_triplanar_features(train_loader, val_loader, cache_data)
+
+        # Extract per-modality features for dual/triple modes
+        if self.image_keys:
+            self._extract_per_modality_features(train_loader, val_loader, cache_data)
 
         # Cache to disk
         torch.save(cache_data, cache_file)
@@ -770,6 +867,7 @@ class GenerationMetrics:
         run_dir: Path,
         space: Any | None = None,
         mode_name: str = 'bravo',
+        image_keys: list[str] | None = None,
     ) -> None:
         self.config = config
         self.device = device
@@ -777,6 +875,8 @@ class GenerationMetrics:
         self.space = space  # DiffusionSpace for latent decoding
         self.mode_name = mode_name
         self.is_seg_mode = mode_name in ('seg', 'seg_conditioned', 'seg_conditioned_input')
+        # Per-modality metrics for dual/triple modes
+        self.image_keys = image_keys if image_keys and len(image_keys) >= 2 else None
 
         # Initialize feature extractors (lazy-loaded)
         # For 3D: compile_extractors=False saves ~10GB VRAM from CUDA Graph pools
@@ -793,6 +893,7 @@ class GenerationMetrics:
             config.feature_batch_size,
             resnet_rin_extractor=self.resnet_rin,
             original_depth=config.original_depth,
+            image_keys=self.image_keys,
         )
 
         # Fixed conditioning masks (loaded once, used every epoch)

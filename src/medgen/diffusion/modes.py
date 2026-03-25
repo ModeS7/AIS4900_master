@@ -480,16 +480,36 @@ class ConditionalDualMode(TrainingMode):
         # Handle dict batch format (from unified or 3D loaders)
         if isinstance(batch, dict):
             images_dict: dict[str, torch.Tensor] = {}
-            for key in self.image_keys:
-                img = batch.get(key)
-                if img is None:
-                    raise ValueError(f"Dict batch missing '{key}' key")
-                if img.dim() not in (4, 5):
+
+            # Check if batch has individual modality keys or stacked 'image' tensor
+            if self.image_keys[0] in batch:
+                # Individual keys format: {'t1_pre': [B,1,...], 't1_gd': [B,1,...], ...}
+                for key in self.image_keys:
+                    img = batch.get(key)
+                    if img is None:
+                        raise ValueError(f"Dict batch missing '{key}' key")
+                    if img.dim() not in (4, 5):
+                        raise ValueError(
+                            f"ConditionalDualMode: expected 4D or 5D tensor for '{key}', "
+                            f"got {img.dim()}D with shape {list(img.shape)}"
+                        )
+                    images_dict[key] = img
+            elif 'image' in batch:
+                # Stacked format from 3D loader: {'image': [B, N, D, H, W], 'seg': ...}
+                stacked = batch['image']
+                n = len(self.image_keys)
+                if stacked.shape[1] != n:
                     raise ValueError(
-                        f"ConditionalDualMode: expected 4D or 5D tensor for '{key}', "
-                        f"got {img.dim()}D with shape {list(img.shape)}"
+                        f"ConditionalDualMode: stacked 'image' has {stacked.shape[1]} channels, "
+                        f"expected {n} for keys {self.image_keys}"
                     )
-                images_dict[key] = img
+                for i, key in enumerate(self.image_keys):
+                    images_dict[key] = stacked[:, i:i+1]
+            else:
+                raise ValueError(
+                    f"Dict batch missing both modality keys {self.image_keys} and 'image' key. "
+                    f"Available keys: {list(batch.keys())}"
+                )
 
             seg_mask = batch.get('seg')
             if seg_mask is not None and seg_mask.dim() not in (4, 5):

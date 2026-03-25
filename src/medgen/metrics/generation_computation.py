@@ -183,6 +183,90 @@ def _compute_triplanar_metrics(
             results[f'{key}_val'] = value
 
 
+def _extract_per_modality_generated_features(
+    self_: GenerationMetrics,
+    samples: torch.Tensor,
+) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]]:
+    """Extract features per modality from multi-channel generated samples.
+
+    Splits samples by channel and extracts features for each modality.
+
+    Args:
+        self_: GenerationMetrics instance (must have image_keys set).
+        samples: Generated samples [N, num_modalities, H, W] or [N, num_modalities, D, H, W].
+
+    Returns:
+        Dict mapping modality name to (resnet_feats, biomed_feats, resnet_rin_feats).
+    """
+    result = {}
+    for i, key in enumerate(self_.image_keys):
+        single_ch = samples[:, i:i+1]  # [N, 1, ...]
+        single_ch_dev = single_ch.to(self_.device)
+
+        resnet_feats = extract_features_batched(self_, single_ch_dev, self_.resnet)
+        biomed_feats = extract_features_batched(self_, single_ch_dev, self_.biomed)
+        rin_feats = extract_features_batched(self_, single_ch_dev, self_.resnet_rin) if self_.resnet_rin is not None else None
+
+        result[key] = (resnet_feats, biomed_feats, rin_feats)
+        del single_ch_dev
+
+    return result
+
+
+def _compute_per_modality_metrics(
+    self_: GenerationMetrics,
+    per_modality_gen: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]],
+    prefix: str = "",
+) -> dict[str, float]:
+    """Compute KID/CMMD per modality against cached reference features.
+
+    Args:
+        self_: GenerationMetrics instance.
+        per_modality_gen: Dict from _extract_per_modality_generated_features.
+        prefix: Metric prefix (e.g., "extended_").
+
+    Returns:
+        Dict with keys like "t1_pre/{prefix}KID_mean_train".
+    """
+    from .generation import compute_kid, compute_cmmd
+    results = {}
+
+    for key, (gen_resnet, gen_biomed, gen_rin) in per_modality_gen.items():
+        for split in ('train', 'val'):
+            ref_resnet = self_.cache.per_modality.get(f'{split}_resnet__{key}')
+            ref_biomed = self_.cache.per_modality.get(f'{split}_biomed__{key}')
+            ref_rin = self_.cache.per_modality.get(f'{split}_resnet_rin__{key}')
+
+            if ref_resnet is None or ref_biomed is None:
+                continue
+
+            # KID
+            kid_mean, kid_std = compute_kid(
+                ref_resnet.to(self_.device),
+                gen_resnet.to(self_.device),
+            )
+            results[f'{key}/{prefix}KID_mean_{split}'] = kid_mean
+            results[f'{key}/{prefix}KID_std_{split}'] = kid_std
+
+            # KID_RIN
+            if gen_rin is not None and ref_rin is not None:
+                kid_rin_mean, kid_rin_std = compute_kid(
+                    ref_rin.to(self_.device),
+                    gen_rin.to(self_.device),
+                )
+                results[f'{key}/{prefix}KID_RIN_mean_{split}'] = kid_rin_mean
+                results[f'{key}/{prefix}KID_RIN_std_{split}'] = kid_rin_std
+
+            # CMMD
+            cmmd = compute_cmmd(
+                ref_biomed.to(self_.device),
+                gen_biomed.to(self_.device),
+            )
+            results[f'{key}/{prefix}CMMD_{split}'] = cmmd
+
+    return results
+
+
 def compute_diversity_metrics(
     self_: GenerationMetrics,
     samples: torch.Tensor,
@@ -333,6 +417,8 @@ def compute_epoch_metrics(
     try:
         is_3d = _validate_conditioning_and_detect_3d(self_)
 
+        per_modality_gen = None  # Set in 2D path; 3D uses streaming
+
         if is_3d:
             # 3D: Generate and extract features one at a time (streaming)
             streaming = generate_and_extract_features_3d_streaming(
@@ -375,43 +461,31 @@ def compute_epoch_metrics(
                     self_, samples, self_.fixed_size_bins[:samples.shape[0]], prefix=""
                 )
 
+            # Per-modality feature extraction (before freeing samples)
+            if self_.image_keys and self_.cache.per_modality:
+                per_modality_gen = _extract_per_modality_generated_features(self_, samples)
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
 
-        results = {}
-
-        # Add diversity metrics
-        results.update(diversity_metrics)
-
-        # Add size bin metrics
-        results.update(size_bin_metrics)
-
-        # Metrics vs train
-        train_metrics = compute_metrics_against_reference(
-            self_, gen_resnet, gen_biomed,
-            self_.cache.train_resnet, self_.cache.train_biomed,
+        results = _assemble_metrics(
+            self_, gen_resnet, gen_biomed, gen_resnet_rin,
+            diversity_metrics, size_bin_metrics, per_modality_gen,
             prefix="",
-            gen_resnet_rin=gen_resnet_rin,
-            ref_resnet_rin=self_.cache.train_resnet_rin,
         )
-        for key, value in train_metrics.items():
-            results[f'{key}_train'] = value
-
-        # Metrics vs val
-        val_metrics = compute_metrics_against_reference(
-            self_, gen_resnet, gen_biomed,
-            self_.cache.val_resnet, self_.cache.val_biomed,
-            prefix="",
-            gen_resnet_rin=gen_resnet_rin,
-            ref_resnet_rin=self_.cache.val_resnet_rin,
-        )
-        for key, value in val_metrics.items():
-            results[f'{key}_val'] = value
 
         # Tri-planar metrics (3D only)
         if is_3d:
             _compute_triplanar_metrics(self_, streaming, results, prefix="")
+            # Per-modality from streaming
+            if streaming.per_modality_resnet and self_.cache.per_modality:
+                per_mod_gen = {
+                    key: (streaming.per_modality_resnet[key], streaming.per_modality_biomed[key],
+                          streaming.per_modality_resnet_rin.get(key) if streaming.per_modality_resnet_rin else None)
+                    for key in streaming.per_modality_resnet
+                }
+                results.update(_compute_per_modality_metrics(self_, per_mod_gen, prefix=""))
 
         return results
 
@@ -419,6 +493,50 @@ def compute_epoch_metrics(
         # Restore RNG state
         torch.set_rng_state(rng_state)
         torch.cuda.set_rng_state(cuda_rng_state, self_.device)
+
+
+def _assemble_metrics(
+    self_: GenerationMetrics,
+    gen_resnet: torch.Tensor,
+    gen_biomed: torch.Tensor,
+    gen_resnet_rin: torch.Tensor | None,
+    diversity_metrics: dict[str, float],
+    size_bin_metrics: dict[str, float],
+    per_modality_gen: dict | None,
+    prefix: str = "",
+) -> dict[str, float]:
+    """Assemble combined and per-modality metrics into a single result dict."""
+    results = {}
+    results.update(diversity_metrics)
+    results.update(size_bin_metrics)
+
+    # Combined metrics vs train
+    train_metrics = compute_metrics_against_reference(
+        self_, gen_resnet, gen_biomed,
+        self_.cache.train_resnet, self_.cache.train_biomed,
+        prefix=prefix,
+        gen_resnet_rin=gen_resnet_rin,
+        ref_resnet_rin=self_.cache.train_resnet_rin,
+    )
+    for key, value in train_metrics.items():
+        results[f'{key}_train'] = value
+
+    # Combined metrics vs val
+    val_metrics = compute_metrics_against_reference(
+        self_, gen_resnet, gen_biomed,
+        self_.cache.val_resnet, self_.cache.val_biomed,
+        prefix=prefix,
+        gen_resnet_rin=gen_resnet_rin,
+        ref_resnet_rin=self_.cache.val_resnet_rin,
+    )
+    for key, value in val_metrics.items():
+        results[f'{key}_val'] = value
+
+    # Per-modality metrics
+    if per_modality_gen is not None:
+        results.update(_compute_per_modality_metrics(self_, per_modality_gen, prefix=prefix))
+
+    return results
 
 
 def compute_extended_metrics(
@@ -491,43 +609,32 @@ def compute_extended_metrics(
                     self_, samples, self_.fixed_size_bins[:samples.shape[0]], prefix="extended_"
                 )
 
+            # Per-modality feature extraction (before freeing samples)
+            per_modality_gen = None
+            if self_.image_keys and self_.cache.per_modality:
+                per_modality_gen = _extract_per_modality_generated_features(self_, samples)
+
             # Free samples
             del samples
             torch.cuda.empty_cache()
 
-        results = {}
-
-        # Add diversity metrics
-        results.update(diversity_metrics)
-
-        # Add size bin metrics
-        results.update(size_bin_metrics)
-
-        # Metrics vs train
-        train_metrics = compute_metrics_against_reference(
-            self_, gen_resnet, gen_biomed,
-            self_.cache.train_resnet, self_.cache.train_biomed,
+        results = _assemble_metrics(
+            self_, gen_resnet, gen_biomed, gen_resnet_rin,
+            diversity_metrics, size_bin_metrics, per_modality_gen if not is_3d else None,
             prefix="extended_",
-            gen_resnet_rin=gen_resnet_rin,
-            ref_resnet_rin=self_.cache.train_resnet_rin,
         )
-        for key, value in train_metrics.items():
-            results[f'{key}_train'] = value
-
-        # Metrics vs val
-        val_metrics = compute_metrics_against_reference(
-            self_, gen_resnet, gen_biomed,
-            self_.cache.val_resnet, self_.cache.val_biomed,
-            prefix="extended_",
-            gen_resnet_rin=gen_resnet_rin,
-            ref_resnet_rin=self_.cache.val_resnet_rin,
-        )
-        for key, value in val_metrics.items():
-            results[f'{key}_val'] = value
 
         # Tri-planar metrics (3D only)
         if is_3d:
             _compute_triplanar_metrics(self_, streaming, results, prefix="extended_")
+            # Per-modality from streaming
+            if streaming.per_modality_resnet and self_.cache.per_modality:
+                per_mod_gen = {
+                    key: (streaming.per_modality_resnet[key], streaming.per_modality_biomed[key],
+                          streaming.per_modality_resnet_rin.get(key) if streaming.per_modality_resnet_rin else None)
+                    for key in streaming.per_modality_resnet
+                }
+                results.update(_compute_per_modality_metrics(self_, per_mod_gen, prefix="extended_"))
 
         return results
 

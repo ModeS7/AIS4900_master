@@ -448,6 +448,7 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             trainer.save_dir,
             space=trainer.space,
             mode_name=trainer.mode_name,
+            image_keys=getattr(trainer.mode, 'image_keys', None),
         )
         if trainer.is_main_process:
             logger.info("Generation metrics initialized (caching happens at training start)")

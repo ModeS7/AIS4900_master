@@ -50,6 +50,7 @@ class GenerationMetricsManager:
         size_bin_edges: list[float] | None = None,
         size_bin_fov_mm: float = 240.0,
         is_main_process: bool = True,
+        image_keys: list[str] | None = None,
     ) -> None:
         """Initialize generation metrics manager.
 
@@ -73,6 +74,7 @@ class GenerationMetricsManager:
             size_bin_edges: Size bin edges for seg_conditioned mode.
             size_bin_fov_mm: FOV in mm for size bins.
             is_main_process: Whether this is the main process.
+            image_keys: Modality names for per-modality metrics (dual/triple).
         """
         self.enabled = enabled
         self.spatial_dims = spatial_dims
@@ -82,6 +84,7 @@ class GenerationMetricsManager:
         self.save_dir = save_dir
         self.space = space
         self.is_main_process = is_main_process
+        self.image_keys = image_keys
 
         # Config
         self.samples_per_epoch = samples_per_epoch
@@ -137,6 +140,7 @@ class GenerationMetricsManager:
             self.save_dir,
             space=self.space,
             mode_name=self.mode_name,
+            image_keys=self.image_keys,
         )
 
         if self.is_main_process:
@@ -301,6 +305,8 @@ def create_gen_metrics_manager_from_config(
     from medgen.metrics.generation import GenerationMetricsConfig
     gen_cfg_typed = GenerationMetricsConfig.from_hydra(cfg, spatial_dims)
 
+    image_keys = list(cfg.mode.get('image_keys', [])) or None
+
     return GenerationMetricsManager(
         enabled=gen_cfg_typed.enabled,
         spatial_dims=spatial_dims,
@@ -321,4 +327,5 @@ def create_gen_metrics_manager_from_config(
         size_bin_edges=gen_cfg_typed.size_bin_edges,
         size_bin_fov_mm=gen_cfg_typed.size_bin_fov_mm,
         is_main_process=is_main_process,
+        image_keys=image_keys,
     )

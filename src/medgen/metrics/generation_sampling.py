@@ -36,6 +36,10 @@ class StreamingFeatures(NamedTuple):
     biomed_3d: torch.Tensor | None  # tri-planar
     resnet_rin_3d: torch.Tensor | None  # tri-planar
     diversity_samples: torch.Tensor | None
+    # Per-modality features (dual/triple modes)
+    per_modality_resnet: dict[str, torch.Tensor] | None = None
+    per_modality_biomed: dict[str, torch.Tensor] | None = None
+    per_modality_resnet_rin: dict[str, torch.Tensor] | None = None
 
 
 def set_fixed_conditioning(
@@ -329,15 +333,14 @@ def generate_samples(
         # Generate noise
         noise = torch.randn_like(masks)
 
-        if out_channels == 2:  # Dual mode
+        if out_channels >= 2:  # Multi-channel mode (dual/triple)
             if encode_cond:
                 raise ValueError(
-                    "Dual mode metrics do not support latent-encoded conditioning. "
+                    "Multi-channel mode metrics do not support latent-encoded conditioning. "
                     "Use bravo_seg_cond mode for latent conditioning."
                 )
-            noise_pre = torch.randn_like(masks)
-            noise_gd = torch.randn_like(masks)
-            model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
+            noise_channels = [torch.randn_like(masks) for _ in range(out_channels)]
+            model_input = torch.cat([*noise_channels, masks], dim=1)
             batch_bin_maps = None
         elif self_.mode_name == 'seg_conditioned_input' and self_.fixed_bin_maps is not None:
             # seg_conditioned_input mode: pass noise as model_input, bin_maps separately for CFG
@@ -375,8 +378,8 @@ def generate_samples(
 
         # Clear intermediate tensors
         del samples, model_input, noise, masks
-        if out_channels == 2:
-            del noise_pre, noise_gd
+        if out_channels >= 2:
+            del noise_channels
 
     # Concatenate all samples
     result = torch.cat(all_samples, dim=0)
@@ -473,15 +476,14 @@ def generate_and_extract_features_3d_streaming(
 
         noise = torch.randn_like(masks)
 
-        if out_channels == 2:  # Dual mode
+        if out_channels >= 2:  # Multi-channel mode (dual/triple)
             if encode_cond:
                 raise ValueError(
-                    "Dual mode metrics do not support latent-encoded conditioning. "
+                    "Multi-channel mode metrics do not support latent-encoded conditioning. "
                     "Use bravo_seg_cond mode for latent conditioning."
                 )
-            noise_pre = torch.randn_like(masks)
-            noise_gd = torch.randn_like(masks)
-            model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
+            noise_channels = [torch.randn_like(masks) for _ in range(out_channels)]
+            model_input = torch.cat([*noise_channels, masks], dim=1)
             batch_bin_maps = None
         elif self_.mode_name == 'seg_conditioned_input' and self_.fixed_bin_maps is not None:
             batch_bin_maps = self_.fixed_bin_maps[idx:idx+1]
@@ -519,8 +521,8 @@ def generate_and_extract_features_3d_streaming(
 
         cpu_samples.append(sample.cpu())
         del sample, model_input, noise, masks
-        if out_channels == 2:
-            del noise_pre, noise_gd
+        if out_channels >= 2:
+            del noise_channels
         torch.cuda.empty_cache()
 
     logger.debug(f"[3D GenMetrics] Phase 1 complete: {len(cpu_samples)} samples on CPU")
@@ -578,6 +580,37 @@ def generate_and_extract_features_3d_streaming(
     self_.biomed.unload()
     torch.cuda.empty_cache()
 
+    # --- Per-modality features (dual/triple) ---
+    pm_resnet: dict[str, torch.Tensor] | None = None
+    pm_biomed: dict[str, torch.Tensor] | None = None
+    pm_rin: dict[str, torch.Tensor] | None = None
+    if self_.image_keys and self_.cache.per_modality:
+        from .generation_3d import extract_features_3d
+        logger.debug("[3D GenMetrics] Phase 2d: Per-modality features")
+        pm_resnet_acc: dict[str, list] = {k: [] for k in self_.image_keys}
+        pm_biomed_acc: dict[str, list] = {k: [] for k in self_.image_keys}
+        pm_rin_acc: dict[str, list] = {k: [] for k in self_.image_keys}
+
+        for sample_cpu in cpu_samples:
+            for ch_i, key in enumerate(self_.image_keys):
+                single_ch = sample_cpu[:, ch_i:ch_i+1].to(self_.device)
+                pm_resnet_acc[key].append(extract_features_batched(self_, single_ch, self_.resnet).cpu())
+                pm_biomed_acc[key].append(extract_features_batched(self_, single_ch, self_.biomed).cpu())
+                if has_resnet_rin:
+                    pm_rin_acc[key].append(extract_features_batched(self_, single_ch, self_.resnet_rin).cpu())
+                del single_ch
+
+        pm_resnet = {k: torch.cat(v, dim=0) for k, v in pm_resnet_acc.items()}
+        pm_biomed = {k: torch.cat(v, dim=0) for k, v in pm_biomed_acc.items()}
+        pm_rin = {k: torch.cat(v, dim=0) for k, v in pm_rin_acc.items()} if has_resnet_rin else None
+
+        # Unload extractors used for per-modality
+        self_.resnet.unload()
+        self_.biomed.unload()
+        if has_resnet_rin:
+            self_.resnet_rin.unload()
+        torch.cuda.empty_cache()
+
     del cpu_samples
 
     # Concatenate all features
@@ -600,4 +633,7 @@ def generate_and_extract_features_3d_streaming(
         biomed_3d=gen_biomed_3d,
         resnet_rin_3d=gen_resnet_rin_3d,
         diversity_samples=diversity_tensor,
+        per_modality_resnet=pm_resnet,
+        per_modality_biomed=pm_biomed,
+        per_modality_resnet_rin=pm_rin,
     )
