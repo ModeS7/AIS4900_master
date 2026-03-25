@@ -539,9 +539,10 @@ def main():
             ref_dirs = [splits[ref_split_name]]
 
         import nibabel as nib
-        for split_files in ref_dirs:
-            for filepath in split_files:
-                vol = nib.load(filepath).get_fdata()
+        for split_dir in ref_dirs:
+            seg_files = sorted(split_dir.glob(f"*/{ref_modality}.nii.gz"))
+            for filepath in seg_files:
+                vol = nib.load(str(filepath)).get_fdata()
                 # Pad depth to match generation output
                 if vol.shape[0] < pixel_depth:
                     pad_d = pixel_depth - vol.shape[0]
@@ -549,7 +550,7 @@ def main():
                 elif vol.shape[0] > pixel_depth:
                     vol = vol[:pixel_depth]
                 ref_masks_3d.append((vol > 0.5).astype(np.float32))
-        logger.info(f"Loaded {len(ref_masks_3d)} reference masks")
+        logger.info(f"Loaded {len(ref_masks_3d)} reference masks from {len(ref_dirs)} splits")
     else:
         logger.info("Preparing reference features...")
 
