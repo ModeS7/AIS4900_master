@@ -446,7 +446,8 @@ def main():
         'fid': 'fid', 'kid': 'kid_mean', 'cmmd': 'cmmd',
         'fid_radimagenet': 'fid_radimagenet',
         'kid_radimagenet': 'kid_radimagenet_mean',
-    }[args.metric]
+        'morphological': 'morphological',
+    }.get(args.metric, args.metric)
 
     def evaluate_ratio(ratio: float) -> float:
         """Evaluate a single shift ratio, return the target metric value."""
@@ -576,7 +577,8 @@ def _print_comparison_table(history: list[dict], args) -> None:
         'fid': 'fid', 'kid': 'kid_mean', 'cmmd': 'cmmd',
         'fid_radimagenet': 'fid_radimagenet',
         'kid_radimagenet': 'kid_radimagenet_mean',
-    }[args.metric]
+        'morphological': 'morphological',
+    }.get(args.metric, args.metric)
 
     best_entry = min(history, key=lambda h: h[metric_key])
 
