@@ -196,7 +196,7 @@ def main():
 
     # Metric
     parser.add_argument('--metric', choices=[
-        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet',
+        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological',
     ], default='fid',
                         help='Primary metric for comparison (default: fid)')
     parser.add_argument('--ref-split', default='test',
@@ -356,11 +356,34 @@ def main():
                 for pid, seg in cond_list
             ]
 
-    # ── Reference features ────────────────────────────────────────────────
+    # ── Reference data ──────────────────────────────────────────────────
+    import gc
+    import numpy as np
+    ref_masks_3d = None
+    eval_ref = None
+
+    if args.metric == 'morphological':
+        logger.info("Loading reference masks for morphological comparison...")
+        ref_masks_3d = []
+        ref_split_name = 'all' if args.ref_split == 'all' else args.ref_split
+        ref_dirs = list(splits.values()) if ref_split_name == 'all' else [splits[ref_split_name]]
+
+        import nibabel as nib
+        for split_dir in ref_dirs:
+            seg_files = sorted(split_dir.glob(f"*/{ref_modality}.nii.gz"))
+            for filepath in seg_files:
+                vol = nib.load(str(filepath)).get_fdata()
+                if vol.shape[0] < pixel_depth:
+                    vol = np.pad(vol, ((0, pixel_depth - vol.shape[0]), (0, 0), (0, 0)), mode='constant')
+                elif vol.shape[0] > pixel_depth:
+                    vol = vol[:pixel_depth]
+                ref_masks_3d.append((vol > 0.5).astype(np.float32))
+        logger.info(f"Loaded {len(ref_masks_3d)} reference masks from {len(ref_dirs)} splits")
+
     logger.info("Preparing reference features...")
     cache_dir = output_dir / "reference_features"
 
-    if args.ref_split == 'all':
+    if args.metric != 'morphological' and args.ref_split == 'all':
         ref_features = get_or_cache_reference_features(
             splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
             modality=ref_modality, build_all=False,
@@ -372,7 +395,7 @@ def main():
         }}
         del ref_features
         gc.collect()
-    elif args.ref_split in splits:
+    elif args.metric != 'morphological' and args.ref_split in splits:
         needed_splits = {args.ref_split: splits[args.ref_split]}
         ref_features = get_or_cache_reference_features(
             needed_splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
@@ -381,7 +404,7 @@ def main():
         eval_ref = {args.ref_split: ref_features[args.ref_split]}
         del ref_features
         gc.collect()
-    else:
+    elif args.metric != 'morphological':
         available = list(splits.keys()) + ['all']
         raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
 
@@ -454,32 +477,52 @@ def main():
                 modality=ref_modality,
             )
 
-        split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
-        ref_metrics = split_metrics.get(args.ref_split)
-        if ref_metrics is None:
-            raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
-
-        m = asdict(ref_metrics)
         elapsed = time.time() - t0
-        logger.info(
-            f"  {ratio_label}: FID={m['fid']:.2f}  KID={m['kid_mean']:.6f}  CMMD={m['cmmd']:.6f}  "
-            f"FID_RIN={m['fid_radimagenet']:.2f}  KID_RIN={m['kid_radimagenet_mean']:.6f}  ({elapsed:.0f}s)"
-        )
 
-        history.append({
-            'ratio': ratio,
-            'label': ratio_label,
-            'base_numel': base_numel,
-            'fid': m['fid'],
-            'kid_mean': m['kid_mean'],
-            'kid_std': m['kid_std'],
-            'cmmd': m['cmmd'],
-            'fid_radimagenet': m['fid_radimagenet'],
-            'kid_radimagenet_mean': m['kid_radimagenet_mean'],
-            'kid_radimagenet_std': m['kid_radimagenet_std'],
-            'wall_time_s': wall_time,
-            'eval_time_s': elapsed,
-        })
+        if args.metric == 'morphological':
+            from medgen.metrics.morphological import compute_morphological_score
+            gen_masks = [(vol > 0.5).astype(np.float32) for vol in volumes]
+            morph = compute_morphological_score(ref_masks_3d, gen_masks)
+            target = morph.total
+
+            logger.info(
+                f"  {ratio_label}: morph={morph.total:.4f} "
+                f"(vol={morph.volume_dist:.4f}, feret={morph.feret_dist:.4f}, "
+                f"spatial=[{morph.spatial_d_dist:.4f}, {morph.spatial_h_dist:.4f}, {morph.spatial_w_dist:.4f}], "
+                f"count={morph.count_dist:.4f})  ({elapsed:.0f}s)"
+            )
+
+            history.append({
+                'ratio': ratio, 'label': ratio_label, 'base_numel': base_numel,
+                'morphological': morph.total,
+                'morph_volume': morph.volume_dist, 'morph_feret': morph.feret_dist,
+                'morph_spatial_d': morph.spatial_d_dist, 'morph_spatial_h': morph.spatial_h_dist,
+                'morph_spatial_w': morph.spatial_w_dist, 'morph_count': morph.count_dist,
+                'n_real_tumors': morph.n_real_tumors, 'n_gen_tumors': morph.n_gen_tumors,
+                'wall_time_s': wall_time, 'eval_time_s': elapsed,
+            })
+        else:
+            split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
+            ref_metrics = split_metrics.get(args.ref_split)
+            if ref_metrics is None:
+                raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
+
+            m = asdict(ref_metrics)
+            target = m[metric_key]
+
+            logger.info(
+                f"  {ratio_label}: FID={m['fid']:.2f}  KID={m['kid_mean']:.6f}  CMMD={m['cmmd']:.6f}  "
+                f"FID_RIN={m['fid_radimagenet']:.2f}  KID_RIN={m['kid_radimagenet_mean']:.6f}  ({elapsed:.0f}s)"
+            )
+
+            history.append({
+                'ratio': ratio, 'label': ratio_label, 'base_numel': base_numel,
+                'fid': m['fid'], 'kid_mean': m['kid_mean'], 'kid_std': m['kid_std'],
+                'cmmd': m['cmmd'], 'fid_radimagenet': m['fid_radimagenet'],
+                'kid_radimagenet_mean': m['kid_radimagenet_mean'],
+                'kid_radimagenet_std': m['kid_radimagenet_std'],
+                'wall_time_s': wall_time, 'eval_time_s': elapsed,
+            })
 
         _save_results(output_dir, history, args, input_numel)
 
@@ -487,7 +530,7 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
-        return m[metric_key]
+        return target
 
     # ── Run evaluation ────────────────────────────────────────────────────
     total_start = time.time()
