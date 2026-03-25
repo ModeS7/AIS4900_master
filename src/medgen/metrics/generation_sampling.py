@@ -585,7 +585,6 @@ def generate_and_extract_features_3d_streaming(
     pm_biomed: dict[str, torch.Tensor] | None = None
     pm_rin: dict[str, torch.Tensor] | None = None
     if self_.image_keys and self_.cache.per_modality:
-        from .generation_3d import extract_features_3d
         logger.debug("[3D GenMetrics] Phase 2d: Per-modality features")
         pm_resnet_acc: dict[str, list] = {k: [] for k in self_.image_keys}
         pm_biomed_acc: dict[str, list] = {k: [] for k in self_.image_keys}

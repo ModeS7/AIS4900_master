@@ -228,7 +228,7 @@ def _compute_per_modality_metrics(
     Returns:
         Dict with keys like "t1_pre/{prefix}KID_mean_train".
     """
-    from .generation import compute_kid, compute_cmmd
+    from .generation import compute_cmmd, compute_kid
     results = {}
 
     for key, (gen_resnet, gen_biomed, gen_rin) in per_modality_gen.items():

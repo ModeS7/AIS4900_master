@@ -670,7 +670,6 @@ def main():
         if args.metric == 'morphological':
             # Morphological comparison: extract masks and compare distributions
             from medgen.metrics.morphological import compute_morphological_score
-            from medgen.data.utils import binarize_seg
 
             gen_masks = []
             for vol in volumes:

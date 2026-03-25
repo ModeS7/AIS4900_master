@@ -565,7 +565,7 @@ def _compute_perceptual_with_inverse(
         # Apply same transform to noisy_images for reconstruction
         stacked_noisy = torch.cat([noisy_images[k] for k in keys], dim=1)
         aug_noisy = trainer.score_aug.apply_omega(stacked_noisy, omega)
-        aug_noisy_dict = {keys[0]: aug_noisy[:, 0:1], keys[1]: aug_noisy[:, 1:2]}
+        aug_noisy_dict = {keys[i]: aug_noisy[:, i:i+1] for i in range(len(keys))}
 
         # Reconstruct clean from prediction using shared helper
         aug_clean = _reconstruct_clean(

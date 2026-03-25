@@ -208,6 +208,7 @@ class TestStreamingFeatures:
             'resnet', 'biomed', 'resnet_rin',
             'resnet_3d', 'biomed_3d', 'resnet_rin_3d',
             'diversity_samples',
+            'per_modality_resnet', 'per_modality_biomed', 'per_modality_resnet_rin',
         )
 
     def test_construction_all_populated(self):
@@ -255,7 +256,7 @@ class TestStreamingFeatures:
         assert sf[0] is sf.resnet
         assert sf[1] is sf.biomed
         # Length
-        assert len(sf) == 7
+        assert len(sf) == 10
 
 
 # =============================================================================

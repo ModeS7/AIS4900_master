@@ -533,13 +533,14 @@ def _create_3d_multi_channel_loader(
     batch_size: int | None,
 ) -> tuple[DataLoader, Dataset]:
     """Create 3D multi-channel mode loader (dual/triple conditioned on seg)."""
+    import os
+
     from medgen.data.loaders.volume_3d import (
         MultiChannelVolume3DDataset,
         VolumeConfig,
         _create_loader,
         build_3d_augmentation,
     )
-    import os
 
     image_keys = list(cfg.mode.get('image_keys', ['t1_pre', 't1_gd']))
     vcfg = VolumeConfig.from_cfg(cfg)

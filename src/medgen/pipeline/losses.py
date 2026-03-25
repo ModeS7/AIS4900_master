@@ -99,15 +99,14 @@ def compute_min_snr_weighted_mse(
     # Cast to FP32 for MSE computation (BF16 underflow causes ~15-20% lower loss)
     if isinstance(images, dict):
         keys = list(images.keys())
-        if trainer.strategy_name == 'rflow':
-            target_0 = images[keys[0]] - noise[keys[0]]
-            target_1 = images[keys[1]] - noise[keys[1]]
-        else:
-            target_0, target_1 = noise[keys[0]], noise[keys[1]]
-        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
-        mse_0 = ((pred_0.float() - target_0.float()) ** 2).flatten(1).mean(1)
-        mse_1 = ((pred_1.float() - target_1.float()) ** 2).flatten(1).mean(1)
-        mse_per_sample = (mse_0 + mse_1) / 2
+        n = len(keys)
+        mse_per_sample = sum(
+            ((prediction[:, i:i+1].float() - (
+                (images[keys[i]] - noise[keys[i]]).float() if trainer.strategy_name == 'rflow'
+                else noise[keys[i]].float()
+            )) ** 2).flatten(1).mean(1)
+            for i in range(n)
+        ) / n
     else:
         target = images - noise if trainer.strategy_name == 'rflow' else noise
         mse_per_sample = ((prediction.float() - target.float()) ** 2).flatten(1).mean(1)
@@ -282,21 +281,15 @@ def compute_region_weighted_mse(
     # Compute per-pixel MSE
     if isinstance(images, dict):
         keys = list(images.keys())
-        if trainer.strategy_name == 'rflow':
-            target_0 = images[keys[0]] - noise[keys[0]]
-            target_1 = images[keys[1]] - noise[keys[1]]
-        else:
-            target_0, target_1 = noise[keys[0]], noise[keys[1]]
-        pred_0, pred_1 = prediction[:, 0:1], prediction[:, 1:2]
-
-        # Per-pixel MSE with weights
-        mse_0 = (pred_0.float() - target_0.float()) ** 2  # [B, 1, ...]
-        mse_1 = (pred_1.float() - target_1.float()) ** 2  # [B, 1, ...]
-
-        # Apply regional weights
-        weighted_mse_0 = (mse_0 * weight_map).mean()
-        weighted_mse_1 = (mse_1 * weight_map).mean()
-        return (weighted_mse_0 + weighted_mse_1) / 2
+        n = len(keys)
+        total_weighted_mse = sum(
+            ((prediction[:, i:i+1].float() - (
+                (images[keys[i]] - noise[keys[i]]).float() if trainer.strategy_name == 'rflow'
+                else noise[keys[i]].float()
+            )) ** 2 * weight_map).mean()
+            for i in range(n)
+        )
+        return total_weighted_mse / n
     else:
         target = images - noise if trainer.strategy_name == 'rflow' else noise
         mse = (prediction.float() - target.float()) ** 2  # [B, C, H, W]

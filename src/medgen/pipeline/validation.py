@@ -260,10 +260,17 @@ def compute_validation_losses(
                 channel_lpips = {}
 
                 for key in keys:
-                    channel_msssim[key] = compute_msssim(metrics_pred[key], metrics_gt[key])
+                    channel_msssim[key] = compute_msssim(
+                        metrics_pred[key], metrics_gt[key], spatial_dims=trainer.spatial_dims
+                    )
                     channel_psnr[key] = compute_psnr(metrics_pred[key], metrics_gt[key])
                     if trainer.log_lpips:
-                        channel_lpips[key] = compute_lpips(metrics_pred[key], metrics_gt[key], trainer.device)
+                        if trainer.spatial_dims == 3:
+                            channel_lpips[key] = compute_lpips_3d(
+                                metrics_pred[key], metrics_gt[key], trainer.device, use_compile=False
+                            )
+                        else:
+                            channel_lpips[key] = compute_lpips(metrics_pred[key], metrics_gt[key], trainer.device)
 
                     # Accumulate per-channel metrics
                     if key not in per_channel_metrics:
@@ -312,7 +319,14 @@ def compute_validation_losses(
             # This ensures regional quality metrics are computed in pixel space for consistency
             # with pixel-space diffusion (same PSNR/MSE interpretation regardless of latent vs pixel)
             if trainer.log_regional_losses and labels_pixel is not None:
-                trainer._unified_metrics.update_regional(metrics_pred, metrics_gt, labels_pixel)
+                # Regional tracker expects tensors — stack dict channels for dual/triple
+                if isinstance(metrics_pred, dict):
+                    reg_pred = torch.cat(list(metrics_pred.values()), dim=1)
+                    reg_gt = torch.cat(list(metrics_gt.values()), dim=1)
+                else:
+                    reg_pred = metrics_pred
+                    reg_gt = metrics_gt
+                trainer._unified_metrics.update_regional(reg_pred, reg_gt, labels_pixel)
 
             # Timestep loss tracking (per-bin velocity/noise prediction MSE)
             # Uses the actual training target (velocity for RFlow, noise for DDPM)

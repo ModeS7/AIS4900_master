@@ -162,10 +162,10 @@ def evaluate_test_set(
             with torch.no_grad():
                 if isinstance(predicted_clean, dict):
                     keys = list(predicted_clean.keys())
-                    mse_per_sample = (
-                        (predicted_clean[keys[0]] - images[keys[0]]).pow(2).flatten(1).mean(1) +
-                        (predicted_clean[keys[1]] - images[keys[1]]).pow(2).flatten(1).mean(1)
-                    ) / 2
+                    mse_per_sample = sum(
+                        (predicted_clean[k] - images[k]).pow(2).flatten(1).mean(1)
+                        for k in keys
+                    ) / len(keys)
                 else:
                     mse_per_sample = (predicted_clean - images).pow(2).flatten(1).mean(1)
                 bin_size = trainer.num_timesteps // num_timestep_bins
@@ -187,13 +187,20 @@ def evaluate_test_set(
 
             if isinstance(metrics_pred, dict):
                 keys = list(metrics_pred.keys())
-                msssim_val = (compute_msssim_dispatch(metrics_pred[keys[0]], metrics_gt[keys[0]], trainer.spatial_dims) +
-                              compute_msssim_dispatch(metrics_pred[keys[1]], metrics_gt[keys[1]], trainer.spatial_dims)) / 2
-                psnr_val = (compute_psnr(metrics_pred[keys[0]], metrics_gt[keys[0]]) +
-                            compute_psnr(metrics_pred[keys[1]], metrics_gt[keys[1]])) / 2
+                n = len(keys)
+                msssim_val = sum(
+                    compute_msssim_dispatch(metrics_pred[k], metrics_gt[k], trainer.spatial_dims)
+                    for k in keys
+                ) / n
+                psnr_val = sum(
+                    compute_psnr(metrics_pred[k], metrics_gt[k])
+                    for k in keys
+                ) / n
                 if trainer.log_lpips:
-                    lpips_val = (compute_lpips_dispatch(metrics_pred[keys[0]], metrics_gt[keys[0]], trainer.spatial_dims, trainer.device) +
-                                 compute_lpips_dispatch(metrics_pred[keys[1]], metrics_gt[keys[1]], trainer.spatial_dims, trainer.device)) / 2
+                    lpips_val = sum(
+                        compute_lpips_dispatch(metrics_pred[k], metrics_gt[k], trainer.spatial_dims, trainer.device)
+                        for k in keys
+                    ) / n
                 else:
                     lpips_val = 0.0
             else:
