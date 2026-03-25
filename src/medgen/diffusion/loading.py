@@ -282,7 +282,14 @@ def load_diffusion_model_with_metadata(
             f"depth_size={depth_size}, patch_size={patch_size}, in_ch={hdit_in_channels}, "
             f"cond_ch={cond_channels}, level_depths={level_depths}"
         )
-        model: nn.Module = base_model
+        if wrapper_type == 'score_aug':
+            embed_dim = base_model.hidden_size
+            model, wrapper_name = create_conditioning_wrapper(
+                model=base_model, use_omega=True, use_mode=False, embed_dim=embed_dim,
+            )
+            logger.info(f"Applied {wrapper_name} conditioning wrapper")
+        else:
+            model: nn.Module = base_model
 
     elif model_type in ('uvit',):
         from medgen.models.uvit import create_uvit
@@ -325,7 +332,14 @@ def load_diffusion_model_with_metadata(
             f"depth_size={depth_size}, patch_size={patch_size}, in_ch={uvit_in_channels}, "
             f"cond_ch={cond_channels}"
         )
-        model = base_model
+        if wrapper_type == 'score_aug':
+            embed_dim = base_model.hidden_size
+            model, wrapper_name = create_conditioning_wrapper(
+                model=base_model, use_omega=True, use_mode=False, embed_dim=embed_dim,
+            )
+            logger.info(f"Applied {wrapper_name} conditioning wrapper")
+        else:
+            model = base_model
 
     elif model_type in ('dit', 'sit'):
         # Create DiT/SiT model from checkpoint config
@@ -409,8 +423,18 @@ def load_diffusion_model_with_metadata(
             f"cond_ch={cond_channels}, spatial_dims={resolved_spatial_dims}"
         )
 
-        # DiT models are always 'raw' (no wrapper support)
-        model: nn.Module = base_model
+        # Apply omega wrapper if checkpoint had one
+        if wrapper_type == 'score_aug':
+            embed_dim = base_model.hidden_size
+            model, wrapper_name = create_conditioning_wrapper(
+                model=base_model,
+                use_omega=True,
+                use_mode=False,
+                embed_dim=embed_dim,
+            )
+            logger.info(f"Applied {wrapper_name} conditioning wrapper")
+        else:
+            model = base_model
     else:
         # Create UNet model
         # Log architecture info

@@ -426,28 +426,29 @@ class ConditionalSingleMode(TrainingMode):
 
 
 class ConditionalDualMode(TrainingMode):
-    """Conditional dual image generation mode.
+    """Conditional multi-channel image generation mode.
 
-    Mode 3: Train two images (T1 pre + T1 gd) conditioned on segmentation mask.
+    Generates N image channels conditioned on segmentation mask.
+    Supports dual (N=2: t1_pre + t1_gd) and triple (N=3: t1_pre + t1_gd + flair).
 
-    Input: [B, 3, H, W] - [T1_pre, T1_gd, seg_mask]
-    Output: [B, 2, H, W] - [denoised_T1_pre, denoised_T1_gd]
+    Input: [B, N+1, ...] - [image_0, ..., image_N, seg_mask]
+    Output: [B, N, ...] - [denoised_0, ..., denoised_N]
 
-    Uses segmentation mask as conditioning. Model learns to keep both
-    images anatomically consistent.
+    Uses segmentation mask as conditioning. Model learns to keep all
+    channels anatomically consistent.
     """
 
     def __init__(self, image_keys: list[str] | None = None) -> None:
-        """Initialize conditional dual mode.
+        """Initialize conditional multi-channel mode.
 
         Args:
-            image_keys: Names of the two image types to train.
+            image_keys: Names of the image types to train.
                 Default: DEFAULT_DUAL_IMAGE_KEYS ('t1_pre', 't1_gd')
         """
         if image_keys is None:
             image_keys = DEFAULT_DUAL_IMAGE_KEYS.copy()
-        if len(image_keys) != 2:
-            raise ValueError(f"ConditionalDualMode requires exactly 2 image types, got {len(image_keys)}: {image_keys}")
+        if len(image_keys) < 2:
+            raise ValueError(f"ConditionalDualMode requires at least 2 image types, got {len(image_keys)}: {image_keys}")
         self.image_keys: list[str] = image_keys
 
     @property
@@ -499,30 +500,37 @@ class ConditionalDualMode(TrainingMode):
 
             return {'images': images_dict, 'labels': seg_mask}
 
-        # Handle 2D tensor format [B, 3, H, W] (dimension-agnostic slicing)
+        # Handle 2D tensor format [B, N+1, H, W] (dimension-agnostic slicing)
+        n = len(self.image_keys)
         images: dict[str, torch.Tensor] = {
-            self.image_keys[0]: batch[:, 0:1],
-            self.image_keys[1]: batch[:, 1:2],
+            self.image_keys[i]: batch[:, i:i+1]
+            for i in range(n)
         }
-        seg_mask = batch[:, 2:3]
+        seg_mask = batch[:, n:n+1]
 
         return {
             'images': images,
             'labels': seg_mask
         }
 
+    @property
+    def num_image_channels(self) -> int:
+        """Number of image channels (excludes conditioning)."""
+        return len(self.image_keys)
+
     def get_model_config(self) -> dict[str, int]:
         """Get model channel configuration.
 
-        Model takes: [noisy_t1_pre, noisy_t1_gd, seg_mask] = 3 input channels
-        Model outputs: [noise/velocity_pred_pre, noise/velocity_pred_gd] = 2 channels
+        Model takes: [noisy_ch_0, ..., noisy_ch_N, seg_mask] = N+1 input channels
+        Model outputs: [pred_0, ..., pred_N] = N channels
 
         Returns:
             Channel configuration dictionary.
         """
+        n = len(self.image_keys)
         return {
-            'in_channels': 3,
-            'out_channels': 2
+            'in_channels': n + 1,  # N image channels + 1 seg conditioning
+            'out_channels': n
         }
 
     def format_model_input(  # type: ignore[override]

@@ -429,11 +429,15 @@ class Volume3DDataset(Base3DVolumeDataset):
         return result
 
 
-class DualVolume3DDataset(Base3DVolumeDataset):
-    """Dataset that loads dual-modality 3D volumes (t1_pre + t1_gd).
+class MultiChannelVolume3DDataset(Base3DVolumeDataset):
+    """Dataset that loads multi-channel 3D volumes from N modalities.
+
+    Generalizes the former DualVolume3DDataset to support arbitrary modality
+    combinations (dual: t1_pre+t1_gd, triple: t1_pre+t1_gd+flair, etc.).
 
     Args:
         data_dir: Directory containing patient subdirectories.
+        image_keys: List of modality names to load (e.g., ['t1_pre', 't1_gd']).
         height: Target height dimension.
         width: Target width dimension.
         pad_depth_to: Target depth after padding.
@@ -446,6 +450,7 @@ class DualVolume3DDataset(Base3DVolumeDataset):
     def __init__(
         self,
         data_dir: str,
+        image_keys: list[str] | None = None,
         height: int = 256,
         width: int = 256,
         pad_depth_to: int = 160,
@@ -456,6 +461,13 @@ class DualVolume3DDataset(Base3DVolumeDataset):
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
 
+        if image_keys is None:
+            from medgen.core.constants import DEFAULT_DUAL_IMAGE_KEYS
+            image_keys = DEFAULT_DUAL_IMAGE_KEYS.copy()
+        if len(image_keys) < 2:
+            raise ValueError(f"MultiChannelVolume3DDataset requires at least 2 modalities, got {image_keys}")
+        self.image_keys = image_keys
+
         # List patient directories
         self.patients = sorted([
             p for p in os.listdir(data_dir)
@@ -465,7 +477,7 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         if not self.patients:
             raise ValueError(f"No patient directories found in {data_dir}")
 
-        logger.info(f"Found {len(self.patients)} patients for dual mode")
+        logger.info(f"Found {len(self.patients)} patients for {len(self.image_keys)}-channel mode ({self.image_keys})")
 
     def __len__(self) -> int:
         return len(self.patients)
@@ -474,12 +486,12 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
-        # Load both modalities using base class helper
-        t1_pre = self._load_volume(os.path.join(patient_dir, "t1_pre.nii.gz"))
-        t1_gd = self._load_volume(os.path.join(patient_dir, "t1_gd.nii.gz"))
-
-        # Stack as 2 channels: [2, D, H, W]
-        volume = torch.cat([t1_pre, t1_gd], dim=0)
+        # Load all modalities and stack as N channels: [N, D, H, W]
+        volumes = [
+            self._load_volume(os.path.join(patient_dir, f"{key}.nii.gz"))
+            for key in self.image_keys
+        ]
+        volume = torch.cat(volumes, dim=0)
 
         result = {'image': volume, 'patient': patient}
 
@@ -494,21 +506,27 @@ class DualVolume3DDataset(Base3DVolumeDataset):
         return result
 
 
+# Backward compatibility alias
+DualVolume3DDataset = MultiChannelVolume3DDataset
+
+
 def _create_single_dual_dataset(
     data_dir: str,
     modality: str,
     vcfg: VolumeConfig,
     height: int | None = None,
     width: int | None = None,
+    image_keys: list[str] | None = None,
 ) -> Dataset:
-    """Create Volume3DDataset or DualVolume3DDataset based on modality.
+    """Create Volume3DDataset or MultiChannelVolume3DDataset based on modality.
 
     Args:
         data_dir: Path to data directory (train/val/test_new).
-        modality: 'dual' for DualVolume3DDataset, else Volume3DDataset.
+        modality: 'dual'/'triple' for MultiChannelVolume3DDataset, else Volume3DDataset.
         vcfg: Volume configuration.
         height: Override height (defaults to vcfg.height).
         width: Override width (defaults to vcfg.width).
+        image_keys: Modalities to load for multi-channel modes (default from constants).
 
     Returns:
         Appropriate dataset instance.
@@ -516,9 +534,14 @@ def _create_single_dual_dataset(
     h = height if height is not None else vcfg.height
     w = width if width is not None else vcfg.width
 
-    if modality == 'dual':
-        return DualVolume3DDataset(
+    if modality in ('dual', 'triple') or (image_keys is not None and len(image_keys) > 1):
+        # Infer default image_keys from modality if not provided
+        if image_keys is None and modality == 'triple':
+            from medgen.core.constants import DEFAULT_TRIPLE_IMAGE_KEYS
+            image_keys = DEFAULT_TRIPLE_IMAGE_KEYS.copy()
+        return MultiChannelVolume3DDataset(
             data_dir=data_dir,
+            image_keys=image_keys,
             height=h,
             width=w,
             pad_depth_to=vcfg.pad_depth_to,

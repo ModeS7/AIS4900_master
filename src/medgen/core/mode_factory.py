@@ -81,6 +81,7 @@ class ModeFactory:
         ModeType.BRAVO: ModeCategory.SINGLE,
         ModeType.BRAVO_SEG_COND: ModeCategory.SINGLE,
         ModeType.DUAL: ModeCategory.DUAL,
+        ModeType.TRIPLE: ModeCategory.DUAL,
         ModeType.MULTI: ModeCategory.MULTI,
         ModeType.SEG_CONDITIONED: ModeCategory.SEG_CONDITIONED,
         ModeType.SEG_CONDITIONED_INPUT: ModeCategory.SEG_CONDITIONED,
@@ -336,6 +337,8 @@ class ModeFactory:
             return 'seg'
         elif mode == ModeType.DUAL:
             return 'dual'
+        elif mode == ModeType.TRIPLE:
+            return 'triple'
         elif mode == ModeType.MULTI:
             return 'multi'
         else:

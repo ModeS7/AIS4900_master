@@ -26,6 +26,7 @@ class ModeType(str, Enum):
     BRAVO = "bravo"           # Single MRI modality (BRAVO/FLAIR)
     BRAVO_SEG_COND = "bravo_seg_cond"  # Latent BRAVO conditioned on latent seg
     DUAL = "dual"             # Two MRI modalities (t1_pre + t1_gd)
+    TRIPLE = "triple"         # Three MRI modalities (t1_pre + t1_gd + flair)
     MULTI = "multi"           # Multi-modality diffusion with mode embedding
     MULTI_MODALITY = "multi_modality"  # Multi-modality VAE (no mode embedding)
 
@@ -47,8 +48,9 @@ DEFAULT_NUM_HEAD_CHANNELS = 256
 # Data loading
 DEFAULT_NUM_WORKERS = 4  # Parallel data loading workers
 
-# Dual mode default image keys
+# Dual/triple mode default image keys
 DEFAULT_DUAL_IMAGE_KEYS = ['t1_pre', 't1_gd']
+DEFAULT_TRIPLE_IMAGE_KEYS = ['t1_pre', 't1_gd', 'flair']
 
 
 def get_modality_for_mode(mode: str) -> str:
@@ -68,7 +70,7 @@ def get_modality_for_mode(mode: str) -> str:
         ValueError: If mode requires special handling not supported here
     """
     # Direct modalities: mode == file modality
-    if mode in ('bravo', 'seg', 'flair', 't1_pre', 't1_gd', 'dual'):
+    if mode in ('bravo', 'seg', 'flair', 't1_pre', 't1_gd', 'dual', 'triple'):
         return mode
 
     # Segmentation modes load seg.nii.gz

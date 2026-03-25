@@ -53,10 +53,10 @@ def create_dual_image_dataloader(
         Batches have shape [B, 3, H, W] = [t1_pre, t1_gd, seg].
 
     Raises:
-        ValueError: If image_keys does not contain exactly 2 items.
+        ValueError: If image_keys contains fewer than 2 items.
     """
-    if len(image_keys) != 2:
-        raise ValueError(f"Dual-image mode requires exactly 2 image types, got {len(image_keys)}: {image_keys}")
+    if len(image_keys) < 2:
+        raise ValueError(f"Multi-channel mode requires at least 2 image types, got {len(image_keys)}: {image_keys}")
 
     data_dir = os.path.join(cfg.paths.data_dir, "train")
     image_size = cfg.model.image_size
@@ -146,7 +146,7 @@ def create_dual_image_validation_dataloader(
     if not os.path.exists(val_dir):
         return None
 
-    if len(image_keys) != 2:
+    if len(image_keys) < 2:
         return None
 
     image_size = cfg.model.image_size
@@ -220,7 +220,7 @@ def create_dual_image_test_dataloader(
     if not os.path.exists(test_dir):
         return None
 
-    if len(image_keys) != 2:
+    if len(image_keys) < 2:
         return None
 
     image_size = cfg.model.image_size

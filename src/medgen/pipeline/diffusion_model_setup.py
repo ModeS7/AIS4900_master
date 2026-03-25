@@ -87,10 +87,10 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
     if trainer.is_transformer:
         raw_model = create_diffusion_model(trainer.cfg, trainer.device, in_channels, out_channels)
 
-        if trainer.use_omega_conditioning or trainer.use_mode_embedding:
+        if trainer.use_mode_embedding:
             raise ValueError(
-                "Omega/mode conditioning wrappers are not yet supported for transformer models. "
-                "Either use model=default (UNet) or disable omega_conditioning/mode_embedding."
+                "Mode embedding wrappers are not yet supported for transformer models. "
+                "Either use model=default (UNet) or disable mode_embedding."
             )
     else:
         from .base_config import ModelConfig
@@ -134,15 +134,19 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
     use_compile = getattr(trainer.cfg.training, 'use_compile', True)
 
-    # Handle embedding wrappers (UNet only)
+    # Determine time embedding dimension for conditioning wrappers
     if not trainer.is_transformer:
         channels = tuple(mc.channels)
         time_embed_dim = 4 * channels[0]
     else:
-        time_embed_dim = None
+        # DiT/HDiT/UViT: TimestepEmbedder outputs hidden_size
+        time_embed_dim = getattr(raw_model, 'hidden_size', None)
+        if time_embed_dim is None:
+            # Fallback: read from model attributes
+            time_embed_dim = raw_model.t_embedder.mlp[-1].out_features if hasattr(raw_model, 't_embedder') else None
 
     # Handle embedding wrappers: omega, mode, or both
-    if not trainer.is_transformer and (trainer.use_omega_conditioning or trainer.use_mode_embedding):
+    if (trainer.use_omega_conditioning or (not trainer.is_transformer and trainer.use_mode_embedding)):
         from medgen.data import create_conditioning_wrapper
         wrapper, wrapper_name = create_conditioning_wrapper(
             model=raw_model,

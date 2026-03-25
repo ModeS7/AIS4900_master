@@ -404,7 +404,7 @@ def compute_scoreaug_loss(
     # 1. Compute target BEFORE ScoreAug using strategy's compute_target method
     target = trainer.strategy.compute_target(images, noise)
 
-    # 2. For dual mode, stack targets for joint transform
+    # 2. For multi-channel mode (dual/triple), stack targets for joint transform
     is_dual = isinstance(target, dict)
     if is_dual:
         keys = list(target.keys())
@@ -412,8 +412,8 @@ def compute_scoreaug_loss(
         aug_input, aug_target_stacked, omega = trainer.score_aug(model_input, stacked_target)
         # Unstack back to dict
         aug_target = {
-            keys[0]: aug_target_stacked[:, 0:1],
-            keys[1]: aug_target_stacked[:, 1:2],
+            keys[i]: aug_target_stacked[:, i:i+1]
+            for i in range(len(keys))
         }
     else:
         aug_input, aug_target, omega = trainer.score_aug(model_input, target)
@@ -429,12 +429,11 @@ def compute_scoreaug_loss(
 
     # 5. Compute MSE loss with augmented target
     if is_dual:
-        pred_0 = prediction[:, 0:1, :, :]
-        pred_1 = prediction[:, 1:2, :, :]
-        mse_loss = (
-            F.mse_loss(pred_0.float(), aug_target[keys[0]].float()) +
-            F.mse_loss(pred_1.float(), aug_target[keys[1]].float())
-        ) / 2
+        n = len(keys)
+        mse_loss = sum(
+            F.mse_loss(prediction[:, i:i+1].float(), aug_target[keys[i]].float())
+            for i in range(n)
+        ) / n
     else:
         mse_loss = F.mse_loss(prediction.float(), aug_target.float())
 

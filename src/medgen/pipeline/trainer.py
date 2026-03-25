@@ -402,6 +402,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             'bravo': ConditionalSingleMode,
             'bravo_seg_cond': LatentSegConditionedMode,
             'dual': ConditionalDualMode,
+            'triple': ConditionalDualMode,
             'multi': MultiModalityMode,
         }
         if mode not in modes:
@@ -409,7 +410,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         mc = self._mode_config
 
-        if mode == ModeType.DUAL or mode == 'dual':
+        if mode in (ModeType.DUAL, 'dual', ModeType.TRIPLE, 'triple'):
             image_keys = mc.image_keys if mc.image_keys else None
             return ConditionalDualMode(image_keys)
 

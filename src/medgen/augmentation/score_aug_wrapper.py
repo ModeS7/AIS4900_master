@@ -91,8 +91,8 @@ class ScoreAugModelWrapper(nn.Module):
         """Initialize wrapper.
 
         Args:
-            model: MONAI DiffusionModelUNet to wrap
-            embed_dim: Embedding dimension (should match model's time_embed output)
+            model: Model to wrap (MONAI UNet with time_embed, or DiT/HDiT/UViT with t_embedder)
+            embed_dim: Embedding dimension (should match model's timestep embed output)
             spatial_dims: Number of spatial dimensions (2 or 3)
         """
         super().__init__()
@@ -100,15 +100,22 @@ class ScoreAugModelWrapper(nn.Module):
         self.embed_dim = embed_dim
         self.spatial_dims = spatial_dims
 
-        # Replace time_embed with omega-aware version
-        if not hasattr(model, 'time_embed'):
-            raise ValueError("Model does not have 'time_embed' attribute")
+        # Find the timestep embedding module: UNet uses 'time_embed', DiT/HDiT/UViT use 't_embedder'
+        if hasattr(model, 'time_embed'):
+            self._embed_attr = 'time_embed'
+            original_embed = model.time_embed
+        elif hasattr(model, 't_embedder'):
+            self._embed_attr = 't_embedder'
+            original_embed = model.t_embedder
+        else:
+            raise ValueError(
+                "Model has neither 'time_embed' (UNet) nor 't_embedder' (DiT/HDiT/UViT) attribute"
+            )
 
-        original_time_embed = model.time_embed
-        self.omega_time_embed = OmegaTimeEmbed(original_time_embed, embed_dim)
+        self.omega_time_embed = OmegaTimeEmbed(original_embed, embed_dim)
 
-        # Replace the model's time_embed
-        model.time_embed = self.omega_time_embed
+        # Replace the model's timestep embedding
+        setattr(model, self._embed_attr, self.omega_time_embed)
 
     def forward(
         self,

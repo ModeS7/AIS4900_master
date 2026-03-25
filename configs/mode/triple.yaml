@@ -1,0 +1,24 @@
+# Triple Mode - Conditional triple image generation
+#
+# Generates T1 pre-contrast, T1 post-contrast (Gd), and FLAIR
+# conditioned on segmentation mask.
+#
+# For DIFFUSION training:
+#   in_channels: 4 = [noisy_t1_pre, noisy_t1_gd, noisy_flair, seg_mask]
+#   out_channels: 3 = predicted [t1_pre, t1_gd, flair]
+#   Dataloader: create_dual_image_dataloader() with 3 image_keys
+#
+# For VAE training (channels overridden in train_vae.py):
+#   in_channels: 3 = [t1_pre, t1_gd, flair] (NO seg mask!)
+#   out_channels: 3
+#   Dataloader: create_vae_dataloader()
+
+name: triple
+is_conditional: true
+in_channels: 4   # [noisy_t1_pre, noisy_t1_gd, noisy_flair, seg_mask] - for diffusion
+out_channels: 3  # predicted noise/velocity for [t1_pre, t1_gd, flair]
+image_keys: [t1_pre, t1_gd, flair]  # Which modalities to load
+description: "T1 pre/post-contrast + FLAIR triple generation conditioned on segmentation mask"
+
+# Classifier-free guidance (CFG) dropout
+cfg_dropout_prob: 0.0  # Disabled - no benefit for dense spatial conditioning

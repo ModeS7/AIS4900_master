@@ -292,7 +292,7 @@ def create_diffusion_dataloader(
     if spatial_dims not in (2, 3):
         raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
 
-    if mode not in ('seg', 'bravo', 'dual', 'multi', 'seg_conditioned', 'seg_conditioned_input', 'bravo_seg_cond'):
+    if mode not in ('seg', 'bravo', 'dual', 'triple', 'multi', 'seg_conditioned', 'seg_conditioned_input', 'bravo_seg_cond'):
         raise ValueError(f"Unsupported mode: {mode}")
 
     # Determine augmentation setting
@@ -391,7 +391,7 @@ def _get_raw_2d_loader(
         image_type = 'bravo' if mode in ('bravo', 'bravo_seg_cond') else 'seg'
         spec = single_spec(image_type, augment_type)
 
-    elif mode == 'dual':
+    elif mode in ('dual', 'triple'):
         image_keys = cfg.mode.get('image_keys', ['t1_pre', 't1_gd'])
         conditioning = cfg.mode.get('conditioning', 'seg')
         spec = dual_spec(image_keys, conditioning, augment_type)
@@ -455,8 +455,8 @@ def _create_3d_loader(
     elif mode == 'bravo_seg_cond':
         # bravo_seg_cond: same pixel loader as bravo, latent handling is separate
         return _create_3d_bravo_loader(cfg, vol_cfg, split, augment, batch_size)
-    elif mode == 'dual':
-        raise ValueError("3D dual mode not yet supported")
+    elif mode in ('dual', 'triple'):
+        return _create_3d_multi_channel_loader(cfg, vol_cfg, split, augment, batch_size)
     elif mode == 'multi':
         raise ValueError("3D multi mode not yet supported")
     elif mode == 'seg_conditioned':
@@ -523,6 +523,60 @@ def _create_3d_bravo_loader(
         return result
     else:
         raise ValueError(f"Unknown split: {split}")
+
+
+def _create_3d_multi_channel_loader(
+    cfg: DictConfig,
+    vol_cfg: Any,
+    split: str,
+    augment: bool,
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
+    """Create 3D multi-channel mode loader (dual/triple conditioned on seg)."""
+    from medgen.data.loaders.volume_3d import (
+        MultiChannelVolume3DDataset,
+        VolumeConfig,
+        _create_loader,
+        build_3d_augmentation,
+    )
+    import os
+
+    image_keys = list(cfg.mode.get('image_keys', ['t1_pre', 't1_gd']))
+    vcfg = VolumeConfig.from_cfg(cfg)
+
+    if split == 'train':
+        data_dir = os.path.join(cfg.paths.data_dir, 'train')
+    elif split == 'val':
+        data_dir = os.path.join(cfg.paths.data_dir, 'val')
+    elif split == 'test':
+        data_dir = os.path.join(cfg.paths.data_dir, 'test_new')
+    else:
+        raise ValueError(f"Unknown split: {split}")
+
+    if not os.path.isdir(data_dir):
+        raise ValueError(f"No 3D {split} data found at {data_dir}")
+
+    aug = build_3d_augmentation(seg_mode=False, include_seg=True) if (augment and split == 'train') else None
+
+    h = vcfg.train_height if split == 'train' else vcfg.height
+    w = vcfg.train_width if split == 'train' else vcfg.width
+
+    dataset = MultiChannelVolume3DDataset(
+        data_dir=data_dir,
+        image_keys=image_keys,
+        height=h,
+        width=w,
+        pad_depth_to=vcfg.pad_depth_to,
+        pad_mode=vcfg.pad_mode,
+        slice_step=vcfg.slice_step,
+        load_seg=True,  # Always load seg for conditioning
+        augmentation=aug,
+    )
+
+    shuffle = (split == 'train')
+    drop_last = (split == 'train')
+    loader = _create_loader(dataset, vcfg, shuffle=shuffle, drop_last=drop_last)
+    return loader, dataset
 
 
 def _create_3d_seg_conditioned_loader(
@@ -683,7 +737,7 @@ def _get_compression_output_format(mode: str) -> str:
     """
     if mode == 'seg_compression':
         return 'compression_seg'
-    elif mode == 'dual':
+    elif mode in ('dual', 'triple'):
         return 'compression_dual'
     elif mode == 'multi_modality':
         return 'compression_multi'
@@ -807,7 +861,7 @@ def _get_raw_compression_2d_loader(
             spec = multi_modality_spec(image_keys)
         else:
             spec = multi_modality_val_spec(image_keys)
-    elif mode == 'dual':
+    elif mode in ('dual', 'triple'):
         spec = vae_dual_spec()
     else:
         # Single modality: bravo, t1_pre, t1_gd, flair, seg
@@ -864,12 +918,12 @@ def _create_compression_3d_loader(
                 raise ValueError("No 3D test data found for multi_modality")
             return result
 
-    elif mode == 'dual':
-        # Dual modality 3D VAE
+    elif mode in ('dual', 'triple'):
+        # Multi-channel modality 3D VAE
         if split == 'train':
-            return volume_3d.create_vae_3d_dataloader(cfg, modality='dual')
+            return volume_3d.create_vae_3d_dataloader(cfg, modality=mode)
         elif split == 'val':
-            result = volume_3d.create_vae_3d_validation_dataloader(cfg, 'dual')
+            result = volume_3d.create_vae_3d_validation_dataloader(cfg, mode)
             if result is None:
                 raise ValueError("No 3D validation data found for dual VAE")
             return result
