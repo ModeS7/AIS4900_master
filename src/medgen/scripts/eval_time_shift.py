@@ -67,6 +67,72 @@ logger = logging.getLogger(__name__)
 # Default shift ratios to evaluate
 DEFAULT_RATIOS = [1.0, 1.5, 2.0, 3.0, 4.0, 6.84]
 
+# Golden ratio for search
+GR = (5 ** 0.5 - 1) / 2  # ~0.618
+
+
+def golden_section_search_float(
+    evaluate_fn,
+    lo: float,
+    hi: float,
+    tol: float = 0.1,
+) -> tuple[float, float, dict[float, float]]:
+    """Find float minimizer of evaluate_fn on [lo, hi] via golden section.
+
+    Args:
+        evaluate_fn: Callable(float) -> float.
+        lo: Lower bound (inclusive).
+        hi: Upper bound (inclusive).
+        tol: Stop when hi - lo <= tol.
+
+    Returns:
+        (best_ratio, best_metric, all_evaluations)
+    """
+    cache: dict[float, float] = {}
+
+    def eval_cached(x: float) -> float:
+        # Round to 2 decimal places to avoid near-duplicate evals
+        x = round(x, 2)
+        if x not in cache:
+            cache[x] = evaluate_fn(x)
+        else:
+            logger.info(f"  [cached] ratio={x:.2f} -> metric={cache[x]:.4f}")
+        return cache[x]
+
+    a, b = lo, hi
+    x1 = round(b - GR * (b - a), 2)
+    x2 = round(a + GR * (b - a), 2)
+
+    f1 = eval_cached(x1)
+    f2 = eval_cached(x2)
+
+    iteration = 0
+    while b - a > tol:
+        iteration += 1
+        logger.info(f"\n--- Iteration {iteration}: [{a:.2f}, {b:.2f}] (width={b-a:.2f}) ---")
+        logger.info(f"  x1={x1:.2f} (metric={f1:.4f}), x2={x2:.2f} (metric={f2:.4f})")
+
+        if f1 < f2:
+            b = x2
+            x2 = x1
+            f2 = f1
+            x1 = round(b - GR * (b - a), 2)
+            if abs(x1 - x2) < 0.01:
+                break
+            f1 = eval_cached(x1)
+        else:
+            a = x1
+            x1 = x2
+            f1 = f2
+            x2 = round(a + GR * (b - a), 2)
+            if abs(x1 - x2) < 0.01:
+                break
+            f2 = eval_cached(x2)
+
+    # Find best from all evaluated points
+    best_x = min(cache, key=cache.get)
+    return best_x, cache[best_x], cache
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
@@ -105,9 +171,19 @@ def main():
 
     # Time shift params
     parser.add_argument('--ratios', type=float, nargs='+', default=DEFAULT_RATIOS,
-                        help=f'Shift ratios to test (default: {DEFAULT_RATIOS})')
+                        help=f'Shift ratios to test in sweep mode (default: {DEFAULT_RATIOS})')
     parser.add_argument('--num-steps', type=int, default=25,
                         help='Number of Euler steps (default: 25)')
+
+    # Search mode (golden section instead of fixed sweep)
+    parser.add_argument('--search', action='store_true',
+                        help='Use golden section search instead of fixed ratio sweep')
+    parser.add_argument('--search-lo', type=float, default=1.0,
+                        help='Lower bound for ratio search (default: 1.0)')
+    parser.add_argument('--search-hi', type=float, default=5.0,
+                        help='Upper bound for ratio search (default: 5.0)')
+    parser.add_argument('--search-tol', type=float, default=0.1,
+                        help='Stop when interval width <= tol (default: 0.1)')
 
     # Volume config
     parser.add_argument('--cond-split', default='val',
@@ -339,30 +415,26 @@ def main():
         out_channels=model_out_channels,
     )
 
-    # ── Evaluate each shift ratio ─────────────────────────────────────────
+    # ── Evaluation helper ────────────────────────────────────────────────
     solver_cfg = SolverConfig(solver='euler', steps=args.num_steps)
     history = []
-    total_start = time.time()
 
-    for ratio in args.ratios:
-        # Compute base_numel from ratio: ratio = (input_numel / base_numel)^(1/spatial_dims)
-        # → base_numel = input_numel / ratio^spatial_dims
-        base_numel = int(input_numel / (ratio ** spatial_dims))
-        # Ensure base_numel >= 1
-        base_numel = max(1, base_numel)
+    metric_key = {
+        'fid': 'fid', 'kid': 'kid_mean', 'cmmd': 'cmmd',
+        'fid_radimagenet': 'fid_radimagenet',
+        'kid_radimagenet': 'kid_radimagenet_mean',
+    }[args.metric]
 
-        # Set the scheduler's base_img_size_numel to induce the desired ratio
+    def evaluate_ratio(ratio: float) -> float:
+        """Evaluate a single shift ratio, return the target metric value."""
+        base_numel = max(1, int(input_numel / (ratio ** spatial_dims)))
         strategy.scheduler.base_img_size_numel = base_numel
 
         ratio_label = f"ratio_{ratio:.2f}"
         if ratio == 1.0:
             ratio_label = "no_shift"
-        elif abs(ratio - 6.84) < 0.1:
-            ratio_label = "monai_default"
 
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Evaluating: {ratio_label} (ratio={ratio:.2f}, base_numel={base_numel:,})")
-        logger.info(f"{'='*60}")
+        logger.info(f"\n  Evaluating {ratio_label} (ratio={ratio:.2f}, base_numel={base_numel:,}) ...")
 
         t0 = time.time()
         volumes, total_nfe, wall_time = generate_volumes(
@@ -388,39 +460,63 @@ def main():
             raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
 
         m = asdict(ref_metrics)
-        fid = m['fid']
-        kid = m['kid_mean']
-        cmmd = m['cmmd']
-        fid_rin = m['fid_radimagenet']
-        kid_rin = m['kid_radimagenet_mean']
-
         elapsed = time.time() - t0
         logger.info(
-            f"  {ratio_label}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
-            f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}  ({elapsed:.0f}s)"
+            f"  {ratio_label}: FID={m['fid']:.2f}  KID={m['kid_mean']:.6f}  CMMD={m['cmmd']:.6f}  "
+            f"FID_RIN={m['fid_radimagenet']:.2f}  KID_RIN={m['kid_radimagenet_mean']:.6f}  ({elapsed:.0f}s)"
         )
 
         history.append({
             'ratio': ratio,
             'label': ratio_label,
             'base_numel': base_numel,
-            'fid': fid,
-            'kid_mean': kid,
+            'fid': m['fid'],
+            'kid_mean': m['kid_mean'],
             'kid_std': m['kid_std'],
-            'cmmd': cmmd,
-            'fid_radimagenet': fid_rin,
-            'kid_radimagenet_mean': kid_rin,
+            'cmmd': m['cmmd'],
+            'fid_radimagenet': m['fid_radimagenet'],
+            'kid_radimagenet_mean': m['kid_radimagenet_mean'],
             'kid_radimagenet_std': m['kid_radimagenet_std'],
             'wall_time_s': wall_time,
             'eval_time_s': elapsed,
         })
 
-        # Save incremental results
         _save_results(output_dir, history, args, input_numel)
 
         del volumes
         gc.collect()
         torch.cuda.empty_cache()
+
+        return m[metric_key]
+
+    # ── Run evaluation ────────────────────────────────────────────────────
+    total_start = time.time()
+
+    if args.search:
+        logger.info("=" * 70)
+        logger.info("Golden Section Search for Optimal Time-Shift Ratio")
+        logger.info(f"Search range: [{args.search_lo}, {args.search_hi}]")
+        logger.info(f"Tolerance: {args.search_tol}")
+        logger.info(f"Metric: {args.metric}")
+        logger.info("=" * 70)
+
+        best_ratio, best_val, all_evals = golden_section_search_float(
+            evaluate_ratio, args.search_lo, args.search_hi, tol=args.search_tol,
+        )
+
+        logger.info(f"\n{'='*70}")
+        logger.info(f"RESULT: Optimal shift ratio = {best_ratio:.2f}")
+        logger.info(f"  {args.metric.upper()} = {best_val:.4f}")
+        logger.info(f"  Total evaluations: {len(all_evals)}")
+        logger.info(f"{'='*70}")
+
+        logger.info("\nAll evaluations (sorted by ratio):")
+        for r in sorted(all_evals):
+            marker = " <--" if r == best_ratio else ""
+            logger.info(f"  ratio={r:.2f}  {args.metric}={all_evals[r]:.4f}{marker}")
+    else:
+        for ratio in args.ratios:
+            evaluate_ratio(ratio)
 
     total_time = time.time() - total_start
 
