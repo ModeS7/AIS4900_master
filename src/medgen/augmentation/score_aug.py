@@ -187,10 +187,12 @@ class ScoreAugTransform:
                 ])
         else:  # 3D
             if self.rotation:
-                # Rotations around each axis: 90, 180, 270 degrees
-                for axis in ['d', 'h', 'w']:
-                    for k in [1, 2, 3]:
-                        spatial_options.append(('rot90_3d', {'axis': axis, 'k': k}))
+                # Only rotate around D axis (H-W plane) since H=W.
+                # Rotating around H or W axis swaps D with H/W, changing tensor
+                # shape when D != H (e.g., 40x64x64 latent). This breaks DiT/HDiT/UViT
+                # which have fixed positional embeddings and unpatchify to a static shape.
+                for k in [1, 2, 3]:
+                    spatial_options.append(('rot90_3d', {'axis': 'd', 'k': k}))
             if self.flip:
                 spatial_options.extend([
                     ('flip_d', {}),

@@ -58,6 +58,7 @@ import math
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from medgen.scripts.eval_ode_solvers import (
@@ -333,7 +334,7 @@ def main():
 
     # Metric
     parser.add_argument('--metric', choices=[
-        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet',
+        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological',
     ], default='fid',
                         help='Metric to minimize (default: fid)')
     parser.add_argument('--ref-split', default='all',
@@ -522,14 +523,42 @@ def main():
                 for pid, seg in cond_list
             ]
 
-    logger.info("Preparing reference features...")
+    # ── Morphological metric: load raw reference masks instead of features ──
+    import gc
+    ref_masks_3d = None  # Only set for morphological metric
+    eval_ref = None      # Only set for FID/KID/CMMD metrics
+
+    if args.metric == 'morphological':
+        logger.info("Loading reference masks for morphological comparison...")
+        ref_masks_3d = []
+        # Load all masks from the reference split
+        ref_split_name = 'all' if args.ref_split == 'all' else args.ref_split
+        if ref_split_name == 'all':
+            ref_dirs = list(splits.values())
+        else:
+            ref_dirs = [splits[ref_split_name]]
+
+        import nibabel as nib
+        for split_files in ref_dirs:
+            for filepath in split_files:
+                vol = nib.load(filepath).get_fdata()
+                # Pad depth to match generation output
+                if vol.shape[0] < pixel_depth:
+                    pad_d = pixel_depth - vol.shape[0]
+                    vol = np.pad(vol, ((0, pad_d), (0, 0), (0, 0)), mode='constant')
+                elif vol.shape[0] > pixel_depth:
+                    vol = vol[:pixel_depth]
+                ref_masks_3d.append((vol > 0.5).astype(np.float32))
+        logger.info(f"Loaded {len(ref_masks_3d)} reference masks")
+    else:
+        logger.info("Preparing reference features...")
+
     cache_dir = output_dir / "reference_features"
 
     # Only load/extract features for splits we actually need.
     # For --ref-split test: load only test features (~300 MB vs ~2 GB for all).
     # For --ref-split all: must load all per-split features to concatenate.
-    import gc
-    if args.ref_split == 'all':
+    if args.metric != 'morphological' and args.ref_split == 'all':
         ref_features = get_or_cache_reference_features(
             splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
             modality=ref_modality, build_all=False,
@@ -542,7 +571,7 @@ def main():
         logger.info(f"  all: {eval_ref['all']['resnet'].shape[0]} features")
         del ref_features
         gc.collect()
-    elif args.ref_split in splits:
+    elif args.metric != 'morphological' and args.ref_split in splits:
         # Only load the single needed split
         needed_splits = {args.ref_split: splits[args.ref_split]}
         ref_features = get_or_cache_reference_features(
@@ -552,7 +581,7 @@ def main():
         eval_ref = {args.ref_split: ref_features[args.ref_split]}
         del ref_features
         gc.collect()
-    else:
+    elif args.metric != 'morphological':
         available = list(splits.keys()) + ['all']
         raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
 
@@ -635,44 +664,81 @@ def main():
                 modality=ref_modality,
             )
 
-        # Compute metrics against only the needed split (saves memory + time)
-        split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
-
-        ref_metrics = split_metrics.get(args.ref_split)
-        if ref_metrics is None:
-            raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
-
-        from dataclasses import asdict
-        m = asdict(ref_metrics)
-        fid = m['fid']
-        kid = m['kid_mean']
-        cmmd = m['cmmd']
-        fid_rin = m['fid_radimagenet']
-        kid_rin = m['kid_radimagenet_mean']
-
-        target = {
-            'fid': fid, 'kid': kid, 'cmmd': cmmd,
-            'fid_radimagenet': fid_rin, 'kid_radimagenet': kid_rin,
-        }[args.metric]
-
         elapsed = time.time() - t0
-        logger.info(
-            f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
-            f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}  ({elapsed:.0f}s)"
-        )
 
-        history.append({
-            'steps': num_steps,
-            'fid': fid,
-            'kid_mean': kid,
-            'kid_std': m['kid_std'],
-            'cmmd': cmmd,
-            'fid_radimagenet': fid_rin,
-            'kid_radimagenet_mean': kid_rin,
-            'kid_radimagenet_std': m['kid_radimagenet_std'],
-            'wall_time_s': wall_time,
-            'eval_time_s': elapsed,
-        })
+        if args.metric == 'morphological':
+            # Morphological comparison: extract masks and compare distributions
+            from medgen.metrics.morphological import compute_morphological_score
+            from medgen.data.utils import binarize_seg
+
+            gen_masks = []
+            for vol in volumes:
+                # vol is [1, D, H, W] tensor — binarize and convert to numpy
+                mask_np = binarize_seg(vol).squeeze(0).cpu().numpy()
+                gen_masks.append(mask_np)
+
+            morph = compute_morphological_score(ref_masks_3d, gen_masks)
+            target = morph.total
+
+            logger.info(
+                f"  euler/{num_steps}: morph={morph.total:.4f} "
+                f"(vol={morph.volume_dist:.4f}, feret={morph.feret_dist:.4f}, "
+                f"spatial=[{morph.spatial_d_dist:.4f}, {morph.spatial_h_dist:.4f}, {morph.spatial_w_dist:.4f}], "
+                f"count={morph.count_dist:.4f})  ({elapsed:.0f}s)"
+            )
+
+            history.append({
+                'steps': num_steps,
+                'morphological': morph.total,
+                'morph_volume': morph.volume_dist,
+                'morph_feret': morph.feret_dist,
+                'morph_spatial_d': morph.spatial_d_dist,
+                'morph_spatial_h': morph.spatial_h_dist,
+                'morph_spatial_w': morph.spatial_w_dist,
+                'morph_count': morph.count_dist,
+                'n_real_tumors': morph.n_real_tumors,
+                'n_gen_tumors': morph.n_gen_tumors,
+                'wall_time_s': wall_time,
+                'eval_time_s': elapsed,
+            })
+        else:
+            # Standard FID/KID/CMMD metrics
+            split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
+
+            ref_metrics = split_metrics.get(args.ref_split)
+            if ref_metrics is None:
+                raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
+
+            from dataclasses import asdict
+            m = asdict(ref_metrics)
+            fid = m['fid']
+            kid = m['kid_mean']
+            cmmd = m['cmmd']
+            fid_rin = m['fid_radimagenet']
+            kid_rin = m['kid_radimagenet_mean']
+
+            target = {
+                'fid': fid, 'kid': kid, 'cmmd': cmmd,
+                'fid_radimagenet': fid_rin, 'kid_radimagenet': kid_rin,
+            }[args.metric]
+
+            logger.info(
+                f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
+                f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}  ({elapsed:.0f}s)"
+            )
+
+            history.append({
+                'steps': num_steps,
+                'fid': fid,
+                'kid_mean': kid,
+                'kid_std': m['kid_std'],
+                'cmmd': cmmd,
+                'fid_radimagenet': fid_rin,
+                'kid_radimagenet_mean': kid_rin,
+                'kid_radimagenet_std': m['kid_radimagenet_std'],
+                'wall_time_s': wall_time,
+                'eval_time_s': elapsed,
+            })
 
         # Save incremental results
         _save_history(output_dir, history, args)
@@ -710,17 +776,30 @@ def main():
 
     # Print full history with all metrics
     logger.info("\nFull history:")
-    logger.info(f"  {'Steps':>5}  {'FID':>8}  {'KID':>10}  {'FID_RIN':>8}  "
-                 f"{'KID_RIN':>10}  {'CMMD':>10}  {'Time':>7}")
-    logger.info(f"  {'-'*68}")
-    for h in sorted(history, key=lambda x: x['steps']):
-        marker = " <--" if h['steps'] == best_steps else ""
-        logger.info(
-            f"  {h['steps']:>5}  {h['fid']:>8.2f}  {h['kid_mean']:>10.6f}  "
-            f"{h.get('fid_radimagenet', 0):>8.2f}  "
-            f"{h.get('kid_radimagenet_mean', 0):>10.6f}  "
-            f"{h['cmmd']:>10.6f}  {h['wall_time_s']:>6.1f}s{marker}"
-        )
+    if args.metric == 'morphological':
+        logger.info(f"  {'Steps':>5}  {'Total':>8}  {'Volume':>8}  {'Feret':>8}  "
+                     f"{'Sp_D':>8}  {'Sp_H':>8}  {'Sp_W':>8}  {'Count':>8}  {'Time':>7}")
+        logger.info(f"  {'-'*80}")
+        for h in sorted(history, key=lambda x: x['steps']):
+            marker = " <--" if h['steps'] == best_steps else ""
+            logger.info(
+                f"  {h['steps']:>5}  {h['morphological']:>8.4f}  {h['morph_volume']:>8.4f}  "
+                f"{h['morph_feret']:>8.4f}  {h['morph_spatial_d']:>8.4f}  "
+                f"{h['morph_spatial_h']:>8.4f}  {h['morph_spatial_w']:>8.4f}  "
+                f"{h['morph_count']:>8.4f}  {h['wall_time_s']:>6.1f}s{marker}"
+            )
+    else:
+        logger.info(f"  {'Steps':>5}  {'FID':>8}  {'KID':>10}  {'FID_RIN':>8}  "
+                     f"{'KID_RIN':>10}  {'CMMD':>10}  {'Time':>7}")
+        logger.info(f"  {'-'*68}")
+        for h in sorted(history, key=lambda x: x['steps']):
+            marker = " <--" if h['steps'] == best_steps else ""
+            logger.info(
+                f"  {h['steps']:>5}  {h['fid']:>8.2f}  {h['kid_mean']:>10.6f}  "
+                f"{h.get('fid_radimagenet', 0):>8.2f}  "
+                f"{h.get('kid_radimagenet_mean', 0):>10.6f}  "
+                f"{h['cmmd']:>10.6f}  {h['wall_time_s']:>6.1f}s{marker}"
+            )
 
     _save_history(output_dir, history, args, best_steps=best_steps)
 
