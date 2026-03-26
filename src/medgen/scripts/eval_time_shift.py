@@ -357,7 +357,6 @@ def main():
             ]
 
     # ── Reference data ──────────────────────────────────────────────────
-    import gc
     import numpy as np
     ref_masks_3d = None
     eval_ref = None
