@@ -64,6 +64,13 @@ cfg_scale_bravo_end: null # Ending CFG for bravo (null = constant)
 cfg_mode: standard
 cfg_zero_init_steps: 1    # Zero-velocity steps for zero_star mode
 
+# Time-shift ratio for RFlow sampling (SD3-style schedule shift)
+# 1.0 = no shift, >1 = bias toward higher noise levels
+# Set per-model: shift_ratio_seg and shift_ratio_bravo override shift_ratio
+shift_ratio: 1.0               # Default (no shift)
+shift_ratio_seg: null           # Override for seg model (null = use shift_ratio)
+shift_ratio_bravo: null         # Override for bravo/image model (null = use shift_ratio)
+
 # ODE solver for generation (requires torchdiffeq for non-euler solvers)
 # Options: euler (default), midpoint, rk4, dopri5
 ode_solver: euler

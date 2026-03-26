@@ -580,6 +580,19 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
     steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
 
+    # Resolve per-model time-shift ratios
+    default_shift = cfg.get('shift_ratio', 1.0)
+    shift_seg = cfg.get('shift_ratio_seg', None) or default_shift
+    shift_bravo = cfg.get('shift_ratio_bravo', None) or default_shift
+
+    input_numel = cfg.image_size * cfg.image_size * cfg.depth
+
+    def _apply_shift(ratio: float) -> None:
+        """Set scheduler time-shift by computing base_img_size_numel from ratio."""
+        if hasattr(strategy, 'scheduler') and hasattr(strategy.scheduler, 'base_img_size_numel'):
+            base_numel = max(1, int(input_numel / (ratio ** 3)))
+            strategy.scheduler.base_img_size_numel = base_numel
+
     # Log output dimensions
     trim_slices = cfg.get('trim_slices', 10)
     output_depth = cfg.depth - trim_slices if trim_slices > 0 else cfg.depth
@@ -594,6 +607,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Mode: seg_conditioned only (just generate seg masks)
     if cfg.gen_mode == 'seg_conditioned':
+        _apply_shift(shift_seg)
         logger.info("Loading seg_conditioned model...")
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
@@ -751,6 +765,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
         num_bins = cfg.get('num_bins', 7)
 
+        if shift_seg != 1.0:
+            logger.info(f"Seg time-shift: ratio={shift_seg:.2f}")
+        if shift_bravo != 1.0:
+            logger.info(f"Bravo time-shift: ratio={shift_bravo:.2f}")
         logger.info(f"Generating {cfg.num_images} seg+bravo pairs...")
         logger.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
         if brain_atlas is not None:
@@ -774,6 +792,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             retries = 0
             while not valid_mask and retries < max_retries:
                 # Generate seg with size bin conditioning
+                _apply_shift(shift_seg)
                 noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
@@ -822,6 +841,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                     seg_binary = cleaned_seg
 
             # Generate BRAVO conditioned on seg mask
+            _apply_shift(shift_bravo)
             bravo_np = _generate_bravo(
                 seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
                 bravo_space, diffrs_disc, diffrs_cfg,
