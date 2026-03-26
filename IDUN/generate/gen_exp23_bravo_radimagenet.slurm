@@ -38,7 +38,6 @@ time python -m medgen.scripts.generate \
     paths=cluster \
     spatial_dims=3 \
     gen_mode=bravo \
-    strategy=rflow \
     image_size=256 \
     depth=160 \
     seg_model="${SEG_CKPT}" \
