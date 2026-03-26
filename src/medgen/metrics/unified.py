@@ -968,15 +968,15 @@ class UnifiedMetrics:
         from .unified_visualization import log_worst_batch
         log_worst_batch(self, original, reconstructed, loss, epoch, phase, mask, timesteps, tag_prefix, save_path, display_metrics)
 
-    def log_denoising_trajectory(self, trajectory: list, epoch: int, tag: str = 'denoising_trajectory'):
+    def log_denoising_trajectory(self, trajectory: list, epoch: int, tag: str = 'denoising_trajectory', image_keys: list[str] | None = None):
         """Log denoising step visualization to TensorBoard."""
         from .unified_visualization import log_denoising_trajectory
-        log_denoising_trajectory(self, trajectory, epoch, tag)
+        log_denoising_trajectory(self, trajectory, epoch, tag, image_keys)
 
-    def log_generated_samples(self, samples: torch.Tensor, epoch: int, tag: str = 'Generated_Samples', nrow: int = 4, num_slices: int = 8):
+    def log_generated_samples(self, samples: torch.Tensor, epoch: int, tag: str = 'Generated_Samples', nrow: int = 4, num_slices: int = 8, image_keys: list[str] | None = None):
         """Log generated samples grid to TensorBoard."""
         from .unified_visualization import log_generated_samples
-        log_generated_samples(self, samples, epoch, tag, nrow, num_slices)
+        log_generated_samples(self, samples, epoch, tag, nrow, num_slices, image_keys)
 
     def log_latent_samples(self, samples: torch.Tensor, epoch: int, tag: str = 'Latent_Samples', num_slices: int = 8):
         """Log latent space samples to TensorBoard (before decoding)."""

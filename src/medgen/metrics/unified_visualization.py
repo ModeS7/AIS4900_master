@@ -117,8 +117,12 @@ def log_denoising_trajectory(
     trajectory: list,
     epoch: int,
     tag: str = 'denoising_trajectory',
+    image_keys: list[str] | None = None,
 ) -> None:
-    """Log denoising step visualization to TensorBoard."""
+    """Log denoising step visualization to TensorBoard.
+
+    For multi-channel: shows one row per channel with modality labels.
+    """
     if metrics.writer is None or not trajectory:
         return
 
@@ -133,18 +137,41 @@ def log_denoising_trajectory(
         trajectory = [_extract_center_slice(metrics, t) for t in trajectory]
         sample = trajectory[0]
 
-    fig, axes = plt.subplots(1, steps, figsize=(2.5 * steps, 3))
-    if steps == 1:
-        axes = [axes]
+    C = sample.shape[1] if isinstance(sample, torch.Tensor) else 1
 
-    for i, step_tensor in enumerate(trajectory):
-        if isinstance(step_tensor, torch.Tensor):
-            img = step_tensor[0, 0].cpu().float().numpy()
-        else:
-            img = step_tensor[0, 0]
-        axes[i].imshow(np.clip(img, 0, 1), cmap='gray', vmin=0, vmax=1)
-        axes[i].set_title(f'Step {i}', fontsize=8)
-        axes[i].axis('off')
+    if C > 1:
+        # Multi-channel: one row per channel
+        channel_names = image_keys if image_keys and len(image_keys) == C else [f'ch{i}' for i in range(C)]
+        fig, axes = plt.subplots(C, steps, figsize=(2.5 * steps, 3 * C))
+        if steps == 1:
+            axes = axes.reshape(C, 1)
+
+        for c in range(C):
+            for i, step_tensor in enumerate(trajectory):
+                if isinstance(step_tensor, torch.Tensor):
+                    img = step_tensor[0, c].cpu().float().numpy()
+                else:
+                    img = step_tensor[0, c]
+                axes[c, i].imshow(np.clip(img, 0, 1), cmap='gray', vmin=0, vmax=1)
+                if c == 0:
+                    axes[c, i].set_title(f'Step {i}', fontsize=8)
+                axes[c, i].axis('off')
+                if i == 0:
+                    axes[c, i].set_ylabel(channel_names[c], fontsize=8)
+    else:
+        # Single channel
+        fig, axes = plt.subplots(1, steps, figsize=(2.5 * steps, 3))
+        if steps == 1:
+            axes = [axes]
+
+        for i, step_tensor in enumerate(trajectory):
+            if isinstance(step_tensor, torch.Tensor):
+                img = step_tensor[0, 0].cpu().float().numpy()
+            else:
+                img = step_tensor[0, 0]
+            axes[i].imshow(np.clip(img, 0, 1), cmap='gray', vmin=0, vmax=1)
+            axes[i].set_title(f'Step {i}', fontsize=8)
+            axes[i].axis('off')
 
     fig.tight_layout()
     metrics.writer.add_figure(f'{tag}/progression', fig, epoch)
@@ -158,6 +185,7 @@ def log_generated_samples(
     tag: str = 'Generated_Samples',
     nrow: int = 4,
     num_slices: int = 8,
+    image_keys: list[str] | None = None,
 ) -> None:
     """Log generated samples grid to TensorBoard."""
     if metrics.writer is None:
@@ -167,7 +195,7 @@ def log_generated_samples(
 
     # Handle 3D - show multiple slices per sample
     if metrics.spatial_dims == 3 and samples.dim() == 5:
-        _log_generated_samples_3d(metrics, samples, epoch, tag, num_slices)
+        _log_generated_samples_3d(metrics, samples, epoch, tag, num_slices, image_keys)
         return
 
     # 2D: simple grid
@@ -182,8 +210,13 @@ def _log_generated_samples_3d(
     epoch: int,
     tag: str,
     num_slices: int = 8,
+    image_keys: list[str] | None = None,
 ) -> None:
-    """Log 3D generated samples with multiple slices per sample."""
+    """Log 3D generated samples with multiple slices per sample.
+
+    For multi-channel (dual/triple): shows each modality as separate rows
+    with channel labels (e.g., t1_pre, t1_gd, flair).
+    """
     import matplotlib.pyplot as plt
 
     B, C, D, H, W = samples.shape
@@ -192,27 +225,42 @@ def _log_generated_samples_3d(
     margin = max(1, D // (num_slices + 2))
     indices = torch.linspace(margin, D - margin - 1, num_slices).long().tolist()
 
-    fig, axes = plt.subplots(B, num_slices, figsize=(num_slices * 2, B * 2))
+    # Multi-channel: one row per (sample, channel) pair
+    if C > 1:
+        channel_names = image_keys if image_keys and len(image_keys) == C else [f'ch{i}' for i in range(C)]
+        n_rows = B * C
+        fig, axes = plt.subplots(n_rows, num_slices, figsize=(num_slices * 2, n_rows * 2))
+        if n_rows == 1:
+            axes = axes.reshape(1, -1)
 
-    if B == 1:
-        axes = axes.reshape(1, -1)
+        for b in range(B):
+            for c in range(C):
+                row = b * C + c
+                for s, slice_idx in enumerate(indices):
+                    ax = axes[row, s]
+                    ax.imshow(samples[b, c, slice_idx].numpy(), cmap='gray', vmin=0, vmax=1)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    if row == 0:
+                        ax.set_title(f'z={slice_idx}', fontsize=8)
+                    if s == 0:
+                        ax.set_ylabel(f'S{b+1} {channel_names[c]}', fontsize=8)
+    else:
+        # Single channel: one row per sample
+        fig, axes = plt.subplots(B, num_slices, figsize=(num_slices * 2, B * 2))
+        if B == 1:
+            axes = axes.reshape(1, -1)
 
-    for b in range(B):
-        for s, slice_idx in enumerate(indices):
-            ax = axes[b, s]
-            slice_img = samples[b, :, slice_idx, :, :]
-            if C == 1:
-                ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
-            else:
-                ax.imshow(slice_img[0].numpy(), cmap='gray', vmin=0, vmax=1)
-
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-            if b == 0:
-                ax.set_title(f'z={slice_idx}', fontsize=8)
-            if s == 0:
-                ax.set_ylabel(f'Sample {b+1}', fontsize=8)
+        for b in range(B):
+            for s, slice_idx in enumerate(indices):
+                ax = axes[b, s]
+                ax.imshow(samples[b, 0, slice_idx].numpy(), cmap='gray', vmin=0, vmax=1)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if b == 0:
+                    ax.set_title(f'z={slice_idx}', fontsize=8)
+                if s == 0:
+                    ax.set_ylabel(f'Sample {b+1}', fontsize=8)
 
     plt.tight_layout()
     metrics.writer.add_figure(tag, fig, epoch)

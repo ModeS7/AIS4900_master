@@ -94,10 +94,9 @@ def visualize_samples_3d(
         bin_maps = None
     else:
         cached_images = trainer._cached_train_batch['images']
-        # Dual/triple mode: images is a dict — 3D visualization not yet supported
+        # Dual/triple mode: stack dict channels into tensor
         if isinstance(cached_images, dict):
-            logger.debug("Skipping 3D generation visualization for multi-channel mode")
-            return
+            cached_images = torch.cat(list(cached_images.values()), dim=1)
         cached_labels = trainer._cached_train_batch.get('labels')
         cached_size_bins = trainer._cached_train_batch.get('size_bins')
         batch_size = min(4, cached_images.shape[0])
@@ -181,7 +180,10 @@ def visualize_samples_3d(
 
     # Log using unified metrics (handles 3D center slice extraction)
     if trainer._unified_metrics is not None:
-        trainer._unified_metrics.log_generated_samples(samples, epoch, tag='Generated_Samples', nrow=2)
+        image_keys = getattr(trainer.mode, 'image_keys', None)
+        trainer._unified_metrics.log_generated_samples(
+            samples, epoch, tag='Generated_Samples', nrow=2, image_keys=image_keys
+        )
 
 
 @torch.no_grad()
@@ -239,10 +241,9 @@ def visualize_denoising_trajectory_3d(
         return
 
     cached_images = trainer._cached_train_batch['images']
-    # Dual/triple mode: images is a dict — 3D denoising trajectory not yet supported
+    # Dual/triple mode: stack dict channels into tensor
     if isinstance(cached_images, dict):
-        logger.debug("Skipping 3D denoising trajectory for multi-channel mode")
-        return
+        cached_images = torch.cat(list(cached_images.values()), dim=1)
     cached_labels = trainer._cached_train_batch.get('labels')
     cached_size_bins = trainer._cached_train_batch.get('size_bins')
 
@@ -331,7 +332,8 @@ def visualize_denoising_trajectory_3d(
 
     # Log using unified metrics (handles 3D center slice extraction)
     if trainer._unified_metrics is not None:
-        trainer._unified_metrics.log_denoising_trajectory(trajectory, epoch, tag='denoising_trajectory')
+        image_keys = getattr(trainer.mode, 'image_keys', None)
+        trainer._unified_metrics.log_denoising_trajectory(trajectory, epoch, tag='denoising_trajectory', image_keys=image_keys)
 
 
 @torch.no_grad()
