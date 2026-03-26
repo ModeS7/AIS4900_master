@@ -366,11 +366,20 @@ def generate_trajectory(
     Returns:
         List of intermediate tensors.
     """
-    # Extract noise from model_input (first channels)
+    # Extract noise from model_input (first out_channels are noise, rest is conditioning)
     if is_conditional:
-        in_ch = 1 if scale_factor == 1 else latent_channels
-        x = model_input[:, :in_ch].clone()
-        conditioning = model_input[:, in_ch:]
+        # Conditioning is always the last channel(s); noise is everything before it
+        # For latent: latent_channels noise channels
+        # For pixel: total_ch - cond_ch noise channels (cond_ch typically = 1 for seg)
+        if scale_factor > 1:
+            out_ch = latent_channels
+        else:
+            # model_input = [noise_channels, conditioning_channels]
+            # conditioning is 1 channel (seg mask) for bravo/dual/triple
+            cond_ch = 1
+            out_ch = model_input.shape[1] - cond_ch
+        x = model_input[:, :out_ch].clone()
+        conditioning = model_input[:, out_ch:]
     else:
         x = model_input.clone()
         conditioning = None
