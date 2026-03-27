@@ -631,7 +631,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if brain_atlas is not None:
             logger.info(f"Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
 
-        generated = 0
+        generated = cfg.get('current_image', 0)
+        if generated > 0:
+            logger.info(f"Resuming from sample {generated}/{cfg.num_images}")
         total_retries = 0
 
         while generated < cfg.num_images:
@@ -778,7 +780,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
-        generated = 0
+        generated = cfg.get('current_image', 0)
+        if generated > 0:
+            logger.info(f"Resuming from sample {generated}/{cfg.num_images}")
         total_retries = 0
         brain_retries = 0
         max_brain_retries = cfg.get('max_brain_retries', 5)
@@ -937,7 +941,9 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if brain_atlas is not None:
             logger.info(f"Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
 
-        generated = 0
+        generated = cfg.get('current_image', 0)
+        if generated > 0:
+            logger.info(f"Resuming from sample {generated}/{cfg.num_images}")
         total_retries = 0
 
         while generated < cfg.num_images:
