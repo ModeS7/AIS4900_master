@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -35,7 +35,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42"
+BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 1000 --ref-split test --seed 42"
 
 CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_latest.pt"
 if [ ! -f "$CKPT" ]; then
