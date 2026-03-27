@@ -245,6 +245,12 @@ class BiomedCLIPFeatures(nn.Module):
 
         logger.debug(f"Loading BiomedCLIP from {model_name}...")
 
+        # Force offline mode — compute nodes can't reach HuggingFace.
+        # The model must already be cached (downloaded on login node or first run).
+        # This prevents retry loops that waste time and leak memory.
+        import os
+        os.environ.setdefault('HF_HUB_OFFLINE', '1')
+
         # Suppress verbose open_clip/HF Hub logging during model creation
         _open_clip_loggers = ['root', 'open_clip', 'huggingface_hub']
         _prev_levels = {}
