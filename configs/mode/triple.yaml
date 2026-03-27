@@ -22,3 +22,8 @@ description: "T1 pre/post-contrast + FLAIR triple generation conditioned on segm
 
 # Classifier-free guidance (CFG) dropout
 cfg_dropout_prob: 0.0  # Disabled - no benefit for dense spatial conditioning
+
+# Multi-channel normalization: joint vs independent
+# false (default): each channel independently scaled to [0,1]
+# true: all channels normalized jointly, preserving relative intensity relationships
+joint_normalization: false

@@ -458,6 +458,7 @@ class MultiChannelVolume3DDataset(Base3DVolumeDataset):
         slice_step: int = 1,
         load_seg: bool = False,
         augmentation: Callable | None = None,
+        joint_normalization: bool = False,
     ) -> None:
         super().__init__(data_dir, height, width, pad_depth_to, pad_mode, slice_step, load_seg, augmentation)
 
@@ -467,6 +468,7 @@ class MultiChannelVolume3DDataset(Base3DVolumeDataset):
         if len(image_keys) < 2:
             raise ValueError(f"MultiChannelVolume3DDataset requires at least 2 modalities, got {image_keys}")
         self.image_keys = image_keys
+        self.joint_normalization = joint_normalization
 
         # List patient directories
         self.patients = sorted([
@@ -482,16 +484,47 @@ class MultiChannelVolume3DDataset(Base3DVolumeDataset):
     def __len__(self) -> int:
         return len(self.patients)
 
+    def _build_raw_transform(self) -> Compose:
+        """Build transform that loads and resizes WITHOUT intensity normalization.
+
+        Used when joint_normalization=True to normalize all channels together
+        after stacking, preserving relative intensity relationships.
+        """
+        from monai.transforms import Resize
+        return Compose([
+            LoadImage(image_only=True),
+            EnsureChannelFirst(channel_dim="no_channel"),
+            Resize(spatial_size=(self.height, self.width, -1)),
+        ])
+
     def __getitem__(self, idx: int) -> dict[str, Any]:
         patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
-        # Load all modalities and stack as N channels: [N, D, H, W]
-        volumes = [
-            self._load_volume(os.path.join(patient_dir, f"{key}.nii.gz"))
-            for key in self.image_keys
-        ]
-        volume = torch.cat(volumes, dim=0)
+        if self.joint_normalization:
+            # Load raw (no per-channel normalization), normalize jointly after stacking.
+            # Preserves relative intensity relationships between modalities
+            # (e.g., t1_gd contrast enhancement vs t1_pre).
+            raw_transform = self._build_raw_transform()
+            volumes = [
+                self._load_volume(
+                    os.path.join(patient_dir, f"{key}.nii.gz"),
+                    transform=raw_transform,
+                )
+                for key in self.image_keys
+            ]
+            volume = torch.cat(volumes, dim=0)
+            vmin = volume.min()
+            vmax = volume.max()
+            if vmax > vmin:
+                volume = (volume - vmin) / (vmax - vmin)
+        else:
+            # Default: each channel independently normalized to [0, 1]
+            volumes = [
+                self._load_volume(os.path.join(patient_dir, f"{key}.nii.gz"))
+                for key in self.image_keys
+            ]
+            volume = torch.cat(volumes, dim=0)
 
         result = {'image': volume, 'patient': patient}
 

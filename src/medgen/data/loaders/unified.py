@@ -562,6 +562,8 @@ def _create_3d_multi_channel_loader(
     h = vcfg.train_height if split == 'train' else vcfg.height
     w = vcfg.train_width if split == 'train' else vcfg.width
 
+    joint_norm = cfg.mode.get('joint_normalization', False)
+
     dataset = MultiChannelVolume3DDataset(
         data_dir=data_dir,
         image_keys=image_keys,
@@ -572,6 +574,7 @@ def _create_3d_multi_channel_loader(
         slice_step=vcfg.slice_step,
         load_seg=True,  # Always load seg for conditioning
         augmentation=aug,
+        joint_normalization=joint_norm,
     )
 
     shuffle = (split == 'train')
