@@ -216,6 +216,34 @@ def is_seg_inside_atlas(
     return (n_outside / n_tumor) <= tolerance
 
 
+def is_brain_inside_atlas(
+    brain_mask: np.ndarray,
+    atlas: np.ndarray,
+    tolerance: float = 0.05,
+) -> bool:
+    """Check if a generated brain fits within the atlas (real data bounds).
+
+    Computes what fraction of the generated brain's voxels fall outside
+    the atlas. If more than ``tolerance`` fraction is outside, returns False.
+
+    Args:
+        brain_mask: Binary brain mask from generated volume [D, H, W].
+        atlas: Pre-computed brain atlas from real data [D, H, W].
+        tolerance: Maximum allowed fraction of brain voxels outside atlas (0-1).
+
+    Returns:
+        True if the generated brain is within atlas bounds.
+    """
+    n_brain = int(brain_mask.sum())
+    if n_brain == 0:
+        return False  # Empty brain is invalid
+
+    n_outside = int((brain_mask & ~atlas).sum())
+    outside_ratio = n_outside / n_brain
+
+    return outside_ratio <= tolerance
+
+
 def remove_tumors_outside_brain(
     seg: np.ndarray,
     brain_mask: np.ndarray,
