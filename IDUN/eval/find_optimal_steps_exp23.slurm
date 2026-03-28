@@ -35,7 +35,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 1000 --ref-split test --seed 42"
+BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 100 --ref-split test --seed 42"
 
 CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_latest.pt"
 if [ ! -f "$CKPT" ]; then
@@ -57,7 +57,7 @@ echo "=========================================="
 echo "  exp23: Optimal steps by ImageNet FID"
 echo "=========================================="
 
-OUT_FID="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid"
+OUT_FID="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid_v2"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
@@ -76,7 +76,7 @@ echo "=========================================="
 echo "  exp23: Optimal steps by RadImageNet FID"
 echo "=========================================="
 
-OUT_FID_RIN="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid_rin"
+OUT_FID_RIN="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid_rin_v2"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
