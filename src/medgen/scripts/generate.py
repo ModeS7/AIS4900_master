@@ -724,11 +724,21 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Mode: bravo (full pipeline: seg -> bravo)
     elif cfg.gen_mode == 'bravo':
-        logger.info("Loading seg_conditioned model...")
-        seg_model = load_diffusion_model(
-            cfg.seg_model, device=device,
-            in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
-        )
+        # Load real seg masks if provided (skip seg generation)
+        real_seg_dir = cfg.get('real_seg_dir', None)
+        real_seg_files = None
+        if real_seg_dir:
+            real_seg_dir = Path(real_seg_dir)
+            real_seg_files = sorted(real_seg_dir.glob("*/seg.nii.gz"))
+            if not real_seg_files:
+                raise FileNotFoundError(f"No seg.nii.gz files found in {real_seg_dir}")
+            logger.info(f"Using real seg masks from {real_seg_dir} ({len(real_seg_files)} available)")
+        else:
+            logger.info("Loading seg_conditioned model...")
+            seg_model = load_diffusion_model(
+                cfg.seg_model, device=device,
+                in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
+            )
 
         logger.info("Loading bravo model...")
         bravo_model = load_diffusion_model(
@@ -804,50 +814,69 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_brain_retries = cfg.get('max_brain_retries', 5)
 
         while generated < cfg.num_images:
-            bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
-            size_bins = torch.tensor([bins], dtype=torch.long, device=device)
+            if real_seg_files is not None:
+                # Load real seg mask from dataset
+                seg_idx = generated % len(real_seg_files)
+                seg_path = real_seg_files[seg_idx]
+                import nibabel as nib
+                seg_vol = nib.load(str(seg_path)).get_fdata().astype(np.float32)
+                seg_vol = np.transpose(seg_vol, (2, 0, 1))  # [H, W, D] -> [D, H, W]
+                # Pad/crop depth
+                d = seg_vol.shape[0]
+                if d < cfg.depth:
+                    seg_vol = np.concatenate([seg_vol, np.zeros((cfg.depth - d, *seg_vol.shape[1:]), dtype=np.float32)], axis=0)
+                elif d > cfg.depth:
+                    seg_vol = seg_vol[:cfg.depth]
+                seg_binary = (seg_vol > 0.5).astype(np.float32)
+                bins = [0] * 7  # Placeholder — real masks don't have bin info
+                if cfg.verbose and generated < 3:
+                    logger.info(f"Sample {generated}: real seg from {seg_path.parent.name} "
+                                f"(tumor voxels: {int(seg_binary.sum())})")
+            else:
+                bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
+                size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
-            # Retry loop for valid seg mask
-            valid_mask = False
-            retries = 0
-            while not valid_mask and retries < max_retries:
-                # Generate seg with size bin conditioning
-                _apply_shift(shift_seg)
-                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-                seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
-                                     size_bins=size_bins,
-                                     cfg_scale=cfg.cfg_scale_seg,
-                                     cfg_scale_end=cfg.get('cfg_scale_seg_end', None),
-                                     cfg_mode=cfg.get('cfg_mode', 'standard'),
-                                     cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
+                # Retry loop for valid seg mask
+                valid_mask = False
+                retries = 0
+                while not valid_mask and retries < max_retries:
+                    # Generate seg with size bin conditioning
+                    _apply_shift(shift_seg)
+                    noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                    seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
+                                         size_bins=size_bins,
+                                         cfg_scale=cfg.cfg_scale_seg,
+                                         cfg_scale_end=cfg.get('cfg_scale_seg_end', None),
+                                         cfg_mode=cfg.get('cfg_mode', 'standard'),
+                                         cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
 
-                # Binarize seg
-                seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
+                    # Binarize seg
+                    seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
 
-                # Validate mask (per-slice check for 3D)
-                if not is_valid_mask(seg_binary, max_white_pct):
-                    retries += 1
-                    total_retries += 1
-                    if cfg.verbose and retries == 1:
-                        overall_pct = np.mean(seg_binary)
-                        logger.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
-                    continue
-
-                # Validate size bins match conditioning
-                if validate_size_bins:
-                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
-                    if not np.array_equal(actual_bins, np.array(bins)):
+                    # Validate mask (per-slice check for 3D)
+                    if not is_valid_mask(seg_binary, max_white_pct):
                         retries += 1
                         total_retries += 1
                         if cfg.verbose and retries == 1:
-                            logger.warning(f"Sample {generated}: size bins mismatch "
-                                       f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                            overall_pct = np.mean(seg_binary)
+                            logger.warning(f"Sample {generated}: invalid seg mask ({overall_pct:.2%} overall), retrying...")
                         continue
 
-                valid_mask = True
+                    # Validate size bins match conditioning
+                    if validate_size_bins:
+                        actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                        if not np.array_equal(actual_bins, np.array(bins)):
+                            retries += 1
+                            total_retries += 1
+                            if cfg.verbose and retries == 1:
+                                logger.warning(f"Sample {generated}: size bins mismatch "
+                                           f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
+                            continue
 
-            if not valid_mask:
-                logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+                    valid_mask = True
+
+                if not valid_mask:
+                    logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
 
             # Stage 1 — Atlas check (before BRAVO generation)
             if brain_atlas is not None:
