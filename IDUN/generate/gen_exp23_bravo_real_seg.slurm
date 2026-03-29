@@ -75,14 +75,14 @@ time python -m medgen.scripts.generate \
     image_size=256 \
     depth=160 \
     image_model="${BRAVO_CKPT}" \
-    real_seg_dir="${DATA_ROOT}/train" \
+    +real_seg_dir="${DATA_ROOT}/train" \
     num_images=525 \
     current_image=${CURRENT} \
     num_steps_bravo=48 \
     shift_ratio_bravo=1.14 \
     validate_size_bins=false \
     validate_brain_mask=true \
-    brain_pca_path=auto \
+    +brain_pca_path=auto \
     output_subdir="${OUTPUT_SUBDIR}" \
     verbose=true &
 
