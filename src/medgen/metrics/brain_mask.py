@@ -216,6 +216,97 @@ def is_seg_inside_atlas(
     return (n_outside / n_tumor) <= tolerance
 
 
+def has_single_brain_component(
+    image: torch.Tensor | np.ndarray,
+    threshold: float = 0.05,
+    min_component_ratio: float = 0.01,
+) -> bool:
+    """Check that a generated volume has only one significant brain component.
+
+    Rejects volumes where the model generated disconnected blobs of tissue
+    (e.g., a separate island with a tumor not connected to the main brain).
+
+    Args:
+        image: MRI image (any shape, batch/channel dims squeezed).
+        threshold: Intensity threshold for tissue detection.
+        min_component_ratio: Minimum size relative to largest component
+            to count as "significant" (default 1% of brain size).
+
+    Returns:
+        True if only one significant component exists.
+    """
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().numpy()
+    image = np.squeeze(image)
+
+    binary = image > threshold
+    labeled, n_components = ndimage.label(binary)
+
+    if n_components <= 1:
+        return True
+
+    component_sizes = ndimage.sum(binary, labeled, range(1, n_components + 1))
+    largest = max(component_sizes)
+
+    # Count components that are significant (not just noise)
+    n_significant = sum(1 for s in component_sizes if s >= largest * min_component_ratio)
+
+    return n_significant <= 1
+
+
+class BrainPCAModel:
+    """PCA shape model for brain mask validation.
+
+    Loaded once, then used to validate many generated volumes.
+    """
+
+    def __init__(self, npz_path: str | Path):
+        data = np.load(npz_path)
+        self.mean = data['mean']  # [n_voxels]
+        self.components = data['components']  # [n_components, n_voxels]
+        self.error_threshold = float(data['error_threshold'][0])
+        self.pca_shape = tuple(data['pca_shape'])  # (D, H, W) for downsampled
+        self.n_samples = int(data['n_samples'][0])
+
+    def reconstruction_error(self, brain_mask: np.ndarray) -> float:
+        """Compute PCA reconstruction error for a brain mask.
+
+        Args:
+            brain_mask: Binary brain mask [D, H, W] at full resolution.
+
+        Returns:
+            Mean squared reconstruction error.
+        """
+        mask_down = self._downsample(brain_mask)
+        flat = mask_down.flatten().astype(np.float32)
+
+        centered = flat - self.mean
+        projection = centered @ self.components.T
+        reconstructed = projection @ self.components + self.mean
+
+        return float(np.mean((flat - reconstructed) ** 2))
+
+    def is_valid(self, brain_mask: np.ndarray) -> tuple[bool, float]:
+        """Check if brain mask has a real-brain-like shape.
+
+        Args:
+            brain_mask: Binary brain mask [D, H, W].
+
+        Returns:
+            Tuple of (is_valid, reconstruction_error).
+        """
+        error = self.reconstruction_error(brain_mask)
+        return error <= self.error_threshold, error
+
+    def _downsample(self, mask: np.ndarray) -> np.ndarray:
+        """Downsample mask to PCA resolution."""
+        mask_tensor = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+        down = torch.nn.functional.interpolate(
+            mask_tensor, size=self.pca_shape, mode='trilinear', align_corners=False,
+        )
+        return (down.squeeze().numpy() > 0.5).astype(np.float32)
+
+
 def is_brain_inside_atlas(
     brain_mask: np.ndarray,
     atlas: np.ndarray,

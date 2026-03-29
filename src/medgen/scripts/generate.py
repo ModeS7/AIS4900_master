@@ -39,8 +39,9 @@ from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
 from medgen.data.utils import save_nifti
 from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
 from medgen.metrics.brain_mask import (
+    BrainPCAModel,
     create_brain_mask,
-    is_brain_inside_atlas,
+    has_single_brain_component,
     is_seg_inside_atlas,
     load_brain_atlas,
     remove_tumors_outside_brain,
@@ -577,6 +578,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         brain_atlas = load_brain_atlas(atlas_path, expected_shape=expected_shape)
         logger.info(f"Brain atlas loaded: {atlas_path} (coverage: {brain_atlas.mean():.1%})")
 
+    # Load brain PCA shape model for validation
+    brain_pca = None
+    brain_pca_path = cfg.get('brain_pca_path', None)
+    if brain_pca_path == 'auto':
+        repo_root = Path(__file__).resolve().parents[3]
+        brain_pca_path = repo_root / 'data' / f'brain_pca_{cfg.image_size}x{cfg.image_size}x{cfg.depth}.npz'
+        if not brain_pca_path.exists():
+            logger.warning(f"Brain PCA model not found: {brain_pca_path} (skipping shape validation)")
+            brain_pca_path = None
+    if brain_pca_path:
+        brain_pca = BrainPCAModel(brain_pca_path)
+        logger.info(f"Brain PCA model loaded: {brain_pca_path} "
+                     f"({brain_pca.n_samples} ref volumes, threshold={brain_pca.error_threshold:.6f})")
+
     # Resolve per-model step counts (fallback to num_steps)
     steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
     steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
@@ -758,8 +773,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         # Brain mask validation settings
         validate_brain_mask = cfg.get('validate_brain_mask', True)
-        validate_brain_bounds = cfg.get('validate_brain_bounds', True)
-        brain_bounds_tolerance = cfg.get('brain_bounds_tolerance', 0.05)
         brain_threshold = cfg.get('brain_threshold', 0.05)
         brain_tolerance = cfg.get('brain_tolerance', 0.0)
         brain_dilate = cfg.get('brain_dilate_pixels', 0)
@@ -780,8 +793,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             logger.info(f"Stage 1 — Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
         if validate_brain_mask:
             logger.info(f"Stage 2 — Brain mask validation: enabled (per-tumor cleanup, threshold={brain_threshold})")
-        if validate_brain_bounds and brain_atlas is not None:
-            logger.info(f"Stage 3 — Brain bounds validation: enabled (tolerance={brain_bounds_tolerance:.0%})")
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
@@ -858,7 +869,35 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 offset_strength=_bravo_offset_strength,
             )
 
-            # Stage 2 — BRAVO brain mask check (per-tumor cleanup)
+            # Stage 2a — Reject disconnected brain volumes
+            if validate_brain_mask and not has_single_brain_component(bravo_np, threshold=brain_threshold):
+                brain_retries += 1
+                total_retries += 1
+                if cfg.verbose:
+                    logger.warning(f"Sample {generated}: multiple brain components detected, retrying...")
+                if brain_retries < max_brain_retries:
+                    continue
+                else:
+                    logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+
+            # Stage 2b — PCA brain shape validation
+            if brain_pca is not None:
+                gen_brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
+                shape_valid, recon_error = brain_pca.is_valid(gen_brain_mask)
+                if not shape_valid:
+                    brain_retries += 1
+                    total_retries += 1
+                    if cfg.verbose:
+                        logger.warning(
+                            f"Sample {generated}: brain shape invalid "
+                            f"(PCA error={recon_error:.6f}, threshold={brain_pca.error_threshold:.6f}), retrying..."
+                        )
+                    if brain_retries < max_brain_retries:
+                        continue
+                    else:
+                        logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+
+            # Stage 2c — BRAVO brain mask check (per-tumor cleanup)
             if validate_brain_mask:
                 brain_mask = create_brain_mask(
                     bravo_np, threshold=brain_threshold,
@@ -888,30 +927,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                             bravo_space, diffrs_disc, diffrs_cfg,
                         )
 
-            # Stage 3 — Brain bounds check (reject if brain outside real data bounds)
-            if validate_brain_bounds and brain_atlas is not None:
-                gen_brain_mask = create_brain_mask(
-                    bravo_np, threshold=brain_threshold, dilate_pixels=0,
-                )
-                if not is_brain_inside_atlas(gen_brain_mask, brain_atlas,
-                                             tolerance=brain_bounds_tolerance):
-                    brain_retries += 1
-                    total_retries += 1
-                    if cfg.verbose:
-                        n_brain = int(gen_brain_mask.sum())
-                        n_outside = int((gen_brain_mask & ~brain_atlas).sum())
-                        ratio = n_outside / max(n_brain, 1)
-                        logger.warning(
-                            f"Sample {generated}: brain outside atlas bounds "
-                            f"({ratio:.1%} outside), retrying..."
-                        )
-                    if brain_retries < max_brain_retries:
-                        continue
-                    else:
-                        logger.warning(
-                            f"Sample {generated}: max brain retries ({max_brain_retries}) "
-                            f"reached, using anyway"
-                        )
 
             # Reset brain retries on success
             brain_retries = 0

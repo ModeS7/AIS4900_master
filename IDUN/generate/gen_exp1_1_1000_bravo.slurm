@@ -80,6 +80,7 @@ time python -m medgen.scripts.generate \
     num_steps_bravo=27 \
     validate_size_bins=false \
     brain_atlas_path=auto \
+    brain_pca_path=auto \
     validate_brain_mask=true \
     output_subdir="${OUTPUT_SUBDIR}" \
     verbose=true &
