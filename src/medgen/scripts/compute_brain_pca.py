@@ -135,7 +135,7 @@ def main():
     errors = np.mean((masks - reconstructed) ** 2, axis=1)  # MSE per sample
 
     error_threshold = np.percentile(errors, args.error_percentile)
-    logger.info(f"\nReconstruction errors (real data):")
+    logger.info("\nReconstruction errors (real data):")
     logger.info(f"  Mean: {errors.mean():.6f}")
     logger.info(f"  Std:  {errors.std():.6f}")
     logger.info(f"  Min:  {errors.min():.6f}")
