@@ -884,81 +884,78 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 if n_removed > 0:
                     logger.info(f"Sample {generated}: atlas check removed {n_removed} tumor(s)")
                     if cleaned_seg.sum() == 0:
-                        # All tumors outside atlas — retry with new seg
+                        # All tumors outside atlas — restart with new seg
                         total_retries += 1
                         continue
                     seg_binary = cleaned_seg
 
-            # Generate BRAVO conditioned on seg mask
-            _apply_shift(shift_bravo)
-            bravo_np = _generate_bravo(
-                seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
-                bravo_space, diffrs_disc, diffrs_cfg,
-                offset_adjusted=_bravo_offset_adjusted,
-                offset_strength=_bravo_offset_strength,
-            )
+            # Inner loop: generate bravo, validate, retry bravo or restart seg
+            bravo_accepted = False
+            for bravo_attempt in range(max_brain_retries):
+                # Generate BRAVO conditioned on seg mask
+                _apply_shift(shift_bravo)
+                bravo_np = _generate_bravo(
+                    seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                    bravo_space, diffrs_disc, diffrs_cfg,
+                    offset_adjusted=_bravo_offset_adjusted,
+                    offset_strength=_bravo_offset_strength,
+                )
 
-            # Stage 2a — Reject disconnected brain volumes
-            if validate_brain_mask and not has_single_brain_component(bravo_np, threshold=brain_threshold):
-                brain_retries += 1
-                total_retries += 1
-                if cfg.verbose:
-                    logger.warning(f"Sample {generated}: multiple brain components detected, retrying...")
-                if brain_retries < max_brain_retries:
-                    continue
-                else:
-                    logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
-
-            # Stage 2b — PCA brain shape validation
-            if brain_pca is not None:
-                gen_brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
-                shape_valid, recon_error = brain_pca.is_valid(gen_brain_mask)
-                if not shape_valid:
-                    brain_retries += 1
+                # Stage 2a — Reject disconnected brain volumes
+                if validate_brain_mask and not has_single_brain_component(bravo_np, threshold=brain_threshold):
                     total_retries += 1
                     if cfg.verbose:
-                        logger.warning(
-                            f"Sample {generated}: brain shape invalid "
-                            f"(PCA error={recon_error:.6f}, threshold={brain_pca.error_threshold:.6f}), retrying..."
-                        )
-                    if brain_retries < max_brain_retries:
-                        continue
-                    else:
-                        logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
+                        logger.warning(f"Sample {generated}: multiple brain components detected "
+                                       f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
+                    continue
 
-            # Stage 2c — BRAVO brain mask check (per-tumor cleanup)
-            if validate_brain_mask:
-                brain_mask = create_brain_mask(
-                    bravo_np, threshold=brain_threshold,
-                    dilate_pixels=brain_dilate,
-                )
-                cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
-
-                if n_removed > 0:
-                    logger.info(f"Sample {generated}: bravo check removed {n_removed} tumor(s)")
-
-                    if cleaned_seg.sum() == 0:
-                        # All tumors outside — retry with new seg entirely
-                        brain_retries += 1
+                # Stage 2b — PCA brain shape validation
+                if brain_pca is not None:
+                    gen_brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
+                    shape_valid, recon_error = brain_pca.is_valid(gen_brain_mask)
+                    if not shape_valid:
                         total_retries += 1
-                        if brain_retries < max_brain_retries:
+                        if cfg.verbose:
+                            logger.warning(
+                                f"Sample {generated}: brain shape invalid "
+                                f"(PCA error={recon_error:.6f}, threshold={brain_pca.error_threshold:.6f}, "
+                                f"attempt {bravo_attempt + 1}/{max_brain_retries})"
+                            )
+                        continue
+
+                # Stage 2c — BRAVO brain mask check (per-tumor cleanup)
+                if validate_brain_mask:
+                    brain_mask = create_brain_mask(
+                        bravo_np, threshold=brain_threshold,
+                        dilate_pixels=brain_dilate,
+                    )
+                    cleaned_seg_bravo, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
+
+                    if n_removed > 0:
+                        logger.info(f"Sample {generated}: bravo check removed {n_removed} tumor(s)")
+
+                        if cleaned_seg_bravo.sum() == 0:
+                            total_retries += 1
                             if cfg.verbose:
-                                logger.warning(f"Sample {generated}: all tumors outside brain, retrying...")
+                                logger.warning(f"Sample {generated}: all tumors outside brain "
+                                               f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
                             continue
                         else:
-                            logger.warning(f"Sample {generated}: max brain retries ({max_brain_retries}) reached, using anyway")
-                            brain_retries = 0
-                    else:
-                        # Re-generate BRAVO with cleaned seg mask
-                        seg_binary = cleaned_seg
-                        bravo_np = _generate_bravo(
-                            seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
-                            bravo_space, diffrs_disc, diffrs_cfg,
-                        )
+                            # Re-generate BRAVO with cleaned seg mask
+                            seg_binary = cleaned_seg_bravo
+                            bravo_np = _generate_bravo(
+                                seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                                bravo_space, diffrs_disc, diffrs_cfg,
+                            )
 
+                bravo_accepted = True
+                break
 
-            # Reset brain retries on success
-            brain_retries = 0
+            if not bravo_accepted:
+                # All bravo attempts failed — restart with new seg mask
+                logger.warning(f"Sample {generated}: bravo failed {max_brain_retries} times, restarting with new seg...")
+                total_retries += 1
+                continue
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary_save = np.transpose(seg_binary, (1, 2, 0))

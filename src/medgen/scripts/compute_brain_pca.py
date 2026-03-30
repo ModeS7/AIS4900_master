@@ -73,8 +73,8 @@ def main():
     parser.add_argument('--depth', type=int, default=160, help='Target depth (D)')
     parser.add_argument('--threshold', type=float, default=0.05, help='Brain detection threshold')
     parser.add_argument('--n-components', type=int, default=30, help='Number of PCA components')
-    parser.add_argument('--error-percentile', type=float, default=99,
-                        help='Percentile of real data errors to use as threshold')
+    parser.add_argument('--threshold-multiplier', type=float, default=3.0,
+                        help='Threshold = max real error x multiplier (default 3x)')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test1'],
                         help='Dataset splits to include')
     args = parser.parse_args()
@@ -134,13 +134,13 @@ def main():
     reconstructed = projections @ components + mean  # [N, n_voxels]
     errors = np.mean((masks - reconstructed) ** 2, axis=1)  # MSE per sample
 
-    error_threshold = np.percentile(errors, args.error_percentile)
+    error_threshold = errors.max() * args.threshold_multiplier
     logger.info("\nReconstruction errors (real data):")
     logger.info(f"  Mean: {errors.mean():.6f}")
     logger.info(f"  Std:  {errors.std():.6f}")
     logger.info(f"  Min:  {errors.min():.6f}")
     logger.info(f"  Max:  {errors.max():.6f}")
-    logger.info(f"  P{args.error_percentile:.0f}:  {error_threshold:.6f} (threshold)")
+    logger.info(f"  Threshold: {error_threshold:.6f} (max x {args.threshold_multiplier})")
 
     # Save
     output_path = Path(args.output)
