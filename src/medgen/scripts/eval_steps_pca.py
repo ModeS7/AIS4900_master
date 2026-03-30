@@ -77,7 +77,7 @@ def generate_and_evaluate(
     """Generate volumes at given step count and measure PCA errors."""
     errors = []
 
-    for i, (cond, noise) in enumerate(zip(cond_masks, noise_list)):
+    for cond, noise in zip(cond_masks, noise_list):
         cond = cond.to(device)
         noise = noise.to(device)
         model_input = torch.cat([noise, cond], dim=1)
@@ -179,8 +179,8 @@ def main():
     a, b = args.lo, args.hi
 
     # Evaluate initial bracket
-    c = int(round(b - (b - a) / gr))
-    d = int(round(a + (b - a) / gr))
+    c = round(b - (b - a) / gr)
+    d = round(a + (b - a) / gr)
 
     while b - a > 2:  # Stop when range is 2 steps or less
         c = max(a, min(b, c))
@@ -196,8 +196,8 @@ def main():
         else:
             a = c
 
-        c = int(round(b - (b - a) / gr))
-        d = int(round(a + (b - a) / gr))
+        c = round(b - (b - a) / gr)
+        d = round(a + (b - a) / gr)
 
     # Evaluate remaining candidates in final bracket
     for s in range(a, b + 1):
