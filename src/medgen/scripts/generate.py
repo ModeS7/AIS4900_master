@@ -1134,8 +1134,10 @@ def main(cfg: DictConfig) -> None:
     else:
         if cfg.gen_mode == 'seg_conditioned' and not cfg.seg_model:
             raise ValueError("seg_conditioned mode requires seg_model")
-        if cfg.gen_mode == 'bravo' and (not cfg.seg_model or not cfg.image_model):
-            raise ValueError("3D bravo mode requires seg_model and image_model")
+        if cfg.gen_mode == 'bravo' and not cfg.image_model:
+            raise ValueError("3D bravo mode requires image_model")
+        if cfg.gen_mode == 'bravo' and not cfg.seg_model and not cfg.get('real_seg_dir'):
+            raise ValueError("3D bravo mode requires seg_model or real_seg_dir")
         run_3d_pipeline(cfg, output_dir)
 
     logger.info("Generation complete!")
