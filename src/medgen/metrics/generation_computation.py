@@ -490,7 +490,8 @@ def compute_epoch_metrics(
             # PCA brain shape metrics
             if streaming.pca_mean_error is not None:
                 results['PCA_error'] = streaming.pca_mean_error
-                results['PCA_pass_rate'] = streaming.pca_pass_rate
+                if streaming.pca_errors and len(streaming.pca_errors) > 1:
+                    results['PCA_pass_rate'] = streaming.pca_pass_rate
 
         return results
 
@@ -640,6 +641,16 @@ def compute_extended_metrics(
                     for key in streaming.per_modality_resnet
                 }
                 results.update(_compute_per_modality_metrics(self_, per_mod_gen, prefix="extended_"))
+
+            # Extended PCA metrics (more samples = more meaningful stats)
+            if streaming.pca_mean_error is not None:
+                results['extended_PCA_error'] = streaming.pca_mean_error
+                results['extended_PCA_pass_rate'] = streaming.pca_pass_rate
+                if streaming.pca_errors and len(streaming.pca_errors) > 1:
+                    import numpy as _np
+                    results['extended_PCA_error_min'] = float(min(streaming.pca_errors))
+                    results['extended_PCA_error_max'] = float(max(streaming.pca_errors))
+                    results['extended_PCA_error_std'] = float(_np.std(streaming.pca_errors))
 
         return results
 

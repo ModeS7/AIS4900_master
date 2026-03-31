@@ -161,16 +161,20 @@ class GenerationMetricsManager:
         from medgen.metrics.brain_mask import BrainPCAModel
         # Auto-discover: data/brain_pca_{H}x{W}x{D}.npz relative to repo root
         repo_root = Path(__file__).resolve().parents[3]
-        h = w = self._config.image_size if hasattr(self._config, 'image_size') else 256
-        d = self._config.original_depth or 160
+        h = w = self.image_size
+        d = self.original_depth or 160
         # Use padded depth (generation depth) for PCA filename
         pad_d = d + 10 if d == 150 else d  # reverse trim_slices=10
         pca_path = repo_root / 'data' / f'brain_pca_{h}x{w}x{pad_d}.npz'
+        if self.is_main_process:
+            logger.info(f"Brain PCA: looking for {pca_path}")
         if pca_path.exists():
             self._metrics.brain_pca = BrainPCAModel(pca_path)
             if self.is_main_process:
                 logger.info(f"Brain PCA model loaded: {pca_path.name} "
                             f"(threshold={self._metrics.brain_pca.error_threshold:.6f})")
+        elif self.is_main_process:
+            logger.warning(f"Brain PCA model not found: {pca_path} (PCA metrics disabled)")
 
     def initialize(
         self,

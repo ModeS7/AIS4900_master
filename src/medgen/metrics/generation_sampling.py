@@ -43,6 +43,7 @@ class StreamingFeatures(NamedTuple):
     # PCA brain shape metrics (3D only)
     pca_mean_error: float | None = None
     pca_pass_rate: float | None = None
+    pca_errors: list[float] | None = None
 
 
 def set_fixed_conditioning(
@@ -533,11 +534,12 @@ def generate_and_extract_features_3d_streaming(
     # PCA brain shape validation (CPU-only, no GPU needed)
     pca_mean_error = None
     pca_pass_rate = None
+    pca_errors: list[float] = []
     if hasattr(self_, 'brain_pca') and self_.brain_pca is not None and not self_.is_seg_mode:
         from .brain_mask import create_brain_mask
-        pca_errors = []
         for sample_cpu in cpu_samples:
-            vol_np = sample_cpu.squeeze().numpy()
+            # Use first channel for multi-channel modes (dual/triple)
+            vol_np = sample_cpu[0, 0].numpy()
             brain_mask = create_brain_mask(vol_np, threshold=0.05, fill_holes=True, dilate_pixels=0)
             _, error = self_.brain_pca.is_valid(brain_mask)
             pca_errors.append(error)
@@ -657,4 +659,5 @@ def generate_and_extract_features_3d_streaming(
         per_modality_resnet_rin=pm_rin,
         pca_mean_error=pca_mean_error,
         pca_pass_rate=pca_pass_rate,
+        pca_errors=pca_errors if pca_mean_error is not None else None,
     )
