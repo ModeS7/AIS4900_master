@@ -157,6 +157,7 @@ class GenerationMetricsManager:
         if self._metrics is None:
             return
         from pathlib import Path
+
         from medgen.metrics.brain_mask import BrainPCAModel
         # Auto-discover: data/brain_pca_{H}x{W}x{D}.npz relative to repo root
         repo_root = Path(__file__).resolve().parents[3]
