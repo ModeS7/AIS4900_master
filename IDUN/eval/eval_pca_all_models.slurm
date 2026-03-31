@@ -68,7 +68,8 @@ for entry in "${PIXEL_MODELS[@]}"; do
         --num-volumes ${VOLS} \
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
-        --seed 42
+        --seed 42 \
+        --compute-fid --ref-split test1
 done
 
 # === WDM models (wavelet space, same interface as pixel) ===
@@ -100,7 +101,8 @@ for entry in "${WDM_MODELS[@]}"; do
         --num-volumes ${VOLS} \
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
-        --seed 42
+        --seed 42 \
+        --compute-fid --ref-split test1
 done
 
 # === LDM models (need latent decoding - handled by model loading) ===
@@ -136,7 +138,8 @@ for entry in "${LDM_MODELS[@]}"; do
         --num-volumes ${VOLS} \
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
-        --seed 42
+        --seed 42 \
+        --compute-fid --ref-split test1
 done
 
 # === Summary ===

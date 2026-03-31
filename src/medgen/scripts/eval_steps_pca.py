@@ -75,14 +75,23 @@ def generate_and_evaluate(
     brain_threshold: float = 0.05,
     decoder: object | None = None,
     latent_channels: int = 1,
+    ref_features: dict | None = None,
+    out_channels: int = 1,
 ) -> dict:
-    """Generate volumes at given step count and measure PCA errors."""
+    """Generate volumes at given step count and measure PCA errors + FID/KID/CMMD."""
     errors = []
+    cpu_volumes = []  # Keep for FID extraction
 
     for cond, noise in zip(cond_masks, noise_list):
         cond = cond.to(device)
         noise = noise.to(device)
-        model_input = torch.cat([noise, cond], dim=1)
+
+        # Multi-channel: generate N noise channels + conditioning
+        if out_channels >= 2:
+            noise_channels = [torch.randn_like(noise) for _ in range(out_channels)]
+            model_input = torch.cat([*noise_channels, cond], dim=1)
+        else:
+            model_input = torch.cat([noise, cond], dim=1)
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
@@ -97,16 +106,24 @@ def generate_and_evaluate(
                 with torch.no_grad():
                     output = decoder(output)
 
-        bravo_np = torch.clamp(output[0, 0], 0, 1).cpu().numpy()
+        output = torch.clamp(output, 0, 1)
+
+        # PCA on first channel (brain shape)
+        bravo_np = output[0, 0].cpu().numpy()
         brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
         _, error = pca.is_valid(brain_mask)
         errors.append(error)
 
+        # Keep first channel for FID (all modalities show the brain)
+        cpu_volumes.append(output[:, 0:1].cpu())
+
         del output, cond, noise, model_input
+        if out_channels >= 2:
+            del noise_channels
         torch.cuda.empty_cache()
 
     errors = np.array(errors)
-    return {
+    result: dict = {
         'steps': num_steps,
         'mean_error': float(errors.mean()),
         'std_error': float(errors.std()),
@@ -116,6 +133,143 @@ def generate_and_evaluate(
         'pass_rate': float((errors <= pca.error_threshold).mean()),
         'errors': errors.tolist(),
     }
+
+    # Compute FID/KID/CMMD if reference features provided
+    if ref_features is not None and cpu_volumes:
+        result.update(_compute_fid_metrics(cpu_volumes, ref_features, device))
+
+    return result
+
+
+def _compute_fid_metrics(
+    cpu_volumes: list[torch.Tensor],
+    ref_features: dict,
+    device: torch.device,
+) -> dict:
+    """Extract slice features from generated volumes and compute FID/KID/CMMD."""
+    from medgen.metrics.generation_3d import volumes_to_slices
+    from medgen.metrics.metric_computation import compute_cmmd, compute_fid, compute_kid
+
+    # Stack volumes [N, 1, D, H, W] -> slices [N*D, 1, H, W]
+    all_vols = torch.cat(cpu_volumes, dim=0)
+    slices = volumes_to_slices(all_vols)
+    # Repeat to 3ch for feature extractors
+    slices_3ch = slices.repeat(1, 3, 1, 1) if slices.shape[1] == 1 else slices
+
+    metrics = {}
+    try:
+        from medgen.metrics.feature_extractors import BiomedCLIPFeatures, ResNet50Features
+
+        # ResNet50 (ImageNet) -> FID + KID
+        if 'resnet' in ref_features:
+            extractor = ResNet50Features(device, network_type='imagenet', compile_model=False)
+            gen_feats = extractor.extract_features(slices_3ch.to(device))
+            ref = ref_features['resnet'].to(device)
+            metrics['FID'] = float(compute_fid(gen_feats, ref))
+            kid_mean, kid_std = compute_kid(gen_feats, ref)
+            metrics['KID_mean'] = float(kid_mean)
+            metrics['KID_std'] = float(kid_std)
+            extractor.unload()
+            del gen_feats
+            torch.cuda.empty_cache()
+
+        # ResNet50 (RadImageNet) -> FID_RIN + KID_RIN
+        if 'resnet_rin' in ref_features:
+            extractor = ResNet50Features(device, network_type='radimagenet', compile_model=False)
+            gen_feats = extractor.extract_features(slices_3ch.to(device))
+            ref = ref_features['resnet_rin'].to(device)
+            metrics['FID_RIN'] = float(compute_fid(gen_feats, ref))
+            kid_mean, kid_std = compute_kid(gen_feats, ref)
+            metrics['KID_RIN_mean'] = float(kid_mean)
+            extractor.unload()
+            del gen_feats
+            torch.cuda.empty_cache()
+
+        # BiomedCLIP -> CMMD
+        if 'biomed' in ref_features:
+            extractor = BiomedCLIPFeatures(device, compile_model=False)
+            gen_feats = extractor.extract_features(slices_3ch.to(device))
+            ref = ref_features['biomed'].to(device)
+            metrics['CMMD'] = float(compute_cmmd(gen_feats, ref))
+            extractor.unload()
+            del gen_feats
+            torch.cuda.empty_cache()
+
+    except Exception as e:
+        logger.warning(f"FID/KID/CMMD computation failed: {e}")
+
+    return metrics
+
+
+def _extract_reference_features(
+    data_root: Path, split: str, depth: int, image_size: int, device: torch.device,
+) -> dict:
+    """Extract slice features from real volumes for FID/KID/CMMD reference."""
+    import nibabel as nib
+
+    from medgen.metrics.feature_extractors import BiomedCLIPFeatures, ResNet50Features
+    from medgen.metrics.generation_3d import volumes_to_slices
+
+    split_dir = data_root / split
+    files = sorted(split_dir.glob("*/bravo.nii.gz"))
+    logger.info(f"Extracting reference features from {len(files)} volumes ({split})...")
+
+    # Load and stack volumes
+    vols = []
+    for path in files:
+        vol = nib.load(str(path)).get_fdata().astype(np.float32)
+        vmin, vmax = vol.min(), vol.max()
+        if vmax > vmin:
+            vol = (vol - vmin) / (vmax - vmin)
+        vol = np.transpose(vol, (2, 0, 1))  # [H,W,D] -> [D,H,W]
+        d = vol.shape[0]
+        if d < depth:
+            vol = np.concatenate([vol, np.zeros((depth - d, *vol.shape[1:]), dtype=np.float32)], axis=0)
+        elif d > depth:
+            vol = vol[:depth]
+        if vol.shape[1] != image_size or vol.shape[2] != image_size:
+            t = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0)
+            t = torch.nn.functional.interpolate(t, size=(depth, image_size, image_size),
+                                                 mode='trilinear', align_corners=False)
+            vol = t.squeeze().numpy()
+        vols.append(torch.from_numpy(vol).unsqueeze(0).unsqueeze(0))  # [1,1,D,H,W]
+
+    all_vols = torch.cat(vols, dim=0)  # [N,1,D,H,W]
+    slices = volumes_to_slices(all_vols)  # [N*D,1,H,W]
+    slices_3ch = slices.repeat(1, 3, 1, 1)
+
+    ref = {}
+    chunk = 64
+
+    # ResNet50 (ImageNet)
+    ext = ResNet50Features(device, network_type='imagenet', compile_model=False)
+    feats = []
+    for i in range(0, len(slices_3ch), chunk):
+        feats.append(ext.extract_features(slices_3ch[i:i+chunk].to(device)).cpu())
+    ref['resnet'] = torch.cat(feats, dim=0)
+    ext.unload()
+    torch.cuda.empty_cache()
+
+    # ResNet50 (RadImageNet)
+    ext = ResNet50Features(device, network_type='radimagenet', compile_model=False)
+    feats = []
+    for i in range(0, len(slices_3ch), chunk):
+        feats.append(ext.extract_features(slices_3ch[i:i+chunk].to(device)).cpu())
+    ref['resnet_rin'] = torch.cat(feats, dim=0)
+    ext.unload()
+    torch.cuda.empty_cache()
+
+    # BiomedCLIP
+    ext = BiomedCLIPFeatures(device, compile_model=False)
+    feats = []
+    for i in range(0, len(slices_3ch), chunk):
+        feats.append(ext.extract_features(slices_3ch[i:i+chunk].to(device)).cpu())
+    ref['biomed'] = torch.cat(feats, dim=0)
+    ext.unload()
+    torch.cuda.empty_cache()
+
+    logger.info(f"Reference features: resnet={ref['resnet'].shape}, biomed={ref['biomed'].shape}")
+    return ref
 
 
 def main():
@@ -133,6 +287,8 @@ def main():
                         help='Comma-separated step counts (overrides lo/hi)')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--shift-ratio', type=float, default=1.0, help='Time-shift ratio')
+    parser.add_argument('--compute-fid', action='store_true', help='Also compute FID/KID/CMMD')
+    parser.add_argument('--ref-split', type=str, default='test1', help='Reference split for FID')
     args = parser.parse_args()
 
     device = torch.device("cuda")
@@ -234,6 +390,13 @@ def main():
         for _ in range(args.num_volumes)
     ]
 
+    # Extract reference features for FID/KID/CMMD
+    ref_features = None
+    if args.compute_fid:
+        ref_features = _extract_reference_features(
+            data_root, args.ref_split, args.depth, args.image_size, device,
+        )
+
     # Cache for evaluated step counts (avoid re-evaluating)
     eval_cache: dict[int, dict] = {}
 
@@ -246,6 +409,7 @@ def main():
         result = generate_and_evaluate(
             model, strategy, cond_masks, noise_list, steps, device, pca,
             decoder=decoder, latent_channels=latent_channels,
+            ref_features=ref_features, out_channels=out_ch,
         )
         result['wall_time_s'] = time.time() - t0
         logger.info(f"  Mean PCA error: {result['mean_error']:.6f} | "
@@ -288,18 +452,33 @@ def main():
     results = sorted(eval_cache.values(), key=lambda r: r['steps'])
 
     # Summary
-    logger.info("\n" + "=" * 60)
-    logger.info("SUMMARY: Steps vs PCA Error")
-    logger.info("=" * 60)
-    logger.info(f"{'Steps':>6} {'Mean':>10} {'Median':>10} {'Pass%':>8} {'Time':>8}")
-    logger.info("-" * 48)
-    for r in results:
-        logger.info(f"{r['steps']:>6} {r['mean_error']:>10.6f} {r['median_error']:>10.6f} "
-                     f"{r['pass_rate']:>7.0%} {r['wall_time_s']:>7.1f}s")
+    has_fid = any('FID' in r for r in results)
+    logger.info("\n" + "=" * 80)
+    logger.info("SUMMARY: Steps vs PCA Error" + (" + FID/KID/CMMD" if has_fid else ""))
+    logger.info("=" * 80)
+    if has_fid:
+        logger.info(f"{'Steps':>6} {'PCA_err':>10} {'Pass%':>7} {'FID':>8} {'KID':>8} {'CMMD':>8} {'FID_RIN':>8} {'Time':>8}")
+        logger.info("-" * 75)
+        for r in results:
+            fid = f"{r['FID']:.2f}" if 'FID' in r else "—"
+            kid = f"{r['KID_mean']:.4f}" if 'KID_mean' in r else "—"
+            cmmd = f"{r['CMMD']:.4f}" if 'CMMD' in r else "—"
+            fid_rin = f"{r['FID_RIN']:.2f}" if 'FID_RIN' in r else "—"
+            logger.info(f"{r['steps']:>6} {r['mean_error']:>10.6f} {r['pass_rate']:>6.0%} "
+                         f"{fid:>8} {kid:>8} {cmmd:>8} {fid_rin:>8} {r['wall_time_s']:>7.1f}s")
+    else:
+        logger.info(f"{'Steps':>6} {'Mean':>10} {'Median':>10} {'Pass%':>8} {'Time':>8}")
+        logger.info("-" * 48)
+        for r in results:
+            logger.info(f"{r['steps']:>6} {r['mean_error']:>10.6f} {r['median_error']:>10.6f} "
+                         f"{r['pass_rate']:>7.0%} {r['wall_time_s']:>7.1f}s")
 
     best = min(results, key=lambda r: r['mean_error'])
-    logger.info(f"\nBest: {best['steps']} steps (mean error={best['mean_error']:.6f}, "
+    logger.info(f"\nBest PCA: {best['steps']} steps (mean error={best['mean_error']:.6f}, "
                 f"pass rate={best['pass_rate']:.0%})")
+    if has_fid:
+        best_fid = min((r for r in results if 'FID' in r), key=lambda r: r['FID'])
+        logger.info(f"Best FID: {best_fid['steps']} steps (FID={best_fid['FID']:.2f})")
 
     # Save results
     if args.output_dir:
