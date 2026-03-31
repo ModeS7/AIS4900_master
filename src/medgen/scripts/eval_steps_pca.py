@@ -73,6 +73,8 @@ def generate_and_evaluate(
     device: torch.device,
     pca: BrainPCAModel,
     brain_threshold: float = 0.05,
+    decoder: object | None = None,
+    latent_channels: int = 1,
 ) -> dict:
     """Generate volumes at given step count and measure PCA errors."""
     errors = []
@@ -84,12 +86,24 @@ def generate_and_evaluate(
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
-                output = strategy.generate(model, model_input, num_steps, device, latent_channels=1)
+                output = strategy.generate(
+                    model, model_input, num_steps, device,
+                    latent_channels=latent_channels,
+                )
+
+        # Decode latent to pixel space if needed
+        if decoder is not None:
+            with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
+                with torch.no_grad():
+                    output = decoder(output)
 
         bravo_np = torch.clamp(output[0, 0], 0, 1).cpu().numpy()
         brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
         _, error = pca.is_valid(brain_mask)
         errors.append(error)
+
+        del output, cond, noise, model_input
+        torch.cuda.empty_cache()
 
     errors = np.array(errors)
     return {
@@ -126,15 +140,52 @@ def main():
     pca = BrainPCAModel(args.pca_model)
     logger.info(f"PCA model: {args.pca_model} (threshold={pca.error_threshold:.6f})")
 
+    # Load checkpoint config to detect model type
+    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    ckpt_cfg = ckpt.get('config', {})
+    latent_cfg = ckpt_cfg.get('latent', {})
+    is_latent = latent_cfg.get('enabled', False)
+    compression_ckpt = latent_cfg.get('compression_checkpoint', None)
+    wavelet_cfg = ckpt_cfg.get('wavelet', {})
+    is_wavelet = wavelet_cfg.get('enabled', False)
+    in_ch = ckpt_cfg.get('in_channels', 2)
+    out_ch = ckpt_cfg.get('out_channels', 1)
+    latent_channels = 1
+
+    # Detect strategy from checkpoint
+    strategy_type = ckpt_cfg.get('strategy', 'rflow')
+    del ckpt
+
+    logger.info(f"Model type: {'latent' if is_latent else 'wavelet' if is_wavelet else 'pixel'}")
+    logger.info(f"Strategy: {strategy_type}, in_ch={in_ch}, out_ch={out_ch}")
+
     # Load model
     logger.info(f"Loading model: {args.checkpoint}")
     model = load_diffusion_model(
         args.checkpoint, device=device,
-        in_channels=2, out_channels=1, compile_model=True, spatial_dims=3,
+        in_channels=in_ch, out_channels=out_ch, compile_model=True, spatial_dims=3,
     )
 
+    # Load decoder for latent/wavelet models
+    decoder = None
+    if is_latent and compression_ckpt:
+        logger.info(f"Loading VQ-VAE decoder: {compression_ckpt}")
+        from medgen.data.loaders.compression_detection import load_compression_model
+        comp_model = load_compression_model(compression_ckpt, device=device, spatial_dims=3)
+        decoder = comp_model.decode
+        latent_channels = comp_model.latent_channels if hasattr(comp_model, 'latent_channels') else 4
+        logger.info(f"Latent channels: {latent_channels}")
+    elif is_wavelet:
+        logger.info("Loading wavelet decoder")
+        from medgen.models.haar_wavelet_3d import InverseHaarWavelet3D
+        decoder = InverseHaarWavelet3D().to(device)
+
     # Setup strategy
-    strategy = RFlowStrategy()
+    if strategy_type == 'ddpm':
+        from medgen.diffusion.strategy_ddpm import DDPMStrategy
+        strategy = DDPMStrategy()
+    else:
+        strategy = RFlowStrategy()
     strategy.setup_scheduler(num_timesteps=1000, image_size=args.image_size,
                              depth_size=args.depth, spatial_dims=3)
 
@@ -142,17 +193,44 @@ def main():
     if args.shift_ratio != 1.0:
         input_numel = args.image_size * args.image_size * args.depth
         base_numel = max(1, int(input_numel / (args.shift_ratio ** 3)))
-        strategy.scheduler.base_img_size_numel = base_numel
+        if hasattr(strategy, 'scheduler') and hasattr(strategy.scheduler, 'base_img_size_numel'):
+            strategy.scheduler.base_img_size_numel = base_numel
         logger.info(f"Time-shift: ratio={args.shift_ratio}")
 
-    # Load conditioning masks and pre-generate noise (same for all step counts)
+    # Load conditioning masks
     logger.info(f"Loading {args.num_volumes} conditioning masks from val split...")
     cond_masks = load_conditioning_masks(data_root, args.num_volumes, args.depth, args.image_size)
 
+    # Encode conditioning for latent models
+    if is_latent and decoder is not None:
+        logger.info("Encoding conditioning masks to latent space...")
+        encoded_masks = []
+        for m in cond_masks:
+            with torch.no_grad():
+                enc = comp_model.encode(m.to(device))
+            encoded_masks.append(enc.cpu())
+        cond_masks = encoded_masks
+        noise_depth = cond_masks[0].shape[2]
+        noise_h = cond_masks[0].shape[3]
+        noise_w = cond_masks[0].shape[4]
+        noise_ch = latent_channels
+    elif is_wavelet:
+        noise_depth = args.depth // 2
+        noise_h = args.image_size // 2
+        noise_w = args.image_size // 2
+        noise_ch = 8  # 8 wavelet subbands
+    else:
+        noise_depth = args.depth
+        noise_h = args.image_size
+        noise_w = args.image_size
+        noise_ch = out_ch  # pixel space
+
+    # Pre-generate noise (same for all step counts)
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
+    logger.info(f"Noise shape: [1, {noise_ch}, {noise_depth}, {noise_h}, {noise_w}]")
     gen = torch.Generator(device='cpu').manual_seed(args.seed)
     noise_list = [
-        torch.randn(1, 1, args.depth, args.image_size, args.image_size, generator=gen)
+        torch.randn(1, noise_ch, noise_depth, noise_h, noise_w, generator=gen)
         for _ in range(args.num_volumes)
     ]
 
@@ -165,7 +243,10 @@ def main():
             return eval_cache[steps]
         logger.info(f"\n--- Evaluating: {steps} steps ---")
         t0 = time.time()
-        result = generate_and_evaluate(model, strategy, cond_masks, noise_list, steps, device, pca)
+        result = generate_and_evaluate(
+            model, strategy, cond_masks, noise_list, steps, device, pca,
+            decoder=decoder, latent_channels=latent_channels,
+        )
         result['wall_time_s'] = time.time() - t0
         logger.info(f"  Mean PCA error: {result['mean_error']:.6f} | "
                      f"Pass rate: {result['pass_rate']:.0%} | "
