@@ -25,8 +25,8 @@ logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 # Downsample resolution for PCA (keeps shape info, reduces compute)
-PCA_DEPTH = 40
-PCA_SIZE = 64
+PCA_DEPTH = 80
+PCA_SIZE = 128
 
 
 def load_volume(path: Path, depth: int, image_size: int) -> np.ndarray:

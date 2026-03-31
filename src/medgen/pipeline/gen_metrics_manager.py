@@ -143,10 +143,33 @@ class GenerationMetricsManager:
             image_keys=self.image_keys,
         )
 
+        # Load PCA brain shape model if available (3D only)
+        if self.spatial_dims == 3:
+            self._load_brain_pca()
+
         if self.is_main_process:
             logger.info("Generation metrics initialized (caching happens at training start)")
 
         return self._metrics
+
+    def _load_brain_pca(self) -> None:
+        """Load PCA brain shape model for 3D shape quality tracking."""
+        if self._metrics is None:
+            return
+        from pathlib import Path
+        from medgen.metrics.brain_mask import BrainPCAModel
+        # Auto-discover: data/brain_pca_{H}x{W}x{D}.npz relative to repo root
+        repo_root = Path(__file__).resolve().parents[3]
+        h = w = self._config.image_size if hasattr(self._config, 'image_size') else 256
+        d = self._config.original_depth or 160
+        # Use padded depth (generation depth) for PCA filename
+        pad_d = d + 10 if d == 150 else d  # reverse trim_slices=10
+        pca_path = repo_root / 'data' / f'brain_pca_{h}x{w}x{pad_d}.npz'
+        if pca_path.exists():
+            self._metrics.brain_pca = BrainPCAModel(pca_path)
+            if self.is_main_process:
+                logger.info(f"Brain PCA model loaded: {pca_path.name} "
+                            f"(threshold={self._metrics.brain_pca.error_threshold:.6f})")
 
     def initialize(
         self,

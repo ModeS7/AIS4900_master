@@ -487,6 +487,11 @@ def compute_epoch_metrics(
                 }
                 results.update(_compute_per_modality_metrics(self_, per_mod_gen, prefix=""))
 
+            # PCA brain shape metrics
+            if streaming.pca_mean_error is not None:
+                results['PCA_error'] = streaming.pca_mean_error
+                results['PCA_pass_rate'] = streaming.pca_pass_rate
+
         return results
 
     finally:

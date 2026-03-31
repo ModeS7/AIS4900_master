@@ -896,6 +896,9 @@ class GenerationMetrics:
             image_keys=self.image_keys,
         )
 
+        # PCA brain shape model (optional, for 3D shape quality tracking)
+        self.brain_pca = None
+
         # Fixed conditioning masks (loaded once, used every epoch)
         self.fixed_conditioning_masks: torch.Tensor | None = None
         self.fixed_gt_images: torch.Tensor | None = None
