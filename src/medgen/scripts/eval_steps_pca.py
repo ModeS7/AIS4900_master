@@ -86,12 +86,7 @@ def generate_and_evaluate(
         cond = cond.to(device)
         noise = noise.to(device)
 
-        # Multi-channel: generate N noise channels + conditioning
-        if out_channels >= 2:
-            noise_channels = [torch.randn_like(noise) for _ in range(out_channels)]
-            model_input = torch.cat([*noise_channels, cond], dim=1)
-        else:
-            model_input = torch.cat([noise, cond], dim=1)
+        model_input = torch.cat([noise, cond], dim=1)
 
         with autocast(device_type="cuda", enabled=True, dtype=torch.bfloat16):
             with torch.no_grad():
@@ -118,8 +113,6 @@ def generate_and_evaluate(
         cpu_volumes.append(output[:, 0:1].cpu())
 
         del output, cond, noise, model_input
-        if out_channels >= 2:
-            del noise_channels
         torch.cuda.empty_cache()
 
     errors = np.array(errors)
@@ -147,8 +140,8 @@ def _compute_fid_metrics(
     device: torch.device,
 ) -> dict:
     """Extract slice features from generated volumes and compute FID/KID/CMMD."""
+    from medgen.metrics.generation import compute_cmmd, compute_fid, compute_kid
     from medgen.metrics.generation_3d import volumes_to_slices
-    from medgen.metrics.metric_computation import compute_cmmd, compute_fid, compute_kid
 
     # Stack volumes [N, 1, D, H, W] -> slices [N*D, 1, H, W]
     all_vols = torch.cat(cpu_volumes, dim=0)
@@ -418,35 +411,41 @@ def main():
         eval_cache[steps] = result
         return result
 
-    # Golden section search for optimal step count (minimize mean PCA error)
-    logger.info(f"\nGolden section search: [{args.lo}, {args.hi}]")
-    gr = (np.sqrt(5) + 1) / 2  # golden ratio
-    a, b = args.lo, args.hi
-
-    # Evaluate initial bracket
-    c = round(b - (b - a) / gr)
-    d = round(a + (b - a) / gr)
-
-    while b - a > 2:  # Stop when range is 2 steps or less
-        c = max(a, min(b, c))
-        d = max(a, min(b, d))
-        if c == d:
-            break
-
-        fc = evaluate_steps(c)['mean_error']
-        fd = evaluate_steps(d)['mean_error']
-
-        if fc < fd:
-            b = d
-        else:
-            a = c
+    if args.step_list:
+        # Fixed step list — evaluate each
+        step_counts = [int(x) for x in args.step_list.split(',')]
+        logger.info(f"\nEvaluating fixed steps: {step_counts}")
+        for steps in step_counts:
+            evaluate_steps(steps)
+    else:
+        # Golden section search for optimal step count (minimize mean PCA error)
+        logger.info(f"\nGolden section search: [{args.lo}, {args.hi}]")
+        gr = (np.sqrt(5) + 1) / 2  # golden ratio
+        a, b = args.lo, args.hi
 
         c = round(b - (b - a) / gr)
         d = round(a + (b - a) / gr)
 
-    # Evaluate remaining candidates in final bracket
-    for s in range(a, b + 1):
-        evaluate_steps(s)
+        while b - a > 2:
+            c = max(a, min(b, c))
+            d = max(a, min(b, d))
+            if c == d:
+                break
+
+            fc = evaluate_steps(c)['mean_error']
+            fd = evaluate_steps(d)['mean_error']
+
+            if fc < fd:
+                b = d
+            else:
+                a = c
+
+            c = round(b - (b - a) / gr)
+            d = round(a + (b - a) / gr)
+
+        # Evaluate remaining candidates in final bracket
+        for s in range(a, b + 1):
+            evaluate_steps(s)
 
     # Collect all results sorted by steps
     results = sorted(eval_cache.values(), key=lambda r: r['steps'])
