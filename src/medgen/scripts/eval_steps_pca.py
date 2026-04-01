@@ -308,11 +308,11 @@ def main():
     logger.info(f"Model type: {'latent' if is_latent else 'wavelet' if is_wavelet else 'pixel'}")
     logger.info(f"Strategy: {strategy_type}, in_ch={in_ch}, out_ch={out_ch}")
 
-    # Load model
+    # Load model (let load_diffusion_model auto-detect channels from checkpoint)
     logger.info(f"Loading model: {args.checkpoint}")
     model = load_diffusion_model(
         args.checkpoint, device=device,
-        in_channels=in_ch, out_channels=out_ch, compile_model=True, spatial_dims=3,
+        compile_model=True, spatial_dims=3,
     )
 
     # Load decoder for latent/wavelet models
