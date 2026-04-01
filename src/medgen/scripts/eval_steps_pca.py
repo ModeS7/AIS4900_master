@@ -306,13 +306,28 @@ def main():
     strategy_type = ckpt_cfg.get('strategy', 'rflow')
     del ckpt
 
+    # For WDM/LDM, infer actual channels from state dict (mode config has wrong values)
+    if is_wavelet or is_latent:
+        ckpt_sd = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+        sd = ckpt_sd.get('model_state_dict', ckpt_sd)
+        for key, tensor in sd.items():
+            if key.endswith('conv_in.conv.weight') or key.endswith('x_embedder.proj.weight'):
+                in_ch = tensor.shape[1]
+            if key.endswith('out.2.conv.weight') or key.endswith('final_layer.linear.weight'):
+                out_ch = tensor.shape[0]
+                if key.endswith('final_layer.linear.weight'):
+                    # DiT: output = out_ch * patch_size^3, need to divide
+                    pass  # handled by load_diffusion_model
+        del ckpt_sd
+
     logger.info(f"Model type: {'latent' if is_latent else 'wavelet' if is_wavelet else 'pixel'}")
     logger.info(f"Strategy: {strategy_type}, in_ch={in_ch}, out_ch={out_ch}")
 
-    # Load model (let load_diffusion_model auto-detect channels from checkpoint)
+    # Load model with correct channels
     logger.info(f"Loading model: {args.checkpoint}")
     model = load_diffusion_model(
         args.checkpoint, device=device,
+        in_channels=in_ch, out_channels=out_ch,
         compile_model=True, spatial_dims=3,
     )
 
