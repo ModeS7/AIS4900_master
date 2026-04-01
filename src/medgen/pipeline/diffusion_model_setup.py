@@ -450,6 +450,26 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             mode_name=trainer.mode_name,
             image_keys=getattr(trainer.mode, 'image_keys', None),
         )
+
+        # Load PCA shape models for 3D
+        if getattr(trainer, 'spatial_dims', 2) == 3:
+            from pathlib import Path
+
+            from medgen.metrics.brain_mask import BrainPCAModel
+            repo_root = Path(__file__).resolve().parents[3]
+            # Get image_size from volume config or spatial shape
+            shape = trainer._get_spatial_shape()
+            image_size = shape[-1] if shape else 256  # H or W from (D,H,W) or (H,W)
+            depth = shape[0] if shape and len(shape) == 3 else 160
+            for prefix in ('brain', 'seg'):
+                pca_path = repo_root / 'data' / f'{prefix}_pca_{image_size}x{image_size}x{depth}.npz'
+                if pca_path.exists():
+                    pca = BrainPCAModel(pca_path)
+                    setattr(trainer._gen_metrics, f'{prefix}_pca', pca)
+                    if trainer.is_main_process:
+                        logger.info(f"{prefix.title()} PCA loaded: {pca_path.name} "
+                                    f"(threshold={pca.error_threshold:.6f})")
+
         if trainer.is_main_process:
             logger.info("Generation metrics initialized (caching happens at training start)")
 
