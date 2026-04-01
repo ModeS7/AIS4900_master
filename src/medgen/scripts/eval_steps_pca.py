@@ -295,6 +295,7 @@ def main():
     latent_cfg = ckpt_cfg.get('latent', {})
     is_latent = latent_cfg.get('enabled', False)
     compression_ckpt = latent_cfg.get('compression_checkpoint', None)
+    compression_type = latent_cfg.get('compression_type', 'vqvae')
     wavelet_cfg = ckpt_cfg.get('wavelet', {})
     is_wavelet = wavelet_cfg.get('enabled', False)
     in_ch = ckpt_cfg.get('in_channels', 2)
@@ -320,7 +321,7 @@ def main():
     if is_latent and compression_ckpt:
         logger.info(f"Loading VQ-VAE decoder: {compression_ckpt}")
         from medgen.data.loaders.compression_detection import load_compression_model
-        comp_model = load_compression_model(compression_ckpt, device=device, spatial_dims=3)
+        comp_model = load_compression_model(compression_ckpt, compression_type=compression_type, device=device, spatial_dims=3)
         decoder = comp_model.decode
         latent_channels = comp_model.latent_channels if hasattr(comp_model, 'latent_channels') else 4
         logger.info(f"Latent channels: {latent_channels}")
@@ -364,6 +365,15 @@ def main():
         noise_w = cond_masks[0].shape[4]
         noise_ch = latent_channels
     elif is_wavelet:
+        from medgen.models.haar_wavelet_3d import HaarWavelet3D
+        wavelet_encoder = HaarWavelet3D().to(device)
+        logger.info("Encoding conditioning masks to wavelet space...")
+        encoded_masks = []
+        for m in cond_masks:
+            with torch.no_grad():
+                enc = wavelet_encoder(m.to(device))
+            encoded_masks.append(enc.cpu())
+        cond_masks = encoded_masks
         noise_depth = args.depth // 2
         noise_h = args.image_size // 2
         noise_w = args.image_size // 2
