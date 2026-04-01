@@ -83,6 +83,7 @@ time python -m medgen.scripts.generate \
     validate_size_bins=false \
     brain_atlas_path=auto \
     +brain_pca_path=auto \
+    +seg_pca_path=auto \
     validate_brain_mask=true \
     output_subdir="${OUTPUT_SUBDIR}" \
     verbose=true &

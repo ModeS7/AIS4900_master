@@ -592,6 +592,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         logger.info(f"Brain PCA model loaded: {brain_pca_path} "
                      f"({brain_pca.n_samples} ref volumes, threshold={brain_pca.error_threshold:.6f})")
 
+    # Load seg PCA shape model for seg mask validation
+    seg_pca = None
+    seg_pca_path = cfg.get('seg_pca_path', None)
+    if seg_pca_path == 'auto':
+        repo_root = Path(__file__).resolve().parents[3]
+        seg_pca_path = repo_root / 'data' / f'seg_pca_{cfg.image_size}x{cfg.image_size}x{cfg.depth}.npz'
+        if not seg_pca_path.exists():
+            logger.warning(f"Seg PCA model not found: {seg_pca_path} (skipping seg shape validation)")
+            seg_pca_path = None
+    if seg_pca_path:
+        seg_pca = BrainPCAModel(seg_pca_path)
+        logger.info(f"Seg PCA model loaded: {seg_pca_path} "
+                     f"({seg_pca.n_samples} ref volumes, threshold={seg_pca.error_threshold:.8f})")
+
     # Resolve per-model step counts (fallback to num_steps)
     steps_seg = cfg.get('num_steps_seg', None) or cfg.num_steps
     steps_bravo = cfg.get('num_steps_bravo', None) or cfg.num_steps
@@ -801,6 +815,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         logger.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
         if brain_atlas is not None:
             logger.info(f"Stage 1 — Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
+        if seg_pca is not None:
+            logger.info(f"Stage 1b — Seg PCA validation: enabled (threshold={seg_pca.error_threshold:.8f})")
         if validate_brain_mask:
             logger.info(f"Stage 2 — Brain mask validation: enabled (per-tumor cleanup, threshold={brain_threshold})")
         if validate_size_bins:
@@ -889,6 +905,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         continue
                     seg_binary = cleaned_seg
 
+            # Stage 1b — Seg PCA check (is tumor pattern realistic?)
+            if seg_pca is not None:
+                seg_valid, seg_error = seg_pca.is_valid(seg_binary)
+                if not seg_valid:
+                    total_retries += 1
+                    if cfg.verbose:
+                        logger.warning(
+                            f"Sample {generated}: seg pattern unrealistic "
+                            f"(PCA error={seg_error:.8f}, threshold={seg_pca.error_threshold:.8f}), retrying seg..."
+                        )
+                    continue
+
             # Inner loop: generate bravo, validate, retry bravo or restart seg
             bravo_accepted = False
             for bravo_attempt in range(max_brain_retries):
@@ -909,7 +937,28 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                        f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
                     continue
 
-                # Stage 2b — PCA brain shape validation
+                # Stage 2b — Remove tumors outside brain, retry bravo with cleaned seg
+                if validate_brain_mask:
+                    brain_mask = create_brain_mask(
+                        bravo_np, threshold=brain_threshold,
+                        dilate_pixels=brain_dilate,
+                    )
+                    cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
+
+                    if n_removed > 0:
+                        total_retries += 1
+                        if cleaned_seg.sum() == 0:
+                            if cfg.verbose:
+                                logger.warning(f"Sample {generated}: all tumors outside brain "
+                                               f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
+                        else:
+                            if cfg.verbose:
+                                logger.warning(f"Sample {generated}: removed {n_removed} tumor(s) outside brain, "
+                                               f"retrying bravo (attempt {bravo_attempt + 1}/{max_brain_retries})")
+                            seg_binary = cleaned_seg
+                        continue
+
+                # Stage 2c — PCA brain shape validation
                 if brain_pca is not None:
                     gen_brain_mask = create_brain_mask(bravo_np, threshold=brain_threshold, dilate_pixels=0)
                     shape_valid, recon_error = brain_pca.is_valid(gen_brain_mask)
@@ -922,31 +971,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                 f"attempt {bravo_attempt + 1}/{max_brain_retries})"
                             )
                         continue
-
-                # Stage 2c — BRAVO brain mask check (per-tumor cleanup)
-                if validate_brain_mask:
-                    brain_mask = create_brain_mask(
-                        bravo_np, threshold=brain_threshold,
-                        dilate_pixels=brain_dilate,
-                    )
-                    cleaned_seg_bravo, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
-
-                    if n_removed > 0:
-                        logger.info(f"Sample {generated}: bravo check removed {n_removed} tumor(s)")
-
-                        if cleaned_seg_bravo.sum() == 0:
-                            total_retries += 1
-                            if cfg.verbose:
-                                logger.warning(f"Sample {generated}: all tumors outside brain "
-                                               f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
-                            continue
-                        else:
-                            # Re-generate BRAVO with cleaned seg mask
-                            seg_binary = cleaned_seg_bravo
-                            bravo_np = _generate_bravo(
-                                seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
-                                bravo_space, diffrs_disc, diffrs_cfg,
-                            )
 
                 bravo_accepted = True
                 break
