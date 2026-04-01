@@ -535,10 +535,21 @@ def generate_and_extract_features_3d_streaming(
     pca_mean_error = None
     pca_pass_rate = None
     pca_errors: list[float] = []
-    if hasattr(self_, 'brain_pca') and self_.brain_pca is not None and not self_.is_seg_mode:
+    if self_.is_seg_mode and hasattr(self_, 'seg_pca') and self_.seg_pca is not None:
+        # Seg PCA: check tumor pattern directly on generated seg masks
+        for sample_cpu in cpu_samples:
+            seg_np = (sample_cpu[0, 0].numpy() > 0.5).astype(np.float32)
+            _, error = self_.seg_pca.is_valid(seg_np)
+            pca_errors.append(error)
+        if pca_errors:
+            pca_mean_error = float(np.mean(pca_errors))
+            pca_pass_rate = float(np.mean([e <= self_.seg_pca.error_threshold for e in pca_errors]))
+            logger.debug(f"[3D GenMetrics] Seg PCA: mean_error={pca_mean_error:.8f}, "
+                         f"pass_rate={pca_pass_rate:.0%}")
+    elif not self_.is_seg_mode and hasattr(self_, 'brain_pca') and self_.brain_pca is not None:
+        # Brain PCA: check brain shape on generated bravo volumes
         from .brain_mask import create_brain_mask
         for sample_cpu in cpu_samples:
-            # Use first channel for multi-channel modes (dual/triple)
             vol_np = sample_cpu[0, 0].numpy()
             brain_mask = create_brain_mask(vol_np, threshold=0.05, fill_holes=True, dilate_pixels=0)
             _, error = self_.brain_pca.is_valid(brain_mask)
@@ -546,7 +557,7 @@ def generate_and_extract_features_3d_streaming(
         if pca_errors:
             pca_mean_error = float(np.mean(pca_errors))
             pca_pass_rate = float(np.mean([e <= self_.brain_pca.error_threshold for e in pca_errors]))
-            logger.debug(f"[3D GenMetrics] PCA shape: mean_error={pca_mean_error:.6f}, "
+            logger.debug(f"[3D GenMetrics] Brain PCA: mean_error={pca_mean_error:.6f}, "
                          f"pass_rate={pca_pass_rate:.0%}")
 
     # Diversity samples (keep first 2 on CPU)

@@ -896,8 +896,9 @@ class GenerationMetrics:
             image_keys=self.image_keys,
         )
 
-        # PCA brain shape model (optional, for 3D shape quality tracking)
-        self.brain_pca = None
+        # PCA shape models (optional, for 3D shape quality tracking)
+        self.brain_pca = None  # Brain shape for bravo/image modes
+        self.seg_pca = None    # Tumor pattern for seg modes
 
         # Fixed conditioning masks (loaded once, used every epoch)
         self.fixed_conditioning_masks: torch.Tensor | None = None

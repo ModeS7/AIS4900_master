@@ -176,6 +176,14 @@ class GenerationMetricsManager:
         elif self.is_main_process:
             logger.warning(f"Brain PCA model not found: {pca_path} (PCA metrics disabled)")
 
+        # Also load seg PCA for seg modes
+        seg_pca_path = repo_root / 'data' / f'seg_pca_{h}x{w}x{pad_d}.npz'
+        if seg_pca_path.exists():
+            self._metrics.seg_pca = BrainPCAModel(seg_pca_path)
+            if self.is_main_process:
+                logger.info(f"Seg PCA model loaded: {seg_pca_path.name} "
+                            f"(threshold={self._metrics.seg_pca.error_threshold:.8f})")
+
     def initialize(
         self,
         train_dataset: Dataset,
