@@ -328,7 +328,7 @@ def main():
     model = load_diffusion_model(
         args.checkpoint, device=device,
         in_channels=in_ch, out_channels=out_ch,
-        compile_model=True, spatial_dims=3,
+        compile_model=False, spatial_dims=3,
     )
 
     # Load decoder for latent/wavelet models
