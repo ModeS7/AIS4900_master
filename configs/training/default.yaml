@@ -285,6 +285,7 @@ diffusion_mixup:
   enabled: false             # Enable diffusion mixup
   alpha: 0.2                 # Beta distribution parameter (0.2 = mostly near-real, mild mixing)
   prob: 0.5                  # Probability of applying mixup per step (0.5 = half steps are real)
+  warmup_epochs: 0           # Linear warmup: prob ramps from 0 to target over this many epochs
 
 # Optimizer settings
 optimizer:

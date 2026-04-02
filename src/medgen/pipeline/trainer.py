@@ -259,9 +259,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self._mixup_enabled = mixup_cfg.get('enabled', False)
         self._mixup_alpha = mixup_cfg.get('alpha', 0.2)
         self._mixup_prob = mixup_cfg.get('prob', 0.5)
+        self._mixup_warmup_epochs = mixup_cfg.get('warmup_epochs', 0)
         self._mixup_buffer: dict | None = None  # Stores previous encoded sample
         if self._mixup_enabled and self.is_main_process:
-            logger.info(f"Diffusion mixup enabled: alpha={self._mixup_alpha}, prob={self._mixup_prob}")
+            warmup_str = f", warmup={self._mixup_warmup_epochs}ep" if self._mixup_warmup_epochs > 0 else ""
+            logger.info(f"Diffusion mixup enabled: alpha={self._mixup_alpha}, prob={self._mixup_prob}{warmup_str}")
 
         # Mode embedding and size bin embedding
         self._setup_conditional_embeddings()
@@ -578,11 +580,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
         curr_images = images
         curr_labels = labels
 
-        # Check if we should apply mixup this step
+        # Check if we should apply mixup this step (with warmup)
         buf = self._mixup_buffer
+        effective_prob = self._mixup_prob
+        if self._mixup_warmup_epochs > 0 and self.current_epoch < self._mixup_warmup_epochs:
+            effective_prob = self._mixup_prob * (self.current_epoch / self._mixup_warmup_epochs)
         should_mix = (
             buf is not None
-            and random.random() < self._mixup_prob
+            and random.random() < effective_prob
         )
 
         if should_mix:
