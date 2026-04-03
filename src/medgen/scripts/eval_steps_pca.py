@@ -281,6 +281,10 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--space', type=str, default='pixel', choices=['pixel', 'latent', 'wavelet'],
                         help='Diffusion space (pixel, latent, wavelet)')
+    parser.add_argument('--compression-checkpoint', type=str, default=None,
+                        help='VQ-VAE checkpoint for latent space (required if --space=latent)')
+    parser.add_argument('--compression-type', type=str, default='vqvae',
+                        help='Compression type (vqvae, vae)')
     parser.add_argument('--shift-ratio', type=float, default=1.0, help='Time-shift ratio')
     parser.add_argument('--compute-fid', action='store_true', help='Also compute FID/KID/CMMD')
     parser.add_argument('--ref-split', type=str, default='test1', help='Reference split for FID')
@@ -301,14 +305,16 @@ def main():
     base_in_ch = ckpt_cfg.get('in_channels', 2)
     base_out_ch = ckpt_cfg.get('out_channels', 1)
 
-    # Latent config (may be nested under different keys)
-    latent_cfg = ckpt_cfg.get('latent', {})
-    compression_ckpt = latent_cfg.get('compression_checkpoint', None)
-    compression_type = latent_cfg.get('compression_type', 'vqvae')
+    # DDPM-specific config
+    prediction_type = ckpt_cfg.get('prediction_type', 'sample')
+    noise_schedule = ckpt_cfg.get('noise_schedule', 'linear_beta')
+
     del ckpt
 
     is_latent = args.space == 'latent'
     is_wavelet = args.space == 'wavelet'
+    compression_ckpt = args.compression_checkpoint
+    compression_type = args.compression_type
 
     # Compute actual model channels based on space (same as find_optimal_steps.py)
     decoder = None
@@ -359,10 +365,13 @@ def main():
     if strategy_type == 'ddpm':
         from medgen.diffusion.strategy_ddpm import DDPMStrategy
         strategy = DDPMStrategy()
+        strategy.setup_scheduler(num_timesteps=1000, image_size=args.image_size,
+                                 depth_size=args.depth, spatial_dims=3,
+                                 prediction_type=prediction_type, schedule=noise_schedule)
     else:
         strategy = RFlowStrategy()
-    strategy.setup_scheduler(num_timesteps=1000, image_size=args.image_size,
-                             depth_size=args.depth, spatial_dims=3)
+        strategy.setup_scheduler(num_timesteps=1000, image_size=args.image_size,
+                                 depth_size=args.depth, spatial_dims=3)
 
     # Apply time-shift
     if args.shift_ratio != 1.0:

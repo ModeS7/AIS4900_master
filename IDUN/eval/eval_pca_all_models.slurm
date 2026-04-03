@@ -34,6 +34,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 PCA_MODEL="/cluster/work/modestas/AIS4900_master/data/brain_pca_256x256x160.npz"
 OUT_BASE="/cluster/work/modestas/MedicalDataSets/eval_pca_all"
+VQVAE_CKPT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
 STEPS=20
 VOLS=25
 
@@ -142,6 +143,7 @@ for entry in "${LDM_MODELS[@]}"; do
         --shift-ratio 1.0 \
         --seed 42 \
         --space latent \
+        --compression-checkpoint "${VQVAE_CKPT}" \
         --compute-fid --ref-split test1
 done
 
