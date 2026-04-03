@@ -101,7 +101,7 @@ def generate_and_evaluate(
                 with torch.no_grad():
                     output = decoder(output)
 
-        output = torch.clamp(output, 0, 1)
+        output = torch.clamp(output.float(), 0, 1)
 
         # PCA on first channel (brain shape)
         bravo_np = output[0, 0].cpu().numpy()
@@ -335,9 +335,9 @@ def main():
         logger.info(f"Latent space: {latent_channels}ch, {sf}x spatial, {depth_sf}x depth")
     elif is_wavelet:
         logger.info("Loading wavelet encoder/decoder")
-        from medgen.models.haar_wavelet_3d import HaarWavelet3D, InverseHaarWavelet3D
-        wavelet_encoder = HaarWavelet3D().to(device)
-        decoder = InverseHaarWavelet3D().to(device)
+        from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
+        wavelet_encoder = HaarForward3D().to(device)
+        decoder = HaarInverse3D().to(device)
         wav_ch = 8  # 8 wavelet subbands
         in_ch = base_in_ch * wav_ch
         out_ch = base_out_ch * wav_ch
