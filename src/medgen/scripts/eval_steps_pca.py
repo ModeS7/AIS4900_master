@@ -410,6 +410,7 @@ def main():
         noise_h = args.image_size // sf
         noise_w = args.image_size // sf
         noise_ch = base_out_ch * wav_ch
+        latent_channels = wav_ch  # Strategy needs this for noise/cond split
     else:
         noise_depth = args.depth
         noise_h = args.image_size
