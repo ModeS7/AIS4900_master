@@ -69,10 +69,11 @@ for entry in "${PIXEL_MODELS[@]}"; do
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
         --seed 42 \
+        --space pixel \
         --compute-fid --ref-split test1
 done
 
-# === WDM models (wavelet space, same interface as pixel) ===
+# === WDM models (wavelet space) ===
 WDM_MODELS=(
     "exp26:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp26_wdm_scoreaug_20260325-013334/checkpoint_latest.pt"
     "exp26_1:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_latest.pt"
@@ -102,10 +103,11 @@ for entry in "${WDM_MODELS[@]}"; do
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
         --seed 42 \
+        --space wavelet \
         --compute-fid --ref-split test1
 done
 
-# === LDM models (need latent decoding - handled by model loading) ===
+# === LDM models (latent space, need VQ-VAE decoding) ===
 LDM_MODELS=(
     "exp21_2:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_latest.pt"
     "exp22_2:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp22_2_ldm_4x_dit_l_20260304-100612/checkpoint_latest.pt"
@@ -139,6 +141,7 @@ for entry in "${LDM_MODELS[@]}"; do
         --step-list ${STEPS} \
         --shift-ratio 1.0 \
         --seed 42 \
+        --space latent \
         --compute-fid --ref-split test1
 done
 

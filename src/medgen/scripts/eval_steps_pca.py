@@ -279,6 +279,8 @@ def main():
     parser.add_argument('--step-list', type=str, default=None,
                         help='Comma-separated step counts (overrides lo/hi)')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--space', type=str, default='pixel', choices=['pixel', 'latent', 'wavelet'],
+                        help='Diffusion space (pixel, latent, wavelet)')
     parser.add_argument('--shift-ratio', type=float, default=1.0, help='Time-shift ratio')
     parser.add_argument('--compute-fid', action='store_true', help='Also compute FID/KID/CMMD')
     parser.add_argument('--ref-split', type=str, default='test1', help='Reference split for FID')
@@ -293,18 +295,20 @@ def main():
     # Load checkpoint config (same approach as find_optimal_steps.py)
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     ckpt_cfg = ckpt.get('config', {})
-    latent_cfg = ckpt_cfg.get('latent', {})
-    is_latent = latent_cfg.get('enabled', False)
-    compression_ckpt = latent_cfg.get('compression_checkpoint', None)
-    compression_type = latent_cfg.get('compression_type', 'vqvae')
-    wavelet_cfg = ckpt_cfg.get('wavelet', {})
-    is_wavelet = wavelet_cfg.get('enabled', False)
     strategy_type = ckpt_cfg.get('strategy', 'rflow')
 
     # Base channels from mode config (e.g., bravo: in=2, out=1)
     base_in_ch = ckpt_cfg.get('in_channels', 2)
     base_out_ch = ckpt_cfg.get('out_channels', 1)
+
+    # Latent config (may be nested under different keys)
+    latent_cfg = ckpt_cfg.get('latent', {})
+    compression_ckpt = latent_cfg.get('compression_checkpoint', None)
+    compression_type = latent_cfg.get('compression_type', 'vqvae')
     del ckpt
+
+    is_latent = args.space == 'latent'
+    is_wavelet = args.space == 'wavelet'
 
     # Compute actual model channels based on space (same as find_optimal_steps.py)
     decoder = None
@@ -314,15 +318,14 @@ def main():
     if is_latent and compression_ckpt:
         logger.info(f"Loading VQ-VAE decoder: {compression_ckpt}")
         from medgen.data.loaders.compression_detection import load_compression_model
-        comp_model = load_compression_model(
+        # Returns 5-tuple: (model, type, spatial_dims, scale_factor, latent_channels)
+        comp_model, _, _, sf, latent_channels = load_compression_model(
             compression_ckpt, compression_type=compression_type, device=device, spatial_dims=3,
         )
         decoder = comp_model.decode
-        latent_channels = comp_model.latent_channels if hasattr(comp_model, 'latent_channels') else 4
+        depth_sf = sf  # Same scale for depth in 3D VQ-VAE
         in_ch = base_in_ch * latent_channels
         out_ch = base_out_ch * latent_channels
-        sf = comp_model.spatial_scale_factor if hasattr(comp_model, 'spatial_scale_factor') else 4
-        depth_sf = comp_model.depth_scale_factor if hasattr(comp_model, 'depth_scale_factor') else sf
         logger.info(f"Latent space: {latent_channels}ch, {sf}x spatial, {depth_sf}x depth")
     elif is_wavelet:
         logger.info("Loading wavelet encoder/decoder")
