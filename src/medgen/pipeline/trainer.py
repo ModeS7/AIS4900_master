@@ -583,8 +583,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Check if we should apply mixup this step (with warmup)
         buf = self._mixup_buffer
         effective_prob = self._mixup_prob
-        if self._mixup_warmup_epochs > 0 and self.current_epoch < self._mixup_warmup_epochs:
-            effective_prob = self._mixup_prob * (self.current_epoch / self._mixup_warmup_epochs)
+        if self._mixup_warmup_epochs > 0 and self._current_epoch < self._mixup_warmup_epochs:
+            effective_prob = self._mixup_prob * (self._current_epoch / self._mixup_warmup_epochs)
         should_mix = (
             buf is not None
             and random.random() < effective_prob
