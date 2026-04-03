@@ -290,6 +290,7 @@ def main():
     logger.info(f"PCA model: {args.pca_model} (threshold={pca.error_threshold:.6f})")
 
     # Load checkpoint config to detect model type
+    # Load checkpoint config (same approach as find_optimal_steps.py)
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     ckpt_cfg = ckpt.get('config', {})
     latent_cfg = ckpt_cfg.get('latent', {})
@@ -298,30 +299,50 @@ def main():
     compression_type = latent_cfg.get('compression_type', 'vqvae')
     wavelet_cfg = ckpt_cfg.get('wavelet', {})
     is_wavelet = wavelet_cfg.get('enabled', False)
-    in_ch = ckpt_cfg.get('in_channels', 2)
-    out_ch = ckpt_cfg.get('out_channels', 1)
-    latent_channels = 1
-
-    # Detect strategy from checkpoint
     strategy_type = ckpt_cfg.get('strategy', 'rflow')
+
+    # Base channels from mode config (e.g., bravo: in=2, out=1)
+    base_in_ch = ckpt_cfg.get('in_channels', 2)
+    base_out_ch = ckpt_cfg.get('out_channels', 1)
     del ckpt
 
-    # For WDM/LDM, infer actual channels from state dict (mode config has wrong values)
-    if is_wavelet or is_latent:
-        ckpt_sd = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-        sd = ckpt_sd.get('model_state_dict', ckpt_sd)
-        for key, tensor in sd.items():
-            if key.endswith('conv_in.conv.weight') or key.endswith('x_embedder.proj.weight'):
-                in_ch = tensor.shape[1]
-            if key.endswith('out.2.conv.weight') or key.endswith('final_layer.linear.weight'):
-                out_ch = tensor.shape[0]
-                if key.endswith('final_layer.linear.weight'):
-                    # DiT: output = out_ch * patch_size^3, need to divide
-                    pass  # handled by load_diffusion_model
-        del ckpt_sd
+    # Compute actual model channels based on space (same as find_optimal_steps.py)
+    decoder = None
+    latent_channels = 1
+    comp_model = None
 
-    logger.info(f"Model type: {'latent' if is_latent else 'wavelet' if is_wavelet else 'pixel'}")
-    logger.info(f"Strategy: {strategy_type}, in_ch={in_ch}, out_ch={out_ch}")
+    if is_latent and compression_ckpt:
+        logger.info(f"Loading VQ-VAE decoder: {compression_ckpt}")
+        from medgen.data.loaders.compression_detection import load_compression_model
+        comp_model = load_compression_model(
+            compression_ckpt, compression_type=compression_type, device=device, spatial_dims=3,
+        )
+        decoder = comp_model.decode
+        latent_channels = comp_model.latent_channels if hasattr(comp_model, 'latent_channels') else 4
+        in_ch = base_in_ch * latent_channels
+        out_ch = base_out_ch * latent_channels
+        sf = comp_model.spatial_scale_factor if hasattr(comp_model, 'spatial_scale_factor') else 4
+        depth_sf = comp_model.depth_scale_factor if hasattr(comp_model, 'depth_scale_factor') else sf
+        logger.info(f"Latent space: {latent_channels}ch, {sf}x spatial, {depth_sf}x depth")
+    elif is_wavelet:
+        logger.info("Loading wavelet encoder/decoder")
+        from medgen.models.haar_wavelet_3d import HaarWavelet3D, InverseHaarWavelet3D
+        wavelet_encoder = HaarWavelet3D().to(device)
+        decoder = InverseHaarWavelet3D().to(device)
+        wav_ch = 8  # 8 wavelet subbands
+        in_ch = base_in_ch * wav_ch
+        out_ch = base_out_ch * wav_ch
+        sf = 2
+        depth_sf = 2
+    else:
+        in_ch = base_in_ch
+        out_ch = base_out_ch
+        sf = 1
+        depth_sf = 1
+
+    space_name = 'latent' if is_latent else 'wavelet' if is_wavelet else 'pixel'
+    logger.info(f"Model type: {space_name}")
+    logger.info(f"Strategy: {strategy_type}, base_ch=({base_in_ch},{base_out_ch}), model_ch=({in_ch},{out_ch})")
 
     # Load model with correct channels
     logger.info(f"Loading model: {args.checkpoint}")
@@ -330,20 +351,6 @@ def main():
         in_channels=in_ch, out_channels=out_ch,
         compile_model=False, spatial_dims=3,
     )
-
-    # Load decoder for latent/wavelet models
-    decoder = None
-    if is_latent and compression_ckpt:
-        logger.info(f"Loading VQ-VAE decoder: {compression_ckpt}")
-        from medgen.data.loaders.compression_detection import load_compression_model
-        comp_model = load_compression_model(compression_ckpt, compression_type=compression_type, device=device, spatial_dims=3)
-        decoder = comp_model.decode
-        latent_channels = comp_model.latent_channels if hasattr(comp_model, 'latent_channels') else 4
-        logger.info(f"Latent channels: {latent_channels}")
-    elif is_wavelet:
-        logger.info("Loading wavelet decoder")
-        from medgen.models.haar_wavelet_3d import InverseHaarWavelet3D
-        decoder = InverseHaarWavelet3D().to(device)
 
     # Setup strategy
     if strategy_type == 'ddpm':
@@ -366,8 +373,8 @@ def main():
     logger.info(f"Loading {args.num_volumes} conditioning masks from val split...")
     cond_masks = load_conditioning_masks(data_root, args.num_volumes, args.depth, args.image_size)
 
-    # Encode conditioning for latent models
-    if is_latent and decoder is not None:
+    # Encode conditioning for latent/wavelet models
+    if is_latent and comp_model is not None:
         logger.info("Encoding conditioning masks to latent space...")
         encoded_masks = []
         for m in cond_masks:
@@ -378,10 +385,8 @@ def main():
         noise_depth = cond_masks[0].shape[2]
         noise_h = cond_masks[0].shape[3]
         noise_w = cond_masks[0].shape[4]
-        noise_ch = latent_channels
+        noise_ch = base_out_ch * latent_channels
     elif is_wavelet:
-        from medgen.models.haar_wavelet_3d import HaarWavelet3D
-        wavelet_encoder = HaarWavelet3D().to(device)
         logger.info("Encoding conditioning masks to wavelet space...")
         encoded_masks = []
         for m in cond_masks:
@@ -389,15 +394,15 @@ def main():
                 enc = wavelet_encoder(m.to(device))
             encoded_masks.append(enc.cpu())
         cond_masks = encoded_masks
-        noise_depth = args.depth // 2
-        noise_h = args.image_size // 2
-        noise_w = args.image_size // 2
-        noise_ch = 8  # 8 wavelet subbands
+        noise_depth = args.depth // depth_sf
+        noise_h = args.image_size // sf
+        noise_w = args.image_size // sf
+        noise_ch = base_out_ch * wav_ch
     else:
         noise_depth = args.depth
         noise_h = args.image_size
         noise_w = args.image_size
-        noise_ch = out_ch  # pixel space
+        noise_ch = out_ch
 
     # Pre-generate noise (same for all step counts)
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
