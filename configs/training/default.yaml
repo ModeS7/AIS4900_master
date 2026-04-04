@@ -26,6 +26,7 @@ learning_rate: 1.0e-4      # Base learning rate
 gradient_clip_norm: 1.0    # Max gradient norm (prevents explosions)
 warmup_epochs: 5           # Linear warmup epochs (0.1x -> 1x LR)
 num_figures: 20            # Total figure/extended-metric events during training
+collapse_window: 10        # Stop if MSE spikes >3x best and stays flat for this many epochs
 augment: false             # Data augmentation (disabled by default for diffusion)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
 rescale_data: false        # Rescale [0,1] data to [-1,1] for pixel-space diffusion (opt-in)

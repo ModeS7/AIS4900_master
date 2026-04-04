@@ -106,6 +106,9 @@ class BaseTrainer(ABC):
 
         # Signal handling for graceful SLURM shutdown (SIGTERM + SIGUSR1)
         self._sigterm_received = False
+        self._collapse_detected = False
+        self._recent_mse: list[float] = []  # All MSE values for collapse detection
+        self._collapse_window = tc.collapse_window  # Epochs of no improvement before declaring collapse
         self._install_signal_handlers()
 
         # Determine if running on cluster
@@ -413,12 +416,40 @@ class BaseTrainer(ABC):
     def _should_stop_early(self) -> bool:
         """Check if training should stop early.
 
-        Default: Always returns False (no early stopping).
-        Subclasses can override to implement early stopping logic.
+        Detects mean collapse dynamically: a sudden MSE spike (>3x the running
+        minimum) followed by no recovery for N epochs indicates the model has
+        collapsed to predicting the mean.
 
         Returns:
             True if training should stop, False otherwise.
         """
+        if len(self._recent_mse) < self._collapse_window + 5:
+            return False  # Need enough history
+
+        # Find the best MSE achieved before the last N epochs
+        history = self._recent_mse[:-self._collapse_window]
+        best_before = min(history)
+
+        # Check the last N epochs
+        recent = self._recent_mse[-self._collapse_window:]
+        worst_recent = min(recent)  # Best of the recent window
+
+        # Collapse = recent MSE is >3x worse than best AND not improving
+        if best_before > 0 and worst_recent > best_before * 3:
+            # Check no improvement: std of recent is very small (flat line)
+            import numpy as _np
+            recent_std = float(_np.std(recent))
+            recent_mean = float(_np.mean(recent))
+            relative_std = recent_std / max(recent_mean, 1e-8)
+
+            if relative_std < 0.05:  # Less than 5% variation = flat, no recovery
+                logger.error(
+                    f"COLLAPSE DETECTED: MSE jumped from {best_before:.6f} to {recent_mean:.4f} "
+                    f"(>{best_before * 3:.4f}) and stayed flat for {self._collapse_window} epochs "
+                    f"(std={recent_std:.6f}, {relative_std:.1%} variation). Stopping training."
+                )
+                self._collapse_detected = True
+                return True
         return False
 
     def _on_training_end(self, total_time: float) -> None:
@@ -768,6 +799,10 @@ class BaseTrainer(ABC):
                 # Training
                 avg_losses = self.train_epoch(train_loader, epoch)
 
+                # Track MSE for collapse detection
+                mse = avg_losses.get('MSE', avg_losses.get('mse', avg_losses.get('loss', 0.0)))
+                self._recent_mse.append(mse)
+
                 # On SIGTERM: skip validation, just save checkpoint and exit
                 if self._sigterm_received and self.is_main_process:
                     logger.info("SIGTERM: skipping validation, saving checkpoint and exiting.")
@@ -810,6 +845,11 @@ class BaseTrainer(ABC):
 
             total_time = time.time() - total_start
             self._on_training_end(total_time)
+
+        if self._collapse_detected:
+            import sys
+            logger.error("Training collapsed (mean prediction). Exiting with error code 1.")
+            sys.exit(1)
 
         return last_epoch
 

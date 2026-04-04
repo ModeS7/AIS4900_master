@@ -293,6 +293,8 @@ class BaseTrainingConfig:
     keep_last_n_checkpoints: int = 0
     # Experiment name (for fallback save dir)
     name: str = ""
+    # Collapse detection: stop if MSE spikes >3x best and stays flat for N epochs
+    collapse_window: int = 10
 
     def __post_init__(self):
         if self.n_epochs <= 0:
