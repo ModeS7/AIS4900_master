@@ -309,6 +309,12 @@ def main():
     prediction_type = ckpt_cfg.get('prediction_type', 'sample')
     noise_schedule = ckpt_cfg.get('noise_schedule', 'linear_beta')
 
+    # Wavelet normalization stats (needed for WDM decode)
+    wavelet_cfg = ckpt_cfg.get('wavelet', {})
+    wavelet_shift = wavelet_cfg.get('wavelet_shift')
+    wavelet_scale = wavelet_cfg.get('wavelet_scale')
+    wavelet_rescale = wavelet_cfg.get('rescale', False)
+
     del ckpt
 
     is_latent = args.space == 'latent'
@@ -334,15 +340,20 @@ def main():
         out_ch = base_out_ch * latent_channels
         logger.info(f"Latent space: {latent_channels}ch, {sf}x spatial, {depth_sf}x depth")
     elif is_wavelet:
-        logger.info("Loading wavelet encoder/decoder")
-        from medgen.models.haar_wavelet_3d import HaarForward3D, HaarInverse3D
-        wavelet_encoder = HaarForward3D().to(device)
-        decoder = HaarInverse3D().to(device)
-        wav_ch = 8  # 8 wavelet subbands
+        from medgen.diffusion.spaces import WaveletSpace
+        if wavelet_shift is None or wavelet_scale is None:
+            raise ValueError(
+                "WDM checkpoint missing wavelet normalization stats. "
+                "Cannot evaluate without wavelet_shift/wavelet_scale in checkpoint config."
+            )
+        wavelet_space = WaveletSpace(shift=wavelet_shift, scale=wavelet_scale, rescale=wavelet_rescale)
+        decoder = wavelet_space.decode
+        wav_ch = 8
         in_ch = base_in_ch * wav_ch
         out_ch = base_out_ch * wav_ch
         sf = 2
         depth_sf = 2
+        logger.info(f"Wavelet space: 8 subbands, normalized, rescale={wavelet_rescale}")
     else:
         in_ch = base_in_ch
         out_ch = base_out_ch
@@ -399,11 +410,11 @@ def main():
         noise_w = cond_masks[0].shape[4]
         noise_ch = base_out_ch * latent_channels
     elif is_wavelet:
-        logger.info("Encoding conditioning masks to wavelet space...")
+        logger.info("Encoding conditioning masks to wavelet space (normalized)...")
         encoded_masks = []
         for m in cond_masks:
             with torch.no_grad():
-                enc = wavelet_encoder(m.to(device))
+                enc = wavelet_space.encode(m.to(device))
             encoded_masks.append(enc.cpu())
         cond_masks = encoded_masks
         noise_depth = args.depth // depth_sf
