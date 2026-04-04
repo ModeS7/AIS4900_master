@@ -17,7 +17,6 @@
 # Architecture: DiT-L 478M in 4x compressed latent space
 # Mode: bravo_seg_cond, latent diffusion (normalize=false)
 # Strategy: RFlow (continuous timesteps)
-# Runs: ImageNet FID sweep, then RadImageNet FID sweep
 
 cd ${SLURM_SUBMIT_DIR}
 

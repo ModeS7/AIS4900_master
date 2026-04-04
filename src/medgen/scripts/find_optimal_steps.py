@@ -211,10 +211,7 @@ def _setup_latent_space(
         if latent_seg_shift is not None:
             logger.info(f"  Seg normalization: shift={latent_seg_shift}, scale={latent_seg_scale}")
     else:
-        raise ValueError(
-            "Checkpoint has no latent normalization stats (missing config.latent.latent_shift). "
-            "Retrain with the fixed profiling.py that saves stats in the checkpoint."
-        )
+        logger.info("  Latent normalization: disabled (no stats in checkpoint)")
 
     # Slicewise encoding: 2D compression model applied slice-by-slice to 3D volumes
     slicewise = (comp_spatial_dims == 2 and spatial_dims == 3)
@@ -638,6 +635,16 @@ def main():
         out_channels=model_out_channels,
     )
 
+    # ── Load PCA brain shape model (auto-discover) ──────────────────────
+    brain_pca = None
+    from pathlib import Path as _Path
+    _repo_root = _Path(__file__).resolve().parents[3]
+    _pca_path = _repo_root / 'data' / f'brain_pca_{pixel_image_size}x{pixel_image_size}x{pixel_depth}.npz'
+    if _pca_path.exists() and not is_seg:
+        from medgen.metrics.brain_mask import BrainPCAModel
+        brain_pca = BrainPCAModel(_pca_path)
+        logger.info(f"Brain PCA loaded: {_pca_path.name} (threshold={brain_pca.error_threshold:.6f})")
+
     # ── Search history for logging ────────────────────────────────────────
     history = []
 
@@ -665,6 +672,19 @@ def main():
                 modality=ref_modality,
             )
 
+        # PCA brain shape evaluation (CPU, no GPU needed)
+        pca_mean_error = None
+        pca_pass_rate = None
+        if brain_pca is not None:
+            from medgen.metrics.brain_mask import create_brain_mask
+            pca_errors = []
+            for vol in volumes:
+                mask = create_brain_mask(vol, threshold=0.05, fill_holes=True, dilate_pixels=0)
+                _, err = brain_pca.is_valid(mask)
+                pca_errors.append(err)
+            pca_mean_error = float(np.mean(pca_errors))
+            pca_pass_rate = float(np.mean([e <= brain_pca.error_threshold for e in pca_errors]))
+
         elapsed = time.time() - t0
 
         if args.metric == 'morphological':
@@ -686,7 +706,7 @@ def main():
                 f"count={morph.count_dist:.4f})  ({elapsed:.0f}s)"
             )
 
-            history.append({
+            entry = {
                 'steps': num_steps,
                 'morphological': morph.total,
                 'morph_volume': morph.volume_dist,
@@ -699,7 +719,11 @@ def main():
                 'n_gen_tumors': morph.n_gen_tumors,
                 'wall_time_s': wall_time,
                 'eval_time_s': elapsed,
-            })
+            }
+            if pca_mean_error is not None:
+                entry['pca_mean_error'] = pca_mean_error
+                entry['pca_pass_rate'] = pca_pass_rate
+            history.append(entry)
         else:
             # Standard FID/KID/CMMD metrics
             split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
@@ -721,12 +745,13 @@ def main():
                 'fid_radimagenet': fid_rin, 'kid_radimagenet': kid_rin,
             }[args.metric]
 
+            pca_str = f"  PCA={pca_mean_error:.6f} ({pca_pass_rate:.0%})" if pca_mean_error is not None else ""
             logger.info(
                 f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
-                f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}  ({elapsed:.0f}s)"
+                f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}{pca_str}  ({elapsed:.0f}s)"
             )
 
-            history.append({
+            entry = {
                 'steps': num_steps,
                 'fid': fid,
                 'kid_mean': kid,
@@ -737,7 +762,11 @@ def main():
                 'kid_radimagenet_std': m['kid_radimagenet_std'],
                 'wall_time_s': wall_time,
                 'eval_time_s': elapsed,
-            })
+            }
+            if pca_mean_error is not None:
+                entry['pca_mean_error'] = pca_mean_error
+                entry['pca_pass_rate'] = pca_pass_rate
+            history.append(entry)
 
         # Save incremental results
         _save_history(output_dir, history, args)
