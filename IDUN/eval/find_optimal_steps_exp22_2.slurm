@@ -36,7 +36,7 @@ DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp22_2_ldm_4x_dit_l_20260304-100612/checkpoint_latest.pt"
 COMP_CKPT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
 
-BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42 --space latent --compression-checkpoint ${COMP_CKPT}"
+BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 100 --ref-split test --seed 42 --space latent --compression-checkpoint ${COMP_CKPT}"
 
 if [ ! -f "$CKPT" ]; then
     CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp22_2_ldm_4x_dit_l_20260304-100612/checkpoint_best.pt"
