@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -15,11 +15,10 @@
 
 # exp22_2: LDM 4x DiT-L 478M, bravo (256x256x160), RFlow
 # Architecture: DiT-L 478M in 4x compressed latent space
-# Mode: bravo, latent diffusion
+# Mode: bravo_seg_cond, latent diffusion (normalize=false)
 # Strategy: RFlow (continuous timesteps)
 # Runs: ImageNet FID sweep, then RadImageNet FID sweep
 
-# === Environment setup ===
 cd ${SLURM_SUBMIT_DIR}
 
 echo "=== Find Optimal Steps: exp22_2 (LDM 4x DiT-L bravo 256x256x160) ==="
@@ -35,9 +34,11 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42"
-
 CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp22_2_ldm_4x_dit_l_20260304-100612/checkpoint_latest.pt"
+COMP_CKPT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
+
+BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 50 --ref-split test --seed 42 --space latent --compression-checkpoint ${COMP_CKPT}"
+
 if [ ! -f "$CKPT" ]; then
     CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp22_2_ldm_4x_dit_l_20260304-100612/checkpoint_best.pt"
 fi
@@ -48,6 +49,7 @@ if [ ! -f "$CKPT" ]; then
 fi
 
 echo "Checkpoint: $CKPT"
+echo "Compression: $COMP_CKPT"
 
 # ============================================================
 # 1) Optimize by ImageNet FID
