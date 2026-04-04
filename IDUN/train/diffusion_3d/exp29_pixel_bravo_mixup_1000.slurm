@@ -87,7 +87,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.diffusion_mixup.enabled=true \
     training.diffusion_mixup.alpha=0.2 \
     training.diffusion_mixup.prob=0.5 \
-    training.diffusion_mixup.warmup_epochs=50 \
+    training.diffusion_mixup.warmup_epochs=0 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
