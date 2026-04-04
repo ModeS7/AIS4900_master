@@ -159,30 +159,18 @@ class GenerationMetricsManager:
         from pathlib import Path
 
         from medgen.metrics.brain_mask import BrainPCAModel
-        # Auto-discover: data/brain_pca_{H}x{W}x{D}.npz relative to repo root
+        # Auto-discover: find any brain_pca_*.npz / seg_pca_*.npz (resolution-independent)
         repo_root = Path(__file__).resolve().parents[3]
-        h = w = self.image_size
-        d = self.original_depth or 160
-        # Use padded depth (generation depth) for PCA filename
-        pad_d = d + 10 if d == 150 else d  # reverse trim_slices=10
-        pca_path = repo_root / 'data' / f'brain_pca_{h}x{w}x{pad_d}.npz'
-        if self.is_main_process:
-            logger.info(f"Brain PCA: looking for {pca_path}")
-        if pca_path.exists():
-            self._metrics.brain_pca = BrainPCAModel(pca_path)
-            if self.is_main_process:
-                logger.info(f"Brain PCA model loaded: {pca_path.name} "
-                            f"(threshold={self._metrics.brain_pca.error_threshold:.6f})")
-        elif self.is_main_process:
-            logger.warning(f"Brain PCA model not found: {pca_path} (PCA metrics disabled)")
-
-        # Also load seg PCA for seg modes
-        seg_pca_path = repo_root / 'data' / f'seg_pca_{h}x{w}x{pad_d}.npz'
-        if seg_pca_path.exists():
-            self._metrics.seg_pca = BrainPCAModel(seg_pca_path)
-            if self.is_main_process:
-                logger.info(f"Seg PCA model loaded: {seg_pca_path.name} "
-                            f"(threshold={self._metrics.seg_pca.error_threshold:.8f})")
+        for prefix, attr in [('brain', 'brain_pca'), ('seg', 'seg_pca')]:
+            candidates = sorted(repo_root.glob(f'data/{prefix}_pca_*.npz'))
+            if candidates:
+                pca = BrainPCAModel(candidates[0])
+                setattr(self._metrics, attr, pca)
+                if self.is_main_process:
+                    logger.info(f"{prefix.title()} PCA loaded: {candidates[0].name} "
+                                f"(threshold={pca.error_threshold:.6f})")
+            elif self.is_main_process:
+                logger.warning(f"No {prefix}_pca_*.npz found in data/ (PCA metrics disabled)")
 
     def initialize(
         self,

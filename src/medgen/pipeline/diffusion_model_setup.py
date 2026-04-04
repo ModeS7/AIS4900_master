@@ -457,13 +457,11 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
             from medgen.metrics.brain_mask import BrainPCAModel
             repo_root = Path(__file__).resolve().parents[3]
-            # Get image_size from volume config or spatial shape
-            shape = trainer._get_spatial_shape()
-            image_size = shape[-1] if shape else 256  # H or W from (D,H,W) or (H,W)
-            depth = shape[0] if shape and len(shape) == 3 else 160
             for prefix in ('brain', 'seg'):
-                pca_path = repo_root / 'data' / f'{prefix}_pca_{image_size}x{image_size}x{depth}.npz'
-                if pca_path.exists():
+                # Find any PCA file for this prefix (resolution-independent)
+                candidates = sorted(repo_root.glob(f'data/{prefix}_pca_*.npz'))
+                if candidates:
+                    pca_path = candidates[0]
                     pca = BrainPCAModel(pca_path)
                     setattr(trainer._gen_metrics, f'{prefix}_pca', pca)
                     if trainer.is_main_process:
