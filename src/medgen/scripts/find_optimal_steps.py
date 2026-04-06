@@ -331,7 +331,7 @@ def main():
 
     # Metric
     parser.add_argument('--metric', choices=[
-        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological',
+        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological', 'pca',
     ], default='fid',
                         help='Metric to minimize (default: fid)')
     parser.add_argument('--ref-split', default='all',
@@ -525,7 +525,11 @@ def main():
     ref_masks_3d = None  # Only set for morphological metric
     eval_ref = None      # Only set for FID/KID/CMMD metrics
 
-    if args.metric == 'morphological':
+    if args.metric == 'pca':
+        if brain_pca is None:
+            raise ValueError("PCA metric requires brain PCA model but none found in data/")
+        logger.info("PCA metric selected — no reference features needed")
+    elif args.metric == 'morphological':
         logger.info("Loading reference masks for morphological comparison...")
         ref_masks_3d = []
         # Load all masks from the reference split
@@ -556,7 +560,7 @@ def main():
     # Only load/extract features for splits we actually need.
     # For --ref-split test: load only test features (~300 MB vs ~2 GB for all).
     # For --ref-split all: must load all per-split features to concatenate.
-    if args.metric != 'morphological' and args.ref_split == 'all':
+    if args.metric not in ('morphological', 'pca') and args.ref_split == 'all':
         ref_features = get_or_cache_reference_features(
             splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
             modality=ref_modality, build_all=False,
@@ -569,7 +573,7 @@ def main():
         logger.info(f"  all: {eval_ref['all']['resnet'].shape[0]} features")
         del ref_features
         gc.collect()
-    elif args.metric != 'morphological' and args.ref_split in splits:
+    elif args.metric not in ('morphological', 'pca') and args.ref_split in splits:
         # Only load the single needed split
         needed_splits = {args.ref_split: splits[args.ref_split]}
         ref_features = get_or_cache_reference_features(
@@ -579,7 +583,7 @@ def main():
         eval_ref = {args.ref_split: ref_features[args.ref_split]}
         del ref_features
         gc.collect()
-    elif args.metric != 'morphological':
+    elif args.metric not in ('morphological', 'pca'):
         available = list(splits.keys()) + ['all']
         raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
 
@@ -687,7 +691,33 @@ def main():
 
         elapsed = time.time() - t0
 
-        if args.metric == 'morphological':
+        if args.metric == 'pca':
+            # PCA-only: return mean PCA error as the optimization target
+            if pca_mean_error is None:
+                raise RuntimeError("PCA model not loaded but --metric pca requested")
+
+            logger.info(
+                f"  euler/{num_steps}: PCA_error={pca_mean_error:.6f}  "
+                f"PCA_pass={pca_pass_rate:.0%}  ({elapsed:.0f}s)"
+            )
+
+            entry = {
+                'steps': num_steps,
+                'pca_mean_error': pca_mean_error,
+                'pca_pass_rate': pca_pass_rate,
+                'wall_time_s': wall_time,
+                'eval_time_s': elapsed,
+            }
+            history.append(entry)
+
+            _save_history(output_dir, history, args)
+            del volumes
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            return pca_mean_error
+
+        elif args.metric == 'morphological':
             # Morphological comparison: extract masks and compare distributions
             from medgen.metrics.morphological import compute_morphological_score
 

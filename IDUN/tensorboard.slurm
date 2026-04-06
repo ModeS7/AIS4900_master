@@ -17,6 +17,7 @@ CHAIN_MAX=50
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 
 # === Signal handler for auto-chaining ===
+# Try to land on the same node so the URL stays the same
 handle_timeout() {
     echo "=== Wall time approaching (SIGUSR1). Resubmitting TensorBoard... ==="
     kill $PID 2>/dev/null
@@ -28,8 +29,20 @@ handle_timeout() {
         exit 0
     fi
 
-    sbatch --export=ALL,CHAIN_COUNT=${NEXT_COUNT} "$0"
-    echo "Resubmitted chain segment ${NEXT_COUNT}/${CHAIN_MAX}"
+    PREV_NODE="${SLURM_JOB_NODELIST}"
+
+    # Try to get the same node for 60s (keeps the URL stable)
+    NEW_JOB=$(sbatch --export=ALL,CHAIN_COUNT=${NEXT_COUNT},PREV_NODE=${PREV_NODE} \
+        --nodelist="${PREV_NODE}" --immediate=60 "$0" 2>&1)
+
+    if echo "$NEW_JOB" | grep -q "Submitted"; then
+        echo "Resubmitted on SAME node ${PREV_NODE}: ${NEW_JOB}"
+    else
+        # Fallback: any available node
+        NEW_JOB=$(sbatch --export=ALL,CHAIN_COUNT=${NEXT_COUNT},PREV_NODE=${PREV_NODE} "$0" 2>&1)
+        echo "Same node unavailable, resubmitted on ANY node: ${NEW_JOB}"
+    fi
+
     exit 0
 }
 
@@ -56,6 +69,11 @@ echo "Log:   ${LOGDIR}"
 echo ""
 echo "Open in browser:"
 echo "  https://apps.hpc.ntnu.no/rnode/${SLURM_JOB_NODELIST}/${PORT}/"
+if [ -n "${PREV_NODE:-}" ] && [ "${PREV_NODE}" != "${SLURM_JOB_NODELIST}" ]; then
+    echo ""
+    echo "WARNING: Node changed from ${PREV_NODE} -> ${SLURM_JOB_NODELIST}"
+    echo "         Update your browser URL!"
+fi
 echo "============================================"
 
 tensorboard --logdir=${LOGDIR} --port=${PORT} --bind_all &
