@@ -3,8 +3,8 @@
 Uses argparse (NOT Hydra) — nnU-Net has its own config system.
 
 Workflow per experiment:
-    1. Set nnU-Net env vars (shared raw + preprocessed, per-experiment results)
-    2. Install experiment-specific splits_final.json
+    1. Set nnU-Net env vars (per-experiment isolated preprocessed + results)
+    2. Create isolated preprocessed dir with experiment-specific splits
     3. Register custom TensorBoard trainer
     4. Run nnU-Net training for specified fold(s)
 
@@ -33,14 +33,23 @@ import shutil
 import torch
 
 
-def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
+def _setup_env(
+    nnunet_base: str,
+    nnunet_results: str,
+    experiment_name: str,
+    isolated_preprocessed: str | None = None,
+) -> None:
     """Set nnU-Net environment variables.
 
-    Raw and preprocessed are under nnunet_base (dataset storage).
+    Raw data is under nnunet_base. Preprocessed points to the isolated
+    per-experiment dir (if provided) to avoid split race conditions.
     Results are under nnunet_results (per-experiment).
     """
     os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')  # noqa: SIM112
-    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
+    if isolated_preprocessed is not None:
+        os.environ['nnUNet_preprocessed'] = isolated_preprocessed  # noqa: SIM112
+    else:
+        os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
     os.environ['nnUNet_results'] = os.path.join(  # noqa: SIM112
         nnunet_results, experiment_name,
     )
@@ -134,18 +143,21 @@ def main() -> None:
     print(f"  Experiment: {experiment_name}")
     print(f"  Folds: {folds}")
 
-    # 1. Set environment variables (per-experiment results dir)
+    # 1. Set raw + results env vars (preprocessed set after isolation)
     print("\nEnvironment:")
-    _setup_env(args.nnunet_base, args.nnunet_results, experiment_name)
+    shared_preprocessed = os.path.join(args.nnunet_base, 'nnUNet_preprocessed')
 
-    # 2. Install experiment-specific splits
-    print("\nInstalling splits:")
+    # 2. Create isolated preprocessed dir with experiment-specific splits
+    # This prevents race conditions when multiple experiments run concurrently.
+    print("\nCreating isolated preprocessed dir:")
     from medgen.downstream.nnunet.splits import (
         _load_case_info,
+        create_isolated_preprocessed_dir,
         generate_experiment_splits,
-        install_splits,
     )
 
+    # Need raw env var set to load case info
+    os.environ['nnUNet_raw'] = os.path.join(args.nnunet_base, 'nnUNet_raw')  # noqa: SIM112
     case_info = _load_case_info(os.environ['nnUNet_raw'], args.dataset_id)  # noqa: SIM112
     splits = generate_experiment_splits(
         experiment=args.experiment,
@@ -153,7 +165,16 @@ def main() -> None:
         synthetic_cases=case_info['synthetic_cases'],
         n_synthetic=args.n_synthetic,
     )
-    install_splits(splits, os.environ['nnUNet_preprocessed'], args.dataset_id)  # noqa: SIM112
+    isolated_preprocessed = create_isolated_preprocessed_dir(
+        experiment_name=experiment_name,
+        splits=splits,
+        nnunet_preprocessed=shared_preprocessed,
+        dataset_id=args.dataset_id,
+    )
+
+    # Now set all env vars with the isolated preprocessed path
+    _setup_env(args.nnunet_base, args.nnunet_results, experiment_name,
+               isolated_preprocessed=isolated_preprocessed)
 
     # 3. Register custom trainer
     print("\nRegistering trainer:")

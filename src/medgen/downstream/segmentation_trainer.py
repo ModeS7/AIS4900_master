@@ -364,6 +364,10 @@ class SegmentationTrainer(BaseTrainer):
         if self.val_loader is None:
             return {}
 
+        # Save RNG state so validation doesn't affect training reproducibility
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state(self.device) if torch.cuda.is_available() else None
+
         self.model.eval()
         self.regional_tracker.reset()
         self.global_metrics.reset()
@@ -498,6 +502,11 @@ class SegmentationTrainer(BaseTrainer):
                 global_str += f", HD95: {metrics['hd95']:.1f}"
             det_str = f"Det: {metrics.get('detection_rate', 0):.0%}, FP: {metrics.get('false_positives', 0):.0f}"
             logger.info(f"Validation - {dice_str} | {size_str} | {global_str} | {det_str}")
+
+        # Restore RNG state so validation doesn't affect training
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state, self.device)
 
         return metrics
 

@@ -764,10 +764,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     # Dual mode: apply same mask to both modalities
                     keys = list(noise.keys())
                     aug_diff_mask = self._create_aug_diff_mask(noise[keys[0]])
+                    images = {k: v * aug_diff_mask for k, v in images.items()}
                     noise = {k: v * aug_diff_mask for k, v in noise.items()}
                     noisy_images = {k: v * aug_diff_mask for k, v in noisy_images.items()}
                 else:
                     aug_diff_mask = self._create_aug_diff_mask(noise)
+                    images = images * aug_diff_mask
                     noise = noise * aug_diff_mask
                     noisy_images = noisy_images * aug_diff_mask
 

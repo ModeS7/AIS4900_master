@@ -276,6 +276,30 @@ class TestRFlowStrategy:
 
         assert noisy.shape == images.shape
 
+    def test_add_noise_numerical_correctness(self, rflow_strategy_2d):
+        """RFlow add_noise must follow x_t = (1-t̃)*x_0 + t̃*noise where t̃ = t/T."""
+        images = torch.randn(2, 1, 64, 64)
+        noise = torch.randn_like(images)
+        T = rflow_strategy_2d.scheduler.num_train_timesteps
+
+        # Test at t=0 (clean) and t=T (noise)
+        t_zero = torch.zeros(2, dtype=torch.long)
+        noisy_zero = rflow_strategy_2d.add_noise(images, noise, t_zero)
+        assert torch.allclose(noisy_zero, images, atol=1e-5), "t=0 should return clean images"
+
+        t_max = torch.full((2,), T, dtype=torch.long)
+        noisy_max = rflow_strategy_2d.add_noise(images, noise, t_max)
+        assert torch.allclose(noisy_max, noise, atol=1e-5), "t=T should return pure noise"
+
+        # Test at intermediate timestep: x_t = (1-t̃)*x_0 + t̃*noise
+        t_mid = torch.full((2,), T // 2, dtype=torch.long)
+        noisy_mid = rflow_strategy_2d.add_noise(images, noise, t_mid)
+        t_norm = 0.5  # T//2 / T
+        expected = (1 - t_norm) * images + t_norm * noise
+        assert torch.allclose(noisy_mid, expected, atol=1e-5), (
+            f"Midpoint interpolation mismatch: max diff={torch.max(torch.abs(noisy_mid - expected)).item():.6f}"
+        )
+
     def test_compute_loss_returns_tuple(self, rflow_strategy_2d):
         """compute_loss returns (loss, predicted_clean)."""
         images = torch.randn(4, 1, 64, 64)

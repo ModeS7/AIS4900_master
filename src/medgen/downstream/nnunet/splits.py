@@ -163,6 +163,10 @@ def install_splits(
 ) -> str:
     """Write splits_final.json to the preprocessed dataset directory.
 
+    .. deprecated::
+        Use :func:`create_isolated_preprocessed_dir` instead to avoid
+        race conditions when running multiple experiments concurrently.
+
     Args:
         splits: List of fold dicts (from generate_experiment_splits).
         nnunet_preprocessed: nnU-Net preprocessed data root.
@@ -185,6 +189,86 @@ def install_splits(
     logger.info(f"Wrote {splits_path}")
 
     return splits_path
+
+
+def create_isolated_preprocessed_dir(
+    experiment_name: str,
+    splits: list[dict],
+    nnunet_preprocessed: str,
+    dataset_id: int = DATASET_ID,
+) -> str:
+    """Create a per-experiment isolated preprocessed directory.
+
+    Creates a shadow directory that symlinks all shared data (preprocessed
+    .npz files, gt_segmentations, plan JSONs) from the original preprocessed
+    dir but contains its own ``splits_final.json``. This prevents race
+    conditions when multiple experiments run concurrently on the same dataset.
+
+    Directory layout::
+
+        {nnunet_preprocessed}_{experiment_name}/
+        └── Dataset501_BrainMet/
+            ├── splits_final.json          ← real file (experiment-specific)
+            ├── nnUNetPlans_3d_fullres/    ← symlink to original
+            ├── gt_segmentations/          ← symlink to original
+            └── *.json                     ← symlinks to original
+
+    Args:
+        experiment_name: Unique experiment identifier (e.g. 'exp3_baseline').
+        splits: List of fold dicts (from generate_experiment_splits).
+        nnunet_preprocessed: Original nnU-Net preprocessed root
+            (e.g. ``/cluster/.../nnUNet_preprocessed``).
+        dataset_id: Dataset ID.
+
+    Returns:
+        Path to the new isolated preprocessed root (to use as
+        ``nnUNet_preprocessed`` env var).
+    """
+    # Find original dataset dir
+    original_dataset_dir = _find_preprocessed_dir(nnunet_preprocessed, dataset_id)
+    dataset_dirname = os.path.basename(original_dataset_dir)
+
+    # Create isolated parent: nnUNet_preprocessed_{experiment_name}/
+    isolated_root = f"{nnunet_preprocessed}_{experiment_name}"
+    isolated_dataset_dir = os.path.join(isolated_root, dataset_dirname)
+    os.makedirs(isolated_dataset_dir, exist_ok=True)
+
+    # Symlink all contents from original EXCEPT splits_final.json
+    for entry in os.listdir(original_dataset_dir):
+        src = os.path.join(original_dataset_dir, entry)
+        dst = os.path.join(isolated_dataset_dir, entry)
+
+        if entry == 'splits_final.json':
+            continue  # We'll write our own
+
+        if os.path.exists(dst) or os.path.islink(dst):
+            continue  # Already set up (e.g. from a previous chain segment)
+
+        os.symlink(src, dst)
+
+    # Write experiment-specific splits_final.json (real file, not symlink)
+    splits_path = os.path.join(isolated_dataset_dir, 'splits_final.json')
+    with open(splits_path, 'w') as f:
+        json.dump(splits, f, indent=2)
+
+    # Verify: read back and check case counts match
+    with open(splits_path) as f:
+        readback = json.load(f)
+    for i, (written, read) in enumerate(zip(splits, readback)):
+        assert len(read['train']) == len(written['train']), (
+            f"Fold {i} split verification failed: wrote {len(written['train'])} "
+            f"train cases but read back {len(read['train'])}. "
+            f"Possible race condition on {splits_path}"
+        )
+
+    # Log summary
+    for i, fold in enumerate(splits):
+        logger.info(
+            f"  Fold {i}: {len(fold['train'])} train, {len(fold['val'])} val"
+        )
+    logger.info(f"Isolated preprocessed dir: {isolated_dataset_dir}")
+
+    return isolated_root
 
 
 def main() -> None:

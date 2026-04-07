@@ -22,9 +22,20 @@ import torch
 
 
 def _setup_env(nnunet_base: str, nnunet_results: str, experiment_name: str) -> None:
-    """Set nnU-Net environment variables."""
+    """Set nnU-Net environment variables.
+
+    Points nnUNet_preprocessed to the per-experiment isolated dir if it exists
+    (created by train_nnunet.py), otherwise falls back to the shared dir.
+    """
     os.environ['nnUNet_raw'] = os.path.join(nnunet_base, 'nnUNet_raw')  # noqa: SIM112
-    os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
+
+    # Use isolated preprocessed dir if it exists (created during training)
+    isolated = os.path.join(nnunet_base, f'nnUNet_preprocessed_{experiment_name}')
+    if os.path.isdir(isolated):
+        os.environ['nnUNet_preprocessed'] = isolated  # noqa: SIM112
+    else:
+        os.environ['nnUNet_preprocessed'] = os.path.join(nnunet_base, 'nnUNet_preprocessed')  # noqa: SIM112
+
     os.environ['nnUNet_results'] = os.path.join(  # noqa: SIM112
         nnunet_results, experiment_name,
     )

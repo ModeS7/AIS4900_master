@@ -1,5 +1,6 @@
 # Core ML
 monai>=1.4.0
+torchvision  # For ResNet feature extractor (generation metrics)
 ema-pytorch>=0.7.0
 diffusers>=0.32.0  # For DC-AE (AutoencoderDC)
 

@@ -245,8 +245,8 @@ class RFlowStrategy(DiffusionStrategy):
                 keys = list(noisy_images.keys())
                 assert isinstance(prediction, torch.Tensor)
                 return {
-                    keys[0]: self._slice_channel(prediction, 0, 1),
-                    keys[1]: self._slice_channel(prediction, 1, 2),
+                    keys[i]: self._slice_channel(prediction, i, i + 1)
+                    for i in range(len(keys))
                 }
             return prediction
 
@@ -539,7 +539,7 @@ class RFlowStrategy(DiffusionStrategy):
         if parsed.is_dual:
             raise NotImplementedError("DiffRS does not support dual-image mode yet")
 
-        if cfg_ctx.get('cfg_scale', 1.0) > 1.0:
+        if conditioning.cfg_scale > 1.0:
             raise NotImplementedError(
                 "DiffRS does not support CFG (cfg_scale > 1.0) yet. "
                 "The sampling loop calls model() directly, bypassing "
