@@ -58,7 +58,12 @@ src/medgen/
 │   └── strategy_rflow.py        # RFlow strategy
 ├── downstream/                  # Downstream task evaluation
 │   ├── data.py                  # Segmentation data loading
-│   └── segmentation_trainer.py  # SegResNet trainer (2D/3D)
+│   ├── segmentation_trainer.py  # SegResNet trainer (2D/3D)
+│   └── nnunet/                  # nnU-Net v2 integration
+│       ├── convert_dataset.py   # Convert to nnU-Net format
+│       ├── evaluate.py          # 5-fold ensemble evaluation
+│       ├── splits.py            # Cross-validation splits
+│       └── trainer.py           # nnU-Net training wrapper
 ├── evaluation/                  # Test evaluation and validation
 │   ├── evaluation.py            # BaseTestEvaluator, CompressionTestEvaluator
 │   ├── evaluation_3d.py         # 3D-specific evaluation
@@ -90,6 +95,7 @@ src/medgen/
 │   ├── regional_manager.py      # Regional metrics management
 │   ├── sampler.py               # Metric sampling
 │   ├── seg_metrics.py           # Segmentation-specific metrics (Dice, IoU)
+│   ├── morphological.py         # Morphological comparison (Wasserstein on tumor stats)
 │   ├── mc_dropout.py            # Monte Carlo dropout for uncertainty estimation
 │   ├── visualization_constants.py # Viz constants
 │   ├── regional/               # Regional metrics (per-tumor)
@@ -231,6 +237,7 @@ configs/
 ├── mode/{seg,bravo,bravo_seg_cond,dual,multi,multi_modality,...}.yaml
 ├── mode/{seg_compression,seg_conditioned,seg_conditioned_3d,...}.yaml
 ├── mode/{seg_conditioned_input,seg_conditioned_input_3d}.yaml
+├── mode/triple.yaml             # Triple mode (T1pre + T1gd + FLAIR)
 └── training/{default,fast_debug,smoke_test}.yaml
 ```
 
@@ -267,7 +274,10 @@ configs/
 | `find_optimal_freeu.py` | Grid search for optimal FreeU (b, s) parameters | N/A | Argparse (not Hydra) |
 | `find_optimal_cfg.py` | Grid search for optimal CFG scale | N/A | Argparse (not Hydra) |
 | `synthesize_phema.py` | Post-hoc EMA synthesis sweep for optimal sigma_rel | N/A | Argparse (not Hydra) |
-| `eval_time_shift.py` | Evaluate time-shifted sampling ratios | N/A | Argparse (not Hydra) |
+| `eval_time_shift.py` | Evaluate time-shifted sampling ratios (sweep or golden-section search) | N/A | Argparse (not Hydra) |
+| `eval_steps_pca.py` | Golden-section search for optimal steps by PCA brain shape error | N/A | Argparse (not Hydra) |
+| `compute_brain_atlas.py` | Compute brain atlas (union of training brain masks) | N/A | Argparse |
+| `compute_brain_pca.py` | Compute PCA model from training brain masks | N/A | Argparse |
 
 ### Compression Training Config Names
 
@@ -753,6 +763,7 @@ def train(
 | `seg` | 1 | 1 | None | `[B, 1, H, W]` |
 | `bravo` | 2 | 1 | Seg mask | `[B, 2, H, W]` = [bravo, seg] |
 | `dual` | 3 | 2 | Seg mask | `[B, 3, H, W]` = [t1_pre, t1_gd, seg] |
+| `triple` | 4 | 3 | Seg mask | `[B, 4, H, W]` = [t1_pre, t1_gd, flair, seg] |
 | `multi` | 2 | 1 | Seg mask + mode_id | `[B, 2, H, W]` = [image, seg] + mode embedding |
 | `bravo_seg_cond` | 8 | 4 | Latent seg mask | `[B, 8, ...]` = [bravo_latent(4), seg_latent(4)] |
 | `seg_conditioned` | 1 + size_bins | 1 | Size bins (FiLM) | `[B, 1, H, W]` seg + size bin embedding |
@@ -1082,7 +1093,7 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
 ### Implementation Notes
 
 - **File**: `src/medgen/augmentation/score_aug.py`
-- **Wrapper**: `ScoreAugModelWrapper` injects omega conditioning into UNet's time embedding
+- **Wrapper**: `ScoreAugModelWrapper` injects omega conditioning into the model's time embedding (auto-detects `time_embed` for UNet or `t_embedder` for DiT/HDiT/UViT)
 - **torch.compile**: Inner UNet is compiled, wrapper (with data-dependent omega encoding) stays uncompiled
 - **Perceptual loss**: Skipped for non-invertible transforms (translation, cutout) since original space can't be recovered
 
@@ -1403,6 +1414,7 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 ### Downstream
 - `src/medgen/downstream/segmentation_trainer.py`: SegmentationTrainer (SegResNet, per-tumor-size Dice)
 - `src/medgen/downstream/data.py`: Downstream segmentation data loading
+- `src/medgen/downstream/nnunet/`: nnU-Net v2 integration (convert, train, evaluate, splits)
 
 ### Metrics
 - `src/medgen/metrics/unified.py`: UnifiedMetrics (MANDATORY for all trainers)
@@ -1411,6 +1423,7 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/metrics/mc_dropout.py`: Monte Carlo dropout for uncertainty estimation
 - `src/medgen/metrics/regional/`: Per-tumor regional metrics by size category
 - `src/medgen/metrics/generation.py`: KID, CMMD, FID (ResNet50 + BiomedCLIP)
+- `src/medgen/metrics/morphological.py`: Morphological comparison (Wasserstein on tumor volume/feret/spatial/count)
 - `src/medgen/metrics/figures.py`: Reconstruction figures
 - `src/medgen/metrics/tracking/`: Gradient, FLOPs, codebook, worst batch trackers
 
@@ -1445,7 +1458,10 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/scripts/find_optimal_freeu.py`: Grid search for optimal FreeU parameters (argparse)
 - `src/medgen/scripts/find_optimal_cfg.py`: Grid search for optimal CFG scale (argparse)
 - `src/medgen/scripts/synthesize_phema.py`: Post-hoc EMA synthesis sweep (argparse)
-- `src/medgen/scripts/eval_time_shift.py`: Evaluate time-shifted sampling schedules (argparse)
+- `src/medgen/scripts/eval_time_shift.py`: Evaluate time-shifted sampling (sweep or golden-section search, argparse)
+- `src/medgen/scripts/eval_steps_pca.py`: Golden-section search for optimal steps by PCA brain shape error (argparse)
+- `src/medgen/scripts/compute_brain_atlas.py`: Compute brain atlas from training masks (argparse)
+- `src/medgen/scripts/compute_brain_pca.py`: Compute PCA model from training brain masks (argparse)
 - `src/medgen/scripts/common.py`: Shared utilities
 
 ---

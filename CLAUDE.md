@@ -29,11 +29,12 @@ Before marking ANY task complete, STOP and verify:
 
 | Term | Meaning |
 |------|---------|
-| **Mode** | WHAT to generate: seg, bravo, dual, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond |
+| **Mode** | WHAT to generate: seg, bravo, dual, triple, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond |
 | **Strategy** | HOW to denoise: ddpm, rflow (continuous timesteps by default) |
 | **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT) |
 | **VAE dual** | 2 channels (t1_pre, t1_gd) - NO seg |
 | **Diffusion dual** | 3 channels (t1_pre, t1_gd, seg) - HAS seg |
+| **Diffusion triple** | 4 channels (t1_pre, t1_gd, flair, seg) - HAS seg |
 | **seg_conditioned** | Generate seg masks conditioned on tumor sizes (FiLM embedding) |
 | **seg_conditioned_input** | Generate seg masks with size bins as channel-concat input |
 | **bravo_seg_cond** | Latent diffusion: generate BRAVO latents conditioned on VQ-VAE seg latents |

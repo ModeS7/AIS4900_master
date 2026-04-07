@@ -117,6 +117,14 @@ python -m medgen.scripts.train model=uvit_3d model.variant=M mode=bravo strategy
 # Seg-conditioned diffusion (generate seg masks conditioned on tumor sizes)
 python -m medgen.scripts.train mode=seg_conditioned strategy=rflow
 
+# Dual mode (T1 pre + T1 gd, conditioned on seg mask)
+python -m medgen.scripts.train mode=dual strategy=rflow
+python -m medgen.scripts.train mode=dual strategy=rflow data.joint_normalization=true  # Joint norm
+
+# Triple mode (T1 pre + T1 gd + FLAIR, conditioned on seg mask)
+python -m medgen.scripts.train mode=triple strategy=rflow
+python -m medgen.scripts.train mode=triple strategy=rflow data.joint_normalization=true
+
 # With EMA (Exponential Moving Average)
 python -m medgen.scripts.train mode=bravo strategy=rflow \
     training.use_ema=true training.ema.decay=0.9999
@@ -420,6 +428,16 @@ python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \
 # Custom output subdirectory and sample count
 python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \
     num_samples=100 seg_model=... image_model=...
+
+# With time-shift ratio (SD3-style schedule shift, 2.0 is optimal)
+python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \
+    seg_model=... image_model=... \
+    shift_ratio_bravo=2.0 shift_ratio_seg=1.0
+
+# Resume generation from a specific image counter
+python -m medgen.scripts.generate paths=cluster spatial_dims=3 mode=bravo \
+    seg_model=... image_model=... \
+    current_image=250 num_images=525
 ```
 
 ---
@@ -504,6 +522,35 @@ python -m medgen.scripts.eval_time_shift \
 python -m medgen.scripts.synthesize_phema \
     --run-dir runs/diffusion_3d/bravo/exp1o_1_... \
     --data-root ~/MedicalDataSets/brainmetshare-3
+
+# Time-shift ratio golden-section search (continuous optimization)
+python -m medgen.scripts.eval_time_shift \
+    --checkpoint runs/checkpoint_bravo.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --num-volumes 25 --output-dir eval_time_shift \
+    --search --search-lo 1.0 --search-hi 5.0 --metric fid
+
+# Multi-metric step search (FID + RadImageNet FID + PCA in one run)
+# Shares generated volumes across metrics — ~50% faster than separate runs
+python -m medgen.scripts.find_optimal_steps \
+    --checkpoint runs/checkpoint_bravo.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --output-dir eval_steps_combined \
+    --metric fid,fid_radimagenet,pca --lo 10 --hi 100
+
+# Optimal step search by PCA brain shape error (single metric)
+python -m medgen.scripts.find_optimal_steps \
+    --checkpoint runs/checkpoint_bravo.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --output-dir eval_steps_pca \
+    --metric pca --lo 10 --hi 100
+
+# Optimal step search by morphological score
+python -m medgen.scripts.find_optimal_steps \
+    --checkpoint runs/checkpoint_bravo.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3 \
+    --output-dir eval_steps_morph \
+    --metric morphological --lo 10 --hi 100
 ```
 
 ---

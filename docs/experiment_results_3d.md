@@ -1,6 +1,6 @@
 # 3D Diffusion Experiment Results
 
-Last updated: March 24, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: April 7, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
@@ -15,6 +15,9 @@ Last updated: March 24, 2026. Data extracted from IDUN logs and TensorBoard runs
 | **Bravo pixel 256 (loss)** | exp23 (ScoreAug) | **0.00200** | 62.57 | 1000 | Best val loss of any experiment |
 | **Bravo LDM 4x (FID)** | exp22_2 (DiT-L) | 0.0847 | **47.41** | 500 | Best LDM FID |
 | **Bravo LDM 4x (UNet)** | exp21_2 (MAISI 167M) | 0.0767 | **50.89** | 500 | Best LDM UNet |
+| **Bravo LDM 4x+ScoreAug** | exp27 (DiT-L 1000ep) | — | **57.24** | 1000 | ScoreAug DiT-L |
+| **Dual pixel 128** | exp1v2 (T1pre+T1gd) | — | **32.80** | 500 | Best dual FID |
+| **Triple pixel 128** | exp1v3 (T1pre+T1gd+FLAIR) | — | **65.37** | 500 | Best triple FID |
 | **Bravo WDM** | exp19_2 (270M DDPM) | 0.178 | **67.32** | 500 | Best wavelet |
 | **Bravo 128 ControlNet** | exp6b (Stage 2) | 0.00304 | **49.62** | 500 | Best seg-conditioned gen |
 | **Bravo pixel 128** | exp8 (EMA) | 0.00227 | N/A | 500 | Best 128x128 |
@@ -97,6 +100,19 @@ Last updated: March 24, 2026. Data extracted from IDUN logs and TensorBoard runs
 | exp20_7 | Pixel 67M NoAttn | 256x256x160 | UNet 5L | 67M | rflow | bravo |
 | exp24 | Pixel Combined 270M | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp25 | Pixel Combined 17M | 256x256x160 | UNet 6L | 17M | rflow | bravo |
+| exp26 | WDM+ScoreAug 1000ep | 256x256x160 | UNet 5L | 270M | ddpm x0 | bravo |
+| exp26_1 | WDM vanilla 1000ep | 256x256x160 | UNet 5L | 270M | ddpm x0 | bravo |
+| exp27 | LDM DiT-L+ScoreAug | latent 64x64x40 | DiT-L p=2 | 478M | rflow | bravo_seg_cond |
+| exp28 | LDM MAISI+ScoreAug | latent 64x64x40 | UNet 4L | 167M | rflow | bravo_seg_cond |
+| exp28_1 | LDM MAISI+ScoreAug+Mixup | latent 64x64x40 | UNet 4L | 167M | rflow | bravo_seg_cond |
+| exp28_2 | LDM MAISI+ScoreAug v2 | latent 64x64x40 | UNet 4L | 167M | rflow | bravo_seg_cond |
+| exp1v2 | Pixel Dual (T1pre+T1gd) | 128x128x160 | UNet 5L | 270M | rflow | dual |
+| exp1v2_1 | Pixel Dual + Joint Norm | 128x128x160 | UNet 5L | 270M | rflow | dual |
+| exp1v3 | Pixel Triple (T1pre+T1gd+FLAIR) | 128x128x160 | UNet 5L | 270M | rflow | triple |
+| exp1v3_1 | Pixel Triple + Joint Norm | 128x128x160 | UNet 5L | 270M | rflow | triple |
+| exp12_5 | WDM Medium 250M | 128x128x160 | UNet 5L | ~250M | ddpm x0 | bravo |
+| exp12_6 | WDM DiT-S 128 | 128x128x160 | DiT-S p=2 | ~40M | ddpm x0 | bravo |
+| exp2e | Seg Multi-level Aux Bin | 128x128x160 | UNet 5L | 270M | rflow | seg_cond_3d |
 
 ---
 
@@ -1049,7 +1065,7 @@ Testing how model size affects generation quality at 256x256x160. All use RFlow,
 |-----------|----------|----------|-----------|-----------|
 | Best (ep 368) | 0.00202 | 0.003448 | 33.57 | 0.5714 |
 
-500 epochs complete. 72 gradient spikes. Best val loss 0.00247 — competitive with best techniques.
+500 epochs complete. 72 gradient spikes. Best val loss 0.00202 (ep 368).
 
 ---
 
@@ -1091,12 +1107,16 @@ Testing how model size affects generation quality at 256x256x160. All use RFlow,
 | exp1_1 (500ep) | FID_RIN | 46 | 0.674 | |
 | exp1_1 (1000ep) | FID | 27 | **19.12** | Best overall |
 | exp1_1 (1000ep) | FID_RIN | 49 | 0.714 | |
+| exp1_1 (1000ep v2) | FID | 32 | **20.84** | Repeat run, consistent |
+| exp1_1 (1000ep v2) | FID_RIN | 79 | **0.663** | Repeat run, consistent |
 | **exp23 (1000ep)** | **FID** | **27** | **20.38** | ScoreAug, within 1.3 of baseline |
 | **exp23 (1000ep)** | **FID_RIN** | **48** | **0.659** | **Best RadImageNet FID** |
 | exp1b (128, [-1,1]) | FID | 28 | 51.90 | |
 | exp1c (128, N(0,1)) | FID | 50 | 142.36 | Gaussian norm fails |
 
-**ImageNet FID vs RadImageNet FID disagree on optimal steps**: For exp23, ImageNet prefers 27 steps (FID 20.38) while RadImageNet prefers 48 steps (FID 0.659). ImageNet FID degrades sharply beyond 27 steps (20.38→28.05 at 48 steps) while RadImageNet FID keeps improving. CMMD is flat (~0.110) across all step counts. Practical choice: **27 steps** — best ImageNet FID with acceptable RadImageNet (0.93 vs 0.66).
+**exp1_1 v2 repeat confirms findings**: The repeat run of exp1_1 at 1000 epochs found FID 20.84 at 32 steps (vs 19.12 at 27 steps in original) and RadImageNet FID 0.663 at 79 steps (vs 0.714 at 49 steps). Small differences are expected with 25-volume evaluation variance, but both runs confirm the same pattern: ImageNet FID optimal at ~27-32 steps, RadImageNet FID improves up to ~50-79 steps. PCA pass rate is 100% across all step counts evaluated.
+
+**ImageNet FID vs RadImageNet FID disagree on optimal steps**: For exp23, ImageNet prefers 27 steps (FID 20.38) while RadImageNet prefers 48 steps (FID 0.659). ImageNet FID degrades sharply beyond 27 steps while RadImageNet FID keeps improving. CMMD is flat (~0.110) across all step counts. Practical choice: **27-32 steps** — best ImageNet FID with acceptable RadImageNet.
 
 ### Time-Shift Evaluation (exp1_1, Euler/25)
 
@@ -1278,7 +1298,188 @@ Only available for newer experiments (11 runs with >50 points).
 
 ---
 
-## Key Takeaways (Updated March 24, 2026)
+## Part 17: Multi-Modality Experiments (March-April 2026)
+
+### exp1v2: Dual (T1 pre + T1 gd) @ 128x128x160
+
+**Config**: 270M UNet, rflow, dual mode (in=3: noisy_t1_pre + noisy_t1_gd + seg, out=2), 500 epochs.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9439 | 33.44 | 0.7884 | **32.80** | **0.0216** | **0.1715** | 13 |
+| Latest (500ep) | 0.9418 | 32.39 | 0.6395 | 35.91 | 0.0299 | 0.1756 | |
+
+**First dual-modality experiment.** Jointly generates T1 pre-contrast and T1 post-gadolinium conditioned on segmentation mask. Strong FID (32.80) at 128x128.
+
+### exp1v2_1: Dual + Joint Normalization @ 128x128x160
+
+**Config**: Same as exp1v2 but with joint_normalization=true (all channels normalized together per patient).
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9559 | 32.84 | 0.5267 | **24.30** | **0.0097** | 0.2267 | 11 |
+| Latest (500ep) | 0.9261 | 30.64 | 0.6767 | 44.54 | 0.0376 | 0.1839 | |
+
+**Best-checkpoint FID 24.30 is remarkable for 128x128.** Joint normalization preserves relative intensity relationships between T1 pre and T1 gd. However, latest FID (44.54) is much worse than best (24.30), suggesting overfitting.
+
+### exp1v3: Triple (T1 pre + T1 gd + FLAIR) @ 128x128x160
+
+**Config**: 270M UNet, rflow, triple mode (in=4: noisy_t1_pre + noisy_t1_gd + noisy_flair + seg, out=3), 500 epochs.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9370 | 32.47 | 0.9223 | 65.37 | 0.0642 | 0.2506 | 51 |
+| Latest (500ep) | 0.9475 | 32.93 | 0.6537 | 79.68 | 0.0887 | 0.3276 | |
+
+Triple mode is harder than dual — FID 65.37 vs 32.80. LPIPS on best checkpoint (0.9223) is very high, suggesting best-ckpt reconstruction is poor despite good generation metrics. 51 gradient spikes — more unstable than dual (13).
+
+### exp1v3_1: Triple + Joint Normalization @ 128x128x160
+
+**Config**: Same as exp1v3 but with joint_normalization=true.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9434 | 32.16 | 0.7475 | 66.57 | 0.0735 | 0.3145 | 19 |
+| Latest (500ep) | 0.9412 | 32.04 | 0.6518 | 80.54 | 0.0890 | 0.3843 | |
+
+Joint normalization does NOT help triple mode (FID 66.57 vs 65.37). Fewer gradient spikes (19 vs 51).
+
+### Multi-Modality Summary
+
+| Experiment | Mode | Norm | FID (best) | KID (best) | CMMD (best) | Spikes |
+|-----------|------|------|-----------|-----------|------------|--------|
+| **exp1v2_1** | **Dual** | **Joint** | **24.30** | **0.0097** | 0.2267 | 11 |
+| exp1v2 | Dual | Independent | 32.80 | 0.0216 | **0.1715** | 13 |
+| exp1v3 | Triple | Independent | 65.37 | 0.0642 | **0.2506** | 51 |
+| exp1v3_1 | Triple | Joint | 66.57 | 0.0735 | 0.3145 | 19 |
+
+Joint normalization helps dual mode (FID 24→33) but not triple. Dual mode outperforms triple significantly.
+
+---
+
+## Part 18: LDM ScoreAug Experiments (March 2026)
+
+### exp27: LDM DiT-L + ScoreAug, 1000 epochs
+
+**Config**: DiT-L 478M, VQ-VAE 4x, ScoreAug (D-axis rotation only), torch.compile OFF, gradient_checkpointing ON. 8 chain segments.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9864 | 33.30 | 0.1150 | 60.02 | 0.0493 | 0.2899 | 0 |
+| Latest (1000ep) | 0.9863 | 33.96 | 0.1160 | **57.24** | **0.0477** | **0.2514** | |
+
+**ScoreAug did NOT improve DiT-L.** FID 57.24 is worse than exp22_2 (47.41 at 500ep). Likely because torch.compile was disabled (ScoreAug's dynamic shapes break Triton), reducing training efficiency. Zero gradient spikes though — very stable.
+
+### exp28: LDM MAISI UNet + ScoreAug, 1000 epochs
+
+**Config**: UNet MAISI 167M, VQ-VAE 4x, ScoreAug. 2 chain segments.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9830 | 31.39 | 0.1553 | 131.66 | 0.1368 | 0.3866 | 20 |
+| Latest (1000ep) | 0.9895 | 33.44 | 0.0970 | **79.91** | **0.0786** | **0.2612** | |
+
+**ScoreAug hurt MAISI UNet.** FID 79.91 at 1000ep is much worse than exp21_2 (50.89 at 500ep). Best-checkpoint FID (131.66) is catastrophic. ScoreAug's augmentations may be too aggressive for the smaller 167M model in latent space.
+
+### exp28_1: LDM MAISI + ScoreAug + Diffusion Mixup, 1000 epochs
+
+**Config**: Same as exp28 + diffusion mixup (alpha=0.2, prob=0.5).
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9868 | 32.68 | 0.1136 | 168.88 | 0.1857 | 0.3986 | 13 |
+| Latest (1000ep) | 0.9812 | 32.74 | 0.1553 | **98.56** | **0.0960** | **0.3725** | |
+
+**Mixup made things worse.** FID 98.56 is much worse than exp28 (79.91). Diffusion mixup in latent space with batch_size=1 may not provide useful interpolations.
+
+### exp28_2: LDM MAISI + ScoreAug v2, 1000 epochs
+
+**Config**: Same as exp28 but with ScoreAug v2 (stronger: stacked non-destructive + destructive transforms).
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9905 | 35.24 | 0.0970 | 93.32 | 0.1057 | 0.2819 | 16 |
+| Latest (1000ep) | 0.9836 | 33.51 | 0.1540 | **80.17** | **0.0776** | **0.2945** | |
+
+Stronger augmentation (v2) is similar to v1 (FID 80.17 vs 79.91). Best checkpoint has very good reconstruction (PSNR 35.24) but poor generation.
+
+### LDM ScoreAug Summary
+
+| Experiment | Architecture | ScoreAug | FID (latest) | vs Baseline |
+|-----------|-------------|----------|-------------|-------------|
+| exp22_2 (baseline) | DiT-L 478M | None | **47.41** | — |
+| exp27 | DiT-L 478M | Yes (1000ep) | 57.24 | +9.8 (worse) |
+| exp21_2 (baseline) | MAISI 167M | None | **50.89** | — |
+| exp28 | MAISI 167M | Yes (1000ep) | 79.91 | +29.0 (worse) |
+| exp28_1 | MAISI 167M | Yes + Mixup | 98.56 | +47.7 (worse) |
+| exp28_2 | MAISI 167M | Yes v2 | 80.17 | +29.3 (worse) |
+
+**ScoreAug does NOT help in latent space.** It works for pixel-space (exp23 improved over 1000ep) but hurts LDM. Likely reasons: (1) latent space is already compact and augmentations are too destructive, (2) torch.compile disabled for DiT (training efficiency loss), (3) 167M UNet may be too small for the added augmentation complexity.
+
+---
+
+## Part 19: WDM Extended Experiments (March 2026)
+
+### exp26: WDM 270M + ScoreAug, 1000 epochs
+
+**Config**: Same as exp19_2 (best WDM) + ScoreAug, 1000 epochs. DDPM x0, per-subband N(0,1).
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | Spikes | Status |
+|-----------|---------|------|-------|--------|--------|
+| Best | 0.9661 | 36.27 | 0.2521 | 1 | Gen metrics missing |
+
+Generation metrics not available — test eval likely crashed during metric computation. Training MSE ~0.35 at epoch 950 suggests the model may have partially collapsed.
+
+### exp26_1: WDM 270M vanilla, 1000 epochs
+
+**Config**: Same as exp19_2, extended to 1000 epochs without ScoreAug.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.9514 | 34.81 | 0.2612 | **79.03** | **0.0557** | **0.2320** | 3 |
+| Latest (1000ep) | 0.9430 | 34.30 | 0.2602 | 77.28 | 0.0511 | 0.2174 | |
+
+WDM at 1000ep (FID 77.28) is worse than at 500ep (exp19_2: FID 67.32). WDM is overfitting beyond 500 epochs — the KID trajectory was flat at 500ep, and now generation quality has degraded.
+
+---
+
+## Part 20: Additional Wavelet Experiments (Feb 2026)
+
+### exp12_5: WDM Medium 250M + DDPM x0 @ 128x128x160
+
+**Config**: UNet [64,128,256,512,512] ~250M, DDPM x0, [-1,1] rescale + raw DWT, attention at L3/L4, warmup=10, grad_clip=0.5.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.8986 | 30.10 | 0.7983 | **71.11** | **0.0443** | **0.3321** | 18 |
+| Latest (500ep) | 0.8403 | 28.19 | 0.7647 | — | — | — | |
+
+Scaled up from exp12_4 (~77M) to 250M. FID 71.11 at 128x128 is competitive with exp19_2 (67.32 at 256x256).
+
+### exp12_6: WDM DiT-S + DDPM x0 @ 128x128x160
+
+**Config**: DiT-S (~40M), DDPM x0, [-1,1] rescale + raw DWT, gradient_checkpointing=true. Same as exp19_6 but at 128x128.
+
+| Checkpoint | MS-SSIM | PSNR | LPIPS | FID | KID | CMMD | Spikes |
+|-----------|---------|------|-------|-----|-----|------|--------|
+| Best | 0.8980 | 30.19 | 0.6533 | **59.49** | **0.0385** | 0.3065 | 65 |
+| Latest (500ep) | — | — | — | 60.42 | — | 0.3124 | |
+
+DiT-S at 128x128 (FID 59.49) outperforms the 256x256 version exp19_6 (FID 110.88) — suggesting the 256x256 DiT-S was severely undertrained.
+
+---
+
+## Part 21: Additional Seg Experiments (Feb 2026)
+
+### exp2e: Seg Multi-level Auxiliary Bin Prediction @ 128x128x160
+
+**Config**: 270M UNet, rflow, seg_cond_3d, multi-level auxiliary bin prediction loss.
+
+500 epochs completed. 411 gradient spikes — extremely unstable. Generation metrics not available (possibly crashed). Not a viable approach due to instability.
+
+---
+
+## Key Takeaways (Updated April 7, 2026)
 
 1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep achieves FID 19.12 (27 Euler steps). exp23 (ScoreAug) is close at 20.38, with better RadImageNet FID (0.659 vs 0.714). In-training FID is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
 
@@ -1286,7 +1487,7 @@ Only available for newer experiments (11 runs with >50 points).
 
 3. **ScoreAug alone ≈ combined techniques**: exp24 (ScoreAug + AdjOffset + PosthocEMA + UniformT, 1000ep) achieved FID 62.87, essentially identical to exp23 (ScoreAug only, FID 62.57). Stacking techniques did not improve generation quality — but added instability (742 vs 9 gradient spikes). ScoreAug is the dominant contributor.
 
-4. **ScoreAug is the only technique that scales to long training**: exp23 completed 1000 epochs with continued improvement (KID slope -50.8%/100ep). Post-hoc FID 20.38 confirms quality. Other techniques plateau by 500 epochs.
+4. **ScoreAug helps pixel-space but HURTS latent-space**: exp23 (pixel, 1000ep) improved to FID 20.38. But exp27 (DiT-L LDM + ScoreAug, 1000ep) degraded to 57.24 vs baseline 47.41. exp28 (MAISI UNet LDM + ScoreAug) was even worse (79.91 vs 50.89). ScoreAug augmentations are too destructive for compact latent representations. Diffusion Mixup (exp28_1) and ScoreAug v2 (exp28_2) also failed in latent space.
 
 5. **Weight decay and attn dropout ran at 128x128, not 256x256**: exp1r/1s results (FID 43-49) are not comparable to 256x256 experiments.
 
@@ -1311,3 +1512,7 @@ Only available for newer experiments (11 runs with >50 points).
 15. **Generation metric trajectories matter more than val loss**: Val loss ranking does not predict generation quality. exp20_6 (17M) has val loss 0.00212 (near best) but FID 94.75 (near worst). Always evaluate with generation metrics.
 
 16. **Infrastructure remains the biggest bottleneck**: Checkpoint corruption, OOM kills, disk quota, torch.load bugs, torch.compile+ScoreAug incompatibility, and stalled chains have wasted more GPU hours than any hyperparameter choice.
+
+17. **Dual mode works well, triple mode is harder**: exp1v2_1 (dual + joint norm) achieves FID 24.30 at 128x128 — excellent for multi-modality. Triple mode (exp1v3, FID 65.37) is significantly worse. Joint normalization helps dual but not triple.
+
+18. **WDM overfits beyond 500 epochs**: exp26_1 (WDM 1000ep, FID 77.28) is worse than exp19_2 (WDM 500ep, FID 67.32). WDM was already converged at 500 epochs and degrades with longer training.

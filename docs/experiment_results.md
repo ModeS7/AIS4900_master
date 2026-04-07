@@ -1,6 +1,6 @@
 # Complete Experiment Results
 
-Last updated: February 23, 2026. Data extracted from IDUN logs (`IDUN/output/`) and TensorBoard runs (`runs_tb/`).
+Last updated: April 7, 2026. 2D data extracted from IDUN logs and TensorBoard runs. **3D results have moved to [`experiment_results_3d.md`](experiment_results_3d.md).**
 
 ---
 
@@ -24,16 +24,16 @@ Last updated: February 23, 2026. Data extracted from IDUN logs (`IDUN/output/`) 
 |--------|-------------------|-------------|------------|
 | **2D Diffusion** | 89 | SiT-S (exp12_1c) | val_loss=0.005604 |
 | **2D Diffusion (FID)** | 10 evaluated | SiT-S (exp12_1b) | FID=33.43, KID=0.038 |
-| **3D Diffusion Pixel** | ~25 runs (+24 pending) | exp1_1 256x256 | val_loss=0.00211 |
-| **3D Diffusion Latent** | ~15 runs | exp9_1 LDM 4x | val_loss=0.0764 (still improving) |
+| **3D Diffusion Pixel** | 40+ runs | See `experiment_results_3d.md` | FID=19.12 (exp1_1 1000ep post-hoc) |
+| **3D Diffusion Latent** | 15+ runs | See `experiment_results_3d.md` | FID=47.41 (exp22_2 DiT-L) |
 | **2D Compression VAE** | 5 | exp4 64lat | SSIM=0.999, val_G=0.001356 |
 | **2D Compression VQ-VAE** | 2 | exp6_1 4x | SSIM=0.997, val_G=0.002725 |
 | **2D Compression DC-AE** | ~12 | exp9_3 f128 | SSIM=0.997, PSNR=40.76 |
-| **3D Compression VQ-VAE** | 14 | exp8_1 4x lat4 | SSIM=0.995, PSNR=39.88 |
-| **3D Compression DC-AE** | 1 | exp10_1 | SSIM=0.935, PSNR=30.91 |
+| **3D Compression VQ-VAE** | 14 | exp8_1 4x lat4 | See `experiment_results_3d.md` |
+| **3D Compression DC-AE** | 1 | exp10_1 | See `experiment_results_3d.md` |
 | **Seg Compression 2D** | 4 | exp13_2 f64 | Dice=1.0000 |
-| **Seg Compression 3D** | 1 | exp11_2 VQ-VAE | Dice=0.904 |
-| **Downstream Seg 3D** | 2 completed | exp1 baseline | Test Dice=0.194 |
+| **Seg Compression 3D** | 1 | exp11_2 VQ-VAE | See `experiment_results_3d.md` |
+| **Downstream Seg 3D** | 7+ experiments | See `experiment_results_3d.md` | nnU-Net experiments running |
 
 ---
 
@@ -218,19 +218,9 @@ SiT-S wins on all three generation metrics.
 
 # 3D Diffusion Experiments
 
-## 3D Quick Reference: Best Results
+> **Moved to [`experiment_results_3d.md`](experiment_results_3d.md)** — the authoritative source for all 3D diffusion results (pixel, latent, wavelet, DiT, ControlNet, ScoreAug, dual/triple mode, and more).
 
-| Category | Experiment | Val Loss | Train MSE | Epochs | Notes |
-|----------|-----------|----------|-----------|--------|-------|
-| **Bravo pixel 128** | exp8 (EMA) | 0.00227 | 0.00129 | 500 | Best 128x128 |
-| **Bravo pixel 256** | exp1_1 (run2) | 0.00211 | 0.00284 | 500 | Best 256x256 |
-| **Bravo DiT pixel** | exp7 (2000ep) | 0.00234 | 0.00312 | 2000 | DiT-B patch=8, 134M |
-| **Seg pixel 128** | exp2 (run1) | 0.000373 | 0.000351 | 500 | Only stable 128 seg run |
-| **Seg pixel 256** | exp2b_1 (input) | 0.000336 | 0.000289 | 500 | Best seg overall |
-| **LDM 4x** | exp9_1 (mid UNet) | 0.0764 | 0.025 | 354 | **Still improving**, hit time limit |
-| **LDM 8x** | exp9_ldm_8x (run1) | 0.177 | 1.009 | 500 | Collapsed late training |
-
-## 3D Experiment Index
+## 3D Experiment Index (legacy — see experiment_results_3d.md for current)
 
 | ID | Type | Resolution | Architecture | Params | Strategy | Mode |
 |----|------|-----------|-------------|--------|----------|------|
@@ -679,7 +669,10 @@ MAISI pretrained VAE is significantly worse than our trained models (PSNR 27 vs 
 
 # 3D Compression Experiments
 
-## 3D VAE
+> **See [`experiment_results_3d.md`](experiment_results_3d.md) Part 7** for the authoritative 3D compression results.
+> Summary below is from early runs and may be outdated.
+
+## 3D VAE (legacy)
 
 | Experiment | Job | Epochs | MS-SSIM | PSNR | Best Loss | Notes |
 |-----------|-----|--------|---------|------|-----------|-------|
@@ -832,7 +825,7 @@ Dual slightly worse overall but better HD95 (24.0 vs 29.2) and large tumor Dice.
 
 ---
 
-# 3D Generation & Evaluation
+# 3D Generation & Evaluation (legacy — see experiment_results_3d.md Parts 8-14)
 
 ## Generated Datasets
 
@@ -856,7 +849,7 @@ Dual slightly worse overall but better HD95 (24.0 vs 29.2) and large tumor Dice.
 
 ---
 
-# 3D Sampling Improvement Evaluations (Feb 19-20, 2026)
+# 3D Sampling Improvement Evaluations (legacy — see experiment_results_3d.md Parts 8, 14)
 
 All evaluations use the **exp1_1 bravo pixel 256x256x160** model (best 3D bravo).
 Generated 25 volumes per configuration, evaluated against all reference splits.
