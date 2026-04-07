@@ -1,0 +1,26 @@
+# Normalize all text files to LF in the repository
+* text=auto
+
+# Force LF for these file types regardless of platform
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.sh text eol=lf
+*.slurm text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+
+# Binary files — don't touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.nii.gz binary
+*.npz binary
+*.pt binary
+*.pth binary
+*.pkl binary
+*.pdf binary
