@@ -90,6 +90,7 @@ def golden_section_search(
     lo: int,
     hi: int,
     tol: int = 1,
+    cache: dict[int, float] | None = None,
 ) -> tuple[int, float, dict[int, float]]:
     """Find integer minimizer of evaluate_fn on [lo, hi] via golden section.
 
@@ -98,12 +99,16 @@ def golden_section_search(
         lo: Lower bound (inclusive).
         hi: Upper bound (inclusive).
         tol: Stop when hi - lo <= tol.
+        cache: Optional pre-populated cache of step -> metric value.
+            When provided, already-evaluated step counts are skipped.
+            Useful for multi-metric searches sharing generated volumes.
 
     Returns:
-        (best_steps, best_fid, all_evaluations) where all_evaluations maps
-        steps -> fid for every point evaluated.
+        (best_steps, best_value, all_evaluations) where all_evaluations maps
+        steps -> value for every point evaluated.
     """
-    cache: dict[int, float] = {}
+    if cache is None:
+        cache = {}
 
     def eval_cached(n: int) -> float:
         if n not in cache:
@@ -330,10 +335,11 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
 
     # Metric
-    parser.add_argument('--metric', choices=[
-        'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological', 'pca',
-    ], default='fid',
-                        help='Metric to minimize (default: fid)')
+    parser.add_argument('--metric', default='fid',
+                        help='Metric(s) to minimize, comma-separated '
+                             '(default: fid). Options: fid, kid, cmmd, '
+                             'fid_radimagenet, kid_radimagenet, morphological, pca. '
+                             'Example: --metric fid,fid_radimagenet,pca')
     parser.add_argument('--ref-split', default='all',
                         help='Reference split for metric computation (default: all)')
     parser.add_argument('--save-volumes', action='store_true',
@@ -356,6 +362,14 @@ def main():
     parser.add_argument('--smoke-test', action='store_true',
                         help='Smoke test with tiny dummy model')
     args = parser.parse_args()
+
+    # Parse comma-separated metrics
+    VALID_METRICS = {'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological', 'pca'}
+    metrics = [m.strip() for m in args.metric.split(',')]
+    for m in metrics:
+        if m not in VALID_METRICS:
+            parser.error(f"Unknown metric '{m}'. Valid: {sorted(VALID_METRICS)}")
+    args.metrics = metrics
 
     if args.smoke_test:
         _run_smoke_test(args)
@@ -488,7 +502,7 @@ def main():
         logger.info(f"Model volume: {noise_image_size}x{noise_image_size}x{noise_depth}")
     logger.info(f"Search range: [{args.lo}, {args.hi}]")
     logger.info(f"Volumes per eval: {args.num_volumes}")
-    logger.info(f"Metric: {args.metric} (vs '{args.ref_split}')")
+    logger.info(f"Metrics: {', '.join(args.metrics)} (vs '{args.ref_split}')")
     logger.info(f"Expected evaluations: ~{int(math.log(args.hi - args.lo) / math.log(1/GR)) + 1}")
     logger.info("=" * 70)
 
@@ -520,16 +534,17 @@ def main():
                 for pid, seg in cond_list
             ]
 
-    # ── Morphological metric: load raw reference masks instead of features ──
+    # ── Determine what data each metric needs ────────────────────────────
     import gc
+    FID_METRICS = {'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet'}
+    needs_features = bool(FID_METRICS & set(args.metrics))
+    needs_morphological = 'morphological' in args.metrics
+    needs_pca = 'pca' in args.metrics
+
     ref_masks_3d = None  # Only set for morphological metric
     eval_ref = None      # Only set for FID/KID/CMMD metrics
 
-    if args.metric == 'pca':
-        if brain_pca is None:
-            raise ValueError("PCA metric requires brain PCA model but none found in data/")
-        logger.info("PCA metric selected — no reference features needed")
-    elif args.metric == 'morphological':
+    if needs_morphological:
         logger.info("Loading reference masks for morphological comparison...")
         ref_masks_3d = []
         # Load all masks from the reference split
@@ -552,40 +567,39 @@ def main():
                     vol = vol[:pixel_depth]
                 ref_masks_3d.append((vol > 0.5).astype(np.float32))
         logger.info(f"Loaded {len(ref_masks_3d)} reference masks from {len(ref_dirs)} splits")
-    else:
-        logger.info("Preparing reference features...")
+
+    if not needs_features and not needs_morphological:
+        logger.info("PCA-only mode — no reference features needed")
 
     cache_dir = output_dir / "reference_features"
 
-    # Only load/extract features for splits we actually need.
-    # For --ref-split test: load only test features (~300 MB vs ~2 GB for all).
-    # For --ref-split all: must load all per-split features to concatenate.
-    if args.metric not in ('morphological', 'pca') and args.ref_split == 'all':
-        ref_features = get_or_cache_reference_features(
-            splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
-            modality=ref_modality, build_all=False,
-        )
-        logger.info("Building combined 'all' reference features...")
-        eval_ref = {'all': {
-            key: torch.cat([ref_features[s][key] for s in splits], dim=0)
-            for key in ('resnet', 'resnet_radimagenet', 'clip')
-        }}
-        logger.info(f"  all: {eval_ref['all']['resnet'].shape[0]} features")
-        del ref_features
-        gc.collect()
-    elif args.metric not in ('morphological', 'pca') and args.ref_split in splits:
-        # Only load the single needed split
-        needed_splits = {args.ref_split: splits[args.ref_split]}
-        ref_features = get_or_cache_reference_features(
-            needed_splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
-            modality=ref_modality, build_all=False,
-        )
-        eval_ref = {args.ref_split: ref_features[args.ref_split]}
-        del ref_features
-        gc.collect()
-    elif args.metric not in ('morphological', 'pca'):
-        available = list(splits.keys()) + ['all']
-        raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
+    if needs_features:
+        logger.info("Preparing reference features...")
+        if args.ref_split == 'all':
+            ref_features = get_or_cache_reference_features(
+                splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
+                modality=ref_modality, build_all=False,
+            )
+            logger.info("Building combined 'all' reference features...")
+            eval_ref = {'all': {
+                key: torch.cat([ref_features[s][key] for s in splits], dim=0)
+                for key in ('resnet', 'resnet_radimagenet', 'clip')
+            }}
+            logger.info(f"  all: {eval_ref['all']['resnet'].shape[0]} features")
+            del ref_features
+            gc.collect()
+        elif args.ref_split in splits:
+            needed_splits = {args.ref_split: splits[args.ref_split]}
+            ref_features = get_or_cache_reference_features(
+                needed_splits, cache_dir, device, pixel_depth, args.trim_slices, pixel_image_size,
+                modality=ref_modality, build_all=False,
+            )
+            eval_ref = {args.ref_split: ref_features[args.ref_split]}
+            del ref_features
+            gc.collect()
+        else:
+            available = list(splits.keys()) + ['all']
+            raise ValueError(f"Reference split '{args.ref_split}' not found. Available: {available}")
 
     # ── Load model ────────────────────────────────────────────────────────
     from medgen.diffusion import load_diffusion_model
@@ -649,11 +663,18 @@ def main():
         brain_pca = BrainPCAModel(_pca_path)
         logger.info(f"Brain PCA loaded: {_pca_path.name} (threshold={brain_pca.error_threshold:.6f})")
 
+    if needs_pca and brain_pca is None:
+        raise ValueError("PCA metric requires brain PCA model but none found in data/")
+
     # ── Search history for logging ────────────────────────────────────────
     history = []
 
-    def evaluate_steps(num_steps: int) -> float:
-        """Generate volumes with euler/N and return the target metric."""
+    def evaluate_steps(num_steps: int) -> dict[str, float]:
+        """Generate volumes with euler/N and return ALL computed metrics.
+
+        Returns a dict mapping metric name -> value for every metric that
+        could be computed (depends on what reference data was loaded).
+        """
         solver_cfg = SolverConfig(solver='euler', steps=num_steps)
         logger.info(f"\n  Evaluating euler/{num_steps} ...")
 
@@ -676,9 +697,10 @@ def main():
                 modality=ref_modality,
             )
 
+        result: dict[str, float] = {}
+        entry: dict[str, object] = {'steps': num_steps, 'wall_time_s': wall_time}
+
         # PCA brain shape evaluation (CPU, no GPU needed)
-        pca_mean_error = None
-        pca_pass_rate = None
         if brain_pca is not None:
             from medgen.metrics.brain_mask import create_brain_mask
             pca_errors = []
@@ -688,56 +710,17 @@ def main():
                 pca_errors.append(err)
             pca_mean_error = float(np.mean(pca_errors))
             pca_pass_rate = float(np.mean([e <= brain_pca.error_threshold for e in pca_errors]))
+            result['pca'] = pca_mean_error
+            entry['pca_mean_error'] = pca_mean_error
+            entry['pca_pass_rate'] = pca_pass_rate
 
-        elapsed = time.time() - t0
-
-        if args.metric == 'pca':
-            # PCA-only: return mean PCA error as the optimization target
-            if pca_mean_error is None:
-                raise RuntimeError("PCA model not loaded but --metric pca requested")
-
-            logger.info(
-                f"  euler/{num_steps}: PCA_error={pca_mean_error:.6f}  "
-                f"PCA_pass={pca_pass_rate:.0%}  ({elapsed:.0f}s)"
-            )
-
-            entry = {
-                'steps': num_steps,
-                'pca_mean_error': pca_mean_error,
-                'pca_pass_rate': pca_pass_rate,
-                'wall_time_s': wall_time,
-                'eval_time_s': elapsed,
-            }
-            history.append(entry)
-
-            _save_history(output_dir, history, args)
-            del volumes
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            return pca_mean_error
-
-        elif args.metric == 'morphological':
-            # Morphological comparison: extract masks and compare distributions
+        # Morphological comparison
+        if ref_masks_3d is not None:
             from medgen.metrics.morphological import compute_morphological_score
-
-            gen_masks = []
-            for vol in volumes:
-                # vol is [D, H, W] numpy array, already binarized by generate_volumes
-                gen_masks.append((vol > 0.5).astype(np.float32))
-
+            gen_masks = [(vol > 0.5).astype(np.float32) for vol in volumes]
             morph = compute_morphological_score(ref_masks_3d, gen_masks)
-            target = morph.total
-
-            logger.info(
-                f"  euler/{num_steps}: morph={morph.total:.4f} "
-                f"(vol={morph.volume_dist:.4f}, feret={morph.feret_dist:.4f}, "
-                f"spatial=[{morph.spatial_d_dist:.4f}, {morph.spatial_h_dist:.4f}, {morph.spatial_w_dist:.4f}], "
-                f"count={morph.count_dist:.4f})  ({elapsed:.0f}s)"
-            )
-
-            entry = {
-                'steps': num_steps,
+            result['morphological'] = morph.total
+            entry.update({
                 'morphological': morph.total,
                 'morph_volume': morph.volume_dist,
                 'morph_feret': morph.feret_dist,
@@ -747,126 +730,157 @@ def main():
                 'morph_count': morph.count_dist,
                 'n_real_tumors': morph.n_real_tumors,
                 'n_gen_tumors': morph.n_gen_tumors,
-                'wall_time_s': wall_time,
-                'eval_time_s': elapsed,
-            }
-            if pca_mean_error is not None:
-                entry['pca_mean_error'] = pca_mean_error
-                entry['pca_pass_rate'] = pca_pass_rate
-            history.append(entry)
-        else:
-            # Standard FID/KID/CMMD metrics
-            split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
+            })
 
+        # FID/KID/CMMD metrics
+        if eval_ref is not None:
+            split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
             ref_metrics = split_metrics.get(args.ref_split)
             if ref_metrics is None:
                 raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
-
             from dataclasses import asdict
             m = asdict(ref_metrics)
-            fid = m['fid']
-            kid = m['kid_mean']
-            cmmd = m['cmmd']
-            fid_rin = m['fid_radimagenet']
-            kid_rin = m['kid_radimagenet_mean']
-
-            target = {
-                'fid': fid, 'kid': kid, 'cmmd': cmmd,
-                'fid_radimagenet': fid_rin, 'kid_radimagenet': kid_rin,
-            }[args.metric]
-
-            pca_str = f"  PCA={pca_mean_error:.6f} ({pca_pass_rate:.0%})" if pca_mean_error is not None else ""
-            logger.info(
-                f"  euler/{num_steps}: FID={fid:.2f}  KID={kid:.6f}  CMMD={cmmd:.6f}  "
-                f"FID_RIN={fid_rin:.2f}  KID_RIN={kid_rin:.6f}{pca_str}  ({elapsed:.0f}s)"
-            )
-
-            entry = {
-                'steps': num_steps,
-                'fid': fid,
-                'kid_mean': kid,
-                'kid_std': m['kid_std'],
-                'cmmd': cmmd,
-                'fid_radimagenet': fid_rin,
-                'kid_radimagenet_mean': kid_rin,
+            result.update({
+                'fid': m['fid'], 'kid': m['kid_mean'], 'cmmd': m['cmmd'],
+                'fid_radimagenet': m['fid_radimagenet'],
+                'kid_radimagenet': m['kid_radimagenet_mean'],
+            })
+            entry.update({
+                'fid': m['fid'], 'kid_mean': m['kid_mean'], 'kid_std': m['kid_std'],
+                'cmmd': m['cmmd'], 'fid_radimagenet': m['fid_radimagenet'],
+                'kid_radimagenet_mean': m['kid_radimagenet_mean'],
                 'kid_radimagenet_std': m['kid_radimagenet_std'],
-                'wall_time_s': wall_time,
-                'eval_time_s': elapsed,
-            }
-            if pca_mean_error is not None:
-                entry['pca_mean_error'] = pca_mean_error
-                entry['pca_pass_rate'] = pca_pass_rate
-            history.append(entry)
+            })
 
-        # Save incremental results
+        elapsed = time.time() - t0
+        entry['eval_time_s'] = elapsed
+
+        # Log summary line
+        parts = []
+        if 'fid' in result:
+            parts.append(f"FID={result['fid']:.2f}")
+            parts.append(f"FID_RIN={result['fid_radimagenet']:.2f}")
+        if 'pca' in result:
+            parts.append(f"PCA={result['pca']:.6f}")
+        if 'morphological' in result:
+            parts.append(f"morph={result['morphological']:.4f}")
+        logger.info(f"  euler/{num_steps}: {' | '.join(parts)}  ({elapsed:.0f}s)")
+
+        history.append(entry)
         _save_history(output_dir, history, args)
 
         del volumes
         gc.collect()
         torch.cuda.empty_cache()
 
-        return target
+        return result
 
-    # ── Run golden section search ─────────────────────────────────────────
+    # ── Run golden section search (multi-metric with shared cache) ────────
     total_start = time.time()
 
-    best_steps, best_val, all_evals = golden_section_search(
-        evaluate_steps, args.lo, args.hi, tol=args.tol,
-    )
+    # Shared evaluation cache: step_count -> dict of all metric values
+    eval_cache: dict[int, dict[str, float]] = {}
+
+    def evaluate_and_cache(num_steps: int) -> dict[str, float]:
+        """Generate volumes once per step count, return all metrics."""
+        if num_steps not in eval_cache:
+            eval_cache[num_steps] = evaluate_steps(num_steps)
+        else:
+            logger.info(f"  [cached] steps={num_steps}")
+        return eval_cache[num_steps]
+
+    search_results: dict[str, tuple[int, float, dict[int, float]]] = {}
+
+    for i, metric in enumerate(args.metrics):
+        logger.info(f"\n{'=' * 70}")
+        logger.info(f"Golden section search [{i+1}/{len(args.metrics)}]: {metric.upper()}")
+        logger.info(f"{'=' * 70}")
+
+        # Pre-populate per-metric cache from previously evaluated steps
+        metric_cache: dict[int, float] = {}
+        for steps, all_m in eval_cache.items():
+            if metric in all_m:
+                metric_cache[steps] = all_m[metric]
+        if metric_cache:
+            logger.info(f"  Pre-populated {len(metric_cache)} cached evaluations from previous searches")
+
+        def _make_eval_fn(m: str):
+            def _eval_fn(n: int) -> float:
+                return evaluate_and_cache(n)[m]
+            return _eval_fn
+
+        best_steps, best_val, all_evals = golden_section_search(
+            _make_eval_fn(metric), args.lo, args.hi,
+            tol=args.tol, cache=metric_cache,
+        )
+        search_results[metric] = (best_steps, best_val, all_evals)
 
     total_time = time.time() - total_start
 
     # ── Final report ──────────────────────────────────────────────────────
     logger.info(f"\n{'=' * 70}")
-    logger.info(f"RESULT: Optimal step count = {best_steps}")
-    logger.info(f"  {args.metric.upper()} = {best_val:.4f}")
-    logger.info(f"  Total evaluations: {len(all_evals)}")
+    if len(args.metrics) == 1:
+        metric = args.metrics[0]
+        best_steps, best_val, all_evals = search_results[metric]
+        logger.info(f"RESULT: Optimal step count = {best_steps}")
+        logger.info(f"  {metric.upper()} = {best_val:.4f}")
+        logger.info(f"  Total evaluations: {len(eval_cache)}")
+    else:
+        logger.info("MULTI-METRIC RESULTS")
+        for metric, (best, val, evals) in search_results.items():
+            logger.info(f"  {metric.upper():>20}: optimal steps = {best}, value = {val:.6f}")
+        naive_evals = sum(len(e) for _, _, e in search_results.values())
+        logger.info(f"  Total unique evaluations: {len(eval_cache)} "
+                     f"(saved {naive_evals - len(eval_cache)} via sharing)")
     logger.info(f"  Total time: {total_time/60:.1f} minutes")
     logger.info(f"{'=' * 70}")
 
-    # Print all evaluated points sorted by steps
-    logger.info("\nAll evaluations (sorted by steps):")
-    logger.info(f"  {'Steps':>5}  {args.metric.upper():>10}  {'Best':>5}")
-    logger.info(f"  {'-'*25}")
-    for steps in sorted(all_evals.keys()):
-        marker = " <--" if steps == best_steps else ""
-        logger.info(f"  {steps:>5}  {all_evals[steps]:>10.4f}{marker}")
-
     # Print full history with all metrics
-    logger.info("\nFull history:")
-    if args.metric == 'morphological':
-        logger.info(f"  {'Steps':>5}  {'Total':>8}  {'Volume':>8}  {'Feret':>8}  "
-                     f"{'Sp_D':>8}  {'Sp_H':>8}  {'Sp_W':>8}  {'Count':>8}  {'Time':>7}")
-        logger.info(f"  {'-'*80}")
-        for h in sorted(history, key=lambda x: x['steps']):
-            marker = " <--" if h['steps'] == best_steps else ""
-            logger.info(
-                f"  {h['steps']:>5}  {h['morphological']:>8.4f}  {h['morph_volume']:>8.4f}  "
-                f"{h['morph_feret']:>8.4f}  {h['morph_spatial_d']:>8.4f}  "
-                f"{h['morph_spatial_h']:>8.4f}  {h['morph_spatial_w']:>8.4f}  "
-                f"{h['morph_count']:>8.4f}  {h['wall_time_s']:>6.1f}s{marker}"
-            )
-    else:
-        logger.info(f"  {'Steps':>5}  {'FID':>8}  {'KID':>10}  {'FID_RIN':>8}  "
-                     f"{'KID_RIN':>10}  {'CMMD':>10}  {'Time':>7}")
-        logger.info(f"  {'-'*68}")
-        for h in sorted(history, key=lambda x: x['steps']):
-            marker = " <--" if h['steps'] == best_steps else ""
-            logger.info(
-                f"  {h['steps']:>5}  {h['fid']:>8.2f}  {h['kid_mean']:>10.6f}  "
-                f"{h.get('fid_radimagenet', 0):>8.2f}  "
-                f"{h.get('kid_radimagenet_mean', 0):>10.6f}  "
-                f"{h['cmmd']:>10.6f}  {h['wall_time_s']:>6.1f}s{marker}"
-            )
+    logger.info("\nFull evaluation history (sorted by steps):")
+    has_fid = any('fid' in h for h in history)
+    has_pca = any('pca_mean_error' in h for h in history)
+    has_morph = any('morphological' in h for h in history)
 
-    _save_history(output_dir, history, args, best_steps=best_steps)
+    # Build header
+    header_parts = [f"{'Steps':>5}"]
+    if has_fid:
+        header_parts.extend([f"{'FID':>8}", f"{'FID_RIN':>8}", f"{'KID':>10}", f"{'CMMD':>10}"])
+    if has_pca:
+        header_parts.append(f"{'PCA':>10}")
+    if has_morph:
+        header_parts.append(f"{'Morph':>8}")
+    header_parts.append(f"{'Time':>7}")
+    logger.info(f"  {'  '.join(header_parts)}")
+    logger.info(f"  {'-' * (sum(len(p) + 2 for p in header_parts))}")
+
+    # Find best steps for annotation
+    best_steps_set = {s for s, _, _ in search_results.values()}
+
+    for h in sorted(history, key=lambda x: x['steps']):
+        parts = [f"{h['steps']:>5}"]
+        if has_fid:
+            parts.extend([
+                f"{h.get('fid', 0):>8.2f}",
+                f"{h.get('fid_radimagenet', 0):>8.2f}",
+                f"{h.get('kid_mean', 0):>10.6f}",
+                f"{h.get('cmmd', 0):>10.6f}",
+            ])
+        if has_pca:
+            parts.append(f"{h.get('pca_mean_error', 0):>10.6f}")
+        if has_morph:
+            parts.append(f"{h.get('morphological', 0):>8.4f}")
+        parts.append(f"{h['wall_time_s']:>6.1f}s")
+        marker = " <--" if h['steps'] in best_steps_set else ""
+        logger.info(f"  {'  '.join(parts)}{marker}")
+
+    _save_history(output_dir, history, args, search_results=search_results)
 
 
 def _save_history(
     output_dir: Path,
     history: list[dict],
     args,
-    best_steps: int | None = None,
+    search_results: dict[str, tuple[int, float, dict[int, float]]] | None = None,
 ) -> None:
     """Save search history to JSON."""
     data = {
@@ -875,13 +889,18 @@ def _save_history(
         'space': getattr(args, 'space', 'pixel'),
         'strategy': getattr(args, 'strategy', None),
         'search_range': [args.lo, args.hi],
-        'metric': args.metric,
+        'metrics': getattr(args, 'metrics', [args.metric]),
         'ref_split': args.ref_split,
         'num_volumes': args.num_volumes,
         'seed': args.seed,
-        'best_steps': best_steps,
         'evaluations': sorted(history, key=lambda x: x['steps']),
     }
+    # Add per-metric best results
+    if search_results:
+        data['results'] = {
+            metric: {'best_steps': best, 'best_value': val}
+            for metric, (best, val, _) in search_results.items()
+        }
     with open(output_dir / "search_results.json", 'w') as f:
         json.dump(data, f, indent=2)
 

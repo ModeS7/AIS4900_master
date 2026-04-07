@@ -16,6 +16,7 @@
 # exp1_1_1000 (repeat run): Pixel-space RFlow bravo 256x256x160, 1000 epochs
 # Find optimal steps for: ImageNet FID, RadImageNet FID, PCA
 # Uses LATEST checkpoint only (not best)
+# Multi-metric search: all three metrics share generated volumes
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -33,9 +34,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt"
-PCA_MODEL="/cluster/work/modestas/AIS4900_master/data/brain_pca_256x256x160.npz"
-BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 100 --ref-split test --seed 42"
-OUT_BASE="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_1000_v2"
+OUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1_1_1000_v2"
 
 if [ ! -f "$CKPT" ]; then
     echo "ERROR: Checkpoint not found: $CKPT"
@@ -44,52 +43,20 @@ fi
 echo "Checkpoint: $CKPT"
 
 # ============================================================
-# 1) Golden section search: ImageNet FID
+# Combined golden section search: FID + RadImageNet FID + PCA
+# Volumes generated once per step count, shared across metrics
 # ============================================================
-echo ""
-echo "=========================================="
-echo "  Step 1: Optimal steps by ImageNet FID"
-echo "=========================================="
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
-    --output-dir "${OUT_BASE}_fid" \
-    --metric fid \
-    ${BASE_ARGS}
-
-echo "--- ImageNet FID results ---"
-cat "${OUT_BASE}_fid/search_results.json" 2>/dev/null
-
-# ============================================================
-# 2) Golden section search: RadImageNet FID
-# ============================================================
-echo ""
-echo "=========================================="
-echo "  Step 2: Optimal steps by RadImageNet FID"
-echo "=========================================="
-
-time python -m medgen.scripts.find_optimal_steps \
-    --checkpoint "${CKPT}" \
-    --output-dir "${OUT_BASE}_fid_rin" \
-    --metric fid_radimagenet \
-    ${BASE_ARGS}
-
-echo "--- RadImageNet FID results ---"
-cat "${OUT_BASE}_fid_rin/search_results.json" 2>/dev/null
-
-# ============================================================
-# 3) Golden section search: PCA brain shape error
-# ============================================================
-echo ""
-echo "=========================================="
-echo "  Step 3: Optimal steps by PCA error"
-echo "=========================================="
-
-time python -m medgen.scripts.find_optimal_steps \
-    --checkpoint "${CKPT}" \
-    --output-dir "${OUT_BASE}_pca" \
-    --metric pca \
-    ${BASE_ARGS}
+    --output-dir "${OUT_DIR}" \
+    --metric fid,fid_radimagenet,pca \
+    --data-root "${DATA_ROOT}" \
+    --image-size 256 \
+    --num-volumes 25 \
+    --lo 10 --hi 100 \
+    --ref-split test \
+    --seed 42
 
 # ============================================================
 # Summary
@@ -98,12 +65,5 @@ echo ""
 echo "=========================================="
 echo "  RESULTS SUMMARY: exp1_1_1000 v2"
 echo "=========================================="
-echo "--- ImageNet FID (golden section) ---"
-cat "${OUT_BASE}_fid/search_results.json" 2>/dev/null
-echo ""
-echo "--- RadImageNet FID (golden section) ---"
-cat "${OUT_BASE}_fid_rin/search_results.json" 2>/dev/null
-echo ""
-echo "--- PCA (golden section) ---"
-cat "${OUT_BASE}_pca/search_results.json" 2>/dev/null
+cat "${OUT_DIR}/search_results.json" 2>/dev/null
 echo ""
