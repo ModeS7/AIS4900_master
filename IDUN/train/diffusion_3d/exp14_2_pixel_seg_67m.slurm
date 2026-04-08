@@ -94,6 +94,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.ema.checkpoint_every_num_steps=5000 \
     training.ema.update_every=10 \
     strategy.sample_method=uniform \
+    training.gradient_checkpointing=false \
     training.use_compile=true \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
