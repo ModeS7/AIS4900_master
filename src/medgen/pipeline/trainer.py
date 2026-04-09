@@ -173,6 +173,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Perceptual weight (disabled for seg modes - binary masks don't work with VGG features)
         self.perceptual_weight: float = dc.perceptual_weight
 
+        # Focal Frequency Loss (Jiang et al., ICCV 2021)
+        self.focal_frequency_weight: float = cfg.training.get('focal_frequency_weight', 0.0)
+        self.focal_frequency_loss_fn = None
+        if self.focal_frequency_weight > 0:
+            from focal_frequency_loss import FocalFrequencyLoss
+            self.focal_frequency_loss_fn = FocalFrequencyLoss(loss_weight=1.0, alpha=1.0)
+            if self.is_main_process:
+                logger.info(f"Focal Frequency Loss enabled (weight={self.focal_frequency_weight})")
+
         # FP32 loss computation (set False to reproduce pre-Jan-7-2026 BF16 behavior)
         self.use_fp32_loss: bool = dc.use_fp32_loss
         if self.is_main_process:
@@ -908,6 +917,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         p_loss = torch.tensor(0.0, device=self.device)
 
                     total_loss = mse_loss + self.perceptual_weight * p_loss
+
+                    # Focal Frequency Loss (applied slice-wise for 3D)
+                    if self.focal_frequency_loss_fn is not None:
+                        pred_ffl = predicted_clean.float()
+                        target_ffl = images.float()
+                        if self.spatial_dims == 3:
+                            # Reshape [B, C, D, H, W] -> [B*D, C, H, W] for 2D FFT
+                            B, C, D, H, W = pred_ffl.shape
+                            pred_ffl = pred_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+                            target_ffl = target_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+                        ffl_loss = self.focal_frequency_loss_fn(pred_ffl, target_ffl)
+                        total_loss = total_loss + self.focal_frequency_weight * ffl_loss
 
                     # Self-conditioning consistency loss
                     tt = self._training_tricks

@@ -192,6 +192,11 @@ augmented_diffusion:
 # Disabled by default for diffusion - adds compute overhead with minimal benefit
 perceptual_weight: 0.0     # Weight for perceptual loss term (0 = disabled)
 
+# Focal Frequency Loss (Jiang et al., ICCV 2021)
+# Adaptively upweights hard-to-synthesize frequency components for sharper texture
+# Applied to predicted clean image vs target in frequency domain (2D FFT per slice)
+focal_frequency_weight: 0.0  # Weight for FFL term (0 = disabled). Try 1.0.
+
 # Multi-GPU (DDP)
 use_multi_gpu: false
 disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)
