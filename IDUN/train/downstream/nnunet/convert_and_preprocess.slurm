@@ -13,8 +13,12 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# One-time: convert dataset + preprocess for nnU-Net
-# Creates ONE dataset (501) with all 105 real + 525 synthetic.
+# Convert real + two synthetic datasets to nnU-Net format and preprocess.
+#
+# Dataset 501: BRAVO real + ImageNet-optimized synthetic (32 steps, shift 1.0)
+# Dataset 502: BRAVO real + RadImageNet-optimized synthetic (79 steps, shift 1.0)
+#
+# Both share the same real data (105 train, 51 test).
 # Experiment-specific splits are installed before each training run.
 
 set -e  # Exit on first error
@@ -32,7 +36,8 @@ conda activate nnunet
 NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
 NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
 REAL_DIR="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-SYNTHETIC_DIR="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_3d_256_525_baseline"
+SYNTHETIC_IMAGENET="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_imagenet_525"
+SYNTHETIC_RADIMAGENET="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_radimagenet_525"
 
 export nnUNet_raw="${NNUNET_BASE}/nnUNet_raw"
 export nnUNet_preprocessed="${NNUNET_BASE}/nnUNet_preprocessed"
@@ -40,61 +45,71 @@ export nnUNet_results="${NNUNET_RESULTS}"
 
 mkdir -p "${nnUNet_raw}" "${nnUNet_preprocessed}" "${nnUNet_results}"
 
-# === Step 1: Convert to nnU-Net format ===
-echo ""
-echo "=== Step 1: Converting dataset ==="
-echo "imagesTr: 105 real train + all synthetic"
-echo "imagesTs: 25 val + 26 test_new = 51 test"
+# === Verify synthetic data exists ===
+for DIR in "${SYNTHETIC_IMAGENET}" "${SYNTHETIC_RADIMAGENET}"; do
+    N=$(find "${DIR}" -maxdepth 1 -type d -name "[0-9]*" 2>/dev/null | wc -l)
+    echo "Synthetic: ${DIR} — ${N} volumes"
+    if [ "$N" -lt 525 ]; then
+        echo "WARNING: Expected 525 volumes, found ${N}. Generation may still be running."
+    fi
+done
 
-# Clean up previous data
+# === Clean up ALL previous datasets ===
+echo ""
+echo "=== Cleaning previous nnU-Net data ==="
 rm -rf "${nnUNet_raw}/Dataset501_BrainMet"
 rm -rf "${nnUNet_raw}/Dataset502_BrainMet"
+rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
+rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
+echo "Deleted Dataset501 and Dataset502 (raw + preprocessed)"
 
-# Dataset 501: BRAVO (1 channel)
-echo "--- Dataset 501: BRAVO ---"
+# === Step 1: Convert to nnU-Net format ===
+echo ""
+echo "=========================================="
+echo "  Step 1: Converting datasets"
+echo "=========================================="
+
+# Dataset 501: BRAVO + ImageNet-optimized synthetic
+echo ""
+echo "--- Dataset 501: BRAVO + ImageNet synthetic ---"
 python -m medgen.downstream.nnunet.convert_dataset \
     --real-dir "${REAL_DIR}" \
-    --synthetic-dir "${SYNTHETIC_DIR}" \
+    --synthetic-dir "${SYNTHETIC_IMAGENET}" \
     --nnunet-raw "${nnUNet_raw}" \
     --dataset-id 501 \
     --modality bravo
 
-# Dataset 502: Dual (2 channels: t1_pre + t1_gd), real-only
-echo "--- Dataset 502: Dual ---"
+# Dataset 502: BRAVO + RadImageNet-optimized synthetic
+echo ""
+echo "--- Dataset 502: BRAVO + RadImageNet synthetic ---"
 python -m medgen.downstream.nnunet.convert_dataset \
     --real-dir "${REAL_DIR}" \
+    --synthetic-dir "${SYNTHETIC_RADIMAGENET}" \
     --nnunet-raw "${nnUNet_raw}" \
     --dataset-id 502 \
-    --modality dual
+    --modality bravo
 
-# === Step 2: Validate conversion ===
+# === Step 2: Plan and preprocess ===
 echo ""
-echo "=== Step 2: Validating converted datasets ==="
-python misc/validate_nnunet_conversion.py \
-    --dataset-dir "${nnUNet_raw}/Dataset501_BrainMet"
+echo "=========================================="
+echo "  Step 2: nnU-Net plan and preprocess"
+echo "=========================================="
 
-echo ""
-python misc/validate_nnunet_conversion.py \
-    --dataset-dir "${nnUNet_raw}/Dataset502_BrainMet"
-
-# set -e will abort here if validation fails
-
-# === Step 3: Plan and preprocess ===
-echo ""
-echo "=== Step 3: nnU-Net plan and preprocess ==="
-rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
-rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
-# Use -np 4 to reduce blosc2 concurrency issues on cluster filesystem
-# Default planner
+# ResEnc L planner (residual encoder, better for small lesions)
+echo "--- Dataset 501 (ImageNet) ---"
 nnUNetv2_plan_and_preprocess -d 501 --verify_dataset_integrity -c 3d_fullres -np 4
-nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres -np 4
-# ResEnc L planner (residual encoder, no batch size cap, better for small lesions)
 nnUNetv2_plan_and_preprocess -d 501 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
+
+echo "--- Dataset 502 (RadImageNet) ---"
+nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres -np 4
 nnUNetv2_plan_and_preprocess -d 502 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
 
-# === Step 4: Validate preprocessed data ===
+# === Step 3: Validate ===
 echo ""
-echo "=== Step 4: Checking preprocessed data ==="
+echo "=========================================="
+echo "  Step 3: Validation"
+echo "=========================================="
+
 python -c "
 import numpy as np, os, json
 
@@ -109,9 +124,9 @@ for did in [501, 502]:
         print(f'ERROR: No preprocessed dir for Dataset{did}')
         continue
 
-    print(f'=== Dataset {did} preprocessed ===')
+    label = {501: 'ImageNet', 502: 'RadImageNet'}[did]
+    print(f'=== Dataset {did} ({label}) ===')
 
-    # Check plans (default + ResEncL)
     for plans_name in ['nnUNetPlans.json', 'nnUNetResEncUNetLPlans.json']:
         plans_path = os.path.join(pp_dir, plans_name)
         if not os.path.exists(plans_path):
@@ -123,7 +138,6 @@ for did in [501, 502]:
             print(f'    {cfg_name}: patch={cfg.get(\"patch_size\")}, '
                   f'batch={cfg.get(\"batch_size\")}, spacing={cfg.get(\"spacing\")}')
 
-    # Check preprocessed npz files
     for config_dir in os.listdir(pp_dir):
         config_path = os.path.join(pp_dir, config_dir)
         if not os.path.isdir(config_path):
@@ -131,31 +145,13 @@ for did in [501, 502]:
         npz_files = sorted(f for f in os.listdir(config_path) if f.endswith('.npz'))
         if not npz_files:
             continue
-
-        print(f'  Config {config_dir}: {len(npz_files)} samples')
-        empty_seg = 0
-        for fname in npz_files:
-            d = np.load(os.path.join(config_path, fname))
-            seg = d.get('seg')
-            if seg is None:
-                print(f'    FAIL: {fname} has no seg key!')
-            elif (seg > 0).sum() == 0:
-                empty_seg += 1
-
-        # Spot check first 3
-        for fname in npz_files[:3]:
-            d = np.load(os.path.join(config_path, fname))
-            data, seg = d['data'], d['seg']
-            print(f'    {fname}: data={data.shape} [{data.min():.2f},{data.max():.2f}], '
-                  f'seg={seg.shape} unique={np.unique(seg)} tumor={(seg>0).sum()}')
-
-        if empty_seg:
-            print(f'    WARNING: {empty_seg}/{len(npz_files)} samples have EMPTY seg!')
-        else:
-            print(f'    OK: all {len(npz_files)} samples have tumor voxels')
+        empty_seg = sum(1 for f in npz_files
+                        if (np.load(os.path.join(config_path, f)).get('seg', np.array([1])) > 0).sum() == 0)
+        print(f'  {config_dir}: {len(npz_files)} samples, {empty_seg} empty segs')
     print()
 "
 
 echo ""
-echo "=== Done! ==="
-echo "Ready for: python -m medgen.scripts.train_nnunet --experiment baseline --nnunet-base ${NNUNET_BASE}"
+echo "=== Done! Ready for training ==="
+echo "Dataset 501: real + ImageNet synthetic"
+echo "Dataset 502: real + RadImageNet synthetic"
