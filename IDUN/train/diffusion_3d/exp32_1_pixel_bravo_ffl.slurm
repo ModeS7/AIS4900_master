@@ -34,8 +34,9 @@ if [ -f "${CKPT}" ] && [ -s "${CKPT}" ]; then
     CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${CKPT}"
     echo "Resuming from own checkpoint: ${CKPT}"
 else
+    # First run: resume model+optimizer, use constant scheduler to override stale cosine
     CHAIN_ARGS="${CHAIN_ARGS} training.resume_from=${PRETRAINED}"
-    echo "Fine-tuning from: ${PRETRAINED}"
+    echo "Fine-tuning from: ${PRETRAINED} (model+optimizer, fresh constant scheduler)"
 fi
 
 handle_timeout() {
@@ -85,6 +86,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     volume.pad_depth_to=160 \
     training.epochs=100 \
     training.learning_rate=1e-5 \
+    training.reset_scheduler=true \
     training.warmup_epochs=5 \
     training.gradient_clip_norm=0.5 \
     training.focal_frequency_weight=1.0 \

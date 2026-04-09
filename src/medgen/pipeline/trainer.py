@@ -1473,7 +1473,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
         self.model_raw.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-        if 'scheduler_state_dict' in checkpoint and self.lr_scheduler is not None:
+        reset_scheduler = self.cfg.training.get('reset_scheduler', False)
+        if reset_scheduler:
+            logger.info("Skipping scheduler restore (reset_scheduler=true) — using fresh scheduler")
+        elif 'scheduler_state_dict' in checkpoint and self.lr_scheduler is not None:
             self.lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             logger.info("Restored LR scheduler state")
 
@@ -1496,8 +1499,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             self.checkpoint_manager.set_best_metric(self.best_loss)
 
         saved_epoch = checkpoint['epoch']
-        start_epoch = saved_epoch + 1
-        logger.info(f"Resuming from epoch {start_epoch} (checkpoint saved at epoch {saved_epoch})")
+        if reset_scheduler:
+            start_epoch = 0
+            logger.info(f"Fine-tuning: starting from epoch 0 (source checkpoint was epoch {saved_epoch})")
+        else:
+            start_epoch = saved_epoch + 1
+            logger.info(f"Resuming from epoch {start_epoch} (checkpoint saved at epoch {saved_epoch})")
         return start_epoch
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
