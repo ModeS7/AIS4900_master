@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100"
+#SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --exclude=idun-06-02
 #SBATCH --job-name="nn_s105_RIN"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/exp6_1_radimagenet/%j.out
