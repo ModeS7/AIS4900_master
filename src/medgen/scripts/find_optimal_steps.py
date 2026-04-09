@@ -827,7 +827,7 @@ def main():
         logger.info(f"  Total evaluations: {len(eval_cache)}")
     else:
         logger.info("MULTI-METRIC RESULTS")
-        for metric, (best, val, evals) in search_results.items():
+        for metric, (best, val, _evals) in search_results.items():
             logger.info(f"  {metric.upper():>20}: optimal steps = {best}, value = {val:.6f}")
         naive_evals = sum(len(e) for _, _, e in search_results.values())
         logger.info(f"  Total unique evaluations: {len(eval_cache)} "
