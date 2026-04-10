@@ -32,7 +32,6 @@ NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
 
 python -m medgen.scripts.eval_nnunet \
     --experiment baseline \
-    --experiment-name exp3_baseline \
     --dataset-id 501 \
     --folds 0 1 2 3 4 \
     --nnunet-base "${NNUNET_BASE}" \

@@ -7,8 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100"
-#SBATCH --exclude=idun-06-02
+#SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --job-name="nn_eval"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/eval/%j.out
 #SBATCH --error=IDUN/output/train/downstream/nnunet/eval/%j.err
@@ -16,12 +15,10 @@
 #SBATCH --mail-type=ALL
 
 # Evaluate all trained nnU-Net experiments on the 51-volume test set.
-# Runs inference (checkpoint_best.pth) + MedGen metrics for each experiment.
+# Runs 5-fold ensemble inference (checkpoint_best.pth) + MedGen metrics.
 #
-# Usage:
-#   sbatch evaluate_all.slurm                    # evaluate all experiments
-#   FOLDS="0" sbatch evaluate_all.slurm          # single fold only
-#   EXPERIMENTS="baseline" sbatch evaluate_all.slurm  # single experiment
+# Dataset 501: real + ImageNet-optimized synthetic
+# Dataset 502: real + RadImageNet-optimized synthetic
 
 cd ${SLURM_SUBMIT_DIR}
 
@@ -35,80 +32,41 @@ conda activate nnunet
 
 NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
 NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
-FOLDS=${FOLDS:-"0 1 2 3 4"}
+COMMON="--nnunet-base ${NNUNET_BASE} --nnunet-results ${NNUNET_RESULTS} --trainer nnUNetTrainerBrainMets --plans nnUNetResEncUNetLPlans --folds 0 1 2 3 4"
 
-# Default: all experiments
-if [ -z "${EXPERIMENTS:-}" ]; then
-    EXPERIMENTS="baseline baseline_dual synthetic mixed_25 mixed_50 mixed_75 mixed_105 mixed_210 mixed_315 mixed_525"
-fi
-
-evaluate_experiment() {
-    local experiment=$1
-    local dataset_id=$2
-    local n_synthetic=$3  # empty string if not applicable
-
-    local syn_flag=""
-    if [ -n "$n_synthetic" ]; then
-        syn_flag="--n-synthetic $n_synthetic"
-    fi
+evaluate() {
+    local name=$1
+    local args=$2
 
     echo ""
     echo "=============================================="
-    echo "=== Evaluating: $experiment (dataset $dataset_id, folds: $FOLDS) ==="
+    echo "  Evaluating: ${name}"
     echo "=============================================="
 
     python -m medgen.scripts.eval_nnunet \
-        --experiment $experiment \
-        --dataset-id $dataset_id \
-        --folds $FOLDS \
-        --nnunet-base "${NNUNET_BASE}" \
-        --nnunet-results "${NNUNET_RESULTS}" \
-        --trainer nnUNetTrainerBrainMets \
-        --plans nnUNetResEncUNetLPlans \
-        $syn_flag \
-        || echo "WARNING: Evaluation failed for $experiment"
+        --experiment-name "${name}" \
+        ${args} \
+        ${COMMON} \
+        || echo "WARNING: Evaluation failed for ${name}"
 }
 
-for exp in $EXPERIMENTS; do
-    case $exp in
-        baseline)
-            evaluate_experiment baseline 501 ""
-            ;;
-        baseline_dual)
-            evaluate_experiment baseline_dual 502 ""
-            ;;
-        synthetic)
-            evaluate_experiment synthetic 501 ""
-            ;;
-        synthetic_105)
-            evaluate_experiment synthetic 501 "105"
-            ;;
-        mixed_25)
-            evaluate_experiment mixed 501 "25"
-            ;;
-        mixed_50)
-            evaluate_experiment mixed 501 "50"
-            ;;
-        mixed_75)
-            evaluate_experiment mixed 501 "75"
-            ;;
-        mixed_105)
-            evaluate_experiment mixed 501 "105"
-            ;;
-        mixed_210)
-            evaluate_experiment mixed 501 "210"
-            ;;
-        mixed_315)
-            evaluate_experiment mixed 501 "315"
-            ;;
-        mixed_525)
-            evaluate_experiment mixed 501 "525"
-            ;;
-        *)
-            echo "Unknown experiment: $exp"
-            ;;
-    esac
-done
+# ── Baseline (real-only, Dataset 501) ────────────────────────────
+evaluate "exp3_baseline" \
+    "--experiment baseline --dataset-id 501"
+
+# ── Synthetic-only 525 ───────────────────────────────────────────
+evaluate "exp6_synthetic_imagenet" \
+    "--experiment synthetic --dataset-id 501"
+
+evaluate "exp6_synthetic_radimagenet" \
+    "--experiment synthetic --dataset-id 502"
+
+# ── Synthetic-only 105 ───────────────────────────────────────────
+evaluate "exp6_1_synthetic_105_imagenet" \
+    "--experiment synthetic --n-synthetic 105 --dataset-id 501"
+
+evaluate "exp6_1_synthetic_105_radimagenet" \
+    "--experiment synthetic --n-synthetic 105 --dataset-id 502"
 
 echo ""
 echo "=== All evaluations complete ==="

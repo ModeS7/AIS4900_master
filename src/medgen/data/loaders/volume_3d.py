@@ -38,6 +38,37 @@ from torch.utils.data import DataLoader, Dataset
 from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
 
 
+def _resolve_train_dir(cfg) -> str:
+    """Resolve training data directory, merging multiple splits if configured.
+
+    When ``volume.train_splits`` is set (e.g., ``[train, val, test_new]``),
+    creates a temporary merged directory with symlinks to all patient folders
+    from the specified splits. Otherwise returns the default ``train/`` dir.
+    """
+    train_splits = cfg.volume.get('train_splits', None)
+    if not train_splits:
+        return os.path.join(cfg.paths.data_dir, 'train')
+
+    # Merge multiple splits into a single directory via symlinks
+    merged = os.path.join(cfg.paths.data_dir, '.train_merged')
+    os.makedirs(merged, exist_ok=True)
+
+    total = 0
+    for split in train_splits:
+        split_dir = os.path.join(cfg.paths.data_dir, split)
+        if not os.path.isdir(split_dir):
+            raise NotADirectoryError(f"Split directory not found: {split_dir}")
+        for patient in sorted(os.listdir(split_dir)):
+            src = os.path.join(split_dir, patient)
+            dst = os.path.join(merged, patient)
+            if os.path.isdir(src) and not os.path.exists(dst):
+                os.symlink(src, dst)
+                total += 1
+
+    logger.info(f"Merged {total} patients from splits {train_splits} into {merged}")
+    return merged
+
+
 @dataclass
 class VolumeConfig:
     """Configuration extracted from Hydra config for 3D volume loading.
@@ -657,7 +688,7 @@ def create_vae_3d_dataloader(
         Tuple of (DataLoader, Dataset).
     """
     vcfg = VolumeConfig.from_cfg(cfg)
-    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+    data_dir = _resolve_train_dir(cfg)
 
     # Use training resolution (may be lower than validation resolution)
     dataset = _create_single_dual_dataset(
@@ -860,7 +891,7 @@ def create_vae_3d_multi_modality_dataloader(
         Tuple of (DataLoader, Dataset).
     """
     vcfg = VolumeConfig.from_cfg(cfg)
-    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+    data_dir = _resolve_train_dir(cfg)
 
     # Check if augmentation is enabled
     augment = getattr(cfg.training, 'augment', False)
@@ -1160,7 +1191,7 @@ def create_segmentation_dataloader(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
-    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+    data_dir = _resolve_train_dir(cfg)
 
     aug = build_3d_augmentation(seg_mode=True) if augment else None
 
@@ -1272,7 +1303,7 @@ def create_single_modality_dataloader_with_seg(
     Returns:
         Tuple of (DataLoader, Dataset).
     """
-    data_dir = os.path.join(cfg.paths.data_dir, 'train')
+    data_dir = _resolve_train_dir(cfg)
 
     # CFG dropout for 3D - get from config (default 15%)
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.15))
