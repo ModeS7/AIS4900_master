@@ -896,7 +896,19 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     # Compute perceptual loss (decode for latent space)
                     # For 3D: use 2.5D approach (center slice) for efficiency
-                    if self.perceptual_weight > 0:
+                    # Optional: only at low timesteps where texture detail matters,
+                    # with linear scaling: full weight at t=0, zero at t=max_t
+                    _perceptual_max_t = self.cfg.training.get('perceptual_max_timestep', None)
+                    _apply_perceptual = self.perceptual_weight > 0
+                    _perceptual_scale = 1.0
+                    if _apply_perceptual and _perceptual_max_t is not None:
+                        t_val = timesteps.max().item()
+                        if t_val >= _perceptual_max_t:
+                            _apply_perceptual = False
+                        else:
+                            # Linear ramp: 1.0 at t=0, 0.0 at t=max_t
+                            _perceptual_scale = 1.0 - (t_val / _perceptual_max_t)
+                    if _apply_perceptual:
                         if self.space.needs_decode:
                             # Decode to pixel space for perceptual loss
                             pred_decoded = self.space.decode_batch(predicted_clean)
@@ -916,7 +928,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     else:
                         p_loss = torch.tensor(0.0, device=self.device)
 
-                    total_loss = mse_loss + self.perceptual_weight * p_loss
+                    total_loss = mse_loss + self.perceptual_weight * _perceptual_scale * p_loss
 
                     # Focal Frequency Loss (applied slice-wise for 3D)
                     if self.focal_frequency_loss_fn is not None:
