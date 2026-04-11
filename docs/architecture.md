@@ -62,7 +62,7 @@ src/medgen/
 │   └── nnunet/                  # nnU-Net v2 integration
 │       ├── convert_dataset.py   # Convert to nnU-Net format
 │       ├── evaluate.py          # 5-fold ensemble evaluation
-│       ├── splits.py            # Cross-validation splits
+│       ├── splits.py            # CV splits + isolated preprocessed dir creation
 │       └── trainer.py           # nnU-Net training wrapper
 ├── evaluation/                  # Test evaluation and validation
 │   ├── evaluation.py            # BaseTestEvaluator, CompressionTestEvaluator
@@ -1414,7 +1414,7 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 ### Downstream
 - `src/medgen/downstream/segmentation_trainer.py`: SegmentationTrainer (SegResNet, per-tumor-size Dice)
 - `src/medgen/downstream/data.py`: Downstream segmentation data loading
-- `src/medgen/downstream/nnunet/`: nnU-Net v2 integration (convert, train, evaluate, splits)
+- `src/medgen/downstream/nnunet/`: nnU-Net v2 integration (convert, train, evaluate, splits). Uses per-experiment isolated preprocessed dirs to prevent split race conditions (see pitfall #83)
 
 ### Metrics
 - `src/medgen/metrics/unified.py`: UnifiedMetrics (MANDATORY for all trainers)

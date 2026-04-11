@@ -465,28 +465,36 @@ python -m medgen.scripts.train_segmentation model.spatial_dims=3
 
 ## Downstream nnU-Net Training
 
+Each experiment gets an isolated preprocessed directory (`nnUNet_preprocessed_{experiment}/`)
+with symlinked data and its own `splits_final.json` to prevent race conditions during
+concurrent training (see pitfall #83).
+
 ```bash
 # Train baseline (real-only), all 5 folds
 python -m medgen.scripts.train_nnunet \
     --experiment baseline \
-    --nnunet-base /cluster/work/modestas/nnunet
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet
 
 # Train mixed with 210 synthetic volumes, fold 0 only
 python -m medgen.scripts.train_nnunet \
     --experiment mixed --n-synthetic 210 \
     --fold 0 \
-    --nnunet-base /cluster/work/modestas/nnunet
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet
 
-# Continue interrupted training
+# Continue interrupted training (safe: uses same isolated dir)
 python -m medgen.scripts.train_nnunet \
     --experiment baseline --fold 0 \
     --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet \
     --continue-training
 
 # Evaluate nnU-Net (5-fold ensemble inference + metrics)
 python -m medgen.scripts.eval_nnunet \
     --experiment baseline \
-    --nnunet-base /cluster/work/modestas/nnunet
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet
 
 # Evaluate existing predictions only
 python -m medgen.scripts.eval_nnunet \

@@ -916,3 +916,41 @@ def _get_2d_feret(self, region) -> float:
 - Config `mode.size_bins.voxel_spacing` stores `[D, H, W]` = `[1.0, 0.9375, 0.9375]` — for `compute_feret_diameter_3d`
 
 The training dataloader (`seg.py`) reads from config in the correct `(D, H, W)` order. `generate.py` passes `compute_voxel_size()` output directly, which works only because in-plane spacing is isotropic (x=y). If FOV or resolution ever differs between axes, this would silently produce wrong Feret diameters.
+
+## 83. nnU-Net splits_final.json Race Condition (Fixed April 2026)
+
+**Problem**: All nnU-Net experiments shared a single `splits_final.json` in the preprocessed directory. Each `train_nnunet.py` invocation overwrote this file. When chain segments from different experiments started simultaneously (~2 min torch.compile gap between write and read), one experiment would read another's split. Corrupted 3 of 11 experiments: exp6_1 (synthetic-only got mixed data at epoch 400), exp7_4 (mix-25syn got mix-315syn data), exp7_6 (mix-75syn got mix-525syn data).
+
+**Fix**: `create_isolated_preprocessed_dir()` in `splits.py` creates per-experiment preprocessed directories (`nnUNet_preprocessed_{experiment_name}/`) that symlink shared data but have their own `splits_final.json`. The old `install_splits()` is deprecated.
+
+**Rule**: Never run nnU-Net experiments against a shared `splits_final.json`. Always use isolated preprocessed dirs.
+
+## 84. DiffRS CFG Scale Guard Was Dead Code (Fixed April 2026)
+
+**Problem**: In `strategy_rflow.py` `_generate_diffrs()`, the CFG safety check used `cfg_ctx.get('cfg_scale', 1.0) > 1.0`, but `cfg_ctx` doesn't contain a `'cfg_scale'` key — it has `use_cfg_size_bins`, `use_cfg_conditioning`, etc. The check always returned False.
+
+**Fix**: Changed to `conditioning.cfg_scale > 1.0` which reads from the `ConditioningContext`.
+
+## 85. Augmented Diffusion Passed Unmasked Target to Loss (Fixed April 2026)
+
+**Problem**: DC-AE 1.5 augmented diffusion training masked `noise` and `noisy_images` with `aug_diff_mask` but forgot to mask `images` (the clean target). For RFlow velocity prediction, target = `images - noise`, so the loss computed `unmasked_images - masked_noise` instead of `masked_images - masked_noise`.
+
+**Fix**: Added `images = images * aug_diff_mask` for both dict and tensor paths in `trainer.py`.
+
+## 86. compute_predicted_clean Hardcoded 2 Keys for Sample Prediction (Fixed April 2026)
+
+**Problem**: `RFlowStrategy.compute_predicted_clean()` with `prediction_type='sample'` hardcoded exactly 2 dict keys (`keys[0]`, `keys[1]`). Triple mode has 3 keys — the third channel would have been silently dropped.
+
+**Fix**: Changed to `{keys[i]: self._slice_channel(prediction, i, i+1) for i in range(len(keys))}`.
+
+## 87. CRLF Line Endings in Config Files (Fixed April 2026)
+
+**Problem**: 59 files (all YAML configs, evaluation module, test benchmarks) had Windows CRLF line endings. While Hydra/Python handle both, CRLF causes noisy git diffs and can break shell scripts that parse config values.
+
+**Fix**: Converted all to LF. Added `.gitattributes` with `* text=auto` and `eol=lf` rules to prevent recurrence.
+
+## 88. SegmentationTrainer Didn't Save/Restore RNG During Validation (Fixed April 2026)
+
+**Problem**: `DiffusionTrainer` saves and restores `torch.get_rng_state()` / `torch.cuda.get_rng_state()` around validation so the training data order is deterministic. `SegmentationTrainer.compute_validation_losses()` did not — validation data loading consumed RNG state, making training non-reproducible across runs with different validation frequencies.
+
+**Fix**: Added RNG save/restore around the validation loop in `segmentation_trainer.py`.
