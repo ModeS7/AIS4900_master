@@ -2,6 +2,7 @@
 monai>=1.4.0
 torchvision  # For ResNet feature extractor (generation metrics)
 ema-pytorch>=0.7.0
+ptwt>=1.0.0  # PyTorch Wavelet Toolbox (for FWD metric)
 diffusers>=0.32.0  # For DC-AE (AutoencoderDC)
 
 # Generation metrics (KID, CMMD, FID)
