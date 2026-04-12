@@ -45,6 +45,7 @@ from medgen.diffusion import (
     SegmentationMode,
     TrainingMode,
 )
+from medgen.diffusion.modes import RestorationMode
 from medgen.evaluation import ValidationVisualizer
 from medgen.metrics import UnifiedMetrics
 
@@ -405,12 +406,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     def _create_strategy(self, strategy: str) -> DiffusionStrategy:
         """Create a diffusion strategy instance."""
+        if strategy == 'irsde':
+            from medgen.diffusion.strategy_irsde import IRSDEStrategy
+            return IRSDEStrategy()
+        if strategy == 'resfusion':
+            from medgen.diffusion.strategy_resfusion import ResfusionStrategy
+            return ResfusionStrategy()
         strategies: dict[str, type] = {
             'ddpm': DDPMStrategy,
-            'rflow': RFlowStrategy
+            'rflow': RFlowStrategy,
         }
         if strategy not in strategies:
-            raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(strategies.keys())}")
+            raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(strategies.keys()) + ['irsde', 'resfusion']}")
         return strategies[strategy]()
 
     def _create_mode(self, mode: str) -> TrainingMode:
@@ -424,6 +431,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             'dual': ConditionalDualMode,
             'triple': ConditionalDualMode,
             'multi': MultiModalityMode,
+            'restoration': RestorationMode,
         }
         if mode not in modes:
             raise ValueError(f"Unknown mode: {mode}. Choose from {list(modes.keys())}")
@@ -745,16 +753,31 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             labels_dict = {'labels': labels, 'bin_maps': bin_maps}
 
-            if isinstance(images, dict):
+            # Restoration mode: use degraded volume as noise/target endpoint
+            # For RFlow bridge: degraded replaces Gaussian noise (linear interpolation)
+            # For IR-SDE/Resfusion: degraded is passed as the mean target μ
+            _is_restoration = isinstance(self.mode, RestorationMode)
+
+            if _is_restoration:
+                noise = prepared['degraded']
+                # Optional stochastic bridge (RFlow only): add small noise
+                restoration_noise_std = self.cfg.training.get('restoration_noise_std', 0.0)
+                if restoration_noise_std > 0 and isinstance(self.strategy, RFlowStrategy):
+                    noise = noise + restoration_noise_std * torch.randn_like(noise)
+            elif isinstance(images, dict):
                 noise = {key: torch.randn_like(img).to(self.device) for key, img in images.items()}
             else:
                 noise = torch.randn_like(images).to(self.device)
 
             # Apply offset noise (low-frequency spatially-constant component)
-            noise = self._apply_offset_noise(noise)
+            # Skip for restoration (noise is the degraded volume, not Gaussian)
+            if not _is_restoration:
+                noise = self._apply_offset_noise(noise)
 
             # Apply noise augmentation (perturb noise vector for diversity)
-            noise = self._apply_noise_augmentation(noise)
+            # Skip for restoration (noise is the degraded volume)
+            if not _is_restoration:
+                noise = self._apply_noise_augmentation(noise)
 
             # Sample timesteps (with optional curriculum learning)
             curriculum_range = self._get_curriculum_range(self._current_epoch)

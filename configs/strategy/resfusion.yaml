@@ -1,0 +1,13 @@
+# Resfusion Strategy: Residual Noise Diffusion
+#
+# Shi et al., "Resfusion: Denoising Diffusion Probabilistic Models for
+# Image Restoration Based on Prior Residual Noise", NeurIPS 2024.
+#
+# Forward: x_t = √ᾱ_t * x_0 + (1-√ᾱ_t) * R + √(1-ᾱ_t) * ε
+# R = degraded - clean (residual)
+# Inference starts from T' ≈ step where √ᾱ_{T'} ≈ 0.5 (~5 steps)
+
+name: resfusion
+num_train_timesteps: 1000
+schedule: cosine
+prediction_type: resnoise

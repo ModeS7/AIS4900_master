@@ -292,12 +292,16 @@ def create_diffusion_dataloader(
     if spatial_dims not in (2, 3):
         raise ValueError(f"spatial_dims must be 2 or 3, got {spatial_dims}")
 
-    if mode not in ('seg', 'bravo', 'dual', 'triple', 'multi', 'seg_conditioned', 'seg_conditioned_input', 'bravo_seg_cond'):
+    if mode not in ('seg', 'bravo', 'dual', 'triple', 'multi', 'seg_conditioned', 'seg_conditioned_input', 'bravo_seg_cond', 'restoration'):
         raise ValueError(f"Unsupported mode: {mode}")
 
     # Determine augmentation setting
     if augment is None:
         augment = cfg.training.get('augment', False) if split == 'train' else False
+
+    # Restoration mode: uses separate paired dataset
+    if mode == 'restoration':
+        return _create_restoration_3d_loader(cfg, split, use_distributed, rank, world_size, augment, batch_size)
 
     # Route to appropriate loader
     if spatial_dims == 2:
@@ -951,3 +955,73 @@ def _create_compression_3d_loader(
             if result is None:
                 raise ValueError(f"No 3D test data found for {mode} VAE")
             return result
+
+
+def _create_restoration_3d_loader(
+    cfg: DictConfig,
+    split: str,
+    use_distributed: bool,
+    rank: int,
+    world_size: int,
+    augment: bool,
+    batch_size: int | None,
+) -> tuple[DataLoader, Dataset]:
+    """Create 3D restoration dataloader from pre-computed degradation pairs.
+
+    Uses a separate data directory (paths.restoration_data_dir) containing
+    paired (degraded, clean) volumes.
+    """
+    import os
+
+    from torch.utils.data import DataLoader, DistributedSampler
+
+    from medgen.data.loaders.restoration_3d import Restoration3DDataset
+    from medgen.data.loaders.volume_3d import VolumeConfig
+
+    vol_cfg = VolumeConfig.from_cfg(cfg)
+
+    # Restoration data lives in a separate directory
+    restoration_root = cfg.paths.get('restoration_data_dir', None)
+    if restoration_root is None:
+        raise ValueError(
+            "Restoration mode requires paths.restoration_data_dir config. "
+            "Set it to the directory containing restoration_pairs/{train,val,...}/"
+        )
+
+    split_name = 'test_new' if split == 'test' else split
+    data_dir = os.path.join(restoration_root, split_name)
+    if not os.path.isdir(data_dir):
+        raise ValueError(f"Restoration data directory not found: {data_dir}")
+
+    # Use train resolution for training, full resolution for val
+    if split == 'train':
+        height = vol_cfg.train_height
+        width = vol_cfg.train_width
+    else:
+        height = vol_cfg.height
+        width = vol_cfg.width
+
+    dataset = Restoration3DDataset(
+        data_dir=data_dir,
+        height=height,
+        width=width,
+        pad_depth_to=vol_cfg.pad_depth_to,
+        pad_mode=vol_cfg.pad_mode,
+        slice_step=vol_cfg.slice_step,
+        augment=augment and (split == 'train'),
+    )
+
+    bs = batch_size or vol_cfg.batch_size
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank) if use_distributed else None
+
+    loader = DataLoader(
+        dataset,
+        batch_size=bs,
+        shuffle=(sampler is None and split == 'train'),
+        sampler=sampler,
+        num_workers=cfg.training.get('num_workers', 4),
+        pin_memory=True,
+        drop_last=(split == 'train'),
+    )
+
+    return loader, dataset

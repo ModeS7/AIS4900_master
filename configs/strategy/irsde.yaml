@@ -1,0 +1,15 @@
+# IR-SDE Strategy: Mean-Reverting SDE for Image Restoration
+#
+# Luo et al., "Image Restoration with Mean-Reverting SDE", ICML 2023
+#
+# Forward: dx = θ_t(μ - x)dt + σ_t dw
+# θ schedule: flipped cosine (Nichol & Dhariwal 2021)
+# λ² = 10/255: stationary variance
+# σ_t² = 2λ²θ_t: noise tied to mean-reversion speed
+
+name: irsde
+num_train_timesteps: 100
+lambda_sq: 0.0392  # 10/255
+delta: 0.005       # exp(-θ̄_T) ≈ δ
+s: 0.008           # cosine schedule offset
+prediction_type: noise  # model predicts noise ε

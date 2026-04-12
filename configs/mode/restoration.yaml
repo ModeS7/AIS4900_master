@@ -1,0 +1,20 @@
+# Restoration Mode - Deblur MSE-smoothed volumes
+#
+# Trains a restoration network conditioned on the degraded input volume.
+# The degraded volume replaces the seg mask as the conditioning channel.
+# Model architecture identical to bravo mode (2in, 1out).
+#
+# Works with any strategy:
+#   - rflow: RFlow Bridge (degraded used as noise endpoint)
+#   - irsde: IR-SDE (mean-reverting SDE toward degraded)
+#   - resfusion: Resfusion (residual + DDPM)
+
+name: restoration
+is_conditional: true
+in_channels: 2   # [x_t, degraded_volume]
+out_channels: 1  # predicted noise/velocity
+image_keys: [bravo]
+description: "Restoration: deblur MSE-smoothed volumes conditioned on degraded input"
+
+# No CFG for restoration (same reasoning as bravo)
+cfg_dropout_prob: 0.0

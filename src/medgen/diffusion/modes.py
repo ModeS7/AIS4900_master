@@ -1045,3 +1045,74 @@ class LatentSegConditionedMode(TrainingMode):
                 "Ensure latent cache includes 'latent_seg'."
             )
         return torch.cat([noisy_images, seg_latent], dim=1)
+
+
+class RestorationMode(TrainingMode):
+    """Restoration mode: deblur degraded volumes.
+
+    Trains a restoration network conditioned on degraded input.
+    The degraded volume replaces the seg mask as the conditioning channel.
+
+    Input: [B, 2, D, H, W] - [x_t, degraded_volume]
+    Output: [B, 1, D, H, W] - predicted noise/velocity
+
+    The model architecture is identical to bravo mode (2in, 1out).
+    """
+
+    @property
+    def is_conditional(self) -> bool:
+        return True
+
+    def prepare_batch(
+        self, batch: torch.Tensor | dict[str, Any], device: torch.device
+    ) -> dict[str, Any]:
+        """Extract clean, degraded, and seg from restoration batch.
+
+        Args:
+            batch: Dict with 'image' (clean), 'degraded', and 'seg' keys
+                from Restoration3DDataset.
+            device: Target device.
+
+        Returns:
+            Dict with:
+                images: clean volume [B, 1, D, H, W]
+                labels: degraded volume [B, 1, D, H, W] (for format_model_input)
+                degraded: degraded volume [B, 1, D, H, W] (for noise replacement)
+        """
+        batch = _to_device(batch, device)  # type: ignore[assignment]
+
+        if not isinstance(batch, dict):
+            raise ValueError("RestorationMode requires dict batch from Restoration3DDataset")
+
+        clean = batch.get('image')
+        degraded = batch.get('degraded')
+        if clean is None or degraded is None:
+            raise ValueError("RestorationMode batch must have 'image' and 'degraded' keys")
+
+        return {
+            'images': clean,
+            'labels': degraded,
+            'degraded': degraded,
+        }
+
+    def get_model_config(self) -> dict[str, int]:
+        """Return channel configuration (same as bravo: 2in, 1out)."""
+        return {'in_channels': 2, 'out_channels': 1}
+
+    def format_model_input(  # type: ignore[override]
+        self,
+        noisy_images: torch.Tensor,
+        labels_dict: dict[str, torch.Tensor | None]
+    ) -> torch.Tensor:
+        """Concatenate noisy/interpolated state with degraded volume.
+
+        Args:
+            noisy_images: [B, 1, D, H, W] noisy state x_t.
+            labels_dict: Dict with 'labels' key containing degraded volume.
+
+        Returns:
+            [B, 2, D, H, W] - [x_t, degraded] concatenated.
+        """
+        degraded = labels_dict['labels']
+        assert degraded is not None, "RestorationMode requires degraded volume"
+        return torch.cat([noisy_images, degraded], dim=1)

@@ -29,6 +29,7 @@ class ModeType(str, Enum):
     TRIPLE = "triple"         # Three MRI modalities (t1_pre + t1_gd + flair)
     MULTI = "multi"           # Multi-modality diffusion with mode embedding
     MULTI_MODALITY = "multi_modality"  # Multi-modality VAE (no mode embedding)
+    RESTORATION = "restoration"  # Restoration: deblur MSE-smoothed volumes
 
 
 # Data processing thresholds
