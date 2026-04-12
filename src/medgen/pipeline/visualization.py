@@ -152,7 +152,7 @@ def visualize_samples_3d(
     # Generate samples
     # Use CFG scale from generation metrics config (default 2.0)
     cfg_scale = trainer._gen_metrics_config.cfg_scale if trainer._gen_metrics_config is not None else 2.0
-    num_train_timesteps = trainer.scheduler.num_train_timesteps
+    num_train_timesteps = trainer.scheduler.num_train_timesteps if trainer.scheduler is not None else 1000
     if trainer.use_size_bin_embedding and size_bins is not None:
         samples = generate_with_size_bins(
             model, noise, size_bins, num_train_timesteps,
@@ -265,7 +265,7 @@ def visualize_denoising_trajectory_3d(
     noise = trainer._apply_generation_offset(noise)
 
     # Extract parameters for decoupled generation functions
-    num_train_timesteps = trainer.scheduler.num_train_timesteps
+    num_train_timesteps = trainer.scheduler.num_train_timesteps if trainer.scheduler is not None else 1000
     is_conditional = trainer.mode.is_conditional
     latent_channels = trainer.space.latent_channels
     scale_factor = trainer.space.scale_factor

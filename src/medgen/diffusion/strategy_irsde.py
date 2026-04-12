@@ -377,7 +377,7 @@ class IRSDEStrategy(DiffusionStrategy):
             noise_pred = noise_pred.float()
 
             # Compute score from noise prediction
-            var_i = self.lambda_sq * (1.0 - torch.exp(torch.tensor(-2.0 * theta_bar_i)))
+            var_i = self.lambda_sq * (1.0 - math.exp(-2.0 * theta_bar_i.item()))
             score = -noise_pred / math.sqrt(max(var_i.item(), 1e-10))
 
             # Euler-Maruyama reverse step:
