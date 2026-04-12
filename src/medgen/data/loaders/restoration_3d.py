@@ -25,7 +25,7 @@ from collections.abc import Callable
 from typing import Any
 
 import torch
-from monai.transforms import RandFlipd, RandRotate90d, Compose
+from monai.transforms import Compose, RandFlipd, RandRotate90d
 
 from .volume_3d import Base3DVolumeDataset
 

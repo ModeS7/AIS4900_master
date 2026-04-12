@@ -32,7 +32,6 @@ import argparse
 import json
 import logging
 import random
-import shutil
 from pathlib import Path
 
 import nibabel as nib

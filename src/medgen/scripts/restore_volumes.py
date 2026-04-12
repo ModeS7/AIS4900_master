@@ -28,7 +28,6 @@ Usage:
         --eval --data-root /path/to/real/data
 """
 import argparse
-import gc
 import json
 import logging
 import time
@@ -37,7 +36,6 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 import torch
-from torch.amp import autocast
 
 from medgen.data.utils import save_nifti
 from medgen.diffusion import RFlowStrategy, load_diffusion_model

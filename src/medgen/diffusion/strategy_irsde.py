@@ -20,7 +20,6 @@ Reference:
 """
 import logging
 import math
-import warnings
 from typing import Any
 
 import torch
@@ -342,7 +341,7 @@ class IRSDEStrategy(DiffusionStrategy):
 
         # Use theta schedule for the number of steps we're actually taking
         # If num_steps < self.num_timesteps, we subsample the schedule
-        if T < self.num_timesteps:
+        if self.num_timesteps > T:
             # Subsample: take evenly spaced steps
             step_indices = torch.linspace(self.num_timesteps - 1, 0, T).long()
         else:

@@ -29,7 +29,6 @@ import numpy as np
 import torch
 from torch.amp import autocast
 
-from medgen.data.utils import binarize_seg
 from medgen.diffusion import RFlowStrategy, load_diffusion_model
 
 logging.basicConfig(
