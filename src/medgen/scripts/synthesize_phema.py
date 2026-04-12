@@ -79,9 +79,13 @@ def synthesize_model(
     sigma_rel: float,
     device: torch.device,
 ) -> torch.nn.Module:
-    """Synthesize EMA model at given sigma_rel and load weights."""
+    """Synthesize EMA model at given sigma_rel and load weights.
+
+    Note: KarrasEMA.model returns the online (original) model.
+    KarrasEMA.ema_model holds the actual EMA weights after synthesis.
+    """
     synthesized = phema.synthesize_ema_model(sigma_rel=sigma_rel)
-    model.load_state_dict(synthesized.model.state_dict())
+    model.load_state_dict(synthesized.ema_model.state_dict())
     model.to(device)
     model.eval()
     return model
@@ -364,7 +368,7 @@ def main():
                 )
                 phema_live.load_state_dict(ema_state)
                 # Get the live EMA model at this index
-                model.load_state_dict(phema_live.ema_models[idx].model.state_dict())
+                model.load_state_dict(phema_live.ema_models[idx].ema_model.state_dict())
                 model.to(device)
                 model.eval()
                 del phema_live

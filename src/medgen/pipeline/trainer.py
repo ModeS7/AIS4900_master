@@ -80,8 +80,12 @@ class PostHocEMAWrapper:
 
     @property
     def ema_model(self) -> nn.Module:
-        """Return the first KarrasEMA's model for inference (same role as EMA.ema_model)."""
-        return self._phema.ema_models[0].model
+        """Return the first KarrasEMA's EMA model for inference.
+
+        Note: KarrasEMA.model returns the online (original) model.
+        KarrasEMA.ema_model holds the actual smoothed EMA weights.
+        """
+        return self._phema.ema_models[0].ema_model
 
     def update(self) -> None:
         """Update all internal KarrasEMA models + auto-checkpoint."""
