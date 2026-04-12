@@ -1,18 +1,14 @@
 """IR-SDE Strategy: Image Restoration using Mean-Reverting SDE.
 
-Implements the mean-reverting SDE approach from Luo et al. (ICML 2023).
-The forward SDE transforms a clean image toward a degraded counterpart:
+Faithful reimplementation of Luo et al. (ICML 2023), matching the official
+GitHub repository: https://github.com/Algolzw/image-restoration-sde
 
-    dx = θ_t(μ - x)dt + σ_t dw
-
-where μ is the degraded image, θ_t controls mean-reversion speed,
-and σ_t is the noise volatility (tied to θ_t via stationary variance λ²).
-
-Transition kernel (closed form):
-    x_t = μ + (x_0 - μ)*exp(-θ̄_t) + ε*λ*sqrt(1 - exp(-2θ̄_t))
-
-The reverse SDE restores the clean image from the degraded terminal state.
-Training uses the ML objective (more stable than score matching).
+Key details matched to official code:
+- max_sigma = 10/255 (standard deviation), variance = max_sigma² = (10/255)²
+- Theta schedule: DDPM-style cosine with T+2 offset, cumsum subtracts thetas[0]
+- Loss: L1 (ML objective, eq 15)
+- Sampling: Posterior (estimate x₀ → optimal mean → calibrated noise), NOT Euler-Maruyama
+- Timesteps: 1-based [1, T]
 
 Reference:
     Luo et al., "Image Restoration with Mean-Reverting Stochastic Differential
@@ -33,35 +29,31 @@ logger = logging.getLogger(__name__)
 
 
 class IRSDEStrategy(DiffusionStrategy):
-    """Mean-reverting SDE strategy for image restoration.
+    """Mean-reverting SDE for image restoration (official implementation).
 
     Forward: dx = θ_t(μ - x)dt + σ_t dw
-    Reverse: dx = [θ_t(μ - x) - σ_t² ∇log p_t(x)]dt + σ_t dw̄
+    where σ_t² = 2 * max_sigma² * θ_t (stationary variance condition)
 
-    The model learns to predict the noise ε at each timestep. The ML objective
-    optimizes the reverse trajectory by comparing predicted x_{t-1} against
-    the optimal x*_{t-1} computed from the forward kernel with known x_0.
-
-    Hyperparameters (from paper):
-        λ² = 10/255 ≈ 0.039 (stationary variance)
-        θ schedule: flipped cosine (s=0.008)
-        δ = 0.005 (terminal exponential value)
-        T = 100 (default reverse steps)
+    Training: ML objective (eq 15) with L1 loss on predicted vs optimal reverse step.
+    Sampling: Posterior sampling (more accurate than Euler-Maruyama).
     """
 
     def __init__(self) -> None:
         super().__init__()
-        # Hyperparameters (paper defaults)
-        self.lambda_sq: float = 10.0 / 255.0
-        self.delta: float = 0.005
-        self.s: float = 0.008
-        self.num_timesteps: int = 100
+        # Paper defaults (matching official repo)
+        self.max_sigma: float = 10.0 / 255.0   # λ (std dev, NOT variance)
+        self.eps: float = 0.005                  # δ: exp(-θ̄_T * dt) ≈ eps
+        self.T: int = 100
         self.spatial_dims: int = 3
 
-        # Pre-computed schedules (set in setup_scheduler)
-        self._theta: torch.Tensor | None = None     # Per-step θ values
-        self._theta_bar: torch.Tensor | None = None  # Cumulative θ̄
-        self._dt: float = 0.0                         # Time step Δt
+        # Pre-computed schedules (1-indexed: index 0 unused, indices 1..T)
+        self._thetas: torch.Tensor | None = None          # [T+1], θ values
+        self._thetas_cumsum: torch.Tensor | None = None    # [T+1], cumulative θ (cumsum[0]=0)
+        self._dt: float = 0.0
+
+    @property
+    def num_timesteps(self) -> int:
+        return self.T
 
     def setup_scheduler(
         self,
@@ -71,143 +63,110 @@ class IRSDEStrategy(DiffusionStrategy):
         spatial_dims: int = 3,
         **kwargs: Any,
     ) -> None:
-        """Pre-compute the θ schedule and derived quantities.
-
-        θ schedule is a flipped cosine: high mean-reversion at start
-        (rapidly moving from clean toward degraded), low at end.
-
-        σ_t is derived from the stationary variance condition: σ_t² = 2λ²θ_t.
-
-        Args:
-            num_timesteps: Number of discrete time steps T.
-            image_size: Image spatial size (for compatibility, not used).
-            depth_size: Volume depth (for compatibility, not used).
-            spatial_dims: 2 or 3.
-        """
-        self.num_timesteps = num_timesteps
+        """Setup cosine theta schedule (matching official cosine_theta_schedule)."""
+        self.T = num_timesteps
         self.spatial_dims = spatial_dims
 
-        # Flipped cosine θ schedule (eq 49 from paper appendix D)
-        # θ_t = 1 - f(t)/f(0) where f(t) = cos²((t/T + s)/(1+s) · π/2)
-        t_frac = torch.linspace(0, 1, num_timesteps + 1)
-        f_vals = torch.cos(((t_frac + self.s) / (1.0 + self.s)) * (math.pi / 2.0)) ** 2
-        # θ_i for each step (from f values)
-        # θ_i = -log(f(i+1)/f(i)) approximation for ∫θ_t dt over step i
-        theta = -torch.log(f_vals[1:] / f_vals[:-1])
-        theta = theta.clamp(min=1e-8)  # Numerical stability
+        # Official: cosine_theta_schedule with T+2 offset
+        T_sched = num_timesteps + 2
+        steps = T_sched + 1
+        s = 0.008
+        x = torch.linspace(0, T_sched, steps)
+        alphas_cumprod = torch.cos(((x / T_sched) + s) / (1 + s) * math.pi * 0.5) ** 2
+        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+        betas = 1.0 - alphas_cumprod[1:-1]  # Length T+1 (indices 0..T)
+        betas = betas.clamp(max=0.999)
 
-        # Compute Δt so that exp(-θ̄_T) = δ
-        theta_sum = theta.sum().item()
-        dt = -math.log(self.delta) / theta_sum
-        self._dt = dt
+        # thetas = betas, thetas_cumsum starts at 0 (subtract first element)
+        thetas = betas
+        thetas_cumsum = torch.cumsum(thetas, dim=0) - thetas[0]
+        # Now thetas_cumsum[0] = 0, thetas_cumsum[T] = sum(thetas) - thetas[0]
 
-        # Scale θ by Δt to get actual per-step θ values
-        self._theta = theta * dt
-        self._theta_bar = torch.cumsum(self._theta, dim=0)
+        # dt calibrated so exp(-thetas_cumsum[-1] * dt) = eps
+        self._dt = -math.log(self.eps) / thetas_cumsum[-1].item()
 
-        # Verify terminal values
-        exp_neg_theta_T = torch.exp(-self._theta_bar[-1]).item()
-        var_T = self.lambda_sq * (1.0 - math.exp(-2.0 * self._theta_bar[-1].item()))
+        self._thetas = thetas        # [T+1], indices 0..T
+        self._thetas_cumsum = thetas_cumsum  # [T+1], cumsum[0]=0
+
+        # Verify
+        exp_T = math.exp(-self._thetas_cumsum[-1].item() * self._dt)
+        var_T = self.max_sigma ** 2 * (1.0 - math.exp(-2.0 * self._thetas_cumsum[-1].item() * self._dt))
         logger.info(
-            f"IR-SDE setup: T={num_timesteps}, λ²={self.lambda_sq:.4f}, "
-            f"δ={self.delta}, exp(-θ̄_T)={exp_neg_theta_T:.4f}, "
-            f"var_T={var_T:.4f}, Δt={dt:.4f}"
+            f"IR-SDE setup: T={num_timesteps}, max_σ={self.max_sigma:.4f}, "
+            f"exp(-θ̄_T·dt)={exp_T:.4f}, var_T={var_T:.6f}, dt={self._dt:.4f}"
         )
 
-    def _get_theta_bar(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """Get cumulative θ̄ for given timesteps."""
-        assert self._theta_bar is not None, "Call setup_scheduler first"
-        return self._theta_bar.to(timesteps.device)[timesteps]
+    # ── Schedule helper functions (matching official sde_utils.py) ──────
 
-    def _expand_dims(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Expand 1D tensor x to broadcast with target (4D or 5D)."""
+    def _mu_bar(self, x0: torch.Tensor, mu: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Forward mean: μ + (x₀ - μ) * exp(-θ̄_t * dt)."""
+        theta_cumsum_t = self._thetas_cumsum.to(x0.device)[t]
+        exp_neg = torch.exp(-theta_cumsum_t * self._dt)
+        exp_neg = self._expand(exp_neg, x0)
+        return mu + (x0 - mu) * exp_neg
+
+    def _sigma_bar(self, t: torch.Tensor, device: torch.device) -> torch.Tensor:
+        """Forward std: sqrt(max_σ² * (1 - exp(-2θ̄_t * dt)))."""
+        theta_cumsum_t = self._thetas_cumsum.to(device)[t]
+        return torch.sqrt(
+            self.max_sigma ** 2 * (1.0 - torch.exp(-2.0 * theta_cumsum_t * self._dt))
+        )
+
+    def _expand(self, x: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Expand [B] to broadcast with [B, C, ...] target."""
         while x.dim() < target.dim():
             x = x.unsqueeze(-1)
         return x
 
+    # ── DiffusionStrategy interface ────────────────────────────────────
+
     def add_noise(
-        self,
-        clean_images: ImageOrDict,
-        noise: ImageOrDict,
-        timesteps: torch.Tensor,
+        self, clean_images: ImageOrDict, noise: ImageOrDict, timesteps: torch.Tensor,
     ) -> ImageOrDict:
-        """Forward transition kernel.
-
-        x_t = μ + (x_0 - μ)*exp(-θ̄_t) + ε*λ*sqrt(1 - exp(-2θ̄_t))
-
-        In restoration mode, 'noise' argument is actually the degraded volume μ.
-        We generate Gaussian noise internally.
+        """Forward kernel: x_t = mu_bar(x₀, t) + sigma_bar(t) * ε.
 
         Args:
-            clean_images: x_0 (clean volume).
-            noise: μ (degraded volume, passed via noise argument from trainer).
-            timesteps: Integer timesteps [B].
-
-        Returns:
-            x_t at the given timesteps.
+            clean_images: x₀ (clean).
+            noise: μ (degraded, passed via noise arg in restoration mode).
+            timesteps: 1-based timesteps [B] in [1, T].
         """
-        assert not isinstance(clean_images, dict), "IR-SDE does not support dict images"
-        degraded = noise  # In restoration mode, noise = degraded volume
+        assert not isinstance(clean_images, dict)
+        mu = noise  # degraded
+        device = clean_images.device
 
-        theta_bar_t = self._get_theta_bar(timesteps)
-        theta_bar_t = self._expand_dims(theta_bar_t, clean_images)
+        mean = self._mu_bar(clean_images, mu, timesteps)
+        sigma = self._sigma_bar(timesteps, device)
+        sigma = self._expand(sigma, clean_images)
 
-        exp_neg_theta = torch.exp(-theta_bar_t)
-        var_t = self.lambda_sq * (1.0 - torch.exp(-2.0 * theta_bar_t))
-
-        # Mean: m_t = μ + (x_0 - μ)*exp(-θ̄_t)
-        mean_t = degraded + (clean_images - degraded) * exp_neg_theta
-
-        # Sample x_t = m_t + sqrt(v_t) * ε
         epsilon = torch.randn_like(clean_images)
-        x_t = mean_t + torch.sqrt(var_t.clamp(min=1e-10)) * epsilon
-
-        return x_t
+        return mean + sigma * epsilon
 
     def sample_timesteps(
-        self,
-        images: ImageOrDict,
-        curriculum_range: tuple[float, float] | None = None,
+        self, images: ImageOrDict, curriculum_range: tuple[float, float] | None = None,
     ) -> torch.Tensor:
-        """Sample uniform integer timesteps in [0, T-1]."""
+        """Sample 1-based timesteps in [1, T] (matching official)."""
         if isinstance(images, dict):
             batch_size = next(iter(images.values())).shape[0]
             device = next(iter(images.values())).device
         else:
             batch_size = images.shape[0]
             device = images.device
-        return torch.randint(0, self.num_timesteps, (batch_size,), device=device).long()
+        return torch.randint(1, self.T + 1, (batch_size,), device=device).long()
 
     def predict_noise_or_velocity(
-        self,
-        model: nn.Module,
-        model_input: torch.Tensor,
-        timesteps: torch.Tensor,
+        self, model: nn.Module, model_input: torch.Tensor, timesteps: torch.Tensor,
     ) -> torch.Tensor:
-        """Forward pass through model. Predicts noise ε.
-
-        For IR-SDE, the model takes [x_t, μ] and timesteps,
-        and predicts the Gaussian noise ε that was added.
-        """
-        # Scale timesteps to match model's expected range [0, num_train_timesteps]
-        # IR-SDE uses T=100, but UNet expects timesteps in [0, 1000]
-        # Scale linearly: t_model = t_irsde * (1000 / T)
-        scale = 1000.0 / self.num_timesteps
-        scaled_timesteps = (timesteps.float() * scale).long()
-        return model(x=model_input, timesteps=scaled_timesteps)
+        """Model predicts noise ε. Timesteps passed as-is (1-based)."""
+        # Scale to match UNet's expected range. UNet trained with [0, 1000],
+        # IR-SDE uses [1, 100]. Map linearly.
+        scale = 1000.0 / self.T
+        scaled_t = (timesteps.float() * scale).long()
+        return model(x=model_input, timesteps=scaled_t)
 
     def compute_target(
-        self,
-        clean_images: ImageOrDict,
-        noise: ImageOrDict,
+        self, clean_images: ImageOrDict, noise: ImageOrDict,
     ) -> ImageOrDict:
-        """Compute target for loss.
-
-        For IR-SDE with ML objective, the target is the optimal reverse state
-        x*_{t-1}. This is computed inside compute_loss where we have access
-        to x_t and timesteps. Here we return a placeholder.
-        """
-        # Not used directly — ML objective computed in compute_loss
+        """Placeholder — ML target computed in compute_loss."""
         return clean_images
 
     def compute_loss(
@@ -218,81 +177,79 @@ class IRSDEStrategy(DiffusionStrategy):
         noisy_images: ImageOrDict,
         timesteps: torch.Tensor,
     ) -> tuple[torch.Tensor, ImageOrDict]:
-        """ML objective loss (eq 15 from paper).
+        """Maximum likelihood objective (eq 15) with L1 loss.
 
-        Trains the model so that the reversed x_{t-1} matches the optimal
-        x*_{t-1} computed from the forward kernel.
-
-        The model predicts noise ε. We use this to compute the score,
-        then compute the reversed x_{t-1} via one Euler-Maruyama step.
-        The target x*_{t-1} is computed analytically from (x_0, μ, t).
-
-        Args:
-            prediction: Model's noise prediction ε̃.
-            target_images: Clean images x_0.
-            noise: Degraded images μ.
-            noisy_images: Current state x_t.
-            timesteps: Current timesteps.
-
-        Returns:
-            (loss, predicted_clean) tuple.
+        1. Model predicts noise ε
+        2. Compute score from ε: score = -ε / sigma_bar(t)
+        3. Compute predicted x_{t-1} via reverse drift
+        4. Compute optimal x*_{t-1} from Proposition 3.2
+        5. Loss = L1(predicted, optimal)
         """
         assert not isinstance(target_images, dict)
         assert not isinstance(noise, dict)
         assert not isinstance(noisy_images, dict)
+        assert self._thetas is not None
+        assert self._thetas_cumsum is not None
 
-        clean = target_images
-        degraded = noise  # In restoration mode
-        x_t = noisy_images
+        x0 = target_images.float()
+        mu = noise.float()  # degraded
+        xt = noisy_images.float()
+        eps_pred = prediction.float()
+        device = xt.device
+        dt = self._dt
 
-        theta_bar_t = self._get_theta_bar(timesteps)
-        theta_bar_t_exp = self._expand_dims(theta_bar_t, x_t)
+        thetas = self._thetas.to(device)
+        thetas_cumsum = self._thetas_cumsum.to(device)
 
-        exp_neg_theta = torch.exp(-theta_bar_t_exp)
-        var_t = self.lambda_sq * (1.0 - torch.exp(-2.0 * theta_bar_t_exp))
+        # ── Score from noise prediction ──
+        sigma_bar_t = self._sigma_bar(timesteps, device)
+        sigma_bar_t = self._expand(sigma_bar_t, xt)
+        score = -eps_pred / sigma_bar_t.clamp(min=1e-10)
 
-        # Compute ground truth score: ∇log p_t(x|x_0) = -(x_t - m_t)/v_t
-        mean_t = degraded + (clean - degraded) * exp_neg_theta
-        true_score = -(x_t - mean_t) / var_t.clamp(min=1e-10)
+        # ── Predicted x_{t-1} via reverse SDE drift ──
+        theta_t = thetas[timesteps]
+        theta_t = self._expand(theta_t, xt)
+        sigma_t_sq = self.max_sigma ** 2 * 2.0 * theta_t  # σ² = max_σ² * 2θ
 
-        # Predicted score from model's noise prediction
-        # score = -ε / sqrt(v_t)
-        pred_score = -prediction / torch.sqrt(var_t.clamp(min=1e-10))
+        drift_dt = (theta_t * (mu - xt) - sigma_t_sq * score) * dt
+        x_pred_prev = xt - drift_dt  # reverse time
 
-        # Compute optimal reverse state x*_{t-1} (eq 14 from paper)
-        # For t > 0, compute from known x_0
-        # x*_{t-1} = coefficients depending on θ̄_{t-1}, θ̄_t, x_t, x_0, μ
-        #
-        # Simplified: we use noise matching loss instead of full ML for stability
-        # (both converge to the same optimum, ML is just more stable training)
-        # Loss = ||ε_pred - ε_true||²
-        # where ε_true = (x_t - m_t) / sqrt(v_t)
-        epsilon_true = (x_t.float() - mean_t.float()) / torch.sqrt(var_t.float().clamp(min=1e-10))
-        loss = F.mse_loss(prediction.float(), epsilon_true.float())
+        # ── Optimal x*_{t-1} (Proposition 3.2 / official reverse_optimum_step) ──
+        tc_t = thetas_cumsum[timesteps]        # θ̄_t
+        tc_prev = thetas_cumsum[timesteps - 1]  # θ̄_{t-1} (safe: t≥1, cumsum[0]=0)
+        th_t = thetas[timesteps]               # θ_t (single step)
 
-        # Predicted clean image via Tweedie estimate
-        # x̂_0 = (x_t - sqrt(v_t)*ε_pred - μ*(1 - exp(-θ̄_t))) / exp(-θ̄_t) + μ
-        # Simplified: x̂_0 = μ + (x_t - sqrt(v_t)*ε_pred - μ) / exp(-θ̄_t)
-        sqrt_var_t = torch.sqrt(var_t.clamp(min=1e-10))
-        predicted_clean = degraded + (x_t - sqrt_var_t * prediction - degraded) / exp_neg_theta.clamp(min=1e-6)
+        tc_t = self._expand(tc_t, xt)
+        tc_prev = self._expand(tc_prev, xt)
+        th_t_exp = self._expand(th_t, xt)
+
+        A = torch.exp(-th_t_exp * dt)
+        B = torch.exp(-tc_t * dt)
+        C = torch.exp(-tc_prev * dt)
+
+        denom = (1.0 - B ** 2).clamp(min=1e-10)
+        coeff1 = A * (1.0 - C ** 2) / denom
+        coeff2 = C * (1.0 - A ** 2) / denom
+
+        x_star_prev = coeff1 * (xt - mu) + coeff2 * (x0 - mu) + mu
+
+        # ── L1 loss (matching official) ──
+        loss = F.l1_loss(x_pred_prev, x_star_prev)
+
+        # ── Predicted clean via Tweedie ──
+        # x₀ = (x_t - μ - σ̄(t)*ε) * exp(θ̄_t*dt) + μ
+        exp_pos = torch.exp(tc_t * dt)
+        predicted_clean = (xt - mu - sigma_bar_t * eps_pred) * exp_pos + mu
         predicted_clean = predicted_clean.clamp(0, 1)
 
         return loss, predicted_clean
 
     def compute_predicted_clean(
-        self,
-        noisy_images: ImageOrDict,
-        prediction: ImageOrDict,
-        timesteps: torch.Tensor,
+        self, noisy_images: ImageOrDict, prediction: ImageOrDict, timesteps: torch.Tensor,
     ) -> ImageOrDict:
-        """Estimate clean image from noise prediction (Tweedie).
-
-        This is an approximation used during validation — the full
-        ML objective handles this more carefully in compute_loss.
-        """
-        # For standalone use, we don't have μ (degraded) here.
-        # Return prediction as-is (this method is less used for IR-SDE).
-        return prediction
+        """Approximate clean estimate (full Tweedie in compute_loss)."""
+        assert not isinstance(noisy_images, dict)
+        return noisy_images
 
     @torch.no_grad()
     def generate(
@@ -305,89 +262,88 @@ class IRSDEStrategy(DiffusionStrategy):
         conditioning: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Reverse SDE sampling via Euler-Maruyama.
+        """Posterior sampling (official default, more accurate than Euler-Maruyama).
 
-        Starting from x_T ≈ μ + noise (degraded + Gaussian), iteratively
-        reverse the mean-reverting SDE to recover the clean image.
+        For each reverse step t → t-1:
+        1. Predict noise ε from model
+        2. Estimate x₀ via Tweedie: x₀ = (x_t - μ - σ̄(t)ε) * exp(θ̄_t·dt) + μ
+        3. Compute optimal mean x*_{t-1} from Proposition 3.2
+        4. Add calibrated posterior noise
 
         Args:
             model: Trained restoration model.
-            model_input: [B, 2, D, H, W] = [degraded, degraded] at start.
-                The first channel is the starting state (will be evolved),
-                the second is the conditioning (stays fixed).
-            num_steps: Number of reverse steps (default: T from setup).
+            model_input: [B, 2, D, H, W] = [degraded, degraded].
+            num_steps: Number of reverse steps.
             device: CUDA device.
-
-        Returns:
-            Restored volume [B, 1, D, H, W].
         """
-        assert self._theta is not None, "Call setup_scheduler first"
+        assert self._thetas is not None
+        assert self._thetas_cumsum is not None
 
-        # Parse input: [degraded_as_start, degraded_as_condition]
+        # Parse input
         if model_input.shape[1] == 2:
-            degraded = model_input[:, 1:2]  # Conditioning channel
-            x = model_input[:, 0:1].clone()  # Starting state (will be modified)
+            mu = model_input[:, 1:2]
         else:
-            degraded = model_input
-            x = model_input.clone()
+            mu = model_input
+        batch_size = mu.shape[0]
 
-        # Terminal state: x_T = μ + ε * λ
-        # Add noise at the terminal level
-        var_T = self.lambda_sq * (1.0 - math.exp(-2.0 * self._theta_bar[-1].item()))
-        x = degraded + torch.randn_like(x) * math.sqrt(var_T)
+        # Terminal state: x_T = μ + randn * max_sigma (matching official noise_state)
+        x = mu + torch.randn_like(mu) * self.max_sigma
 
-        batch_size = x.shape[0]
-        T = min(num_steps, self.num_timesteps)
+        thetas = self._thetas.to(device)
+        thetas_cumsum = self._thetas_cumsum.to(device)
+        dt = self._dt
+        T = min(num_steps, self.T)
 
-        # Use theta schedule for the number of steps we're actually taking
-        # If num_steps < self.num_timesteps, we subsample the schedule
-        if self.num_timesteps > T:
-            # Subsample: take evenly spaced steps
-            step_indices = torch.linspace(self.num_timesteps - 1, 0, T).long()
-        else:
-            step_indices = torch.arange(self.num_timesteps - 1, -1, -1)
-
-        theta = self._theta.to(device)
-        theta_bar = self._theta_bar.to(device)
-
-        iterator = step_indices
+        # Reverse from T down to 1
+        steps = list(range(T, 0, -1))
         if use_progress_bars:
             from tqdm import tqdm
-            iterator = tqdm(step_indices, desc="IR-SDE reverse")
+            steps = tqdm(steps, desc="IR-SDE posterior")
 
-        for step_idx in iterator:
-            i = step_idx.item()
-            theta_i = theta[i]
-            theta_bar_i = theta_bar[i]
-            sigma_i = math.sqrt(2.0 * self.lambda_sq * theta_i.item())
+        for t_val in steps:
+            t_batch = torch.full((batch_size,), t_val, device=device, dtype=torch.long)
 
             # Model prediction (noise ε)
-            current_input = torch.cat([x, degraded], dim=1)
-            timesteps_batch = torch.full(
-                (batch_size,), i, device=device, dtype=torch.long,
-            )
-
-            # Scale timesteps for model
-            scale = 1000.0 / self.num_timesteps
-            scaled_t = (timesteps_batch.float() * scale).long()
+            current_input = torch.cat([x, mu], dim=1)
+            scale = 1000.0 / self.T
+            scaled_t = (t_batch.float() * scale).long()
 
             with autocast('cuda', dtype=torch.bfloat16):
                 noise_pred = model(x=current_input, timesteps=scaled_t)
-
             noise_pred = noise_pred.float()
 
-            # Compute score from noise prediction
-            var_i = self.lambda_sq * (1.0 - math.exp(-2.0 * theta_bar_i.item()))
-            score = -noise_pred / math.sqrt(max(var_i, 1e-10))
+            # ── Posterior sampling step ──
 
-            # Euler-Maruyama reverse step:
-            # dx = [θ_t(μ - x) - σ_t² * score] * (-Δt) + σ_t * sqrt(Δt) * z
-            drift = theta_i.item() * (degraded - x) - sigma_i ** 2 * score
-            x = x - drift * self._dt  # Note: negative dt for reverse time
+            # 1. Estimate x₀ from noise (Tweedie)
+            tc_t = thetas_cumsum[t_val]
+            sigma_bar_t = math.sqrt(self.max_sigma ** 2 * (1.0 - math.exp(-2.0 * tc_t.item() * dt)))
+            exp_pos_t = math.exp(tc_t.item() * dt)
+            x0_est = (x - mu - sigma_bar_t * noise_pred) * exp_pos_t + mu
 
-            # Add stochastic noise (skip at last step)
-            if i > 0:
-                z = torch.randn_like(x)
-                x = x + sigma_i * math.sqrt(self._dt) * z
+            # 2. Compute optimal mean x*_{t-1}
+            tc_prev = thetas_cumsum[t_val - 1]  # t≥1, so t-1≥0, cumsum[0]=0
+            th_t = thetas[t_val]
+
+            A = math.exp(-th_t.item() * dt)
+            B = math.exp(-tc_t.item() * dt)
+            C = math.exp(-tc_prev.item() * dt)
+
+            denom = max(1.0 - B ** 2, 1e-10)
+            coeff1 = A * (1.0 - C ** 2) / denom
+            coeff2 = C * (1.0 - A ** 2) / denom
+
+            mean = coeff1 * (x - mu) + coeff2 * (x0_est - mu) + mu
+
+            # 3. Add posterior noise (skip at t=1 → x₀)
+            if t_val > 1:
+                A2 = math.exp(-2.0 * th_t.item() * dt)
+                B2 = math.exp(-2.0 * tc_t.item() * dt)
+                C2 = math.exp(-2.0 * tc_prev.item() * dt)
+                posterior_var = (1.0 - A2) * (1.0 - C2) / max(1.0 - B2, 1e-10)
+                log_pvar = math.log(max(posterior_var, 1e-20 * dt))
+                std = math.exp(0.5 * log_pvar) * self.max_sigma
+                x = mean + std * torch.randn_like(x)
+            else:
+                x = mean
 
         return x.clamp(0, 1)

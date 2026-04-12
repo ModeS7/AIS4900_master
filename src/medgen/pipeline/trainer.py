@@ -10,6 +10,7 @@ and implements 2D-specific diffusion training functionality:
 - Compiled forward paths for performance
 """
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,32 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_eval_volumes(
+    directory: str, modality: str, depth: int, max_vols: int = 50,
+) -> list:
+    """Load NIfTI volumes for FWD evaluation. Returns list of [D,H,W] numpy arrays."""
+    import nibabel as nib
+    import numpy as np
+
+    files = sorted(Path(directory).glob(f"*/{modality}.nii.gz"))
+    if not files:
+        files = sorted(Path(directory).glob("*.nii.gz"))
+    files = files[:max_vols]
+    volumes = []
+    for fp in files:
+        vol = nib.load(str(fp)).get_fdata().astype(np.float32)
+        vmax = vol.max()
+        if vmax > 0:
+            vol = vol / vmax
+        vol = np.transpose(vol, (2, 0, 1))  # [H,W,D] -> [D,H,W]
+        if vol.shape[0] < depth:
+            vol = np.pad(vol, ((0, depth - vol.shape[0]), (0, 0), (0, 0)))
+        elif vol.shape[0] > depth:
+            vol = vol[:depth]
+        volumes.append(vol)
+    return volumes
 
 
 class PostHocEMAWrapper:
@@ -1456,6 +1483,94 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if log_figures or (epoch + 1) == self.n_epochs:
             model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
             self._visualize_samples(model_to_use, epoch, self.train_dataset)
+
+        # Restoration FWD evaluation on pre-generated synthetic datasets
+        if isinstance(self.mode, RestorationMode) and self._spatial_dims == 3:
+            extended_interval = self.cfg.training.get('extended_metrics_interval', 25)
+            if (epoch + 1) % extended_interval == 0 or (epoch + 1) == self.n_epochs:
+                self._compute_restoration_fwd(epoch)
+
+    def _compute_restoration_fwd(self, epoch: int) -> None:
+        """Compute FWD on pre-generated synthetic volumes (ImageNet/RadImageNet).
+
+        Restores 50 volumes from each dataset, computes FWD against real data,
+        and logs to TensorBoard. Only runs for restoration mode.
+        """
+        import numpy as np
+
+        eval_dirs = {}
+        gen_in = self.cfg.get('restoration', {}).get('eval_gen_imagenet_dir', None)
+        gen_rin = self.cfg.get('restoration', {}).get('eval_gen_radimagenet_dir', None)
+        if gen_in:
+            eval_dirs['imagenet'] = gen_in
+        if gen_rin:
+            eval_dirs['radimagenet'] = gen_rin
+
+        if not eval_dirs:
+            return
+
+        from medgen.metrics.fwd import compute_fwd_3d
+
+        model = self.ema.ema_model if self.ema is not None else self.model_raw
+        model.eval()
+
+        depth = self.cfg.volume.get('pad_depth_to', 160)
+        trim_slices = 10
+
+        # Load real volumes (cached after first call)
+        if not hasattr(self, '_restoration_real_vols'):
+            real_dir = os.path.join(self.cfg.paths.data_dir, 'test_new')
+            if not os.path.isdir(real_dir):
+                real_dir = os.path.join(self.cfg.paths.data_dir, 'val')
+            self._restoration_real_vols = _load_eval_volumes(real_dir, 'bravo', depth, max_vols=51)
+            logger.info(f"Restoration FWD: cached {len(self._restoration_real_vols)} real volumes")
+
+        for name, gen_dir in eval_dirs.items():
+            if not os.path.isdir(gen_dir):
+                logger.warning(f"Restoration FWD: dir not found: {gen_dir}")
+                continue
+
+            # Load generated volumes (cached after first call)
+            cache_key = f'_restoration_gen_{name}'
+            if not hasattr(self, cache_key):
+                vols = _load_eval_volumes(gen_dir, 'bravo', depth, max_vols=50)
+                setattr(self, cache_key, vols)
+                logger.info(f"Restoration FWD: cached {len(vols)} generated volumes ({name})")
+
+            gen_vols = getattr(self, cache_key)
+            if not gen_vols:
+                continue
+
+            # Restore each volume with current model
+            restored = []
+            with torch.no_grad():
+                for vol_np in gen_vols:
+                    vol_t = torch.from_numpy(vol_np).unsqueeze(0).unsqueeze(0).to(self.device)
+                    model_input = torch.cat([vol_t, vol_t], dim=1)
+                    out = self.strategy.generate(
+                        model, model_input, num_steps=25, device=self.device,
+                    )
+                    restored.append(out.squeeze().cpu().float().numpy())
+
+            # Compute FWD
+            fwd_score, fwd_bands = compute_fwd_3d(
+                self._restoration_real_vols, restored,
+                trim_slices=trim_slices, max_level=4,
+            )
+            n_bands = len(fwd_bands)
+            quarter = n_bands // 4
+            vals = list(fwd_bands.values())
+            fwd_high = float(np.mean(vals[3 * quarter:])) if vals else 0.0
+
+            # Log to TensorBoard
+            if self.writer is not None:
+                self.writer.add_scalar(f'Restoration/FWD_{name}', fwd_score, epoch)
+                self.writer.add_scalar(f'Restoration/FWD_high_{name}', fwd_high, epoch)
+
+            logger.info(
+                f"Restoration FWD ({name}, epoch {epoch + 1}): "
+                f"FWD={fwd_score:.4f}, FWD_high={fwd_high:.4f}"
+            )
 
     def _on_training_end(self, total_time: float) -> None:
         if self.is_main_process:

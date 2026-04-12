@@ -85,6 +85,8 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.learning_rate=1e-4 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
+    +restoration.eval_gen_imagenet_dir=/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_imagenet_525 \
+    +restoration.eval_gen_radimagenet_dir=/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_radimagenet_525 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
