@@ -146,8 +146,8 @@ def evaluate_model(
         result['fwd_mid'] = float(np.mean(vals[quarter:3 * quarter]))
         result['fwd_high'] = float(np.mean(vals[3 * quarter:]))
 
-    # PCA
-    if brain_pca is not None:
+    # PCA (bravo only)
+    if brain_pca is not None and not is_seg:
         from medgen.metrics.brain_mask import create_brain_mask
         pca_errors = []
         for vol in volumes:
@@ -156,6 +156,19 @@ def evaluate_model(
             pca_errors.append(err)
         result['pca_mean'] = float(np.mean(pca_errors))
         result['pca_pass_rate'] = float(np.mean([e <= brain_pca.error_threshold for e in pca_errors]))
+
+    # Morphological score (seg only)
+    if is_seg and real_volumes:
+        from medgen.metrics.morphological import compute_morphological_score
+        # Binarize generated volumes
+        gen_masks = [(vol > 0.5).astype(np.float32) for vol in volumes]
+        real_masks = [(vol > 0.5).astype(np.float32) for vol in real_volumes]
+        morph = compute_morphological_score(real_masks, gen_masks)
+        result['morph_total'] = morph.total
+        result['morph_volume'] = morph.volume_dist
+        result['morph_count'] = morph.count_dist
+        result['n_real_tumors'] = morph.n_real_tumors
+        result['n_gen_tumors'] = morph.n_gen_tumors
 
     return result
 
