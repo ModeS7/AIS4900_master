@@ -59,7 +59,7 @@ time python -m medgen.scripts.synthesize_phema \
     --run-dir "${RUN_DIR}" \
     --data-root "${DATA_ROOT}" \
     --num-volumes 25 \
-    --num-steps 32 \
+    --num-steps 25 \
     --depth 160 \
     --image-size 256 \
     --seed 42 \

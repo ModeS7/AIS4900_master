@@ -27,4 +27,4 @@ nvidia-smi
 time python -m medgen.scripts.synthesize_phema \
     --run-dir /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp31_2_pixel_bravo_combined_no_sa_17m_20260405-211255 \
     --data-root /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
-    --num-volumes 25 --num-steps 32 --include-raw
+    --num-volumes 25 --num-steps 25 --include-raw
