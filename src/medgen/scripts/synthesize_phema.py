@@ -106,10 +106,12 @@ def evaluate_model(
     """
     from medgen.metrics.fwd import compute_fwd_3d
 
-    # Generate
+    # Generate (seg is unconditional — no conditioning)
     t0 = time.time()
     volumes, nfe, wall_time = generate_volumes(
-        model, strategy, noise_list, cond_list, solver_cfg, device,
+        model, strategy, noise_list,
+        None if is_seg else cond_list,
+        solver_cfg, device,
         is_seg=is_seg,
     )
     gen_time = time.time() - t0
@@ -209,13 +211,21 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Validate
-    if not phema_folder.exists():
-        raise FileNotFoundError(f"No phema_checkpoints/ in {run_dir}")
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    num_snapshots = len(list(phema_folder.glob('*.pt')))
-    logger.info(f"Found {num_snapshots} PostHocEMA snapshots")
+    has_phema_folder = phema_folder.exists() and len(list(phema_folder.glob('*.pt'))) > 0
+    if has_phema_folder:
+        num_snapshots = len(list(phema_folder.glob('*.pt')))
+        logger.info(f"Found {num_snapshots} PostHocEMA snapshots — full sweep available")
+    else:
+        logger.warning(
+            f"No phema_checkpoints/ in {run_dir}. "
+            f"Falling back to live EMA models from checkpoint (training sigma_rels only)."
+        )
+        # Override sigma_rels to only use training values
+        sigma_rels = list(args.training_sigma_rels)
+        logger.info(f"Will evaluate: raw + live EMA at sigma_rels={sigma_rels}")
 
     # ── Load model ───────────────────────────────────────────────────
     logger.info(f"Loading model from {checkpoint_path}")
@@ -289,8 +299,20 @@ def main():
 
     # ── Create PostHocEMA ────────────────────────────────────────────
     training_sigma_rels = tuple(args.training_sigma_rels)
-    logger.info(f"Creating PostHocEMA (training sigma_rels={list(training_sigma_rels)})")
-    phema = create_phema(model, str(phema_folder), sigma_rels=training_sigma_rels)
+    phema = None
+    ema_state = None
+
+    if has_phema_folder:
+        logger.info(f"Creating PostHocEMA (training sigma_rels={list(training_sigma_rels)})")
+        phema = create_phema(model, str(phema_folder), sigma_rels=training_sigma_rels)
+    else:
+        # Load live EMA state from checkpoint for fallback
+        ckpt = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
+        ema_state = ckpt.get('ema_state_dict')
+        if ema_state is None:
+            logger.warning("No EMA state in checkpoint either — only raw model available")
+            sigma_rels = []
+        del ckpt
 
     solver_cfg = SolverConfig(solver='euler', steps=args.num_steps)
 
@@ -327,7 +349,28 @@ def main():
         logger.info(f"{'=' * 60}")
 
         try:
-            model = synthesize_model(phema, model, sigma_rel, device)
+            if phema is not None:
+                # Full synthesis from snapshots
+                model = synthesize_model(phema, model, sigma_rel, device)
+            elif ema_state is not None:
+                # Fallback: load live EMA model from checkpoint
+                # PostHocEMA stores multiple KarrasEMA models; index by sigma_rel
+                idx = list(training_sigma_rels).index(sigma_rel)
+                # Reconstruct PostHocEMA to access the live model
+                phema_live = PostHocEMA(
+                    model, sigma_rels=training_sigma_rels,
+                    checkpoint_every_num_steps='manual',
+                    checkpoint_folder=str(run_dir / '_dummy'),
+                )
+                phema_live.load_state_dict(ema_state)
+                # Get the live EMA model at this index
+                model.load_state_dict(phema_live.ema_models[idx].model.state_dict())
+                model.to(device)
+                model.eval()
+                del phema_live
+            else:
+                logger.error(f"No EMA data available for sigma_rel={sigma_rel}")
+                continue
         except Exception as e:
             logger.error(f"Failed to synthesize sigma_rel={sigma_rel}: {e}")
             all_results[f'sigma_{sigma_rel:.4f}'] = {'sigma_rel': sigma_rel, 'error': str(e)}
