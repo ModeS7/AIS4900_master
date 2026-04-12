@@ -38,7 +38,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from ema_pytorch import PostHocEMA
-from torch.amp import autocast
 
 from medgen.diffusion import RFlowStrategy, load_diffusion_model
 from medgen.scripts.eval_ode_solvers import (
