@@ -344,21 +344,22 @@ def main():
     logger.info("POST-HOC EMA SWEEP RESULTS")
     logger.info("=" * 110)
     header = (f"{'Config':>15}  {'FID':>8}  {'FID_RIN':>8}  {'KID':>10}  "
-              f"{'CMMD':>8}  {'FWD':>8}  {'FWD_hi':>8}  {'PCA%':>6}")
+              f"{'CMMD':>8}  {'FWD':>8}  {'FWD_hi':>8}  {'PCA_err':>8}  {'PCA%':>6}")
     logger.info(header)
-    logger.info("-" * 110)
+    logger.info("-" * 120)
 
     for name, r in all_results.items():
         if 'error' in r:
             logger.info(f"{name:>15}  {'ERROR':>8}  {r['error']}")
             continue
-        pca_str = f"{r.get('pca_pass_rate', 0) * 100:.0f}%" if 'pca_pass_rate' in r else 'N/A'
+        pca_pct = f"{r.get('pca_pass_rate', 0) * 100:.0f}%" if 'pca_pass_rate' in r else 'N/A'
+        pca_err = f"{r.get('pca_mean', 0):.6f}" if 'pca_mean' in r else 'N/A'
         fwd_str = f"{r.get('fwd', 0):.4f}" if 'fwd' in r else 'N/A'
         fwd_hi = f"{r.get('fwd_high', 0):.4f}" if 'fwd_high' in r else 'N/A'
         logger.info(
             f"{name:>15}  {r['fid']:>8.2f}  {r['fid_radimagenet']:>8.2f}  "
             f"{r['kid_mean']:>10.6f}  {r['cmmd']:>8.4f}  "
-            f"{fwd_str:>8}  {fwd_hi:>8}  {pca_str:>6}"
+            f"{fwd_str:>8}  {fwd_hi:>8}  {pca_err:>8}  {pca_pct:>6}"
         )
 
     # Find best sigma_rel by FID
