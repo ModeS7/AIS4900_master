@@ -186,7 +186,7 @@ class StrategyConfig:
     loss_type: str = 'mse'   # mse | pseudo_huber | lpips_huber
 
     def __post_init__(self):
-        valid_names = ('ddpm', 'rflow')
+        valid_names = ('ddpm', 'rflow', 'irsde', 'resfusion')
         if self.name not in valid_names:
             raise ValueError(f"strategy name must be one of {valid_names}, got '{self.name}'")
         if self.num_train_timesteps <= 0:
