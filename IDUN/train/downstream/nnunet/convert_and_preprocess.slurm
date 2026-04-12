@@ -59,9 +59,11 @@ echo ""
 echo "=== Cleaning previous nnU-Net data ==="
 rm -rf "${nnUNet_raw}/Dataset501_BrainMet"
 rm -rf "${nnUNet_raw}/Dataset502_BrainMet"
+rm -rf "${nnUNet_raw}/Dataset503_BrainMet"
 rm -rf "${nnUNet_preprocessed}/Dataset501_BrainMet"
 rm -rf "${nnUNet_preprocessed}/Dataset502_BrainMet"
-echo "Deleted Dataset501 and Dataset502 (raw + preprocessed)"
+rm -rf "${nnUNet_preprocessed}/Dataset503_BrainMet"
+echo "Deleted Dataset501, Dataset502, Dataset503 (raw + preprocessed)"
 
 # === Step 1: Convert to nnU-Net format ===
 echo ""
@@ -89,6 +91,15 @@ python -m medgen.downstream.nnunet.convert_dataset \
     --dataset-id 502 \
     --modality bravo
 
+# Dataset 503: Dual (t1_pre + t1_gd), real-only (for exp4_baseline_dual)
+echo ""
+echo "--- Dataset 503: Dual (t1_pre + t1_gd), real-only ---"
+python -m medgen.downstream.nnunet.convert_dataset \
+    --real-dir "${REAL_DIR}" \
+    --nnunet-raw "${nnUNet_raw}" \
+    --dataset-id 503 \
+    --modality dual
+
 # === Step 2: Plan and preprocess ===
 echo ""
 echo "=========================================="
@@ -104,6 +115,10 @@ echo "--- Dataset 502 (RadImageNet) ---"
 nnUNetv2_plan_and_preprocess -d 502 --verify_dataset_integrity -c 3d_fullres -np 4
 nnUNetv2_plan_and_preprocess -d 502 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
 
+echo "--- Dataset 503 (Dual: t1_pre + t1_gd) ---"
+nnUNetv2_plan_and_preprocess -d 503 --verify_dataset_integrity -c 3d_fullres -np 4
+nnUNetv2_plan_and_preprocess -d 503 -pl nnUNetPlannerResEncL -c 3d_fullres -np 4
+
 # === Step 3: Validate ===
 echo ""
 echo "=========================================="
@@ -113,7 +128,7 @@ echo "=========================================="
 python -c "
 import numpy as np, os, json
 
-for did in [501, 502]:
+for did in [501, 502, 503]:
     pp_base = '${nnUNet_preprocessed}'
     pp_dir = None
     for entry in os.listdir(pp_base):
@@ -124,7 +139,7 @@ for did in [501, 502]:
         print(f'ERROR: No preprocessed dir for Dataset{did}')
         continue
 
-    label = {501: 'ImageNet', 502: 'RadImageNet'}[did]
+    label = {501: 'ImageNet', 502: 'RadImageNet', 503: 'Dual'}[did]
     print(f'=== Dataset {did} ({label}) ===')
 
     for plans_name in ['nnUNetPlans.json', 'nnUNetResEncUNetLPlans.json']:
@@ -153,5 +168,6 @@ for did in [501, 502]:
 
 echo ""
 echo "=== Done! Ready for training ==="
-echo "Dataset 501: real + ImageNet synthetic"
-echo "Dataset 502: real + RadImageNet synthetic"
+echo "Dataset 501: BRAVO, real + ImageNet synthetic"
+echo "Dataset 502: BRAVO, real + RadImageNet synthetic"
+echo "Dataset 503: Dual (t1_pre + t1_gd), real-only"

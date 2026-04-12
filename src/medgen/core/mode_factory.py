@@ -80,6 +80,7 @@ class ModeFactory:
         ModeType.SEG: ModeCategory.SINGLE,
         ModeType.BRAVO: ModeCategory.SINGLE,
         ModeType.BRAVO_SEG_COND: ModeCategory.SINGLE,
+        ModeType.RESTORATION: ModeCategory.SINGLE,
         ModeType.DUAL: ModeCategory.DUAL,
         ModeType.TRIPLE: ModeCategory.DUAL,
         ModeType.MULTI: ModeCategory.MULTI,

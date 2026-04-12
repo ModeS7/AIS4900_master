@@ -50,9 +50,12 @@ evaluate() {
         || echo "WARNING: Evaluation failed for ${name}"
 }
 
-# ── Baseline (real-only, Dataset 501) ────────────────────────────
+# ── Baselines ────────────────────────────────────────────────────
 evaluate "exp3_baseline" \
     "--experiment baseline --dataset-id 501"
+
+evaluate "exp4_baseline_dual" \
+    "--experiment baseline_dual --dataset-id 503"
 
 # ── Synthetic-only 525 ───────────────────────────────────────────
 evaluate "exp6_synthetic_imagenet" \

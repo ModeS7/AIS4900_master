@@ -92,7 +92,7 @@ def validate_diffusion_config(cfg: DictConfig) -> list[str]:
     errors: list[str] = []
 
     # Strategy
-    if cfg.strategy.name not in ['ddpm', 'rflow']:
+    if cfg.strategy.name not in ['ddpm', 'rflow', 'irsde', 'resfusion']:
         errors.append(f"Unknown strategy: {cfg.strategy.name}")
 
     # Mode

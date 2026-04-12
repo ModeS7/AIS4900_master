@@ -60,7 +60,7 @@ fi
 
 time python -m medgen.scripts.train_nnunet \
     --experiment baseline_dual \
-    --dataset-id 502 \
+    --dataset-id 503 \
     --fold ${FOLD} \
     --nnunet-base "${NNUNET_BASE}" \
     --nnunet-results "${NNUNET_RESULTS}" \
@@ -77,7 +77,7 @@ if [ $TRAIN_EXIT -eq 0 ]; then
     echo "=== Evaluating baseline dual (fold ${FOLD}) ==="
     python -m medgen.scripts.eval_nnunet \
         --experiment baseline_dual \
-        --dataset-id 502 \
+        --dataset-id 503 \
         --folds ${FOLD} \
         --nnunet-base "${NNUNET_BASE}" \
         --nnunet-results "${NNUNET_RESULTS}" \
