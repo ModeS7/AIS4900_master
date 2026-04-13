@@ -913,17 +913,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         else:
                             prediction = prediction * aug_diff_mask
 
-                    mse_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
+                    base_loss, predicted_clean = self.strategy.compute_loss(prediction, images, noise, noisy_images, timesteps)
 
                     if self.use_min_snr:
-                        mse_loss = self._compute_min_snr_weighted_mse(
+                        base_loss = self._compute_min_snr_weighted_mse(
                             prediction, images, noise, timesteps
                         )
 
                     if self.rflow_snr_gamma > 0:
                         from .losses import compute_rflow_snr_weighted_mse
                         target = self.strategy.compute_target(images, noise)
-                        mse_loss = compute_rflow_snr_weighted_mse(
+                        base_loss = compute_rflow_snr_weighted_mse(
                             prediction, target, timesteps,
                             self.num_timesteps, self.rflow_snr_gamma,
                         )
@@ -931,11 +931,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     if self.velocity_loss_type == 'pseudo_huber':
                         from .losses import compute_pseudo_huber_loss
                         target = self.strategy.compute_target(images, noise)
-                        mse_loss = compute_pseudo_huber_loss(prediction, target)
+                        base_loss = compute_pseudo_huber_loss(prediction, target)
                     elif self.velocity_loss_type == 'lpips_huber':
                         from .losses import compute_lpips_huber_loss
                         target = self.strategy.compute_target(images, noise)
-                        mse_loss = compute_lpips_huber_loss(
+                        base_loss = compute_lpips_huber_loss(
                             prediction, target, timesteps, self.num_timesteps,
                         )
 
@@ -944,7 +944,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         # For seg_conditioned: images IS the seg mask (labels=None)
                         seg_for_weighting = labels if labels is not None else images
                         if seg_for_weighting is not None and not isinstance(seg_for_weighting, dict):
-                            mse_loss = self._compute_region_weighted_mse(
+                            base_loss = self._compute_region_weighted_mse(
                                 prediction, images, noise, seg_for_weighting
                             )
 
@@ -982,7 +982,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     else:
                         p_loss = torch.tensor(0.0, device=self.device)
 
-                    total_loss = mse_loss + self.perceptual_weight * _perceptual_scale * p_loss
+                    total_loss = base_loss + self.perceptual_weight * _perceptual_scale * p_loss
 
                     # Focal Frequency Loss (applied slice-wise for 3D)
                     if self.focal_frequency_loss_fn is not None:
@@ -1101,7 +1101,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             total_loss=total_loss.item(),
             reconstruction_loss=0.0,  # Not applicable for diffusion
             perceptual_loss=p_loss.item(),
-            mse_loss=mse_loss.item(),
+            mse_loss=base_loss.item(),
             aux_bin_loss=aux_bin_loss.item(),
         )
 
