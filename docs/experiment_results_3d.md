@@ -1,6 +1,6 @@
 # 3D Diffusion Experiment Results
 
-Last updated: April 7, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: April 13, 2026. Data extracted from IDUN logs and TensorBoard runs.
 
 ---
 
@@ -113,6 +113,26 @@ Last updated: April 7, 2026. Data extracted from IDUN logs and TensorBoard runs.
 | exp12_5 | WDM Medium 250M | 128x128x160 | UNet 5L | ~250M | ddpm x0 | bravo |
 | exp12_6 | WDM DiT-S 128 | 128x128x160 | DiT-S p=2 | ~40M | ddpm x0 | bravo |
 | exp2e | Seg Multi-level Aux Bin | 128x128x160 | UNet 5L | 270M | rflow | seg_cond_3d |
+| exp29 | Pixel+Mixup 1000ep | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp30 | Pixel+WD+Mixup+EMA | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp31_0 | Pixel Combined NoSA | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp31_1 | Pixel Combined NoSA 67M | 256x256x160 | UNet 5L | 67M | rflow | bravo |
+| exp31_2 | Pixel Combined NoSA 17M | 256x256x160 | UNet 6L | 17M | rflow | bravo |
+| exp32 | Pixel+LPIPS fine-tune | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp32_1 | Pixel+FFL fine-tune | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp32_2 | Pixel+LPIPS low-t | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp32_1_1000 | FFL 1000ep | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp32_2_1000 | LPIPS low-t 1000ep | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1_1_1000+ | Continue 1000ep | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1_1_156 | Full 156 dataset | 256x256x160 | UNet 5L | 270M | rflow | bravo |
+| exp1v2_2 | Pixel Dual 256 | 256x256x160 | UNet 5L | 270M | rflow | dual |
+| exp1v2_2_1000 | Pixel Dual 256 1000ep | 256x256x160 | UNet 5L | 270M | rflow | dual |
+| exp1v2_2_156 | Pixel Dual 256 full | 256x256x160 | UNet 5L | 270M | rflow | dual |
+| exp14_2 | Seg 67M + PosthocEMA | 256x256x160 | UNet 5L | 67M | rflow | seg |
+| exp33_1 | IR-SDE Restoration | 256x256x160 | UNet 5L | 270M | irsde | restoration |
+| exp33_2 | RFlow Bridge Restoration | 256x256x160 | UNet 5L | 270M | rflow | restoration |
+| exp33_3 | RFlow Bridge+Noise | 256x256x160 | UNet 5L | 270M | rflow | restoration |
+| exp33_4 | Resfusion Restoration | 256x256x160 | UNet 5L | 270M | resfusion | restoration |
 
 ---
 
@@ -1479,7 +1499,104 @@ DiT-S at 128x128 (FID 59.49) outperforms the 256x256 version exp19_6 (FID 110.88
 
 ---
 
-## Key Takeaways (Updated April 7, 2026)
+## Part 22: Texture Fine-tuning Experiments (April 2026)
+
+Attempts to improve high-frequency texture in generated volumes by fine-tuning exp1_1_1000 with auxiliary frequency/perceptual losses.
+
+| Experiment | Loss | Epochs | LR | Status | Notes |
+|-----------|------|--------|-----|--------|-------|
+| exp32 | LPIPS | 100 | 1e-5 | Complete | Full LPIPS, all timesteps. Improved high-freq FWD but destroyed all standard metrics |
+| exp32_1 | FFL | 100 | 1e-5 | Complete | Focal Frequency Loss. Won on standard metrics (FID, KID) but modest FWD improvement |
+| exp32_2 | LPIPS low-t | 100 | 1e-5 | Complete | LPIPS only at t<250 with linear scaling. Compromise approach |
+| exp32_1_1000 | FFL | 1000 | 1e-5 | Training | Continue FFL from exp1_1_1000 for 1000ep |
+| exp32_2_1000 | LPIPS low-t | 1000 | 1e-5 | Training | Continue LPIPS low-t from exp1_1_1000 for 1000ep |
+
+**Conclusion**: Fine-tuning with auxiliary losses provides marginal improvements. MSE-smoothing is a fundamental property of the diffusion reverse process (Wiener filter), not fixable by loss modifications. Motivated the restoration network approach (exp33).
+
+## Part 23: Additional Training Experiments (April 2026)
+
+| Experiment | Description | Epochs | Status | Notes |
+|-----------|-------------|--------|--------|-------|
+| exp1_1_1000+ | Continue exp1_1_1000 for 1000 more epochs | 1000 | Training | Full cosine cycle, reset scheduler |
+| exp1_1_156 | Train on all 156 volumes (train+val+test) | 500 | Training | Tests if more data helps |
+| exp1v2_2_1000 | Dual mode 256x256 for 1000ep | 1000 | Training | Longer dual training |
+| exp1v2_2_156 | Dual on all 156 volumes | 500 | Training | Tests full dataset for dual |
+| exp14_2 | 67M seg model with PostHocEMA | 1000 | Training | Smaller seg architecture |
+
+## Part 24: Downstream nnU-Net Segmentation (April 2026)
+
+Evaluates how well synthetic BRAVO data supports downstream brain metastasis segmentation.
+
+### nnU-Net Results (51-patient test set, 5-fold ensemble)
+
+| Experiment | Data | N_volumes | Dice | Precision | Recall | HD95 |
+|-----------|------|-----------|------|-----------|--------|------|
+| **exp3_baseline** | Real only | 105 | **0.188** | 0.555 | **0.428** | **18.87mm** |
+| exp6_1_imagenet | Synthetic (IN-opt) | 105 | 0.153 | 0.575 | 0.305 | 29.79mm |
+| exp6_1_radimagenet | Synthetic (RIN-opt) | 105 | 0.152 | **0.584** | 0.322 | 27.09mm |
+
+**Per-tumor-size Dice:**
+
+| Size | Real (exp3) | Synthetic IN (exp6_1) | Synthetic RIN (exp6_1) |
+|------|-------------|----------------------|----------------------|
+| Tiny | **0.157** | 0.130 | 0.128 |
+| Small | **0.339** | 0.261 | 0.267 |
+| Medium | **0.702** | 0.574 | 0.575 |
+| Large | **0.809** | 0.625 | **0.664** |
+
+**Key findings:**
+- Synthetic-only training produces ~19% lower Dice than real data (matched 105 volume count)
+- The gap is primarily in recall (-29%) — synthetic model misses more tumors
+- ImageNet vs RadImageNet optimization makes minimal difference downstream
+- Gap attributed to MSE-smoothing in generated textures — motivates restoration network
+
+### Pending: exp6 (525 synthetic), exp4 (dual baseline on Dataset 503)
+
+## Part 25: Restoration Network Experiments (April 2026)
+
+Post-hoc restoration to fix MSE-smoothing artifacts in diffusion outputs.
+
+### Degradation Calibration
+
+SDEdit calibration found t₀=0.50 best matches the actual MSE-smoothing of generated volumes (spectral distance 0.047 for ImageNet-opt, 0.051 for RadImageNet-opt). Training range: [0.35, 0.65]. Degradation pairs pre-computed via SDEdit on all 156 real volumes (4 variants each).
+
+### Restoration Experiments
+
+| Experiment | Method | Loss | Steps | Status |
+|-----------|--------|------|-------|--------|
+| exp33_1 | IR-SDE (Luo ICML23) | L1 ML objective | 100 | Collapsed at ep12 — numerically unstable |
+| exp33_2 | RFlow Bridge | MSE on velocity | 25 (Euler) | Training |
+| exp33_3 | RFlow Bridge + Noise | MSE on velocity + σ=0.05 noise | 25 (Euler) | Training |
+| exp33_4 | Resfusion (Shi NeurIPS24) | MSE on resnoise | ~5 (truncated) | Training |
+
+**IR-SDE collapse**: Loss dropped 0.0034→0.0006 (ep1-11), then jumped to 0.0032 and stayed flat. ML objective denominator (1-B²) is tiny at low timesteps, causing instability. Needs lower LR (1e-5) and tighter gradient clip (0.01).
+
+### FWD Tracking
+
+Restoration experiments evaluate on 50 pre-generated volumes from ImageNet-opt and RadImageNet-opt datasets every 25 epochs, computing FWD against real data. Logged as `Restoration/FWD_imagenet` and `Restoration/FWD_radimagenet` in TensorBoard.
+
+## Part 26: PostHocEMA Evaluation (April 2026)
+
+Proper evaluation of PostHocEMA synthesis after fixing `.model` vs `.ema_model` bug (was reading online model instead of EMA model during both training validation AND post-hoc synthesis).
+
+### Bug Discovery
+
+Training with PostHocEMA had a critical bug: `ema_models[0].model` returns the online (original) model, NOT the EMA copy. Should be `ema_models[0].ema_model`. This meant ALL training-time validation metrics for PostHocEMA experiments showed raw model performance, not EMA performance.
+
+### Sweep Results (exp24, exp31_1)
+
+PostHocEMA synthesis with training sigma_rels [0.05, 0.28] produces unstable interpolation (massive negative weights) for any sigma_rel except the exact training values. Only σ=0.05 and σ=0.28 are reliable.
+
+| Experiment | Raw FID | σ=0.05 FID | σ=0.28 FID | Conclusion |
+|-----------|---------|-----------|-----------|------------|
+| exp24 (270M, ScoreAug, 500ep) | **34.78** | 121.83 | 575.46 | Raw wins |
+| exp31_1 (67M, no SA, 1000ep) | **46.46** | 66.82 | 602.65 | Raw wins |
+
+**Root cause**: The paper's `[0.05, 0.10]` sigma_rels have close gammas (16.97, 6.94) enabling stable interpolation. Our `[0.05, 0.28]` have far-apart gammas (16.97, 0.17), making interpolation numerically unstable.
+
+**PostHocEMA rerun planned** (exp1o_1) with paper-correct `sigma_rels=[0.05, 0.10]`.
+
+## Key Takeaways (Updated April 13, 2026)
 
 1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep achieves FID 19.12 (27 Euler steps). exp23 (ScoreAug) is close at 20.38, with better RadImageNet FID (0.659 vs 0.714). In-training FID is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
 
@@ -1516,3 +1633,11 @@ DiT-S at 128x128 (FID 59.49) outperforms the 256x256 version exp19_6 (FID 110.88
 17. **Dual mode works well, triple mode is harder**: exp1v2_1 (dual + joint norm) achieves FID 24.30 at 128x128 — excellent for multi-modality. Triple mode (exp1v3, FID 65.37) is significantly worse. Joint normalization helps dual but not triple.
 
 18. **WDM overfits beyond 500 epochs**: exp26_1 (WDM 1000ep, FID 77.28) is worse than exp19_2 (WDM 500ep, FID 67.32). WDM was already converged at 500 epochs and degrades with longer training.
+
+19. **Synthetic data alone underperforms real data for downstream segmentation**: 105 synthetic volumes produce 19% lower Dice than 105 real volumes (0.153 vs 0.188). The gap is primarily in recall (-29%) — synthetic textures lack fine detail needed to learn tumor detection. ImageNet vs RadImageNet step optimization makes minimal downstream difference.
+
+20. **MSE-smoothing is fundamental, not fixable by loss tuning**: Diffusion reverse process acts as a Wiener low-pass filter (proven by spectral analysis across 64 papers). Fine-tuning with FFL/LPIPS provides marginal improvements. A separate restoration stage is the principled solution.
+
+21. **PostHocEMA requires careful sigma_rel selection**: Training with `[0.05, 0.28]` produces far-apart gammas (16.97, 0.17) that make synthesis interpolation numerically unstable. The Karras EDM2 paper uses `[0.05, 0.10]` (gammas 16.97, 6.94). With wrong sigma_rels, raw model beats all EMA variants.
+
+22. **PostHocEMA had a critical `.model` vs `.ema_model` bug**: The `ema_pytorch` library's `KarrasEMA.model` returns the online (original) model, not the EMA copy. Training-time validation for all PostHocEMA experiments was evaluating the raw model, not EMA. Fixed April 2026.
