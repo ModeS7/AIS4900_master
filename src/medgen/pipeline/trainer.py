@@ -846,7 +846,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if self._use_compiled_forward and self.mode_name == ModeType.DUAL:
                 # Note: compiled forward is disabled when use_min_snr=True
                 keys = list(images.keys())
-                total_loss, mse_loss, p_loss, clean_0, clean_1 = self._compiled_forward_dual(
+                total_loss, base_loss, p_loss, clean_0, clean_1 = self._compiled_forward_dual(
                     self.model,
                     self.perceptual_loss_fn,
                     model_input,
@@ -865,7 +865,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             elif self._use_compiled_forward and self.mode_name in (ModeType.SEG, ModeType.BRAVO):
                 # Note: compiled forward is disabled when use_min_snr=True
-                total_loss, mse_loss, p_loss, predicted_clean = self._compiled_forward_single(
+                total_loss, base_loss, p_loss, predicted_clean = self._compiled_forward_single(
                     self.model,
                     self.perceptual_loss_fn,
                     model_input,
@@ -882,10 +882,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 # ScoreAug path: transform noisy input and target together
                 if self.score_aug is not None:
                     from .training_tricks import compute_scoreaug_loss
-                    mse_loss, p_loss, predicted_clean = compute_scoreaug_loss(
+                    base_loss, p_loss, predicted_clean = compute_scoreaug_loss(
                         self, model_input, timesteps, images, noise, noisy_images, mode_id
                     )
-                    total_loss = mse_loss + self.perceptual_weight * p_loss
+                    total_loss = base_loss + self.perceptual_weight * p_loss
 
                 else:
                     # Standard path (no ScoreAug)
