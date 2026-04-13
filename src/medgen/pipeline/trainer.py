@@ -1101,7 +1101,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             total_loss=total_loss.item(),
             reconstruction_loss=0.0,  # Not applicable for diffusion
             perceptual_loss=p_loss.item(),
-            mse_loss=base_loss.item(),
+            base_loss=base_loss.item(),
             aux_bin_loss=aux_bin_loss.item(),
         )
 
@@ -1159,7 +1159,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             self._profiler_step()
 
             epoch_loss += result.total_loss
-            epoch_mse_loss += result.mse_loss
+            epoch_mse_loss += result.base_loss
             epoch_perceptual_loss += result.perceptual_loss
             epoch_aux_bin_loss += result.aux_bin_loss
             # Accumulate per-level aux bin losses (set by train_step when multilevel)
@@ -1221,7 +1221,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         # Log training losses (always uses synced values for multi-GPU)
         if self.is_main_process:
-            self._unified_metrics.update_loss('MSE', avg_mse)
+            self._unified_metrics.update_loss(self.strategy.loss_name, avg_mse)
             if self.perceptual_weight > 0:
                 self._unified_metrics.update_loss('Total', avg_loss)
                 self._unified_metrics.update_loss('Perceptual', avg_perceptual)

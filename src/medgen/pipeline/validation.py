@@ -415,7 +415,7 @@ def compute_validation_losses(
         # Log to TensorBoard using unified system
         if trainer.writer is not None and trainer._unified_metrics is not None:
             # Update unified metrics with validation values
-            trainer._unified_metrics.update_loss('MSE', metrics['mse'], phase='val')
+            trainer._unified_metrics.update_loss(trainer.strategy.loss_name, metrics['mse'], phase='val')
             if trainer.perceptual_weight > 0:
                 trainer._unified_metrics.update_loss('Total', metrics['total'], phase='val')
                 trainer._unified_metrics.update_loss('Perceptual', metrics['perceptual'], phase='val')

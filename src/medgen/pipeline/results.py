@@ -29,7 +29,7 @@ class TrainingStepResult:
         regularization_loss: KL (VAE), VQ (VQVAE), or 0 (DCAE/Diffusion).
         adversarial_loss: Generator adversarial loss (0 if GAN disabled).
         discriminator_loss: Discriminator loss (0 if GAN disabled).
-        mse_loss: MSE for diffusion noise prediction (0 for compression models).
+        base_loss: Primary diffusion loss — MSE, L1, etc. depending on strategy.
         aux_bin_loss: Auxiliary bin prediction loss (0 if disabled).
     """
 
@@ -39,7 +39,7 @@ class TrainingStepResult:
     regularization_loss: float = 0.0
     adversarial_loss: float = 0.0
     discriminator_loss: float = 0.0
-    mse_loss: float = 0.0
+    base_loss: float = 0.0
     aux_bin_loss: float = 0.0
 
     def to_legacy_dict(self, reg_key: str | None = 'kl') -> dict[str, float]:

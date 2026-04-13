@@ -800,7 +800,7 @@ class BaseTrainer(ABC):
                 avg_losses = self.train_epoch(train_loader, epoch)
 
                 # Track MSE for collapse detection
-                mse = avg_losses.get('MSE', avg_losses.get('mse', avg_losses.get('loss', 0.0)))
+                mse = avg_losses.get('mse', avg_losses.get('loss', 0.0))
                 self._recent_mse.append(mse)
 
                 # On SIGTERM: skip validation, just save checkpoint and exit

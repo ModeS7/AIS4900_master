@@ -38,6 +38,10 @@ class IRSDEStrategy(DiffusionStrategy):
     Sampling: Posterior sampling (more accurate than Euler-Maruyama).
     """
 
+    @property
+    def loss_name(self) -> str:
+        return 'L1'
+
     def __init__(self) -> None:
         super().__init__()
         # Paper defaults (matching official repo)

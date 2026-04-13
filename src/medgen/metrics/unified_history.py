@@ -118,13 +118,13 @@ def log_console_summary(
 
     # Build loss string
     loss_parts = []
-    total_loss = train_losses.get('Total') or train_losses.get('MSE') or 0
-    val_total = val_metrics.get('MSE') or val_metrics.get('Total') or 0
+    total_loss = train_losses.get('Total') or train_losses.get('MSE') or train_losses.get('L1') or 0
+    val_total = val_metrics.get('MSE') or val_metrics.get('L1') or val_metrics.get('Total') or 0
     loss_parts.append(f"Loss: {total_loss:.4f}")
     if val_total > 0:
         loss_parts[-1] += f"(v:{val_total:.4f})"
 
-    for key in ['MSE', 'Perceptual', 'KL', 'VQ', 'BCE', 'Dice']:
+    for key in ['MSE', 'L1', 'Perceptual', 'KL', 'VQ', 'BCE', 'Dice']:
         if key in train_losses and key != 'Total':
             loss_parts.append(f"{key}: {train_losses[key]:.4f}")
 

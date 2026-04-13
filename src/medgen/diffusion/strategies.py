@@ -515,6 +515,11 @@ class DiffusionStrategy(ABC):
             else:
                 return model(x=model_input, timesteps=timesteps)
 
+    @property
+    def loss_name(self) -> str:
+        """Name of the primary loss function for TensorBoard logging."""
+        return 'MSE'
+
     @abstractmethod
     def setup_scheduler(self, num_timesteps: int, image_size: int) -> Any:
         """Setup the noise scheduler.
