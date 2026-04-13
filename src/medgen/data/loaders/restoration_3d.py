@@ -1,11 +1,11 @@
 """3D paired volume dataset for restoration training.
 
-Loads paired (degraded, clean) volumes from pre-computed SDEdit degradation
-pairs. Each patient has one clean volume and multiple degraded variants;
-one degraded variant is randomly selected per __getitem__ call.
+Supports two modes:
+- **Full volume**: Returns complete 256×256×160 paired volumes (original behavior)
+- **Patch-based**: Random 3D crops from paired volumes, much more training samples
 
-Augmentation (flips, rotations) is applied identically to all volumes
-(clean, degraded, seg) via MONAI dict-based transforms.
+Patch-based training matches IR-SDE paper (Luo et al., ICML 2023) which uses
+128×128 random crops with batch_size=16.
 
 Directory structure expected:
     data_dir/
@@ -13,9 +13,6 @@ Directory structure expected:
             clean_bravo.nii.gz
             seg.nii.gz
             degraded_001.nii.gz
-            degraded_002.nii.gz
-            ...
-        patient_002/
             ...
 """
 import logging
@@ -33,11 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_restoration_augmentation() -> Callable:
-    """Build augmentation that applies identical transforms to all three keys.
-
-    Returns:
-        MONAI Compose transform operating on dict with 'image', 'degraded', 'seg'.
-    """
+    """Build augmentation for all three keys (image, degraded, seg)."""
     keys = ['image', 'degraded', 'seg']
     return Compose([
         RandFlipd(keys=keys, prob=0.5, spatial_axis=0),
@@ -50,20 +43,19 @@ def build_restoration_augmentation() -> Callable:
 class Restoration3DDataset(Base3DVolumeDataset):
     """Paired (degraded, clean) volume dataset for restoration training.
 
-    Each __getitem__ returns a dict with:
-        image: clean volume [1, D, H, W]
-        degraded: degraded volume [1, D, H, W] (random variant)
-        seg: binary seg mask [1, D, H, W]
-        patient: patient ID string
+    Full-volume mode: returns complete volumes, __len__ = num_patients.
+    Patch mode: random 3D crops, __len__ = samples_per_epoch (configurable).
 
     Args:
-        data_dir: Directory with patient subdirs containing clean/degraded/seg.
+        data_dir: Directory with patient subdirs.
         height: Target height.
         width: Target width.
-        pad_depth_to: Target depth after padding.
+        pad_depth_to: Target depth.
         pad_mode: Padding mode.
         slice_step: Subsample slices.
-        augment: Whether to apply augmentation.
+        augment: Apply augmentation.
+        patch_size: Tuple (D, H, W) for random 3D crops. None = full volume.
+        samples_per_epoch: Number of random patches per epoch (only for patch mode).
     """
 
     def __init__(
@@ -75,6 +67,8 @@ class Restoration3DDataset(Base3DVolumeDataset):
         pad_mode: str = 'replicate',
         slice_step: int = 1,
         augment: bool = True,
+        patch_size: tuple[int, int, int] | None = None,
+        samples_per_epoch: int = 10000,
     ) -> None:
         augmentation = build_restoration_augmentation() if augment else None
         super().__init__(
@@ -88,7 +82,10 @@ class Restoration3DDataset(Base3DVolumeDataset):
             augmentation=augmentation,
         )
 
-        # Discover patients and their degraded variants
+        self.patch_size = patch_size
+        self.samples_per_epoch = samples_per_epoch
+
+        # Discover patients and degraded variants
         self.patients: list[str] = []
         self._degraded_files: dict[str, list[str]] = {}
 
@@ -102,14 +99,11 @@ class Restoration3DDataset(Base3DVolumeDataset):
             if not os.path.exists(clean_path) or not os.path.exists(seg_path):
                 continue
 
-            # Find all degraded variants
             degraded = sorted([
                 f for f in os.listdir(patient_dir)
                 if f.startswith("degraded_") and f.endswith(".nii.gz")
             ])
-
             if not degraded:
-                logger.warning(f"No degraded files for {patient}, skipping")
                 continue
 
             self.patients.append(patient)
@@ -121,31 +115,33 @@ class Restoration3DDataset(Base3DVolumeDataset):
             raise ValueError(f"No valid restoration pairs found in {data_dir}")
 
         total_degraded = sum(len(v) for v in self._degraded_files.values())
+        mode_str = f"patch {patch_size}, {samples_per_epoch}/epoch" if patch_size else "full volume"
         logger.info(
             f"Restoration3DDataset: {len(self.patients)} patients, "
-            f"{total_degraded} degraded variants total "
-            f"(avg {total_degraded / len(self.patients):.1f} per patient)"
+            f"{total_degraded} degraded variants ({mode_str})"
         )
 
     def __len__(self) -> int:
+        if self.patch_size is not None:
+            return self.samples_per_epoch
         return len(self.patients)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        patient = self.patients[idx]
+        # Pick random patient (patch mode) or sequential (full volume mode)
+        if self.patch_size is not None:
+            p_idx = random.randint(0, len(self.patients) - 1)
+        else:
+            p_idx = idx
+
+        patient = self.patients[p_idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
-        # Load clean volume
-        clean_path = os.path.join(patient_dir, "clean_bravo.nii.gz")
-        clean = self._load_volume(clean_path)
-
-        # Randomly pick one degraded variant
+        # Load volumes
+        clean = self._load_volume(os.path.join(patient_dir, "clean_bravo.nii.gz"))
         degraded_path = random.choice(self._degraded_files[patient])
         degraded = self._load_volume(degraded_path)
-
-        # Load seg mask
         seg = self._load_seg(patient_dir)
         if seg is None:
-            # Fallback: zeros if seg missing (shouldn't happen)
             seg = torch.zeros_like(clean)
 
         result: dict[str, Any] = {
@@ -155,8 +151,27 @@ class Restoration3DDataset(Base3DVolumeDataset):
             'patient': patient,
         }
 
-        # Apply augmentation (identical transforms to all three)
+        # Apply augmentation first (on full volume)
         result = self._apply_augmentation(result)
+
+        # Then crop patch if in patch mode
+        if self.patch_size is not None:
+            result = self._random_crop(result)
+
+        return result
+
+    def _random_crop(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Random 3D crop of all volumes at the same location."""
+        pd, ph, pw = self.patch_size  # type: ignore[misc]
+        # Volumes are [C, D, H, W]
+        _, d, h, w = result['image'].shape
+
+        d0 = random.randint(0, max(0, d - pd))
+        h0 = random.randint(0, max(0, h - ph))
+        w0 = random.randint(0, max(0, w - pw))
+
+        for key in ('image', 'degraded', 'seg'):
+            result[key] = result[key][:, d0:d0 + pd, h0:h0 + ph, w0:w0 + pw].contiguous()
 
         return result
 
@@ -166,9 +181,7 @@ class Restoration3DDataset(Base3DVolumeDataset):
             return result
 
         aug_result = self.augmentation(result)
-
         for key in ('image', 'degraded', 'seg'):
             if key in aug_result:
                 result[key] = aug_result[key].contiguous()
-
         return result

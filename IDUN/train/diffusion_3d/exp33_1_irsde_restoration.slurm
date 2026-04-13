@@ -14,10 +14,13 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp33_1/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp33_1: IR-SDE restoration (faithful implementation)
-# Mean-reverting SDE: dx = θ_t(μ - x)dt + σ_t dw
-# ML objective, cosine θ schedule, T=100 steps
-# Luo et al., ICML 2023
+# exp33_1: IR-SDE restoration — reworked to match paper
+# Key changes vs exp33_1:
+#   - Patch-based: 128x128x64 random 3D crops (paper: 128x128 2D)
+#   - Small UNet: ~17M params, no attention (paper strips GroupNorm+attention)
+#   - Batch size 8 (paper: 16)
+#   - 10000 patches per epoch × many epochs ≈ 500K iterations
+#   - LR 1e-4 halved every 200K iterations (paper schedule)
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -60,7 +63,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp33_1: IR-SDE Restoration (500 epochs) ==="
+echo "=== Exp33_1: IR-SDE Restoration — Patch-based (paper-faithful) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -72,18 +75,29 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
+# 10000 patches/epoch × 50 epochs = 500K iterations at batch_size=1
+# With batch_size=8: 10000/8 = 1250 steps/epoch × 50 = 62.5K steps
+# Need ~400 epochs to reach 500K steps: 1250 × 400 = 500K
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=irsde \
     mode=restoration \
     model=default_3d \
+    'model.channels=[64, 128, 256, 512]' \
+    'model.attention_levels=[false, false, false, false]' \
+    'model.num_res_blocks=[2, 2, 2, 2]' \
+    model.num_head_channels=32 \
+    model.norm_num_groups=32 \
     volume.height=256 \
     volume.width=256 \
     volume.pad_depth_to=160 \
+    training.batch_size=16 \
     +paths.restoration_data_dir=/cluster/work/modestas/MedicalDataSets/restoration_pairs \
+    '+restoration.patch_size=[32, 64, 64]' \
+    +restoration.samples_per_epoch=10000 \
     training.epochs=500 \
-    training.learning_rate=5e-5 \
-    training.warmup_epochs=10 \
+    training.learning_rate=1e-4 \
+    training.warmup_epochs=5 \
     training.gradient_clip_norm=0.5 \
     +restoration.eval_gen_imagenet_dir=/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_imagenet_525 \
     +restoration.eval_gen_radimagenet_dir=/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_radimagenet_525 \

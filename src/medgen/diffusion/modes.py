@@ -1104,7 +1104,7 @@ class RestorationMode(TrainingMode):
         noisy_images: torch.Tensor,
         labels_dict: dict[str, torch.Tensor | None]
     ) -> torch.Tensor:
-        """Concatenate noisy/interpolated state with degraded volume.
+        """Concatenate noisy state with degraded volume.
 
         Args:
             noisy_images: [B, 1, D, H, W] noisy state x_t.
