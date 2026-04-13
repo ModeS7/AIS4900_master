@@ -205,7 +205,7 @@ def capture_train_step_metrics(
     return {
         'step': step,
         'total_loss': result.total_loss,
-        'mse_loss': result.mse_loss,
+        'mse_loss': result.base_loss,
         'perceptual_loss': getattr(result, 'perceptual_loss', 0.0),
         'grad_norm_sum': sum(grad_norms.values()),
         'weight_samples': weight_samples,
