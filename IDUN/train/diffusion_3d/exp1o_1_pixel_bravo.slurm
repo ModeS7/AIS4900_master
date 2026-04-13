@@ -21,7 +21,8 @@
 #   - num_res_blocks: [1, 1, 1, 2, 2, 2]
 # Mode: bravo (in=2, out=1), raw [0,1] normalization
 # Strategy: RFlow
-# EMA: Post-hoc (Karras EDM2) with sigma_rels=[0.05, 0.28]
+# EMA: Post-hoc (Karras EDM2) with sigma_rels=[0.05, 0.10] (matching paper)
+#   - Paper: γ₁=16.97 (σ_rel=0.05), γ₂=6.94 (σ_rel=0.10) — close gammas for stable interpolation
 #   - Checkpoints every 5000 steps to phema_checkpoints/
 #   - After training: run synthesize_phema.py to find optimal sigma_rel
 
@@ -93,7 +94,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.gradient_clip_norm=0.5 \
     training.use_ema=true \
     training.ema.mode=post_hoc \
-    'training.ema.sigma_rels=[0.05,0.28]' \
+    'training.ema.sigma_rels=[0.05,0.10]' \
     training.ema.checkpoint_every_num_steps=5000 \
     training.ema.update_every=10 \
     training.name=${EXP_NAME} \

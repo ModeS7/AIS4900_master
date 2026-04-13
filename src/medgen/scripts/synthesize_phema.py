@@ -210,7 +210,6 @@ def main():
     run_dir = Path(args.run_dir)
     phema_folder = run_dir / 'phema_checkpoints'
     checkpoint_path = run_dir / args.checkpoint
-    sigma_rels = args.sigma_rels or DEFAULT_SIGMA_RELS
     output_dir = Path(args.output_dir) if args.output_dir else run_dir / 'phema_sweep'
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -221,7 +220,24 @@ def main():
     has_phema_folder = phema_folder.exists() and len(list(phema_folder.glob('*.pt'))) > 0
     if has_phema_folder:
         num_snapshots = len(list(phema_folder.glob('*.pt')))
-        logger.info(f"Found {num_snapshots} PostHocEMA snapshots — full sweep available")
+
+        # Auto-detect training sigma_rels from checkpoint config
+        ckpt_data = torch.load(str(checkpoint_path), map_location='cpu', weights_only=False)
+        ckpt_cfg = ckpt_data.get('config', {})
+        ema_cfg = ckpt_cfg.get('training', {}).get('ema', {})
+        detected_sigma_rels = ema_cfg.get('sigma_rels', None)
+        del ckpt_data
+
+        if detected_sigma_rels is not None:
+            training_sigma_rels = tuple(float(s) for s in detected_sigma_rels)
+            logger.info(f"Auto-detected training sigma_rels from checkpoint: {list(training_sigma_rels)}")
+        else:
+            training_sigma_rels = tuple(args.training_sigma_rels)
+            logger.info(f"Using provided training sigma_rels: {list(training_sigma_rels)}")
+
+        # Evaluate at ALL training sigma_rels (the only stable synthesis points)
+        sigma_rels = args.sigma_rels or list(training_sigma_rels)
+        logger.info(f"Found {num_snapshots} PostHocEMA snapshots, evaluating at sigma_rels={sigma_rels}")
     else:
         logger.warning(
             f"No phema_checkpoints/ in {run_dir}. "
@@ -302,7 +318,6 @@ def main():
             logger.info(f"Brain PCA loaded (threshold={brain_pca.error_threshold:.6f})")
 
     # ── Create PostHocEMA ────────────────────────────────────────────
-    training_sigma_rels = tuple(args.training_sigma_rels)
     phema = None
     ema_state = None
 
