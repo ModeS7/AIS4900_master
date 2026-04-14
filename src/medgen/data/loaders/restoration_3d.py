@@ -1,11 +1,12 @@
 """3D paired volume dataset for restoration training.
 
-Supports two modes:
-- **Full volume**: Returns complete 256×256×160 paired volumes (original behavior)
-- **Patch-based**: Random 3D crops from paired volumes, much more training samples
+Supports three modes:
+- **Full volume**: Returns complete 256×256×160 paired volumes
+- **Patch-based**: Random 3D crops, many patches per volume
+- **2D slice**: Random axial slices with 2D crops
 
-Patch-based training matches IR-SDE paper (Luo et al., ICML 2023) which uses
-128×128 random crops with batch_size=16.
+For patch/slice modes, all volumes are cached in RAM at init to avoid
+repeated NIfTI loading (the main bottleneck for small-patch training).
 
 Directory structure expected:
     data_dir/
@@ -43,22 +44,19 @@ def build_restoration_augmentation() -> Callable:
 class Restoration3DDataset(Base3DVolumeDataset):
     """Paired (degraded, clean) volume dataset for restoration training.
 
-    Full-volume mode: returns complete volumes, __len__ = num_patients.
-    Patch mode: random 3D crops, __len__ = samples_per_epoch (configurable).
+    For patch/slice modes, volumes are pre-loaded into RAM at init time
+    to avoid the NIfTI I/O bottleneck. With 105 patients × 4 degradations
+    × ~40MB per volume ≈ 17GB RAM — fits easily in 48-128GB nodes.
 
     Args:
         data_dir: Directory with patient subdirs.
-        height: Target height.
-        width: Target width.
-        pad_depth_to: Target depth.
-        pad_mode: Padding mode.
-        slice_step: Subsample slices.
+        height, width, pad_depth_to: Volume dimensions.
+        pad_mode, slice_step: Volume processing params.
         augment: Apply augmentation.
-        patch_size: Tuple (D, H, W) for random 3D crops. None = full volume.
-        samples_per_epoch: Number of random patches per epoch (patch/slice mode).
-        slice_2d: If True, extract random 2D axial slices instead of 3D volumes.
-            Returns [C, H, W] tensors. Use with spatial_dims=2.
-        patch_size_2d: Tuple (H, W) for random 2D crops from slices. None = full slice.
+        patch_size: (D, H, W) for random 3D crops. None = full volume.
+        samples_per_epoch: Patches/slices per epoch (patch/slice mode).
+        slice_2d: Extract random 2D axial slices.
+        patch_size_2d: (H, W) for 2D crops from slices.
     """
 
     def __init__(
@@ -91,6 +89,7 @@ class Restoration3DDataset(Base3DVolumeDataset):
         self.samples_per_epoch = samples_per_epoch
         self.slice_2d = slice_2d
         self.patch_size_2d = patch_size_2d
+        self._use_cache = patch_size is not None or slice_2d
 
         # Discover patients and degraded variants
         self.patients: list[str] = []
@@ -122,34 +121,70 @@ class Restoration3DDataset(Base3DVolumeDataset):
             raise ValueError(f"No valid restoration pairs found in {data_dir}")
 
         total_degraded = sum(len(v) for v in self._degraded_files.values())
-        if slice_2d:
+        if self.slice_2d:
             crop_str = f" crop {patch_size_2d}" if patch_size_2d else ""
             mode_str = f"2D slices{crop_str}, {samples_per_epoch}/epoch"
-        elif patch_size:
+        elif self.patch_size:
             mode_str = f"patch {patch_size}, {samples_per_epoch}/epoch"
         else:
             mode_str = "full volume"
+
         logger.info(
             f"Restoration3DDataset: {len(self.patients)} patients, "
             f"{total_degraded} degraded variants ({mode_str})"
         )
 
+        # Pre-load all volumes into RAM for patch/slice mode
+        self._cache: list[dict[str, torch.Tensor]] = []
+        if self._use_cache:
+            logger.info("Caching all volumes in RAM...")
+            for patient in self.patients:
+                patient_dir = os.path.join(data_dir, patient)
+                clean = self._load_volume(os.path.join(patient_dir, "clean_bravo.nii.gz"))
+                seg = self._load_seg(patient_dir)
+                if seg is None:
+                    seg = torch.zeros_like(clean)
+
+                for deg_path in self._degraded_files[patient]:
+                    degraded = self._load_volume(deg_path)
+                    self._cache.append({
+                        'image': clean,
+                        'degraded': degraded,
+                        'seg': seg,
+                    })
+
+            logger.info(f"Cached {len(self._cache)} volume pairs "
+                        f"({len(self._cache) * clean.nelement() * 4 / 1e9:.1f}GB)")
+
     def __len__(self) -> int:
-        if self.patch_size is not None or self.slice_2d:
+        if self._use_cache:
             return self.samples_per_epoch
         return len(self.patients)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        # Pick random patient (patch/slice mode) or sequential (full volume mode)
-        if self.patch_size is not None or self.slice_2d:
-            p_idx = random.randint(0, len(self.patients) - 1)
-        else:
-            p_idx = idx
+        if self._use_cache:
+            # Pick random cached pair
+            pair = self._cache[random.randint(0, len(self._cache) - 1)]
+            result = {
+                'image': pair['image'],
+                'degraded': pair['degraded'],
+                'seg': pair['seg'],
+                'patient': '',
+            }
 
-        patient = self.patients[p_idx]
+            if self.slice_2d:
+                return self._random_slice_2d(result)
+
+            # 3D patch: augment then crop
+            result = self._apply_augmentation(result)
+            if self.patch_size is not None:
+                result = self._random_crop(result)
+            return result
+
+        # Full volume mode (no cache)
+        patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
-        # Load volumes
         clean = self._load_volume(os.path.join(patient_dir, "clean_bravo.nii.gz"))
         degraded_path = random.choice(self._degraded_files[patient])
         degraded = self._load_volume(degraded_path)
@@ -163,34 +198,18 @@ class Restoration3DDataset(Base3DVolumeDataset):
             'seg': seg,
             'patient': patient,
         }
-
-        # 2D slice mode: extract random axial slice, then optional 2D crop
-        if self.slice_2d:
-            result = self._random_slice_2d(result)
-            return result
-
-        # Apply augmentation first (on full volume)
         result = self._apply_augmentation(result)
-
-        # Then crop patch if in 3D patch mode
-        if self.patch_size is not None:
-            result = self._random_crop(result)
-
         return result
 
     def _random_slice_2d(self, result: dict[str, Any]) -> dict[str, Any]:
         """Extract random axial slice and optional 2D crop. Returns [C, H, W]."""
-        # Volumes are [C, D, H, W]
         _, d, h, w = result['image'].shape
-
-        # Pick random non-padded slice (skip last 10 padding slices)
         max_slice = max(1, d - 10)
         s = random.randint(0, max_slice - 1)
 
         for key in ('image', 'degraded', 'seg'):
-            result[key] = result[key][:, s, :, :]  # [C, H, W]
+            result[key] = result[key][:, s, :, :]
 
-        # Optional 2D crop
         if self.patch_size_2d is not None:
             ph, pw = self.patch_size_2d
             _, h, w = result['image'].shape
@@ -199,7 +218,6 @@ class Restoration3DDataset(Base3DVolumeDataset):
             for key in ('image', 'degraded', 'seg'):
                 result[key] = result[key][:, h0:h0 + ph, w0:w0 + pw].contiguous()
 
-        # Random flip and rotate (2D augmentation)
         if random.random() > 0.5:
             for key in ('image', 'degraded', 'seg'):
                 result[key] = result[key].flip(-1)
@@ -215,7 +233,6 @@ class Restoration3DDataset(Base3DVolumeDataset):
     def _random_crop(self, result: dict[str, Any]) -> dict[str, Any]:
         """Random 3D crop of all volumes at the same location."""
         pd, ph, pw = self.patch_size  # type: ignore[misc]
-        # Volumes are [C, D, H, W]
         _, d, h, w = result['image'].shape
 
         d0 = random.randint(0, max(0, d - pd))
