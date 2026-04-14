@@ -1001,11 +1001,14 @@ def _create_restoration_3d_loader(
         height = vol_cfg.height
         width = vol_cfg.width
 
-    # Patch-based training: restoration.patch_size=[D,H,W] and restoration.samples_per_epoch
+    # Patch/slice training options
     restoration_cfg = cfg.get('restoration', {})
     patch_size_cfg = restoration_cfg.get('patch_size', None)
     patch_size = tuple(patch_size_cfg) if patch_size_cfg and split == 'train' else None
     samples_per_epoch = int(restoration_cfg.get('samples_per_epoch', 10000))
+    slice_2d = bool(restoration_cfg.get('slice_2d', False)) and split == 'train'
+    patch_size_2d_cfg = restoration_cfg.get('patch_size_2d', None)
+    patch_size_2d = tuple(patch_size_2d_cfg) if patch_size_2d_cfg and split == 'train' else None
 
     dataset = Restoration3DDataset(
         data_dir=data_dir,
@@ -1017,6 +1020,8 @@ def _create_restoration_3d_loader(
         augment=augment and (split == 'train'),
         patch_size=patch_size,
         samples_per_epoch=samples_per_epoch,
+        slice_2d=slice_2d,
+        patch_size_2d=patch_size_2d,
     )
 
     bs = batch_size or vol_cfg.batch_size
