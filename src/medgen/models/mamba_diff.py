@@ -17,9 +17,7 @@ Reference: LaMamba-Diff (Fu et al., 2024) — https://arxiv.org/abs/2408.02615
 from __future__ import annotations
 
 import logging
-import math
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as ckpt

@@ -1007,10 +1007,10 @@ def _create_restoration_3d_loader(
     # Patch/slice mode applies to both train and val — the model architecture
     # may not fit full volumes if trained on small patches
     patch_size = tuple(patch_size_cfg) if patch_size_cfg else None
+    slice_2d = bool(restoration_cfg.get('slice_2d', False))
     samples_per_epoch = int(restoration_cfg.get('samples_per_epoch', 10000))
     if split != 'train' and (patch_size_cfg or slice_2d):
         samples_per_epoch = min(samples_per_epoch, 200)  # Val only needs a few patches
-    slice_2d = bool(restoration_cfg.get('slice_2d', False))
     patch_size_2d_cfg = restoration_cfg.get('patch_size_2d', None)
     patch_size_2d = tuple(patch_size_2d_cfg) if patch_size_2d_cfg else None
 
