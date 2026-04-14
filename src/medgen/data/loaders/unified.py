@@ -1004,11 +1004,13 @@ def _create_restoration_3d_loader(
     # Patch/slice training options
     restoration_cfg = cfg.get('restoration', {})
     patch_size_cfg = restoration_cfg.get('patch_size', None)
-    patch_size = tuple(patch_size_cfg) if patch_size_cfg and split == 'train' else None
+    # Patch/slice mode applies to both train and val — the model architecture
+    # may not fit full volumes if trained on small patches
+    patch_size = tuple(patch_size_cfg) if patch_size_cfg else None
     samples_per_epoch = int(restoration_cfg.get('samples_per_epoch', 10000))
-    slice_2d = bool(restoration_cfg.get('slice_2d', False)) and split == 'train'
+    slice_2d = bool(restoration_cfg.get('slice_2d', False))
     patch_size_2d_cfg = restoration_cfg.get('patch_size_2d', None)
-    patch_size_2d = tuple(patch_size_2d_cfg) if patch_size_2d_cfg and split == 'train' else None
+    patch_size_2d = tuple(patch_size_2d_cfg) if patch_size_2d_cfg else None
 
     dataset = Restoration3DDataset(
         data_dir=data_dir,
