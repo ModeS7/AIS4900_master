@@ -1,0 +1,37 @@
+# MambaDiff 2D (LaMamba-Diff: Mamba + Local Attention U-Net)
+#
+# Mamba-based diffusion U-Net combining:
+# - SS2D (4-directional Mamba) for global context with linear complexity
+# - Windowed self-attention for local spatial detail
+# - FFN for channel mixing
+# All conditioned via AdaLN-Zero (same as DiT).
+#
+# Override via CLI: python -m medgen.scripts.train model=mamba model.variant=B
+#
+# Variants (embed_dim, num_heads):
+#   S:  128, 4   (~30M params)
+#   B:  192, 8   (~80M params)
+#   L:  256, 16  (~200M params)
+#   XL: 320, 16  (~450M params)
+
+type: mamba
+spatial_dims: 2
+image_size: 128
+patch_size: 2
+variant: B
+
+# U-Net structure
+depths: [2, 2, 2, 2]          # Blocks per encoder stage
+bottleneck_depth: 2            # Blocks in bottleneck
+skip: 2                        # Last N stages don't downsample
+
+# Mamba SSM parameters
+ssm_d_state: 1                 # SSM state dimension (1 is sufficient)
+ssm_ratio: 2.0                 # SSM inner dimension = ssm_ratio * embed_dim
+
+# Attention parameters
+window_size: 8                 # Window size for local attention
+mlp_ratio: 4.0                # FFN expansion ratio
+
+# Conditioning (inherited from pipeline)
+conditioning: concat           # concat or cross_attn

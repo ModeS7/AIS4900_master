@@ -7,6 +7,7 @@ Provides diffusion model architectures including UNet and DiT.
 from .dit import DiT, create_dit, DiT_S, DiT_B, DiT_L, DiT_XL, DIT_VARIANTS
 from .uvit import UViT, create_uvit, UVIT_VARIANTS
 from .hdit import HDiT, create_hdit
+from .mamba_diff import MambaDiff, create_mamba_diff, MAMBA_VARIANTS
 from .factory import create_diffusion_model, get_model_type, is_transformer_model
 from .embeddings import (
     PatchEmbed2D,
@@ -57,6 +58,10 @@ __all__ = [
     # HDiT
     "HDiT",
     "create_hdit",
+    # MambaDiff
+    "MambaDiff",
+    "create_mamba_diff",
+    "MAMBA_VARIANTS",
     # Backward compat
     "SiT",
     "create_sit",

@@ -42,8 +42,10 @@ def create_diffusion_model(
         return _create_uvit(cfg, mc, device, in_channels, out_channels)
     elif mc.type == 'hdit':
         return _create_hdit(cfg, mc, device, in_channels, out_channels)
+    elif mc.type == 'mamba':
+        return _create_mamba_diff(cfg, mc, device, in_channels, out_channels)
     else:
-        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet', 'dit', 'uvit', or 'hdit'")
+        raise ValueError(f"Unknown model type: {mc.type}. Choose 'unet', 'dit', 'uvit', 'hdit', or 'mamba'")
 
 
 def _create_unet(
@@ -271,6 +273,54 @@ def _create_hdit(
     return model.to(device)
 
 
+def _create_mamba_diff(
+    cfg: DictConfig,
+    mc: ModelConfig,
+    device: torch.device,
+    in_channels: int,
+    out_channels: int,
+) -> nn.Module:
+    """Create MambaDiff (Mamba + Local Attention U-Net)."""
+    from .mamba_diff import MAMBA_VARIANTS, create_mamba_diff
+
+    if mc.spatial_dims not in (2, 3):
+        raise ValueError(f"spatial_dims must be 2 or 3, got {mc.spatial_dims}")
+
+    valid_variants = tuple(MAMBA_VARIANTS.keys())
+    if mc.variant not in valid_variants:
+        raise ValueError(f"MambaDiff variant must be one of {valid_variants}, got '{mc.variant}'")
+
+    input_size, depth_size = _compute_input_sizes(cfg, mc)
+
+    # Read mamba-specific config with defaults
+    model_cfg = cfg.model
+    depths = list(model_cfg.get('depths', [2, 2, 2, 2]))
+    bottleneck_depth = model_cfg.get('bottleneck_depth', 2)
+    window_size = model_cfg.get('window_size', 8)
+    skip = model_cfg.get('skip', 2)
+    ssm_d_state = model_cfg.get('ssm_d_state', 1)
+    ssm_ratio = model_cfg.get('ssm_ratio', 2.0)
+
+    model = create_mamba_diff(
+        variant=mc.variant,
+        spatial_dims=mc.spatial_dims,
+        input_size=input_size,
+        patch_size=mc.patch_size,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        depth_size=depth_size,
+        depths=depths,
+        bottleneck_depth=bottleneck_depth,
+        window_size=window_size,
+        skip=skip,
+        ssm_d_state=ssm_d_state,
+        ssm_ratio=ssm_ratio,
+        mlp_ratio=mc.mlp_ratio,
+    )
+
+    return model.to(device)
+
+
 def _compute_input_sizes(
     cfg: DictConfig,
     mc: ModelConfig,
@@ -327,4 +377,4 @@ def get_model_type(cfg: DictConfig) -> str:
 def is_transformer_model(cfg: DictConfig) -> bool:
     """Check if model is transformer-based (DiT)."""
     model_type = get_model_type(cfg)
-    return model_type in ('dit', 'sit', 'uvit', 'hdit')
+    return model_type in ('dit', 'sit', 'uvit', 'hdit', 'mamba')

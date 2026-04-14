@@ -80,7 +80,7 @@ class ModelConfig:
             raise ValueError(f"spatial_dims must be 2 or 3, got {self.spatial_dims}")
         if self.image_size <= 0:
             raise ValueError(f"image_size must be > 0, got {self.image_size}")
-        valid_types = ('unet', 'dit', 'sit', 'uvit', 'hdit')
+        valid_types = ('unet', 'dit', 'sit', 'uvit', 'hdit', 'mamba')
         if self.type not in valid_types:
             raise ValueError(f"model type must be one of {valid_types}, got '{self.type}'")
         if len(self.channels) != len(self.attention_levels):
