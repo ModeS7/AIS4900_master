@@ -1031,12 +1031,15 @@ def _create_restoration_3d_loader(
     bs = batch_size or vol_cfg.batch_size
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank) if use_distributed else None
 
+    # No workers for cached datasets — data is already in RAM, workers just waste memory
+    nw = 0 if dataset._use_cache else cfg.training.get('num_workers', 4)
+
     loader = DataLoader(
         dataset,
         batch_size=bs,
         shuffle=(sampler is None and split == 'train'),
         sampler=sampler,
-        num_workers=cfg.training.get('num_workers', 4),
+        num_workers=nw,
         pin_memory=True,
         drop_last=(split == 'train'),
     )
