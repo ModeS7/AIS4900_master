@@ -175,10 +175,10 @@ class Restoration3DDataset(Base3DVolumeDataset):
             if self.slice_2d:
                 return self._random_slice_2d(result)
 
-            # 3D patch: augment then crop
-            result = self._apply_augmentation(result)
+            # 3D patch: crop FIRST (small patch), then augment (cheap on small tensor)
             if self.patch_size is not None:
                 result = self._random_crop(result)
+            result = self._apply_augmentation(result)
             return result
 
         # Full volume mode (no cache)
