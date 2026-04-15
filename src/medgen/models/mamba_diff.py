@@ -284,6 +284,7 @@ class MambaDiff(nn.Module):
         in_channels: int = 2,
         out_channels: int = 1,
         embed_dim: int = 192,
+        dims: list[int] | None = None,
         depths: list[int] | None = None,
         bottleneck_depth: int = 2,
         num_heads: int = 8,
@@ -306,12 +307,19 @@ class MambaDiff(nn.Module):
         self.skip = skip
         self._use_checkpoint = False
 
-        # Dimension schedule: [D, 2D, 4D, 4D] (last `skip` stages share max dim)
-        dims = []
-        for i in range(self.num_stages):
-            scale = min(2 ** i, 2 ** (self.num_stages - skip))
-            dims.append(embed_dim * scale)
-        self.dims = dims
+        # Dimension schedule: explicit dims or auto-computed [D, 2D, 4D, 4D]
+        if dims is not None:
+            if len(dims) != self.num_stages:
+                raise ValueError(
+                    f"dims length ({len(dims)}) must match depths length ({self.num_stages})"
+                )
+            self.dims = list(dims)
+        else:
+            self.dims = []
+            for i in range(self.num_stages):
+                scale = min(2 ** i, 2 ** (self.num_stages - skip))
+                self.dims.append(embed_dim * scale)
+        dims = self.dims
 
         # Conditioning dimension = largest dim
         cond_dim = dims[-1]
@@ -529,6 +537,7 @@ def create_mamba_diff(
     in_channels: int = 2,
     out_channels: int = 1,
     depth_size: int | None = None,
+    dims: list[int] | None = None,
     depths: list[int] | None = None,
     bottleneck_depth: int = 2,
     window_size: int = 8,
@@ -536,17 +545,19 @@ def create_mamba_diff(
     ssm_d_state: int = 1,
     ssm_ratio: float = 2.0,
     mlp_ratio: float = 4.0,
+    num_heads: int | None = None,
 ) -> MambaDiff:
-    """Create a MambaDiff model from variant name.
+    """Create a MambaDiff model from variant name or custom dims.
 
     Args:
-        variant: Model size variant ('S', 'B', 'L', 'XL').
+        variant: Model size variant ('S', 'B', 'L', 'XL'). Ignored if dims is provided.
         spatial_dims: 2 or 3.
         input_size: Spatial H/W size.
         patch_size: Patch embedding size.
         in_channels: Input channels.
         out_channels: Output channels.
         depth_size: Depth for 3D volumes (None for 2D).
+        dims: Custom channel dimensions per stage (overrides variant).
         depths: Blocks per encoder stage.
         bottleneck_depth: Blocks in bottleneck.
         window_size: Window attention size.
@@ -554,14 +565,24 @@ def create_mamba_diff(
         ssm_d_state: SSM state dimension.
         ssm_ratio: SSM expansion ratio.
         mlp_ratio: FFN expansion ratio.
+        num_heads: Override attention heads (default: from variant).
 
     Returns:
         Initialized MambaDiff model.
     """
-    if variant not in MAMBA_VARIANTS:
-        raise ValueError(f"Unknown variant '{variant}', choose from {list(MAMBA_VARIANTS.keys())}")
-
-    cfg = MAMBA_VARIANTS[variant]
+    if dims is not None:
+        # Custom dims mode — variant only used for num_heads default
+        cfg = MAMBA_VARIANTS.get(variant, MAMBA_VARIANTS['B'])
+        embed_dim = dims[0]  # Not used when dims is explicit, but needed for signature
+        heads = num_heads or cfg['num_heads']
+        variant_label = f"custom{dims}"
+    else:
+        if variant not in MAMBA_VARIANTS:
+            raise ValueError(f"Unknown variant '{variant}', choose from {list(MAMBA_VARIANTS.keys())}")
+        cfg = MAMBA_VARIANTS[variant]
+        embed_dim = cfg['embed_dim']
+        heads = num_heads or cfg['num_heads']
+        variant_label = variant
 
     model = MambaDiff(
         spatial_dims=spatial_dims,
@@ -569,10 +590,11 @@ def create_mamba_diff(
         patch_size=patch_size,
         in_channels=in_channels,
         out_channels=out_channels,
-        embed_dim=cfg['embed_dim'],
+        embed_dim=embed_dim,
+        dims=dims,
         depths=depths,
         bottleneck_depth=bottleneck_depth,
-        num_heads=cfg['num_heads'],
+        num_heads=heads,
         window_size=window_size,
         skip=skip,
         ssm_d_state=ssm_d_state,
@@ -583,10 +605,9 @@ def create_mamba_diff(
 
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
     logger.info(
-        f"Created MambaDiff-{variant}: spatial_dims={spatial_dims}, "
+        f"Created MambaDiff-{variant_label}: spatial_dims={spatial_dims}, "
         f"input_size={input_size}, patch_size={patch_size}, "
-        f"embed_dim={cfg['embed_dim']}, num_heads={cfg['num_heads']}, "
-        f"dims={model.dims}, params={num_params:.1f}M"
+        f"dims={model.dims}, heads={heads}, params={num_params:.1f}M"
     )
 
     return model

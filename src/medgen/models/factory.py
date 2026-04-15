@@ -300,6 +300,8 @@ def _create_mamba_diff(
     skip = model_cfg.get('skip', 2)
     ssm_d_state = model_cfg.get('ssm_d_state', 1)
     ssm_ratio = model_cfg.get('ssm_ratio', 2.0)
+    custom_dims = list(model_cfg.dims) if model_cfg.get('dims', None) else None
+    num_heads = model_cfg.get('num_heads', None)
 
     model = create_mamba_diff(
         variant=mc.variant,
@@ -309,8 +311,10 @@ def _create_mamba_diff(
         in_channels=in_channels,
         out_channels=out_channels,
         depth_size=depth_size,
+        dims=custom_dims,
         depths=depths,
         bottleneck_depth=bottleneck_depth,
+        num_heads=num_heads,
         window_size=window_size,
         skip=skip,
         ssm_d_state=ssm_d_state,

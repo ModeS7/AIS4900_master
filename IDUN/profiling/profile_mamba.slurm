@@ -16,7 +16,7 @@
 cd ${SLURM_SUBMIT_DIR}
 mkdir -p IDUN/output/profiling
 
-echo "=== MambaDiff VRAM Profiling ==="
+echo "=== MambaDiff Architecture Profiling ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node:   $SLURM_JOB_NODELIST"
 echo ""
@@ -28,16 +28,14 @@ conda activate AIS4900
 
 echo ""
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
-python -c "from mamba_ssm.ops.selective_scan_interface import selective_scan_fn; print('mamba_ssm CUDA: OK')" 2>/dev/null || echo "WARNING: mamba_ssm CUDA not available, using fallback"
+python -c "from mamba_ssm.ops.selective_scan_interface import selective_scan_fn; print('mamba_ssm CUDA: OK')" 2>/dev/null || echo "WARNING: mamba_ssm CUDA not available"
 echo ""
 
-# Full sweep: all variants × resolutions × patch sizes
-# With gradient checkpointing (likely needed for large 3D configs)
 echo "=== Without gradient checkpointing ==="
-python misc/profile_mamba_memory.py --channels 2 --out-channels 1
+python misc/profile_mamba_memory.py
 
 echo ""
 echo "=== With gradient checkpointing ==="
-python misc/profile_mamba_memory.py --channels 2 --out-channels 1 --grad-ckpt
+python misc/profile_mamba_memory.py --grad-ckpt
 
 conda deactivate
