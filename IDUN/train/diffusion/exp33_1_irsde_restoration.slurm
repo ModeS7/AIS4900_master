@@ -26,7 +26,7 @@ EXP_NAME="exp33_1_irsde_restoration"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion/restoration/${EXP_NAME}_${TIMESTAMP}"
+    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_2d/restoration/${EXP_NAME}_${TIMESTAMP}"
 fi
 
 CHAIN_ARGS="hydra.run.dir=${CHAIN_RUN_DIR}"
