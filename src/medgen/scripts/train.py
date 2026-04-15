@@ -847,6 +847,10 @@ def _train_3d(cfg: DictConfig) -> None:
     trainer.pixel_train_loader = pixel_train_loader
     trainer.pixel_val_loader = pixel_val_loader
 
+    # Store val dataset for restoration visualization
+    if val_result is not None:
+        trainer._val_dataset = val_result[1]
+
     # Train
     trainer.train(
         train_loader, train_dataset,

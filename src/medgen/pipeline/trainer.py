@@ -1482,13 +1482,65 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Sample visualization
         if log_figures or (epoch + 1) == self.n_epochs:
             model_to_use = self.ema.ema_model if self.ema is not None else self.model_raw
-            self._visualize_samples(model_to_use, epoch, self.train_dataset)
+            if isinstance(self.mode, RestorationMode):
+                self._visualize_restoration_samples(model_to_use, epoch)
+            else:
+                self._visualize_samples(model_to_use, epoch, self.train_dataset)
 
         # Restoration FWD evaluation on pre-generated synthetic datasets
         if isinstance(self.mode, RestorationMode) and self._spatial_dims == 3:
             extended_interval = self.cfg.training.get('extended_metrics_interval', 25)
             if (epoch + 1) % extended_interval == 0 or (epoch + 1) == self.n_epochs:
                 self._compute_restoration_fwd(epoch)
+
+    @torch.no_grad()
+    def _visualize_restoration_samples(self, model: torch.nn.Module, epoch: int) -> None:
+        """Visualize restoration: degraded → restored for a val patch/slice."""
+        model.eval()
+
+        # Get one sample from val dataset
+        val_ds = getattr(self, '_val_dataset', None)
+        if val_ds is None:
+            return
+        sample = val_ds[0]
+        degraded = sample['degraded'].unsqueeze(0).to(self.device)
+        clean = sample['image'].unsqueeze(0).to(self.device)
+
+        # Restore using the strategy
+        model_input = torch.cat([degraded, degraded], dim=1)
+        restored = self.strategy.generate(
+            model, model_input, num_steps=25, device=self.device,
+        )
+
+        # Log: degraded, restored, clean side by side
+        if self.writer is not None:
+            if degraded.dim() == 5:
+                # 3D: take center slice
+                d = degraded.shape[2] // 2
+                deg_2d = degraded[0, 0, d].cpu()
+                res_2d = restored[0, 0, d].cpu()
+                cln_2d = clean[0, 0, d].cpu()
+            else:
+                deg_2d = degraded[0, 0].cpu()
+                res_2d = restored[0, 0].cpu()
+                cln_2d = clean[0, 0].cpu()
+
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+            axes[0].imshow(deg_2d, cmap='gray', vmin=0, vmax=1)
+            axes[0].set_title('Degraded')
+            axes[0].axis('off')
+            axes[1].imshow(res_2d, cmap='gray', vmin=0, vmax=1)
+            axes[1].set_title('Restored')
+            axes[1].axis('off')
+            axes[2].imshow(cln_2d, cmap='gray', vmin=0, vmax=1)
+            axes[2].set_title('Clean (GT)')
+            axes[2].axis('off')
+            plt.tight_layout()
+            self.writer.add_figure('Restoration/samples', fig, epoch)
+            plt.close(fig)
 
     def _compute_restoration_fwd(self, epoch: int) -> None:
         """Compute FWD on pre-generated synthetic volumes (ImageNet/RadImageNet).
