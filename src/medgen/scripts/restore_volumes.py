@@ -125,7 +125,7 @@ def main():
     parser.add_argument("--restoration-model", type=str, required=True,
                         help="Path to trained restoration checkpoint")
     parser.add_argument("--strategy", type=str, default="rflow",
-                        choices=["rflow", "irsde", "resfusion"],
+                        choices=["rflow", "irsde", "resfusion", "bridge"],
                         help="Restoration strategy (default: rflow)")
     parser.add_argument("--input-dir", type=str, required=True,
                         help="Directory with generated volumes (*/bravo.nii.gz or flat *.nii.gz)")

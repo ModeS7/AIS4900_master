@@ -443,12 +443,15 @@ class DiffusionTrainer(DiffusionTrainerBase):
         if strategy == 'resfusion':
             from medgen.diffusion.strategy_resfusion import ResfusionStrategy
             return ResfusionStrategy()
+        if strategy == 'bridge':
+            from medgen.diffusion.strategy_bridge import BridgeStrategy
+            return BridgeStrategy()
         strategies: dict[str, type] = {
             'ddpm': DDPMStrategy,
             'rflow': RFlowStrategy,
         }
         if strategy not in strategies:
-            raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(strategies.keys()) + ['irsde', 'resfusion']}")
+            raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(strategies.keys()) + ['irsde', 'resfusion', 'bridge']}")
         return strategies[strategy]()
 
     def _create_mode(self, mode: str) -> TrainingMode:

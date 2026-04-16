@@ -1,0 +1,14 @@
+# Diffusion Bridge Strategy for Image Restoration
+#
+# Zhang et al., "Diffusion Bridge Models for 3D Medical Image Translation",
+# arXiv:2504.15267, April 2025.
+#
+# Forward: x_t = (1-t)*x_0 + t*x_1 + γ_max*sqrt(4*t*(1-t))*ε
+# γ_max = 0.125 validated on 3D brain MRI (128x128x128)
+# Model predicts x̂_0 (denoiser)
+# Sampling: 40 steps ODE (analytic posterior update)
+
+name: bridge
+num_train_timesteps: 1000
+gamma_max: 0.125
+prediction_type: x0
