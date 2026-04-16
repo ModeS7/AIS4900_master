@@ -158,6 +158,19 @@ class MambaDiffBlock(nn.Module):
 # Downsampling / Upsampling
 # =============================================================================
 
+class ChannelProjection(nn.Module):
+    """Channel-only projection (no spatial change). For skip stages with different dims."""
+
+    def __init__(self, dim_in: int, dim_out: int):
+        super().__init__()
+        self.proj = nn.Linear(dim_in, dim_out)
+        self.norm = nn.LayerNorm(dim_out)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, *spatial, C_in] → [B, *spatial, C_out]."""
+        return self.norm(self.proj(x))
+
+
 class Downsample(nn.Module):
     """Spatial downsampling via strided convolution (2× per spatial dim)."""
 
@@ -365,9 +378,13 @@ class MambaDiff(nn.Module):
                 ssm_d_state=ssm_d_state, ssm_ratio=ssm_ratio,
                 mlp_ratio=mlp_ratio, spatial_dims=spatial_dims,
             ))
-            # Downsample except for last `skip` stages
+            # Downsample (spatial + channel) for early stages,
+            # channel-only projection for skip stages with different dims,
+            # identity for skip stages with same dims
             if i < self.num_stages - skip:
                 self.downsamples.append(Downsample(dims[i], dims[i + 1], spatial_dims))
+            elif i < self.num_stages - 1 and dims[i] != dims[i + 1]:
+                self.downsamples.append(ChannelProjection(dims[i], dims[i + 1]))
             else:
                 self.downsamples.append(nn.Identity())
 
@@ -390,13 +407,20 @@ class MambaDiff(nn.Module):
             dec_dim = dims[enc_idx]
             dec_depth = depths[enc_idx] + 1  # SD-UNet: decoder gets +1 block
 
-            # Pre-upsample: reverse the encoder's downsample at this level.
-            # Encoder stage enc_idx had a downsample if enc_idx < num_stages - skip.
-            # That means x coming in is at dims[enc_idx+1], but the skip is at dims[enc_idx].
-            # We need to upsample dims[enc_idx+1] → dims[enc_idx].
-            if enc_idx < self.num_stages - skip and dims[enc_idx] != dims[enc_idx + 1]:
+            # Pre-upsample: reverse the encoder's downsample/projection at this level.
+            # x arrives from the previous (deeper) decoder stage. We need to match
+            # dims[enc_idx] and spatial resolution before adding skip[enc_idx].
+            if i == 0:
+                # First decoder stage: x from bottleneck at dims[-1], skip at dims[-1]
+                self.pre_upsamples.append(nn.Identity())
+            elif enc_idx < self.num_stages - skip:
+                # Encoder had spatial downsample here → decoder needs spatial upsample
                 self.pre_upsamples.append(Upsample(dims[enc_idx + 1], dims[enc_idx], spatial_dims))
+            elif dims[enc_idx] != dims[enc_idx + 1]:
+                # Encoder had channel-only projection → decoder needs reverse projection
+                self.pre_upsamples.append(ChannelProjection(dims[enc_idx + 1], dims[enc_idx]))
             else:
+                # Same dim, same spatial — identity
                 self.pre_upsamples.append(nn.Identity())
 
             self.decoder_stages.append(MambaDiffStage(
