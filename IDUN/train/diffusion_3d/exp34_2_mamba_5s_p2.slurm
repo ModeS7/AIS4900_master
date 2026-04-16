@@ -7,7 +7,7 @@
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp34_5s_p2"
+#SBATCH --job-name="exp34_2"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --output=IDUN/output/train/diffusion_3d/exp34_2/%j.out
@@ -24,7 +24,7 @@
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp34_mamba_5s_p2"
+EXP_NAME="exp34_2_mamba_5s_p2"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)

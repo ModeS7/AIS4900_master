@@ -31,6 +31,10 @@ depths: [2, 2, 2, 2]          # Blocks per encoder stage
 bottleneck_depth: 2            # Blocks in bottleneck
 skip: 2                        # Last N stages don't downsample
 
+# Optional overrides (null = use variant defaults)
+dims: null                     # Custom channel dims per stage (overrides variant)
+num_heads: null                # Override attention heads (default: from variant)
+
 # Mamba SSM parameters
 ssm_d_state: 1                 # SSM state dimension (1 is sufficient)
 ssm_ratio: 2.0                 # SSM inner dimension = ssm_ratio * embed_dim
