@@ -103,35 +103,31 @@ def sdedit_denoise(
     noisy = strategy.scheduler.add_noise(clean, noise, t_scaled)
 
     d, h, w = clean.shape[2], clean.shape[3], clean.shape[4]
-    # Scale total scheduler timesteps so ~num_steps Euler steps land in [0, t₀·T].
-    # Without this, low t₀ values result in far too few denoising steps
-    # (e.g. t₀=0.02 with num_steps=32 → only ~1 step actually executes, leaving noise).
-    # Clamp at T=1000 — scheduler can't go denser than per-integer timestep.
-    inference_steps = min(T, max(num_steps, int(num_steps / max(t0, 0.01))))
+    # Initialize scheduler (required for internal state; the specific
+    # num_inference_steps value doesn't matter — we override timesteps below).
     strategy.scheduler.set_timesteps(
-        num_inference_steps=inference_steps, device=device,
+        num_inference_steps=T, device=device,
         input_img_size_numel=d * h * w,
     )
 
-    t0_threshold = t0 * T
-    all_timesteps = strategy.scheduler.timesteps
-    all_next = torch.cat((
-        all_timesteps[1:],
-        torch.tensor([0], dtype=all_timesteps.dtype, device=device),
-    ))
+    # Build a UNIFORM timestep sequence from t₀·T down to 0.
+    # Using the scheduler's default logit-normal spacing clusters timesteps
+    # in the middle, giving very few steps near t=0 where SDEdit needs them.
+    # And the last scheduler timestep is usually > 0, leaving residual noise.
+    # A uniform sequence ending exactly at 0 fixes both issues.
+    start_t = t0 * T
+    # num_steps Euler steps → num_steps+1 timestep endpoints
+    uniform_ts = torch.linspace(start_t, 0.0, num_steps + 1, device=device)
+    all_timesteps = uniform_ts[:-1]  # all except last (=0)
+    all_next = uniform_ts[1:]         # shift by one
 
     x = noisy
     for t, next_t in zip(all_timesteps, all_next):
-        if t.item() > t0_threshold:
-            continue
         timesteps_batch = t.unsqueeze(0).to(device)
-        next_timestep = next_t.to(device) if isinstance(next_t, torch.Tensor) else torch.tensor(
-            next_t, device=device,
-        )
         model_input = torch.cat([x, seg], dim=1)
         with autocast('cuda', dtype=torch.bfloat16):
             velocity = model(model_input, timesteps_batch)
-        x, _ = strategy.scheduler.step(velocity.float(), t, x, next_timestep)
+        x, _ = strategy.scheduler.step(velocity.float(), t, x, next_t)
 
     return x.clamp(0, 1)
 
