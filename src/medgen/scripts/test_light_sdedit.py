@@ -370,6 +370,11 @@ def main() -> None:
             sde_np = out.squeeze().cpu().numpy()
             sdedit_results[t0] = sde_np
 
+            # Free GPU memory before the next t₀ setup (which may allocate
+            # a much larger scheduler buffer — e.g. 1000 steps for t₀=0.02).
+            del out
+            torch.cuda.empty_cache()
+
             # Spectrum
             _, sde_psd = compute_radial_spectrum(sde_np)
             all_sdedit_spectra[t0].append(sde_psd)
@@ -386,6 +391,7 @@ def main() -> None:
         plot_difference_grid(real, sdedit_results, output_dir / f'residuals_{vol_idx:02d}.png', slice_idx)
         logger.info("  Saved visual comparison")
 
+        del real_t, seg_t, sdedit_results
         torch.cuda.empty_cache()
 
     # Average spectra across volumes
