@@ -10,8 +10,8 @@
 #SBATCH --job-name="phema_1o1"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/eval/phema_sweep_exp1o_1/%j.out
-#SBATCH --error=IDUN/output/eval/phema_sweep_exp1o_1/%j.err
+#SBATCH --output=IDUN/output/eval/phema_sweep_exp1o_1_%j.out
+#SBATCH --error=IDUN/output/eval/phema_sweep_exp1o_1_%j.err
 
 # Post-hoc EMA sweep for exp1o_1 (270M bravo, sigma_rels=[0.05, 0.10])
 # Evaluates: raw model + EMA at sigma_rel=0.05 + EMA at sigma_rel=0.10
@@ -37,6 +37,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 time python -m medgen.scripts.synthesize_phema \
     --run-dir "${RUN_DIR}" \
     --data-root /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --training-sigma-rels 0.05 0.10 \
     --num-volumes 25 \
     --num-steps 25 \
     --depth 160 \
