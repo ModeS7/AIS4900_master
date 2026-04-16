@@ -103,8 +103,12 @@ def sdedit_denoise(
     noisy = strategy.scheduler.add_noise(clean, noise, t_scaled)
 
     d, h, w = clean.shape[2], clean.shape[3], clean.shape[4]
+    # Scale total scheduler timesteps so ~num_steps Euler steps land in [0, t₀·T].
+    # Without this, low t₀ values result in far too few denoising steps
+    # (e.g. t₀=0.02 with num_steps=32 → only ~1 step actually executes, leaving noise).
+    inference_steps = max(num_steps, int(num_steps / max(t0, 0.01)))
     strategy.scheduler.set_timesteps(
-        num_inference_steps=num_steps, device=device,
+        num_inference_steps=inference_steps, device=device,
         input_img_size_numel=d * h * w,
     )
 
