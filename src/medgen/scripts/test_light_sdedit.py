@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -378,7 +379,7 @@ def main() -> None:
         slice_idx = real.shape[0] // 2
         plot_visual_grid(real, sdedit_results, gen, output_dir / f'visual_{vol_idx:02d}.png', slice_idx)
         plot_difference_grid(real, sdedit_results, output_dir / f'residuals_{vol_idx:02d}.png', slice_idx)
-        logger.info(f"  Saved visual comparison")
+        logger.info("  Saved visual comparison")
 
         torch.cuda.empty_cache()
 
