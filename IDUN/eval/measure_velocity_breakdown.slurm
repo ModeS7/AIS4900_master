@@ -10,8 +10,8 @@
 #SBATCH --job-name="vel_brkdn"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/eval/velocity_breakdown/%j.out
-#SBATCH --error=IDUN/output/eval/velocity_breakdown/%j.err
+#SBATCH --output=IDUN/output/eval/velocity_breakdown_%j.out
+#SBATCH --error=IDUN/output/eval/velocity_breakdown_%j.err
 
 # Velocity prediction breakdown analysis for exp1_1_1000
 # 21 timesteps × 10 volumes × 1 forward pass each ≈ 210 predictions
