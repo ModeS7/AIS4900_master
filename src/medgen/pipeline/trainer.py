@@ -1598,14 +1598,22 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             # Restore each volume with current model
             restored = []
-            with torch.no_grad():
-                for vol_np in gen_vols:
-                    vol_t = torch.from_numpy(vol_np).unsqueeze(0).unsqueeze(0).to(self.device)
-                    model_input = torch.cat([vol_t, vol_t], dim=1)
-                    out = self.strategy.generate(
-                        model, model_input, num_steps=25, device=self.device,
-                    )
-                    restored.append(out.squeeze().cpu().float().numpy())
+            try:
+                with torch.no_grad():
+                    for vol_np in gen_vols:
+                        vol_t = torch.from_numpy(vol_np).unsqueeze(0).unsqueeze(0).to(self.device)
+                        model_input = torch.cat([vol_t, vol_t], dim=1)
+                        out = self.strategy.generate(
+                            model, model_input, num_steps=25, device=self.device,
+                        )
+                        restored.append(out.squeeze().cpu().float().numpy())
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                logger.warning(
+                    f"Restoration FWD ({name}): OOM on full-volume inference — "
+                    "skipping FWD (patch-trained models cannot run on full volumes)"
+                )
+                continue
 
             # Compute FWD
             fwd_score, fwd_bands = compute_fwd_3d(
