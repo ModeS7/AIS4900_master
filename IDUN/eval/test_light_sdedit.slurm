@@ -10,8 +10,8 @@
 #SBATCH --job-name="sde_sweep"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/eval/light_sdedit/%j.out
-#SBATCH --error=IDUN/output/eval/light_sdedit/%j.err
+#SBATCH --output=IDUN/output/eval/light_sdedit_%j.out
+#SBATCH --error=IDUN/output/eval/light_sdedit_%j.err
 
 # Light SDEdit sweep: t₀ from 0.02 to 0.50
 # Shows the transition from texture-only smoothing to structure destruction
