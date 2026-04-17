@@ -191,12 +191,16 @@ augmented_diffusion:
 # Perceptual loss (SqueezeNet features)
 # Disabled by default for diffusion - adds compute overhead with minimal benefit
 perceptual_weight: 0.0     # Weight for perceptual loss term (0 = disabled)
-perceptual_max_timestep: null  # Only apply perceptual loss when t < this value (null = all timesteps)
+perceptual_max_timestep: null  # Legacy low-t ramp: only apply when t < this (null = all timesteps)
+perceptual_t_schedule: null    # High-t schedule [t_on, t_full, t_off]: piecewise-linear
+                                # weight=0 below t_on, ramps to 1 at t_full, plateaus, drops to 0 at t_off.
+                                # Accepts normalized [0,1] or integer [0,T]. Takes precedence over max_timestep.
 
 # Focal Frequency Loss (Jiang et al., ICCV 2021)
 # Adaptively upweights hard-to-synthesize frequency components for sharper texture
 # Applied to predicted clean image vs target in frequency domain (2D FFT per slice)
 focal_frequency_weight: 0.0  # Weight for FFL term (0 = disabled). Try 1.0.
+focal_frequency_t_schedule: null  # Same [t_on, t_full, t_off] semantics as perceptual_t_schedule
 
 # Multi-GPU (DDP)
 use_multi_gpu: false

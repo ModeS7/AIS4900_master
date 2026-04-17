@@ -577,6 +577,35 @@ class DiffusionTrainer(DiffusionTrainerBase):
         from .training_tricks import apply_timestep_jitter
         return apply_timestep_jitter(self, timesteps)
 
+    @staticmethod
+    def _compute_t_schedule_weight(
+        t_val: float,
+        schedule: list[float] | tuple[float, float, float],
+        num_timesteps: int,
+    ) -> float:
+        """Piecewise-linear t-weighting for high-t-targeted auxiliary losses.
+
+        schedule = [t_on, t_full, t_off] in normalized units (0-1) or integer
+        timesteps (0-num_timesteps). Auto-detected: any value > 1.0 => integer.
+
+        Returns 0 for t < t_on, linearly ramps to 1.0 at t_full, stays 1.0
+        until t_off, then drops to 0 (x̂₀ unreliable beyond t_off).
+        """
+        if schedule is None or len(schedule) != 3:
+            return 1.0
+        t_on, t_full, t_off = float(schedule[0]), float(schedule[1]), float(schedule[2])
+        # Auto-detect normalized vs integer by looking at max value
+        if max(t_on, t_full, t_off) <= 1.0:
+            t_on *= num_timesteps
+            t_full *= num_timesteps
+            t_off *= num_timesteps
+        if t_val < t_on or t_val >= t_off:
+            return 0.0
+        if t_val >= t_full:
+            return 1.0
+        # Ramp from t_on → t_full
+        return (t_val - t_on) / max(t_full - t_on, 1e-6)
+
     def _apply_noise_augmentation(
         self,
         noise: torch.Tensor | dict[str, torch.Tensor],
@@ -953,17 +982,27 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
                     # Compute perceptual loss (decode for latent space)
                     # For 3D: use 2.5D approach (center slice) for efficiency
-                    # Optional: only at low timesteps where texture detail matters,
-                    # with linear scaling: full weight at t=0, zero at t=max_t
+                    # t-weighting options (precedence: high-t schedule > low-t max-only):
+                    #   perceptual_t_schedule=[t_on, t_full, t_off]: piecewise-linear,
+                    #     zero below t_on, ramps to 1 at t_full, plateaus, drops to 0 at t_off.
+                    #     Targets mid/high-t HF deficit while avoiding unreliable x̂₀ at t≈T.
+                    #   perceptual_max_timestep: legacy low-t ramp (1→0 from 0→max_t).
+                    _perceptual_schedule = self.cfg.training.get('perceptual_t_schedule', None)
                     _perceptual_max_t = self.cfg.training.get('perceptual_max_timestep', None)
                     _apply_perceptual = self.perceptual_weight > 0
                     _perceptual_scale = 1.0
-                    if _apply_perceptual and _perceptual_max_t is not None:
+                    if _apply_perceptual and _perceptual_schedule is not None:
+                        t_val = timesteps.max().item()
+                        _perceptual_scale = self._compute_t_schedule_weight(
+                            t_val, _perceptual_schedule, self.num_timesteps,
+                        )
+                        if _perceptual_scale <= 0:
+                            _apply_perceptual = False
+                    elif _apply_perceptual and _perceptual_max_t is not None:
                         t_val = timesteps.max().item()
                         if t_val >= _perceptual_max_t:
                             _apply_perceptual = False
                         else:
-                            # Linear ramp: 1.0 at t=0, 0.0 at t=max_t
                             _perceptual_scale = 1.0 - (t_val / _perceptual_max_t)
                     if _apply_perceptual:
                         if self.space.needs_decode:
@@ -988,16 +1027,29 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     total_loss = base_loss + self.perceptual_weight * _perceptual_scale * p_loss
 
                     # Focal Frequency Loss (applied slice-wise for 3D)
+                    # Optional t-weighting via focal_frequency_t_schedule=[t_on, t_full, t_off]
                     if self.focal_frequency_loss_fn is not None:
-                        pred_ffl = predicted_clean.float()
-                        target_ffl = images.float()
-                        if self.spatial_dims == 3:
-                            # Reshape [B, C, D, H, W] -> [B*D, C, H, W] for 2D FFT
-                            B, C, D, H, W = pred_ffl.shape
-                            pred_ffl = pred_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-                            target_ffl = target_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
-                        ffl_loss = self.focal_frequency_loss_fn(pred_ffl, target_ffl)
-                        total_loss = total_loss + self.focal_frequency_weight * ffl_loss
+                        _ffl_schedule = self.cfg.training.get('focal_frequency_t_schedule', None)
+                        _ffl_scale = 1.0
+                        _apply_ffl = True
+                        if _ffl_schedule is not None:
+                            t_val = timesteps.max().item()
+                            _ffl_scale = self._compute_t_schedule_weight(
+                                t_val, _ffl_schedule, self.num_timesteps,
+                            )
+                            if _ffl_scale <= 0:
+                                _apply_ffl = False
+
+                        if _apply_ffl:
+                            pred_ffl = predicted_clean.float()
+                            target_ffl = images.float()
+                            if self.spatial_dims == 3:
+                                # Reshape [B, C, D, H, W] -> [B*D, C, H, W] for 2D FFT
+                                B, C, D, H, W = pred_ffl.shape
+                                pred_ffl = pred_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+                                target_ffl = target_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
+                            ffl_loss = self.focal_frequency_loss_fn(pred_ffl, target_ffl)
+                            total_loss = total_loss + self.focal_frequency_weight * _ffl_scale * ffl_loss
 
                     # Self-conditioning consistency loss
                     tt = self._training_tricks
