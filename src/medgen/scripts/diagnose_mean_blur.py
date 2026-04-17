@@ -157,6 +157,8 @@ def save_visual_grid(
     output_path: Path, title: str,
 ) -> None:
     """Save side-by-side grid: real + N predictions, with zoomed inset."""
+    real = real.cpu()
+    preds = [p.cpu() for p in preds]
     n_preds = len(preds)
     n_cols = n_preds + 1
     fig, axes = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 6.5))
@@ -164,7 +166,7 @@ def save_visual_grid(
 
     def _slice(x, i):
         # x: [1,1,D,H,W] → numpy 2D axial
-        return x[0, 0, i].cpu().numpy()
+        return x[0, 0, i].numpy()
 
     h, w = real.shape[3], real.shape[4]
     ch, cw = h // 2, w // 2
