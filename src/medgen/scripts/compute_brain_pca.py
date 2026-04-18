@@ -24,7 +24,8 @@ from medgen.metrics.brain_mask import create_brain_mask
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-# Downsample resolution for PCA (keeps shape info, reduces compute)
+# Default downsample resolution for PCA (keeps shape info, reduces compute).
+# Overridable via CLI (--pca-size, --pca-depth).
 PCA_DEPTH = 80
 PCA_SIZE = 128
 
@@ -73,6 +74,10 @@ def main():
     parser.add_argument('--depth', type=int, default=160, help='Target depth (D)')
     parser.add_argument('--threshold', type=float, default=0.05, help='Brain detection threshold')
     parser.add_argument('--n-components', type=int, default=30, help='Number of PCA components')
+    parser.add_argument('--pca-size', type=int, default=PCA_SIZE,
+                        help='Target H/W after downsampling for PCA (default 128)')
+    parser.add_argument('--pca-depth', type=int, default=PCA_DEPTH,
+                        help='Target D after downsampling for PCA (default 80)')
     parser.add_argument('--threshold-multiplier', type=float, default=3.0,
                         help='Threshold = max real error x multiplier (default 3x)')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test1'],
@@ -80,12 +85,12 @@ def main():
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
-    target_shape = (PCA_DEPTH, PCA_SIZE, PCA_SIZE)
-    n_voxels = PCA_DEPTH * PCA_SIZE * PCA_SIZE
+    target_shape = (args.pca_depth, args.pca_size, args.pca_size)
+    n_voxels = args.pca_depth * args.pca_size * args.pca_size
 
     logger.info(f"Data root: {data_root}")
     logger.info(f"Full resolution: {args.image_size}x{args.image_size}x{args.depth}")
-    logger.info(f"PCA resolution: {PCA_SIZE}x{PCA_SIZE}x{PCA_DEPTH}")
+    logger.info(f"PCA resolution: {args.pca_size}x{args.pca_size}x{args.pca_depth}")
     logger.info(f"Components: {args.n_components}")
 
     # Collect all brain masks
@@ -150,6 +155,7 @@ def main():
         mean=mean,
         components=components,
         explained_variance=explained_variance,
+        full_singular_values=S.astype(np.float32),
         error_threshold=np.array([error_threshold]),
         pca_shape=np.array(target_shape),
         full_shape=np.array([args.depth, args.image_size, args.image_size]),
