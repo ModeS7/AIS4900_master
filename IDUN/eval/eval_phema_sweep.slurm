@@ -42,13 +42,17 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 
 SEG_FLAG=""
 if [ "${IS_SEG:-0}" = "1" ]; then

@@ -560,8 +560,7 @@ def _train_3d(cfg: DictConfig) -> None:
             )
             logger.info(f"Loaded SEG encoder: {seg_comp_type}")
 
-        # Check for slicewise encoding (2D encoder applied slice-by-slice for 3D)
-        slicewise_encoding = latent_cfg.get('slicewise_encoding', False)
+        # Resolved once above at line 518 — reuse the local to avoid drift after open_dict(cfg).
         if slicewise_encoding:
             logger.info("Using slicewise encoding: 2D encoder applied slice-by-slice")
 

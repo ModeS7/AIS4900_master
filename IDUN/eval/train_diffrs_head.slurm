@@ -23,6 +23,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -32,7 +36,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
 BRAVO_CHECKPOINT="runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 OUTPUT_DIR="runs/diffrs"
 
 # Train DiffRS head for the 3D bravo model

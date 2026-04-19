@@ -13,7 +13,7 @@ Produces:
 5. Spatial difference maps showing WHERE blur is applied
 
 Usage:
-    python -m medgen.scripts.test_light_sdedit \
+    python -m medgen.scripts.eval_light_sdedit \
         --bravo-model /path/to/exp1_1_1000/checkpoint.pt \
         --data-root /path/to/brainmetshare-3 \
         --generated-dir /path/to/generated/exp1_1_bravo_imagenet_525 \

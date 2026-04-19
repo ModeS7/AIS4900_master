@@ -23,7 +23,7 @@ EXP_NAME="exp9_dcae_f32_1_5"
 # First run: create unique run directory. Subsequent: reuse from env var.
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-    CHAIN_RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/compression_2d/multi_modality/${EXP_NAME}_${TIMESTAMP}"
+    CHAIN_RUN_DIR="${CLUSTER_BASE}/AIS4900_master/runs/compression_2d/multi_modality/${EXP_NAME}_${TIMESTAMP}"
 fi
 
 # Build resume arguments
@@ -68,6 +68,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"

@@ -24,6 +24,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -31,15 +35,15 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export HF_HUB_OFFLINE=1
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-PCA_MODEL="/cluster/work/modestas/AIS4900_master/data/brain_pca_256x256x160.npz"
-OUT_BASE="/cluster/work/modestas/MedicalDataSets/eval_pca_dual_triple"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+PCA_MODEL="${CLUSTER_BASE}/AIS4900_master/data/brain_pca_256x256x160.npz"
+OUT_BASE="${CLUSTER_BASE}/MedicalDataSets/eval_pca_dual_triple"
 
 MODELS=(
-    "exp1v2:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1v2_pixel_dual_20260326-164147/checkpoint_latest.pt"
-    "exp1v2_1:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1v2_1_pixel_dual_joint_norm_20260327-031630/checkpoint_latest.pt"
-    "exp1v3:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1v3_pixel_triple_20260326-164117/checkpoint_latest.pt"
-    "exp1v3_1:/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1v3_1_pixel_triple_joint_norm_20260327-033611/checkpoint_latest.pt"
+    "exp1v2:${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1v2_pixel_dual_20260326-164147/checkpoint_latest.pt"
+    "exp1v2_1:${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1v2_1_pixel_dual_joint_norm_20260327-031630/checkpoint_latest.pt"
+    "exp1v3:${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1v3_pixel_triple_20260326-164117/checkpoint_latest.pt"
+    "exp1v3_1:${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1v3_1_pixel_triple_joint_norm_20260327-033611/checkpoint_latest.pt"
 )
 
 for entry in "${MODELS[@]}"; do

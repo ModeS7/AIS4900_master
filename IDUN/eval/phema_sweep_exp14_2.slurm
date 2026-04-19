@@ -18,6 +18,10 @@
 cd ${SLURM_SUBMIT_DIR}
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
@@ -25,7 +29,7 @@ echo "=== PostHocEMA Sweep: exp14_2 (seg) ==="
 nvidia-smi
 
 time python -m medgen.scripts.synthesize_phema \
-    --run-dir /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/seg/exp14_2_pixel_seg_67m_20260408-035801 \
-    --data-root /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --run-dir ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/seg/exp14_2_pixel_seg_67m_20260408-035801 \
+    --data-root ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3 \
     --num-volumes 25 --num-steps 25 --include-raw \
     --is-seg

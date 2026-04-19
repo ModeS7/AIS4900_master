@@ -38,10 +38,13 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 
 from medgen.diffusion import (
+    BridgeStrategy,
     DDPMStrategy,
     DiffusionSpace,
     DiffusionStrategy,
+    IRSDEStrategy,
     PixelSpace,
+    ResfusionStrategy,
     RFlowStrategy,
 )
 
@@ -222,7 +225,7 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         """Create diffusion strategy based on name.
 
         Args:
-            name: Strategy name ('ddpm' or 'rflow').
+            name: Strategy name ('ddpm', 'rflow', 'bridge', 'irsde', 'resfusion').
 
         Returns:
             DiffusionStrategy instance.
@@ -233,6 +236,9 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         strategies: dict[str, type] = {
             'ddpm': DDPMStrategy,
             'rflow': RFlowStrategy,
+            'bridge': BridgeStrategy,
+            'irsde': IRSDEStrategy,
+            'resfusion': ResfusionStrategy,
         }
         if name not in strategies:
             raise ValueError(f"Unknown strategy: {name}. Choose from {list(strategies.keys())}")

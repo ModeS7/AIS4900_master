@@ -5,6 +5,10 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
+# Max num_bins supported by the tuple-format heuristic. Configs with num_bins above
+# this must switch to the dict batch format (see from_raw). Default is 7 (CLAUDE.md).
+_MAX_SIZE_BINS_HEURISTIC = 10
+
 
 @dataclass
 class BatchData:
@@ -80,9 +84,11 @@ class BatchData:
                     )
 
                 # Distinguish (images, labels) from (seg, size_bins)
-                # size_bins: [B] (pre-collation) or [B, num_bins] (post-collation, num_bins <= 10)
-                # labels/seg: [B, 1, H, W] (dim >= 3, or dim == 2 with shape[1] > 10)
-                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= 10):
+                # size_bins: [B] (pre-collation) or [B, num_bins] (post-collation, num_bins <= _MAX_SIZE_BINS_HEURISTIC)
+                # labels/seg: [B, 1, H, W] (dim >= 3, or dim == 2 with shape[1] > _MAX_SIZE_BINS_HEURISTIC)
+                # NOTE: any future config with num_bins > _MAX_SIZE_BINS_HEURISTIC must switch
+                # to the dict batch format (the deprecated tuple path can't disambiguate).
+                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= _MAX_SIZE_BINS_HEURISTIC):
                     return cls(images=first, size_bins=second)
                 else:
                     return cls(images=first, labels=second)
@@ -98,7 +104,7 @@ class BatchData:
                         )
 
                 # Same heuristic: size_bins has dim <= 2 with small last dim
-                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= 10):
+                if second.dim() == 1 or (second.dim() == 2 and second.shape[1] <= _MAX_SIZE_BINS_HEURISTIC):
                     return cls(images=first, size_bins=second, bin_maps=third)
                 else:
                     return cls(images=first, labels=second, mode_id=third)

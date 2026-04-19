@@ -1,6 +1,10 @@
 # DC-AE 3D default architecture configuration
 # Shared settings for all compression variants
 #
+# ⚠️  DEPRECATED: Latent-space 3D experiments consistently underperformed
+# pixel-space on this dataset (see MEMORY.md). Prefer pixel-space diffusion
+# or 2D VQ-VAE for new work. Kept for reference / historical runs only.
+#
 # Based on:
 # - DC-AE: https://arxiv.org/abs/2410.10733
 # - DC-VideoGen: https://arxiv.org/abs/2509.25182

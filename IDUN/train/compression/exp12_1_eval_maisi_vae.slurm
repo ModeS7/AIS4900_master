@@ -58,6 +58,10 @@ nvidia-smi
 module purge
 module load Anaconda3/2024.02-1
 source $(conda info --base)/etc/profile.d/conda.sh
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
@@ -79,7 +83,7 @@ echo ""
 echo "=== Evaluating on TEST_NEW set ==="
 time python misc/experiments/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --data_dir ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3 \
     --split test_new \
     --output $OUTPUT_DIR/maisi_test_new_results.json
 
@@ -87,7 +91,7 @@ echo ""
 echo "=== Evaluating on VAL set ==="
 time python misc/experiments/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --data_dir ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3 \
     --split val \
     --output $OUTPUT_DIR/maisi_val_results.json
 
@@ -95,7 +99,7 @@ echo ""
 echo "=== Evaluating on TRAIN set (100 samples) ==="
 time python misc/experiments/evaluate_maisi_vae.py \
     --bundle_path bundles/maisi_ct_generative \
-    --data_dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --data_dir ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3 \
     --split train \
     --max_samples 100 \
     --output $OUTPUT_DIR/maisi_train_results.json

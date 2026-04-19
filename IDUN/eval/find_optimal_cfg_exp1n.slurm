@@ -28,18 +28,22 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --num-steps 25 --ref-split test --seed 42"
 
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1n_pixel_bravo_cfg_zero_star_20260309-191558/checkpoint_best.pt"
+CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1n_pixel_bravo_cfg_zero_star_20260309-191558/checkpoint_best.pt"
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1n_pixel_bravo_cfg_zero_star_20260309-191558/checkpoint_latest.pt"
+    CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1n_pixel_bravo_cfg_zero_star_20260309-191558/checkpoint_latest.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then
@@ -57,7 +61,7 @@ echo "=========================================="
 echo "  exp1n: CFG-Zero* scale sweep (FID)"
 echo "=========================================="
 
-OUT_ZERO_STAR="/cluster/work/modestas/MedicalDataSets/eval_cfg_exp1n_zero_star"
+OUT_ZERO_STAR="${CLUSTER_BASE}/MedicalDataSets/eval_cfg_exp1n_zero_star"
 
 time python -m medgen.scripts.find_optimal_cfg \
     --checkpoint "${CKPT}" \
@@ -78,7 +82,7 @@ echo "=========================================="
 echo "  exp1n: Standard CFG scale sweep (FID)"
 echo "=========================================="
 
-OUT_STANDARD="/cluster/work/modestas/MedicalDataSets/eval_cfg_exp1n_standard"
+OUT_STANDARD="${CLUSTER_BASE}/MedicalDataSets/eval_cfg_exp1n_standard"
 
 time python -m medgen.scripts.find_optimal_cfg \
     --checkpoint "${CKPT}" \

@@ -24,19 +24,23 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_latest.pt"
-COMP_CKPT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
-OUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp21_2"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_latest.pt"
+COMP_CKPT="${CLUSTER_BASE}/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
+OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp21_2"
 
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_best.pt"
+    CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_best.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then

@@ -29,9 +29,9 @@ Before marking ANY task complete, STOP and verify:
 
 | Term | Meaning |
 |------|---------|
-| **Mode** | WHAT to generate: seg, bravo, dual, triple, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond |
-| **Strategy** | HOW to denoise: ddpm, rflow (continuous timesteps by default) |
-| **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT) |
+| **Mode** | WHAT to generate: seg, bravo, dual, triple, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond, restoration |
+| **Strategy** | HOW to denoise: ddpm, rflow (continuous timesteps by default), bridge, irsde, resfusion |
+| **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT), Mamba (LaMamba-Diff, pixel-space only) |
 | **VAE dual** | 2 channels (t1_pre, t1_gd) - NO seg |
 | **Diffusion dual** | 3 channels (t1_pre, t1_gd, seg) - HAS seg |
 | **Diffusion triple** | 4 channels (t1_pre, t1_gd, flair, seg) - HAS seg |
@@ -69,6 +69,13 @@ python -m medgen.scripts.train mode=bravo strategy=rflow model.spatial_dims=3  #
 python -m medgen.scripts.train model=dit model.variant=S mode=bravo strategy=rflow   # DiT
 python -m medgen.scripts.train model=hdit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # HDiT
 python -m medgen.scripts.train model=uvit_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # UViT
+
+# === DIFFUSION (Mamba / LaMamba-Diff, pixel-space only) ===
+python -m medgen.scripts.train model=mamba model.variant=S mode=bravo strategy=rflow   # 2D
+python -m medgen.scripts.train model=mamba_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # 3D
+
+# === RESTORATION (IR-SDE) ===
+python -m medgen.scripts.train mode=restoration strategy=irsde model.spatial_dims=3
 
 # === VAE ===
 python -m medgen.scripts.train_compression --config-name=vae mode=multi_modality
@@ -119,7 +126,7 @@ This catches:
 | Doc | Contents |
 |-----|----------|
 | `@docs/architecture.md` | File locations, trainer hierarchy, config structure, TensorBoard metrics |
-| `@docs/common-pitfalls.md` | 88 known issues, bug fixes, and gotchas (numbered 1-88, #43 skipped) |
+| `@docs/common-pitfalls.md` | 87 known issues, bug fixes, and gotchas (numbered 1-88 with #43 intentionally skipped → 87 actual entries) |
 | `@docs/commands.md` | Full command reference with all options |
 | `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |

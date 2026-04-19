@@ -28,18 +28,22 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 BASE_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --lo 10 --hi 100 --ref-split test --seed 42"
 
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_latest.pt"
+CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_latest.pt"
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_best.pt"
+    CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp23_pixel_bravo_scoreaug_256_20260309-220559/checkpoint_best.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then
@@ -57,7 +61,7 @@ echo "=========================================="
 echo "  exp23: Optimal steps by ImageNet FID"
 echo "=========================================="
 
-OUT_FID="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid_v2"
+OUT_FID="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp23_fid_v2"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \
@@ -76,7 +80,7 @@ echo "=========================================="
 echo "  exp23: Optimal steps by RadImageNet FID"
 echo "=========================================="
 
-OUT_FID_RIN="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp23_fid_rin_v2"
+OUT_FID_RIN="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp23_fid_rin_v2"
 
 time python -m medgen.scripts.find_optimal_steps \
     --checkpoint "${CKPT}" \

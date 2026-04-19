@@ -516,6 +516,12 @@ def validate_mode_requirements(
             validate_fn(data_dir, key)
         if require_seg and mode != 'dual_vae':
             validate_fn(data_dir, 'seg')
+    elif mode == 'triple':
+        keys = image_keys or ['t1_pre', 't1_gd', 'flair']
+        for key in keys:
+            validate_fn(data_dir, key)
+        if require_seg:
+            validate_fn(data_dir, 'seg')
     elif mode in ('multi', 'multi_modality', 'multi_modality_vae'):
         keys = image_keys or ['bravo', 'flair', 't1_pre', 't1_gd']
         for key in keys:
@@ -524,5 +530,13 @@ def validate_mode_requirements(
             validate_fn(data_dir, 'seg')
     elif mode in ('seg_conditioned', 'seg_conditioned_input'):
         validate_fn(data_dir, 'seg')
+    elif mode == 'bravo_seg_cond':
+        # Latent diffusion over BRAVO conditioned on seg latent
+        validate_fn(data_dir, 'bravo')
+        if require_seg:
+            validate_fn(data_dir, 'seg')
+    elif mode == 'restoration':
+        # Restoration: degraded → clean input-output pairs
+        validate_fn(data_dir, 'bravo')
     else:
         raise ValueError(f"Unknown mode: {mode}")

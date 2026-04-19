@@ -18,7 +18,7 @@ CONFIGS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'configs')
 CONFIGS_DIR = os.path.abspath(CONFIGS_DIR)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def vae_cfg():
     """Load VAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):
@@ -37,7 +37,7 @@ def vae_cfg():
         return cfg
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def vae_3d_cfg():
     """Load 3D VAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):
@@ -57,7 +57,7 @@ def vae_3d_cfg():
         return cfg
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def vqvae_cfg():
     """Load VQVAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):
@@ -76,7 +76,7 @@ def vqvae_cfg():
         return cfg
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def vqvae_3d_cfg():
     """Load 3D VQVAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):
@@ -96,7 +96,7 @@ def vqvae_3d_cfg():
         return cfg
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def dcae_cfg():
     """Load DCAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):
@@ -115,7 +115,7 @@ def dcae_cfg():
         return cfg
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def dcae_3d_cfg():
     """Load 3D DCAE config from actual config files."""
     with initialize_config_dir(config_dir=CONFIGS_DIR, version_base=None):

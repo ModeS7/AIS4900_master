@@ -18,14 +18,18 @@ cd ${SLURM_SUBMIT_DIR}
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-OUTPUT_DIR="/cluster/work/modestas/AIS4900_master/runs/eval/fft_comparison_${TIMESTAMP}"
+OUTPUT_DIR="${CLUSTER_BASE}/AIS4900_master/runs/eval/fft_comparison_${TIMESTAMP}"
 
 python -m medgen.scripts.visualize_fft_comparison \
-    --real-dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3/train \
-    --generated-dir /cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_imagenet_525 \
+    --real-dir ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train \
+    --generated-dir ${CLUSTER_BASE}/MedicalDataSets/generated/exp1_1_bravo_imagenet_525 \
     --output-dir ${OUTPUT_DIR} \
     --num-volumes 20 \
     --depth 160

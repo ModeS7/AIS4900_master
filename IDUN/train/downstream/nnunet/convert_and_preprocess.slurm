@@ -30,14 +30,18 @@ echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate nnunet
 
 # === Paths ===
-NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
-NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
-REAL_DIR="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-SYNTHETIC_IMAGENET="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_imagenet_525"
-SYNTHETIC_RADIMAGENET="/cluster/work/modestas/MedicalDataSets/generated/exp1_1_bravo_radimagenet_525"
+NNUNET_BASE="${CLUSTER_BASE}/MedicalDataSets/nnunet"
+NNUNET_RESULTS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
+REAL_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+SYNTHETIC_IMAGENET="${CLUSTER_BASE}/MedicalDataSets/generated/exp1_1_bravo_imagenet_525"
+SYNTHETIC_RADIMAGENET="${CLUSTER_BASE}/MedicalDataSets/generated/exp1_1_bravo_radimagenet_525"
 
 export nnUNet_raw="${NNUNET_BASE}/nnUNet_raw"
 export nnUNet_preprocessed="${NNUNET_BASE}/nnUNet_preprocessed"

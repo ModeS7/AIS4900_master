@@ -253,6 +253,21 @@ def estimate_adaptive_thresholds(
     if conditioning is None:
         conditioning = ConditioningContext()
 
+    # DiffRS warmup cannot yet thread omega/mode_id/size_bins through the raw
+    # model call below — so if the training used any of those wrappers, the
+    # calibrated thresholds would reflect a different distribution than
+    # generation. Refuse loudly instead of silently miscalibrating.
+    _omega = getattr(conditioning, 'omega', None)
+    _mode_id = getattr(conditioning, 'mode_id', None)
+    _size_bins = getattr(conditioning, 'size_bins', None)
+    if _omega is not None or _mode_id is not None or _size_bins is not None:
+        raise NotImplementedError(
+            "DiffRS warmup does not support omega/mode_id/size_bins conditioning yet. "
+            "Calibrated thresholds would diverge from the generation distribution. "
+            "Either disable DiffRS or thread conditioning through "
+            "estimate_adaptive_thresholds before running."
+        )
+
     batch_size = sample_shape[0] if len(sample_shape) > 3 else 1
 
     # Compute input_img_size_numel for scheduler (spatial dims only, no channels)

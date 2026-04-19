@@ -25,18 +25,22 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_latest.pt"
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp26_1"
+CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_latest.pt"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp26_1"
 
 if [ ! -f "$CKPT" ]; then
-    CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_best.pt"
+    CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_best.pt"
 fi
 
 if [ ! -f "$CKPT" ]; then

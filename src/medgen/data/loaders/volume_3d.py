@@ -35,6 +35,8 @@ from monai.transforms import (
 )
 from torch.utils.data import DataLoader, Dataset
 
+from medgen.data.utils import binarize_seg
+
 from .common import DataLoaderConfig, DistributedArgs, create_dataloader, get_validated_split_dir
 
 
@@ -364,7 +366,7 @@ class Base3DVolumeDataset(Dataset):
             return None
 
         seg = self._load_volume(seg_path, transform=self._seg_transform)
-        seg = (seg > 0.5).float()  # Binarize
+        seg = binarize_seg(seg)  # clamps to [0,1] then thresholds (single source of truth)
         return seg
 
 

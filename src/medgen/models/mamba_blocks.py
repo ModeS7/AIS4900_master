@@ -200,29 +200,43 @@ class SS2D(nn.Module):
                 x_w.flip(-1),
             ], dim=1)  # [B, 6, C, L]
 
-    def _cross_merge(self, ys: torch.Tensor) -> torch.Tensor:
+    def _cross_merge(self, ys: torch.Tensor, spatial_shape: tuple[int, ...]) -> torch.Tensor:
         """Merge K directional scan outputs back to spatial layout, then sum.
+
+        Each direction's scan output lives in a different flat order (e.g. col-major
+        vs row-major for 2D; (H,D,W) or (W,D,H) vs (D,H,W) for 3D). Before summing,
+        each must be reshaped + permuted back to the canonical flat layout so that
+        position i of every output corresponds to the same spatial position.
 
         Args:
             ys: [B, K, C, L] scan outputs.
+            spatial_shape: original spatial dims (H, W) for 2D or (D, H, W) for 3D.
 
         Returns:
-            [B, C, L] merged output (sum of all directions after reversing).
+            [B, C, L] merged output with all directions aligned to canonical order.
         """
+        B = ys.shape[0]
+        C = ys.shape[2]
+        L = ys.shape[3]
+
         if self.spatial_dims == 2:
-            # Reverse the scan directions and sum
-            y0 = ys[:, 0]              # row-fwd: as-is
-            y1 = ys[:, 1].flip(-1)     # row-rev: flip back
-            y2 = ys[:, 2]              # col-fwd: will be transposed back
-            y3 = ys[:, 3].flip(-1)     # col-rev: flip back
+            H, W = spatial_shape
+            y0 = ys[:, 0]                                     # row-fwd: canonical [H, W]
+            y1 = ys[:, 1].flip(-1)                            # row-rev: unflip
+            # col-fwd: scanned [W, H] flat; reshape + transpose back to [H, W]
+            y2 = ys[:, 2].reshape(B, C, W, H).permute(0, 1, 3, 2).reshape(B, C, L)
+            y3 = ys[:, 3].flip(-1).reshape(B, C, W, H).permute(0, 1, 3, 2).reshape(B, C, L)
             return y0 + y1 + y2 + y3
         else:
-            y_d_fwd = ys[:, 0]
+            D, H, W = spatial_shape
+            y_d_fwd = ys[:, 0]                                # canonical [D, H, W]
             y_d_rev = ys[:, 1].flip(-1)
-            y_h_fwd = ys[:, 2]
-            y_h_rev = ys[:, 3].flip(-1)
-            y_w_fwd = ys[:, 4]
-            y_w_rev = ys[:, 5].flip(-1)
+            # H-axis scanned [H, D, W]; reshape + swap H↔D to get [D, H, W]
+            y_h_fwd = ys[:, 2].reshape(B, C, H, D, W).permute(0, 1, 3, 2, 4).reshape(B, C, L)
+            y_h_rev = ys[:, 3].flip(-1).reshape(B, C, H, D, W).permute(0, 1, 3, 2, 4).reshape(B, C, L)
+            # W-axis scanned [W, D, H]; permute (W,D,H)→(D,H,W) = dims (3,4,2) over B,C
+            y_w_fwd = ys[:, 4].reshape(B, C, W, D, H).permute(0, 1, 3, 4, 2).reshape(B, C, L)
+            y_w_rev = ys[:, 5].flip(-1).reshape(B, C, W, D, H).permute(0, 1, 3, 4, 2).reshape(B, C, L)
             return y_d_fwd + y_d_rev + y_h_fwd + y_h_rev + y_w_fwd + y_w_rev
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -307,7 +321,7 @@ class SS2D(nn.Module):
         ys = torch.stack(ys_list, dim=1).to(x.dtype)  # [B, K, D_inner, L]
 
         # Merge directions: ys is already [B, K, D_inner, L] from stack
-        y = self._cross_merge(ys)  # [B, D_inner, L]
+        y = self._cross_merge(ys, tuple(spatial_shape))  # [B, D_inner, L]
 
         # Gate and project
         y = y.transpose(1, 2)  # [B, L, C]

@@ -51,6 +51,10 @@ python -m medgen.scripts.train_compression --config-name=vqvae_3d mode=multi_mod
 
 ## DC-AE Training
 
+> ⚠️ **DC-AE is legacy.** Latent-space experiments consistently underperformed
+> pixel-space on this dataset (see MEMORY.md). VQ-VAE is preferred for new
+> compression experiments. DC-AE commands remain for reference / historical runs.
+
 ```bash
 # DC-AE (32× compression, default)
 python -m medgen.scripts.train_compression --config-name=dcae mode=multi_modality

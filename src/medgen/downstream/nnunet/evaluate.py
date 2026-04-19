@@ -152,7 +152,7 @@ def evaluate_predictions(
     }
 
     if output_path is not None:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
         with open(output_path, 'w') as f:
             json.dump(results, f, indent=2)
         logger.info(f"Results saved to {output_path}")
@@ -174,19 +174,21 @@ def evaluate_predictions(
         writer.close()
         logger.info(f"Test metrics logged to TensorBoard: {tensorboard_dir}")
 
-    # Print summary
-    print(f"\n=== Evaluation Results ({len(per_case)} cases) ===")
-    print(f"Global: precision={global_results['precision']:.4f}, "
-          f"recall={global_results['recall']:.4f}", end='')
-    if 'hd95' in global_results:
-        print(f", HD95={global_results['hd95']:.2f}mm")
-    else:
-        print()
-
-    print(f"Regional: overall_dice={regional_results.get('dice', 0):.4f}, "
-          f"overall_iou={regional_results.get('iou', 0):.4f}")
+    # Log summary via logger (not print) so output respects handlers + redirect contexts.
+    logger.info(f"=== Evaluation Results ({len(per_case)} cases) ===")
+    hd95_suffix = (
+        f", HD95={global_results['hd95']:.2f}mm" if 'hd95' in global_results else ""
+    )
+    logger.info(
+        f"Global: precision={global_results['precision']:.4f}, "
+        f"recall={global_results['recall']:.4f}{hd95_suffix}"
+    )
+    logger.info(
+        f"Regional: overall_dice={regional_results.get('dice', 0):.4f}, "
+        f"overall_iou={regional_results.get('iou', 0):.4f}"
+    )
     for size in ('tiny', 'small', 'medium', 'large'):
         d = regional_results.get(f'dice_{size}', float('nan'))
-        print(f"  {size}: dice={d:.4f}")
+        logger.info(f"  {size}: dice={d:.4f}")
 
     return results

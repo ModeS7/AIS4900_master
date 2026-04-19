@@ -39,7 +39,13 @@ logger = logging.getLogger(__name__)
 
 
 def set_deterministic(seed: int = 42):
-    """Set all random seeds for reproducibility."""
+    """Set all random seeds for reproducibility.
+
+    Uses `torch.use_deterministic_algorithms(True, warn_only=True)` so that ops
+    without a deterministic implementation (some 3D cuDNN kernels on WSL2, for
+    example) fall back to non-deterministic and emit a warning — without
+    hanging the test run or hard-erroring.
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
@@ -47,6 +53,15 @@ def set_deterministic(seed: int = 42):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    # Modern PyTorch determinism API (>=1.8). `warn_only=True` is critical on
+    # platforms where some cuDNN algorithms have no deterministic variant — we
+    # want a warning instead of a hang or hard error.
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except (AttributeError, RuntimeError):
+        # Older torch or environment without the setter — cudnn-only settings
+        # above are the fallback.
+        pass
 
 
 def create_synthetic_batch_2d(batch_size: int = 4, image_size: int = 64, channels: int = 2, seed: int = 0) -> torch.Tensor:

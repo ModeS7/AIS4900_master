@@ -19,7 +19,7 @@
 
 cd ${SLURM_SUBMIT_DIR}
 
-RUN_DIR="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1o_1_pixel_bravo_20260413-023304"
+RUN_DIR="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1o_1_pixel_bravo_20260413-023304"
 
 echo "=== Post-hoc EMA Sweep: exp1o_1 ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
@@ -28,6 +28,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -36,7 +40,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 time python -m medgen.scripts.synthesize_phema \
     --run-dir "${RUN_DIR}" \
-    --data-root /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --data-root ${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3 \
     --training-sigma-rels 0.05 0.10 \
     --num-volumes 25 \
     --num-steps 25 \

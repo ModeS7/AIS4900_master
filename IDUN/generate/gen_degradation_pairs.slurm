@@ -54,15 +54,19 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-BRAVO_CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt"
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUT_DIR="/cluster/work/modestas/MedicalDataSets/restoration_pairs"
+BRAVO_CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/restoration_pairs"
 
 time python -m medgen.scripts.generate_degradation_pairs \
     --bravo-model "${BRAVO_CKPT}" \

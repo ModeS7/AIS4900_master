@@ -26,13 +26,17 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 COMMON_ARGS="--data-root ${DATA_ROOT} --image-size 256 --num-volumes 25 --num-steps 25 --metric fid --ref-split test --seed 42"
 
 # ============================================================
@@ -43,11 +47,11 @@ echo "=========================================="
 echo "  exp1_1 (run 0129): Time-Shift Eval"
 echo "=========================================="
 
-CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_best.pt"
+CKPT_0129="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_best.pt"
 if [ ! -f "$CKPT_0129" ]; then
-    CKPT_0129="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"
+    CKPT_0129="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"
 fi
-OUT_0129="/cluster/work/modestas/MedicalDataSets/eval_time_shift_exp1_1_0129"
+OUT_0129="${CLUSTER_BASE}/MedicalDataSets/eval_time_shift_exp1_1_0129"
 
 if [ -f "$CKPT_0129" ]; then
     echo "Checkpoint: $CKPT_0129"

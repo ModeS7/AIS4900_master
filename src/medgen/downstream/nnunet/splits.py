@@ -307,8 +307,15 @@ def main() -> None:
         seed=args.seed,
     )
 
-    path = install_splits(splits, args.nnunet_preprocessed, args.dataset_id)
-    print(f"Installed: {path}")
+    # Use the per-experiment isolated preprocessed dir to avoid the splits_final.json
+    # race condition that bit us before (see docs/common-pitfalls.md).
+    path = create_isolated_preprocessed_dir(
+        experiment_name=args.experiment,
+        splits=splits,
+        nnunet_preprocessed=args.nnunet_preprocessed,
+        dataset_id=args.dataset_id,
+    )
+    logger.info(f"Installed isolated preprocessed dir: {path}")
 
 
 if __name__ == '__main__':

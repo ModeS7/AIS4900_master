@@ -37,7 +37,29 @@ from medgen.data import binarize_seg
 from medgen.data.loaders.datasets import create_size_bin_maps
 from medgen.data.loaders.seg import DEFAULT_BIN_EDGES, compute_size_bins_3d
 from medgen.data.utils import save_nifti
-from medgen.diffusion import DDPMStrategy, DiffusionStrategy, RFlowStrategy, load_diffusion_model
+from medgen.diffusion import (
+    BridgeStrategy,
+    DDPMStrategy,
+    DiffusionStrategy,
+    IRSDEStrategy,
+    ResfusionStrategy,
+    RFlowStrategy,
+    load_diffusion_model,
+)
+
+
+def _create_strategy(name: str) -> DiffusionStrategy:
+    """Create diffusion strategy by name. Keep in sync with DiffusionTrainerBase._create_strategy."""
+    strategies: dict[str, type] = {
+        'ddpm': DDPMStrategy,
+        'rflow': RFlowStrategy,
+        'bridge': BridgeStrategy,
+        'irsde': IRSDEStrategy,
+        'resfusion': ResfusionStrategy,
+    }
+    if name not in strategies:
+        raise ValueError(f"Unknown strategy: {name}. Choose from {list(strategies.keys())}")
+    return strategies[name]()
 from medgen.metrics.brain_mask import (
     BrainPCAModel,
     create_brain_mask,
@@ -117,6 +139,17 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
         return 0.0 < white_percentage < max_white_percentage
 
 
+def _xyz_to_dhw(voxel_xyz: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Reorder (x, y, z) voxel spacing to (D, H, W) expected by size-bin / Feret functions.
+
+    compute_voxel_size returns NIfTI-style (x, y, z); compute_size_bins_3d and
+    compute_feret_diameter_3d expect (D, H, W). In practice H == W for isotropic
+    in-plane data, so the primary effect is swapping D (was x) with W (was z).
+    """
+    x, y, z = voxel_xyz
+    return (z, y, x)
+
+
 def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
                        z_spacing_mm: float = 1.0) -> tuple[float, float, float]:
     """Compute voxel size based on resolution and field of view.
@@ -167,8 +200,11 @@ def _get_offset_noise_config(checkpoint_path: str) -> tuple[bool, float]:
         del ckpt
         if enabled and adjusted:
             return True, strength
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            f"Could not load offset noise config from {checkpoint_path}: {type(e).__name__}: {e}. "
+            "Falling back to offset-disabled — generated samples may diverge from training distribution."
+        )
     return False, 0.0
 
 
@@ -285,7 +321,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     batch_size = auto_adjust_batch_size(cfg.batch_size, 2, device)
 
     # Initialize strategy
-    strategy: DiffusionStrategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
+    strategy: DiffusionStrategy = _create_strategy(cfg.strategy)
     strategy.setup_scheduler(1000, cfg.image_size)
 
     # ODE solver config (RFlow only)
@@ -528,7 +564,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     device = torch.device("cuda")
 
-    strategy = RFlowStrategy() if cfg.strategy == 'rflow' else DDPMStrategy()
+    strategy = _create_strategy(cfg.strategy)
     strategy.setup_scheduler(
         num_timesteps=1000,
         image_size=cfg.image_size,
@@ -687,7 +723,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
                 # Validate size bins match conditioning
                 if validate_size_bins:
-                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, _xyz_to_dhw(voxel_spacing), num_bins)
                     if not np.array_equal(actual_bins, np.array(bins)):
                         retries += 1
                         total_retries += 1
@@ -716,7 +752,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
 
             # Trim last N slices to match training data (training pads, so we remove padding)
-            trim_slices = cfg.get('trim_slices', 10)
             if trim_slices > 0:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
@@ -828,8 +863,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         total_retries = 0
         brain_retries = 0
         max_brain_retries = cfg.get('max_brain_retries', 5)
+        outer_retries = 0  # retries per sample (reset on successful save)
+        max_outer_retries = cfg.get('max_outer_retries', 20)
 
         while generated < cfg.num_images:
+            if outer_retries >= max_outer_retries:
+                raise RuntimeError(
+                    f"Sample {generated}: exhausted {max_outer_retries} outer retries. "
+                    f"Likely pathological atlas/bin/PCA combination. "
+                    f"Consider: increase max_outer_retries, relax brain_tolerance, "
+                    f"disable seg_pca, or use real_seg_dir."
+                )
             if real_seg_files is not None:
                 # Load real seg mask from dataset
                 seg_idx = generated % len(real_seg_files)
@@ -902,6 +946,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                     if cleaned_seg.sum() == 0:
                         # All tumors outside atlas — restart with new seg
                         total_retries += 1
+                        outer_retries += 1
                         continue
                     seg_binary = cleaned_seg
 
@@ -910,6 +955,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_valid, seg_error = seg_pca.is_valid(seg_binary)
                 if not seg_valid:
                     total_retries += 1
+                    outer_retries += 1
                     if cfg.verbose:
                         logger.warning(
                             f"Sample {generated}: seg pattern unrealistic "
@@ -979,6 +1025,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 # All bravo attempts failed — restart with new seg mask
                 logger.warning(f"Sample {generated}: bravo failed {max_brain_retries} times, restarting with new seg...")
                 total_retries += 1
+                outer_retries += 1
                 continue
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
@@ -986,7 +1033,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             bravo_np = np.transpose(bravo_np, (1, 2, 0))
 
             # Trim last N slices to match training data (training pads, so we remove padding)
-            trim_slices = cfg.get('trim_slices', 10)
             if trim_slices > 0:
                 seg_binary_save = seg_binary_save[:, :, :-trim_slices]  # [H, W, D-trim]
                 bravo_np = bravo_np[:, :, :-trim_slices]
@@ -1000,6 +1046,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             all_bins.append((generated, bins))
 
             generated += 1
+            outer_retries = 0  # reset on successful sample
 
             # Log progress and clear cache periodically
             if generated % 10 == 0 or generated == cfg.num_images:
@@ -1068,7 +1115,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
                 # Validate size bins match conditioning
                 if validate_size_bins:
-                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, voxel_spacing, num_bins)
+                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, _xyz_to_dhw(voxel_spacing), num_bins)
                     if not np.array_equal(actual_bins, np.array(bins)):
                         retries += 1
                         total_retries += 1
@@ -1097,7 +1144,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             seg_binary = np.transpose(seg_binary, (1, 2, 0))
 
             # Trim last N slices to match training data (training pads, so we remove padding)
-            trim_slices = cfg.get('trim_slices', 10)
             if trim_slices > 0:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 

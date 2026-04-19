@@ -376,10 +376,9 @@ class ConditionalSampler:
             noise = torch.randn_like(masks)
 
             # Build model input based on mode
-            if out_channels == 2:  # Dual mode
-                noise_pre = torch.randn_like(masks)
-                noise_gd = torch.randn_like(masks)
-                model_input = torch.cat([noise_pre, noise_gd, masks], dim=1)
+            if out_channels >= 2:  # Dual / triple / multi-channel modes
+                noise_channels = [torch.randn_like(masks) for _ in range(out_channels)]
+                model_input = torch.cat([*noise_channels, masks], dim=1)
                 batch_bin_maps = None
             elif self.mode_name == 'seg_conditioned_input' and batch_bin_maps is not None:
                 model_input = noise

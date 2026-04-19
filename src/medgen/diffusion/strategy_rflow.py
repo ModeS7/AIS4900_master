@@ -103,7 +103,7 @@ class RFlowStrategy(DiffusionStrategy):
         image_size: int = 128,
         depth_size: int | None = None,
         spatial_dims: int = 2,
-        use_discrete_timesteps: bool = True,
+        use_discrete_timesteps: bool = False,
         sample_method: str = 'logit-normal',
         use_timestep_transform: bool = True,
         prediction_type: str = 'velocity',
@@ -116,7 +116,7 @@ class RFlowStrategy(DiffusionStrategy):
             image_size: Height/width of input.
             depth_size: Depth for 3D volumes (required if spatial_dims=3).
             spatial_dims: Number of spatial dimensions (2 or 3).
-            use_discrete_timesteps: Use discrete integer timesteps (default True).
+            use_discrete_timesteps: Use discrete integer timesteps (default False, matches StrategyConfig).
             sample_method: Timestep sampling - 'uniform' or 'logit-normal' (default).
             use_timestep_transform: Apply resolution-based timestep transform (default True).
             prediction_type: 'velocity' (default) or 'sample' (predict x₀ directly).

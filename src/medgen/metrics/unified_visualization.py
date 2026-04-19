@@ -439,6 +439,69 @@ def log_test_figure(
     )
 
 
+def log_restoration_samples(
+    metrics: UnifiedMetrics,
+    degraded: torch.Tensor,
+    restored: torch.Tensor,
+    clean: torch.Tensor,
+    epoch: int,
+    tag: str = 'Restoration/samples',
+) -> None:
+    """Log a 3-panel figure: degraded → restored → clean (GT).
+
+    Accepts 2D `[B, C, H, W]` or 3D `[B, C, D, H, W]` volumes; in the 3D case the
+    center slice of dim 2 (depth) is used.
+
+    This helper centralizes the matplotlib logic that used to live inside
+    `DiffusionTrainer._visualize_restoration_samples` (CLAUDE.md rule: trainer
+    code should never own visualization).
+    """
+    if metrics.writer is None:
+        return
+
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    def _center_slice(t: torch.Tensor) -> torch.Tensor:
+        # [B, C, ...] → [H, W] (first sample, first channel, middle depth if 3D)
+        if t.dim() == 5:
+            d = t.shape[2] // 2
+            return t[0, 0, d].detach().cpu()
+        return t[0, 0].detach().cpu()
+
+    deg_2d = _center_slice(degraded)
+    res_2d = _center_slice(restored)
+    cln_2d = _center_slice(clean)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    for ax, img, title in zip(axes, (deg_2d, res_2d, cln_2d), ('Degraded', 'Restored', 'Clean (GT)')):
+        ax.imshow(img, cmap='gray', vmin=0, vmax=1)
+        ax.set_title(title)
+        ax.axis('off')
+    plt.tight_layout()
+    metrics.writer.add_figure(tag, fig, epoch)
+    plt.close(fig)
+
+
+def log_restoration_fwd_scores(
+    metrics: UnifiedMetrics,
+    epoch: int,
+    fwd_scores: dict[str, tuple[float, float]],
+) -> None:
+    """Log FWD scalars (overall + high-band) for restoration eval.
+
+    Args:
+        fwd_scores: Mapping `{name: (fwd_score, fwd_high_band_score)}`.
+    """
+    if metrics.writer is None:
+        return
+    for name, (score, high) in fwd_scores.items():
+        metrics.writer.add_scalar(f'Restoration/FWD_{name}', score, epoch)
+        metrics.writer.add_scalar(f'Restoration/FWD_high_{name}', high, epoch)
+
+
 def _extract_center_slice(metrics: UnifiedMetrics, tensor: torch.Tensor) -> torch.Tensor:
     """Extract center slice from 3D volume."""
     if tensor.dim() == 5:

@@ -14,8 +14,12 @@ cd ${SLURM_SUBMIT_DIR}
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate nnunet
 
 python misc/diagnose_nnunet.py \
-    --nnunet-base /cluster/work/modestas/MedicalDataSets/nnunet \
-    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet
+    --nnunet-base ${CLUSTER_BASE}/MedicalDataSets/nnunet \
+    --nnunet-results ${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet

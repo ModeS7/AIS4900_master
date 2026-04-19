@@ -29,6 +29,9 @@ from .strategies import (
     RFlowStrategy,
     ParsedModelInput,
 )
+from .strategy_bridge import BridgeStrategy
+from .strategy_irsde import IRSDEStrategy
+from .strategy_resfusion import ResfusionStrategy
 
 # Conditioning
 from .conditioning import ConditioningContext
@@ -78,6 +81,9 @@ __all__ = [
     'DiffusionStrategy',
     'DDPMStrategy',
     'RFlowStrategy',
+    'BridgeStrategy',
+    'IRSDEStrategy',
+    'ResfusionStrategy',
     'ParsedModelInput',
     # Conditioning
     'ConditioningContext',

@@ -23,6 +23,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -31,8 +35,8 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
 BRAVO_CHECKPOINT="runs/diffusion_3d/bravo/exp1_1_pixel_bravo_rflow_256x160_20260119-212710/checkpoint_latest.pt"
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUTPUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps"
 
 # Golden section search over [10, 50] — ~8-10 evaluations, ~2-3 hours
 time python -m medgen.scripts.find_optimal_steps \

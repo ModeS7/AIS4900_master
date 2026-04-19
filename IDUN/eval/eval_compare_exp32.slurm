@@ -25,6 +25,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -55,14 +59,14 @@ from medgen.metrics.fwd import compute_fwd_3d
 
 device = torch.device('cuda')
 
-DATA_ROOT = Path('/cluster/work/modestas/MedicalDataSets/brainmetshare-3')
-OUT_DIR = Path('/cluster/work/modestas/MedicalDataSets/eval_compare_exp32')
+DATA_ROOT = Path('${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3')
+OUT_DIR = Path('${CLUSTER_BASE}/MedicalDataSets/eval_compare_exp32')
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 CHECKPOINTS = {
-    'exp1_1_baseline': '/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt',
-    'exp32_lpips': '/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp32_pixel_bravo_perceptual_20260409-192621/checkpoint_latest.pt',
-    'exp32_1_ffl': '/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp32_1_pixel_bravo_ffl_20260409-192332/checkpoint_latest.pt',
+    'exp1_1_baseline': '${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt',
+    'exp32_lpips': '${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp32_pixel_bravo_perceptual_20260409-192621/checkpoint_latest.pt',
+    'exp32_1_ffl': '${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp32_1_pixel_bravo_ffl_20260409-192332/checkpoint_latest.pt',
 }
 
 NUM_VOLUMES = 25
@@ -120,7 +124,7 @@ logger.info(f'Loaded {len(real_volumes)} real volumes for FWD')
 
 # ── Load PCA model ────────────────────────────────────────────────
 brain_pca = None
-repo_root = Path('/cluster/work/modestas/AIS4900_master')
+repo_root = Path('${CLUSTER_BASE}/AIS4900_master')
 pca_path = repo_root / 'data' / f'brain_pca_{IMAGE_SIZE}x{IMAGE_SIZE}x{DEPTH}.npz'
 if pca_path.exists():
     from medgen.metrics.brain_mask import BrainPCAModel, create_brain_mask
@@ -249,6 +253,6 @@ logger.info(f'Results saved to: {OUT_DIR / \"compare_results.json\"}'  )
 
 echo ""
 echo "=== Results ==="
-cat /cluster/work/modestas/MedicalDataSets/eval_compare_exp32/compare_results.json 2>/dev/null
+cat ${CLUSTER_BASE}/MedicalDataSets/eval_compare_exp32/compare_results.json 2>/dev/null
 
 conda deactivate

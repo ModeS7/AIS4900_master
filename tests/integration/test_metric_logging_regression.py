@@ -4,6 +4,25 @@ These tests catch when metrics silently disappear or change after code updates.
 If a test fails, it means a metric that was previously logged is now missing.
 
 Run with: pytest tests/integration/test_metric_logging_regression.py -v
+
+Design note on the mock-writer pattern below
+--------------------------------------------
+These tests use `MagicMock()` for ``SummaryWriter`` as a *capture harness*,
+not as a call-assertion target. The mock's ``add_scalar``/``add_image``/
+``add_figure`` are replaced with closures that record the (tag, value, step)
+tuples into a dict. Tests then assert on the *recorded values* — i.e., what
+would have been written — not on whether a specific method was called with a
+specific signature.
+
+That means:
+- Renaming ``add_scalar`` or switching to a wrapper around the real writer
+  would break these tests (they hook the method name explicitly).
+- Changing what gets logged (e.g., dropping a metric) WILL be caught.
+- Changing the log value/step for an existing tag WILL be caught.
+
+A real-writer safety net lives in ``TestRealWriterSmokeTest`` at the bottom
+of this file — it uses an actual ``SummaryWriter`` + ``EventAccumulator`` to
+verify the end-to-end pipeline still produces event files.
 """
 
 import pytest
@@ -859,3 +878,68 @@ class TestMetricListCompleteness:
         - Generation_Diversity/*
         """
         pass  # This is documentation, not a real test
+
+
+# ============================================================================
+# Real-Writer Smoke Test
+# ============================================================================
+
+
+class TestRealWriterSmokeTest:
+    """End-to-end sanity: a real SummaryWriter + UnifiedMetrics produces readable events.
+
+    This is the safety net for the mock-based tests above: if all of them drift
+    away from reality (because they hook specific method names), this test will
+    still catch "UnifiedMetrics + SummaryWriter no longer works together".
+    """
+
+    def test_unified_metrics_writes_parseable_events(self, tmp_path):
+        from torch.utils.tensorboard import SummaryWriter
+        from medgen.metrics.unified import UnifiedMetrics
+
+        log_dir = tmp_path / "unified_real"
+        log_dir.mkdir()
+
+        writer = SummaryWriter(log_dir=str(log_dir))
+        metrics = UnifiedMetrics(
+            writer=writer,
+            mode='bravo',
+            spatial_dims=2,
+            modality='bravo',
+            device=torch.device('cpu'),
+            enable_regional=False,
+            log_grad_norm=True,
+            log_timestep_losses=False,
+            log_regional_losses=False,
+            log_msssim=False,
+            log_psnr=False,
+            log_lpips=False,
+            log_flops=False,
+        )
+
+        metrics.update_loss('Total', 0.5, phase='train')
+        metrics.update_loss('MSE', 0.3, phase='train')
+        metrics.update_lr(1e-4)
+        metrics.update_grad_norm(1.5)
+        metrics.log_training(epoch=0)
+
+        writer.flush()
+        writer.close()
+
+        # Verify an event file was created
+        files = list(log_dir.glob('events.out.tfevents.*'))
+        assert len(files) > 0, f"No event file produced in {log_dir}"
+        assert files[0].stat().st_size > 0, "Event file is empty"
+
+        # Try to parse the event file — if this fails, the writer is broken.
+        try:
+            from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        except ImportError:
+            pytest.skip("tensorboard EventAccumulator not available")
+
+        acc = EventAccumulator(str(log_dir))
+        acc.Reload()
+        scalar_tags = acc.Tags().get('scalars', [])
+        # At minimum, we logged LR + Total loss; exact tag names may evolve but
+        # the *existence* of some scalars is the invariant under test.
+        assert len(scalar_tags) > 0, f"No scalar tags in event file (got: {scalar_tags})"

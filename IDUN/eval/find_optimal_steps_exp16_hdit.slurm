@@ -25,6 +25,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -32,9 +36,9 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
-CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp16_hdit_pixel_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp16_hdit"
+CHECKPOINT=$(ls -d ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp16_hdit_pixel_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUTPUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp16_hdit"
 
 if [ -z "$CHECKPOINT" ]; then
     echo "ERROR: No checkpoint found for exp16_hdit_pixel_bravo_*"

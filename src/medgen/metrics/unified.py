@@ -993,6 +993,27 @@ class UnifiedMetrics:
         from .unified_visualization import log_test_figure
         log_test_figure(self, original, reconstructed, prefix, mask, metrics)
 
+    def log_restoration_samples(
+        self,
+        degraded: torch.Tensor,
+        restored: torch.Tensor,
+        clean: torch.Tensor,
+        epoch: int,
+        tag: str = 'Restoration/samples',
+    ) -> None:
+        """Log degraded→restored→clean 3-panel figure (2D or 3D centre slice)."""
+        from .unified_visualization import log_restoration_samples
+        log_restoration_samples(self, degraded, restored, clean, epoch, tag)
+
+    def log_restoration_fwd_scores(
+        self,
+        epoch: int,
+        fwd_scores: dict[str, tuple[float, float]],
+    ) -> None:
+        """Log FWD overall + high-band scalars for restoration eval."""
+        from .unified_visualization import log_restoration_fwd_scores
+        log_restoration_fwd_scores(self, epoch, fwd_scores)
+
     def _extract_center_slice(self, tensor: torch.Tensor) -> torch.Tensor:
         """Extract center slice from 3D volume."""
         from .unified_visualization import _extract_center_slice

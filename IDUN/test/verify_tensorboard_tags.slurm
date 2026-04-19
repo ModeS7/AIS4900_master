@@ -15,7 +15,7 @@
 # TensorBoard Tag Verification - Complete Test Suite (All Trainers)
 # =============================================================================
 # Submit: sbatch IDUN/test/verify_tensorboard_tags.slurm
-# All outputs saved to: /cluster/work/modestas/AIS4900_master/runs_tb_verify/
+# All outputs saved to: ${CLUSTER_BASE}/AIS4900_master/runs_tb_verify/
 # =============================================================================
 
 # Don't use set -e - we want to continue even if individual tests fail
@@ -33,6 +33,10 @@ echo "============================================================"
 module purge
 module load Anaconda3/2024.02-1
 source $(conda info --base)/etc/profile.d/conda.sh
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 # Verify GPU
@@ -42,7 +46,7 @@ python -c "import torch; print(f'PyTorch CUDA: {torch.cuda.is_available()}, Devi
 # =============================================================================
 # Configuration - ALL outputs go to single directory
 # =============================================================================
-TEST_BASE="/cluster/work/modestas/AIS4900_master/runs_tb_verify"
+TEST_BASE="${CLUSTER_BASE}/AIS4900_master/runs_tb_verify"
 TEST_DIR="$TEST_BASE/run_$(date +%Y%m%d_%H%M%S)_job${SLURM_JOB_ID}"
 mkdir -p "$TEST_DIR"
 

@@ -23,6 +23,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -31,8 +35,8 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # DC-AE checkpoints (128x spatial compression, 2x2 latent, 512 channels)
-BRAVO_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/multi_modality/exp9_f128_20260106-165531/checkpoint_latest.pt
-SEG_ENCODER=/cluster/work/modestas/AIS4900_master/runs/compression_2d/seg/exp13_3_seg_f128_20260201-025617/checkpoint_latest.pt
+BRAVO_ENCODER=${CLUSTER_BASE}/AIS4900_master/runs/compression_2d/multi_modality/exp9_f128_20260106-165531/checkpoint_latest.pt
+SEG_ENCODER=${CLUSTER_BASE}/AIS4900_master/runs/compression_2d/seg/exp13_3_seg_f128_20260201-025617/checkpoint_latest.pt
 
 echo "DC-AE Configuration:"
 echo "  Compression: 128x spatial (256x256 -> 2x2)"

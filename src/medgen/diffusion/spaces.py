@@ -153,6 +153,7 @@ class PixelSpace(DiffusionSpace):
         Priority: shift/scale normalization > rescale [-1,1] > identity.
         """
         if self._shift is not None:
+            assert self._scale is not None, "_scale must be set whenever _shift is set"
             shift = self._shift
             scale = self._scale
             if shift.device != x.device:
@@ -161,8 +162,8 @@ class PixelSpace(DiffusionSpace):
             # Squeeze trailing dims if input is 2D [B, C, H, W]
             if x.dim() == 4:
                 shift = shift.squeeze(-1)
-                scale = scale.squeeze(-1)  # type: ignore[union-attr]
-            return (x - shift) / scale  # type: ignore[operator]
+                scale = scale.squeeze(-1)
+            return (x - shift) / scale
         if self._rescale:
             return 2.0 * x - 1.0
         return x
@@ -170,6 +171,7 @@ class PixelSpace(DiffusionSpace):
     def decode(self, z: Tensor) -> Tensor:
         """Denormalize from diffusion space back to pixel [0,1]."""
         if self._shift is not None:
+            assert self._scale is not None, "_scale must be set whenever _shift is set"
             shift = self._shift
             scale = self._scale
             if shift.device != z.device:
@@ -177,8 +179,8 @@ class PixelSpace(DiffusionSpace):
                 self._scale = scale = scale.to(z.device)
             if z.dim() == 4:
                 shift = shift.squeeze(-1)
-                scale = scale.squeeze(-1)  # type: ignore[union-attr]
-            return z * scale + shift  # type: ignore[operator]
+                scale = scale.squeeze(-1)
+            return z * scale + shift
         if self._rescale:
             return (z + 1.0) / 2.0
         return z
@@ -380,10 +382,11 @@ class WaveletSpace(DiffusionSpace):
             x = 2.0 * x - 1.0
         result: Tensor = self._forward(x)
         if self._shift is not None:
+            assert self._scale is not None, "_scale must be set whenever _shift is set"
             if self._shift.device != result.device:
                 self._shift = self._shift.to(result.device)
-                self._scale = self._scale.to(result.device)  # type: ignore[union-attr]
-            result = (result - self._shift) / self._scale  # type: ignore[operator]
+                self._scale = self._scale.to(result.device)
+            result = (result - self._shift) / self._scale
         return result
 
     def decode(self, z: Tensor) -> Tensor:
@@ -404,10 +407,11 @@ class WaveletSpace(DiffusionSpace):
                 f"got {z.dim()}D tensor with shape {z.shape}"
             )
         if self._shift is not None:
+            assert self._scale is not None, "_scale must be set whenever _shift is set"
             if self._shift.device != z.device:
                 self._shift = self._shift.to(z.device)
-                self._scale = self._scale.to(z.device)  # type: ignore[union-attr]
-            z = z * self._scale + self._shift  # type: ignore[operator]
+                self._scale = self._scale.to(z.device)
+            z = z * self._scale + self._shift
         result: Tensor = self._inverse(z)
         if self._rescale:
             result = (result + 1.0) / 2.0

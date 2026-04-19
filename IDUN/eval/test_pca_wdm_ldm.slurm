@@ -20,19 +20,23 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export HF_HUB_OFFLINE=1
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-PCA_MODEL="/cluster/work/modestas/AIS4900_master/data/brain_pca_256x256x160.npz"
-VQVAE_CKPT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
-OUT="/cluster/work/modestas/MedicalDataSets/test_pca_wdm_ldm"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+PCA_MODEL="${CLUSTER_BASE}/AIS4900_master/data/brain_pca_256x256x160.npz"
+VQVAE_CKPT="${CLUSTER_BASE}/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt"
+OUT="${CLUSTER_BASE}/MedicalDataSets/test_pca_wdm_ldm"
 
 echo ""
 echo "=== WDM: exp26_1 (5 vol, 10 steps) ==="
 time python -m medgen.scripts.eval_steps_pca \
-    --checkpoint "/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_latest.pt" \
+    --checkpoint "${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp26_1_wdm_1000ep_20260327-024744/checkpoint_latest.pt" \
     --data-root "${DATA_ROOT}" \
     --pca-model "${PCA_MODEL}" \
     --output-dir "${OUT}/exp26_1" \
@@ -45,7 +49,7 @@ time python -m medgen.scripts.eval_steps_pca \
 echo ""
 echo "=== LDM: exp21_2 (5 vol, 10 steps) ==="
 time python -m medgen.scripts.eval_steps_pca \
-    --checkpoint "/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_latest.pt" \
+    --checkpoint "${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo_latent/exp21_2_ldm_4x_unet_maisi_20260304-083519/checkpoint_latest.pt" \
     --data-root "${DATA_ROOT}" \
     --pca-model "${PCA_MODEL}" \
     --output-dir "${OUT}/exp21_2" \

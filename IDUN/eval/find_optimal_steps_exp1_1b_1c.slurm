@@ -29,13 +29,17 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 
 # Common args
 COMMON_ARGS="--data-root ${DATA_ROOT} --image-size 128 --num-volumes 25 --lo 10 --hi 50 --metric fid --seed 42"
@@ -48,8 +52,8 @@ echo "=========================================="
 echo "  exp1c: Pixel bravo brain N(0,1)"
 echo "=========================================="
 
-CKPT_EXP1C="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1c_20260223-002347/checkpoint_latest.pt"
-OUT_EXP1C="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1c"
+CKPT_EXP1C="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1c_20260223-002347/checkpoint_latest.pt"
+OUT_EXP1C="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp1c"
 
 echo "Checkpoint: $CKPT_EXP1C"
 time python -m medgen.scripts.find_optimal_steps \
@@ -68,8 +72,8 @@ echo "=========================================="
 echo "  exp1b: Pixel bravo [-1,1] rescaled"
 echo "=========================================="
 
-CKPT_EXP1B="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1b_20260221-172156/checkpoint_latest.pt"
-OUT_EXP1B="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1b"
+CKPT_EXP1B="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1b_20260221-172156/checkpoint_latest.pt"
+OUT_EXP1B="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp1b"
 
 echo "Checkpoint: $CKPT_EXP1B"
 time python -m medgen.scripts.find_optimal_steps \
@@ -88,8 +92,8 @@ echo "=========================================="
 echo "  exp1: Pixel bravo [0,1] baseline"
 echo "=========================================="
 
-CKPT_EXP1="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_rflow_128x160_20260129-233854/checkpoint_latest.pt"
-OUT_EXP1="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp1"
+CKPT_EXP1="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp1_pixel_bravo_rflow_128x160_20260129-233854/checkpoint_latest.pt"
+OUT_EXP1="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp1"
 
 echo "Checkpoint: $CKPT_EXP1"
 time python -m medgen.scripts.find_optimal_steps \
@@ -107,7 +111,7 @@ echo "=========================================="
 echo "  ALL RESULTS SUMMARY"
 echo "=========================================="
 for EXP in exp1 exp1b exp1c; do
-    RESULT="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_${EXP}/search_results.json"
+    RESULT="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_${EXP}/search_results.json"
     if [ -f "$RESULT" ]; then
         echo "--- ${EXP} ---"
         cat "$RESULT"

@@ -24,6 +24,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -31,10 +35,10 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export HF_HUB_OFFLINE=1
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-PCA_MODEL="/cluster/work/modestas/AIS4900_master/data/brain_pca_256x256x160.npz"
-OUT_BASE="/cluster/work/modestas/MedicalDataSets/eval_pca_exp1_variants"
-RUN_BASE="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+PCA_MODEL="${CLUSTER_BASE}/AIS4900_master/data/brain_pca_256x256x160.npz"
+OUT_BASE="${CLUSTER_BASE}/MedicalDataSets/eval_pca_exp1_variants"
+RUN_BASE="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
 
 MODELS=(
     "exp1_1:${RUN_BASE}/exp1_1_pixel_bravo_20260301-180232/checkpoint_latest.pt"

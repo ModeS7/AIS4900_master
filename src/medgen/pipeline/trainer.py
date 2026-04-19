@@ -1550,7 +1550,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
     @torch.no_grad()
     def _visualize_restoration_samples(self, model: torch.nn.Module, epoch: int) -> None:
-        """Visualize restoration: degraded → restored for a val patch/slice."""
+        """Visualize restoration: degraded → restored for a val patch/slice.
+
+        Brackets RNG save/restore around strategy.generate() so logging cadence
+        doesn't shift the global RNG state between training epochs (CLAUDE.md rule).
+        """
         model.eval()
 
         # Get one sample from val dataset
@@ -1561,41 +1565,26 @@ class DiffusionTrainer(DiffusionTrainerBase):
         degraded = sample['degraded'].unsqueeze(0).to(self.device)
         clean = sample['image'].unsqueeze(0).to(self.device)
 
-        # Restore using the strategy
-        model_input = torch.cat([degraded, degraded], dim=1)
-        restored = self.strategy.generate(
-            model, model_input, num_steps=25, device=self.device,
-        )
+        # Save RNG so strategy.generate's torch.randn doesn't shift training state.
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        try:
+            # Restore using the strategy
+            model_input = torch.cat([degraded, degraded], dim=1)
+            restored = self.strategy.generate(
+                model, model_input, num_steps=25, device=self.device,
+            )
+        finally:
+            torch.set_rng_state(cpu_rng)
+            if cuda_rng is not None:
+                torch.cuda.set_rng_state_all(cuda_rng)
 
-        # Log: degraded, restored, clean side by side
-        if self.writer is not None:
-            if degraded.dim() == 5:
-                # 3D: take center slice
-                d = degraded.shape[2] // 2
-                deg_2d = degraded[0, 0, d].cpu()
-                res_2d = restored[0, 0, d].cpu()
-                cln_2d = clean[0, 0, d].cpu()
-            else:
-                deg_2d = degraded[0, 0].cpu()
-                res_2d = restored[0, 0].cpu()
-                cln_2d = clean[0, 0].cpu()
-
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-            axes[0].imshow(deg_2d, cmap='gray', vmin=0, vmax=1)
-            axes[0].set_title('Degraded')
-            axes[0].axis('off')
-            axes[1].imshow(res_2d, cmap='gray', vmin=0, vmax=1)
-            axes[1].set_title('Restored')
-            axes[1].axis('off')
-            axes[2].imshow(cln_2d, cmap='gray', vmin=0, vmax=1)
-            axes[2].set_title('Clean (GT)')
-            axes[2].axis('off')
-            plt.tight_layout()
-            self.writer.add_figure('Restoration/samples', fig, epoch)
-            plt.close(fig)
+        # Log: degraded, restored, clean side by side via the unified helper
+        # (keeps matplotlib inside metrics/unified_visualization.py — CLAUDE.md).
+        if self._unified_metrics is not None:
+            self._unified_metrics.log_restoration_samples(
+                degraded=degraded, restored=restored, clean=clean, epoch=epoch,
+            )
 
     def _compute_restoration_fwd(self, epoch: int) -> None:
         """Compute FWD on pre-generated synthetic volumes (ImageNet/RadImageNet).
@@ -1648,8 +1637,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
             if not gen_vols:
                 continue
 
-            # Restore each volume with current model
+            # Restore each volume with current model.
+            # Bracket RNG around strategy.generate so FWD eval doesn't shift training state.
             restored = []
+            cpu_rng = torch.get_rng_state()
+            cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
             try:
                 with torch.no_grad():
                     for vol_np in gen_vols:
@@ -1666,6 +1658,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                     "skipping FWD (patch-trained models cannot run on full volumes)"
                 )
                 continue
+            finally:
+                torch.set_rng_state(cpu_rng)
+                if cuda_rng is not None:
+                    torch.cuda.set_rng_state_all(cuda_rng)
 
             # Compute FWD
             fwd_score, fwd_bands = compute_fwd_3d(
@@ -1677,10 +1673,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
             vals = list(fwd_bands.values())
             fwd_high = float(np.mean(vals[3 * quarter:])) if vals else 0.0
 
-            # Log to TensorBoard
-            if self.writer is not None:
-                self.writer.add_scalar(f'Restoration/FWD_{name}', fwd_score, epoch)
-                self.writer.add_scalar(f'Restoration/FWD_high_{name}', fwd_high, epoch)
+            # Log via unified helper (keeps direct writer calls out of trainers).
+            if self._unified_metrics is not None:
+                self._unified_metrics.log_restoration_fwd_scores(
+                    epoch=epoch,
+                    fwd_scores={name: (fwd_score, fwd_high)},
+                )
 
             logger.info(
                 f"Restoration FWD ({name}, epoch {epoch + 1}): "

@@ -1,19 +1,34 @@
 """
 Multi-modality dataloaders for diffusion training with mode embedding.
 
-Provides dataloaders that pool multiple MR modalities, each paired with seg mask
-and mode_id for training a single model on all modalities.
+.. deprecated::
+    This legacy module returns tuple-format batches `(image, seg, mode_id)`.
+    The canonical path is now:
 
-Uses eager loading like other loaders - all slices extracted upfront into memory.
+      - `medgen.data.loaders.datasets.MultiDiffusionDataset` (dict format)
+      - `medgen.data.loaders.builder_2d` (wires GroupedBatchSampler correctly)
+
+    New code should not import from this module. The `create_multi_diffusion_*`
+    functions here are kept temporarily for backward compatibility of external
+    scripts that still call them.
 """
 import logging
 import os
+import warnings
 from collections.abc import Callable
 
 import numpy as np
 import torch
 from monai.data import DataLoader, Dataset
 from omegaconf import DictConfig
+
+warnings.warn(
+    "medgen.data.loaders.multi_diffusion is deprecated; use "
+    "medgen.data.loaders.builder_2d (with datasets.MultiDiffusionDataset) instead. "
+    "The legacy module returns tuple-format batches and does NOT wire GroupedBatchSampler.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from medgen.augmentation import build_diffusion_augmentation
 from medgen.core.constants import BINARY_THRESHOLD_GT

@@ -404,14 +404,24 @@ class BaseTestEvaluator(ABC):
             )
             return
 
-        # Fallback to direct writer calls for backward compatibility
-        # Log to TensorBoard
-        fig = self.worst_batch_figure_fn(worst_batch_data)
+        # Fallback to direct writer calls for backward compatibility.
+        # Both 2D (create_worst_batch_figure) and 3D (create_worst_batch_figure_3d)
+        # take positional (original, generated, loss, loss_breakdown=...) args —
+        # unpack the dict rather than passing it whole, otherwise the 3D path raises
+        # TypeError and the 2D path is also technically wrong.
+        def _make_fig():
+            return self.worst_batch_figure_fn(
+                worst_batch_data['original'],
+                worst_batch_data['generated'],
+                worst_batch_data['loss'],
+                worst_batch_data.get('loss_breakdown'),
+            )
+
+        fig = _make_fig()
         self.writer.add_figure(f'test_{label}/worst_batch', fig, 0)
         plt.close(fig)
 
-        # Save as PNG
-        fig = self.worst_batch_figure_fn(worst_batch_data)
+        fig = _make_fig()
         fig_path = os.path.join(self.save_dir, f'test_worst_batch_{label}.png')
         fig.savefig(fig_path, dpi=150, bbox_inches='tight')
         plt.close(fig)

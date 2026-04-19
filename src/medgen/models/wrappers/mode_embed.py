@@ -227,9 +227,11 @@ class ModeEmbedModelWrapper(nn.Module):
         # Call model normally
         return self.model(x, timesteps)
 
-    def parameters(self, recurse: bool = True):
-        """Get all parameters including mode MLP."""
-        return self.model.parameters(recurse=recurse)
+    # No custom parameters() override: rely on nn.Module's default traversal over
+    # all registered children (self.model plus any wrapper-owned sub-modules like
+    # mode_time_embed). Default de-duplicates via memo so params spliced into
+    # self.model.time_embed are yielded exactly once. The previous delegation-only
+    # override silently dropped wrapper-owned params if they weren't also spliced.
 
 
 class ModeEmbedDropoutModelWrapper(nn.Module):
@@ -316,9 +318,11 @@ class ModeEmbedDropoutModelWrapper(nn.Module):
         # Call model normally
         return self.model(x, timesteps)
 
-    def parameters(self, recurse: bool = True):
-        """Get all parameters including mode MLP."""
-        return self.model.parameters(recurse=recurse)
+    # No custom parameters() override: rely on nn.Module's default traversal over
+    # all registered children (self.model plus any wrapper-owned sub-modules like
+    # mode_time_embed). Default de-duplicates via memo so params spliced into
+    # self.model.time_embed are yielded exactly once. The previous delegation-only
+    # override silently dropped wrapper-owned params if they weren't also spliced.
 
 
 class NoModeModelWrapper(nn.Module):
@@ -364,9 +368,8 @@ class NoModeModelWrapper(nn.Module):
         # Simply call model without any mode conditioning
         return self.model(x, timesteps)
 
-    def parameters(self, recurse: bool = True):
-        """Get all parameters."""
-        return self.model.parameters(recurse=recurse)
+    # No custom parameters() override: NoModeModelWrapper has only self.model as a
+    # child, so the default nn.Module traversal yields the same set of params.
 
 
 class LateModeTimeEmbed(nn.Module):

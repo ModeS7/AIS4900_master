@@ -145,6 +145,15 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             # Fallback: read from model attributes
             time_embed_dim = raw_model.t_embedder.mlp[-1].out_features if hasattr(raw_model, 't_embedder') else None
 
+    # Block DDP with embedding wrappers - fail fast before any device moves.
+    # Embeddings in wrappers won't sync across GPUs, causing silent training corruption.
+    if trainer.use_multi_gpu and (trainer.use_omega_conditioning or trainer.use_mode_embedding):
+        raise ValueError(
+            "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
+            "Embeddings would NOT be synchronized across GPUs, causing silent training corruption. "
+            "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
+        )
+
     # Handle embedding wrappers: omega, mode, or both
     if (trainer.use_omega_conditioning or (not trainer.is_transformer and trainer.use_mode_embedding)):
         from medgen.data import create_conditioning_wrapper
@@ -179,14 +188,6 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
             compile_mode="default",
             disable_ddp_optimizer=disable_ddp_opt,
             is_main_process=trainer.is_main_process,
-        )
-
-    # Block DDP with embedding wrappers - embeddings won't sync across GPUs
-    if trainer.use_multi_gpu and (trainer.use_omega_conditioning or trainer.use_mode_embedding):
-        raise ValueError(
-            "DDP is not compatible with embedding wrappers (ScoreAug, ModeEmbed). "
-            "Embeddings would NOT be synchronized across GPUs, causing silent training corruption. "
-            "Either disable DDP (use single GPU) or disable omega_conditioning/mode_embedding."
         )
 
     # Handle size bin embedding for seg_conditioned mode
@@ -356,71 +357,10 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
     trainer._setup_compiled_forward(compile_fused)
 
-    # Setup optimizer
-    # Determine which parameters to train
-    if trainer.use_controlnet:
-        if trainer.controlnet_freeze_unet:
-            # Stage 2: Only train ControlNet
-            train_params = list(trainer.controlnet.parameters())
-            if trainer.is_main_process:
-                trainable = sum(p.numel() for p in train_params if p.requires_grad)
-                logger.info(f"Training only ControlNet ({trainable:,} trainable params, UNet frozen)")
-        else:
-            # Joint training: Both UNet and ControlNet
-            train_params = list(trainer.model_raw.parameters()) + list(trainer.controlnet.parameters())
-            if trainer.is_main_process:
-                trainable = sum(p.numel() for p in train_params if p.requires_grad)
-                logger.info(f"Joint training: UNet + ControlNet ({trainable:,} trainable params)")
-    else:
-        train_params = list(trainer.model_raw.parameters())
-        # Add auxiliary bin prediction head parameters (separate module, not in model_raw)
-        bin_pred_multi = getattr(trainer, '_bin_prediction_multi', None)
-        bin_pred_head = getattr(trainer, '_bin_prediction_head', None)
-        if bin_pred_multi is not None:
-            train_params += list(bin_pred_multi.parameters())
-        elif bin_pred_head is not None:
-            train_params += list(bin_pred_head.parameters())
-
-    trainer.optimizer = AdamW(
-        train_params,
-        lr=trainer.learning_rate,
-        weight_decay=trainer.weight_decay,
-    )
-
-    if trainer.is_main_process and trainer.weight_decay > 0:
-        logger.info(f"Using weight decay: {trainer.weight_decay}")
-
-    # Learning rate scheduler (cosine, constant, or plateau)
-    trainer.scheduler_type = trainer._diffusion_config.scheduler_type
-    if trainer.scheduler_type == 'constant':
-        trainer.lr_scheduler = create_warmup_constant_scheduler(
-            trainer.optimizer,
-            warmup_epochs=trainer.warmup_epochs,
-            total_epochs=trainer.n_epochs,
-        )
-        if trainer.is_main_process:
-            logger.info("Using constant LR scheduler (warmup then constant)")
-    elif trainer.scheduler_type == 'plateau':
-        plateau_cfg = trainer.cfg.training.get('plateau', {})  # Not yet in typed config
-        trainer.lr_scheduler = create_plateau_scheduler(
-            trainer.optimizer,
-            mode='min',
-            factor=plateau_cfg.get('factor', 0.5),
-            patience=plateau_cfg.get('patience', 10),
-            min_lr=plateau_cfg.get('min_lr', 1e-6),
-        )
-        if trainer.is_main_process:
-            logger.info(
-                f"Using ReduceLROnPlateau scheduler "
-                f"(factor={plateau_cfg.get('factor', 0.5)}, patience={plateau_cfg.get('patience', 10)})"
-            )
-    else:
-        trainer.lr_scheduler = create_warmup_cosine_scheduler(
-            trainer.optimizer,
-            warmup_epochs=trainer.warmup_epochs,
-            total_epochs=trainer.n_epochs,
-            eta_min=trainer.eta_min,
-        )
+    # Setup optimizer + LR scheduler (extracted into helpers for readability —
+    # see _setup_optimizer and _setup_lr_scheduler below).
+    _setup_optimizer(trainer)
+    _setup_lr_scheduler(trainer)
 
     # Create EMA wrapper if enabled
     trainer._setup_ema()
@@ -477,6 +417,89 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
 
     # Setup feature perturbation hooks if enabled
     trainer._setup_feature_perturbation()
+
+
+def _setup_optimizer(trainer: DiffusionTrainer) -> None:
+    """Build AdamW optimizer over the right parameter set.
+
+    Handles three cases:
+      - ControlNet + frozen UNet (Stage 2): train ControlNet only.
+      - ControlNet + joint training: train UNet + ControlNet.
+      - Otherwise: train model_raw plus any auxiliary bin-prediction heads.
+    """
+    from torch.optim import AdamW
+
+    if trainer.use_controlnet:
+        if trainer.controlnet_freeze_unet:
+            # Stage 2: Only train ControlNet
+            train_params = list(trainer.controlnet.parameters())
+            if trainer.is_main_process:
+                trainable = sum(p.numel() for p in train_params if p.requires_grad)
+                logger.info(f"Training only ControlNet ({trainable:,} trainable params, UNet frozen)")
+        else:
+            # Joint training: Both UNet and ControlNet
+            train_params = list(trainer.model_raw.parameters()) + list(trainer.controlnet.parameters())
+            if trainer.is_main_process:
+                trainable = sum(p.numel() for p in train_params if p.requires_grad)
+                logger.info(f"Joint training: UNet + ControlNet ({trainable:,} trainable params)")
+    else:
+        train_params = list(trainer.model_raw.parameters())
+        # Add auxiliary bin prediction head parameters (separate module, not in model_raw)
+        bin_pred_multi = getattr(trainer, '_bin_prediction_multi', None)
+        bin_pred_head = getattr(trainer, '_bin_prediction_head', None)
+        if bin_pred_multi is not None:
+            train_params += list(bin_pred_multi.parameters())
+        elif bin_pred_head is not None:
+            train_params += list(bin_pred_head.parameters())
+
+    trainer.optimizer = AdamW(
+        train_params,
+        lr=trainer.learning_rate,
+        weight_decay=trainer.weight_decay,
+    )
+
+    if trainer.is_main_process and trainer.weight_decay > 0:
+        logger.info(f"Using weight decay: {trainer.weight_decay}")
+
+
+def _setup_lr_scheduler(trainer: DiffusionTrainer) -> None:
+    """Create the LR scheduler (cosine / constant / plateau) on trainer.optimizer."""
+    from medgen.core import (
+        create_plateau_scheduler,
+        create_warmup_constant_scheduler,
+        create_warmup_cosine_scheduler,
+    )
+
+    trainer.scheduler_type = trainer._diffusion_config.scheduler_type
+    if trainer.scheduler_type == 'constant':
+        trainer.lr_scheduler = create_warmup_constant_scheduler(
+            trainer.optimizer,
+            warmup_epochs=trainer.warmup_epochs,
+            total_epochs=trainer.n_epochs,
+        )
+        if trainer.is_main_process:
+            logger.info("Using constant LR scheduler (warmup then constant)")
+    elif trainer.scheduler_type == 'plateau':
+        plateau_cfg = trainer.cfg.training.get('plateau', {})  # Not yet in typed config
+        trainer.lr_scheduler = create_plateau_scheduler(
+            trainer.optimizer,
+            mode='min',
+            factor=plateau_cfg.get('factor', 0.5),
+            patience=plateau_cfg.get('patience', 10),
+            min_lr=plateau_cfg.get('min_lr', 1e-6),
+        )
+        if trainer.is_main_process:
+            logger.info(
+                f"Using ReduceLROnPlateau scheduler "
+                f"(factor={plateau_cfg.get('factor', 0.5)}, patience={plateau_cfg.get('patience', 10)})"
+            )
+    else:
+        trainer.lr_scheduler = create_warmup_cosine_scheduler(
+            trainer.optimizer,
+            warmup_epochs=trainer.warmup_epochs,
+            total_epochs=trainer.n_epochs,
+            eta_min=trainer.eta_min,
+        )
 
 
 def setup_compiled_forward(trainer: DiffusionTrainer, enabled: bool) -> None:

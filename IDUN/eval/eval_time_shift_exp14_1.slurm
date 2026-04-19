@@ -25,6 +25,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -32,8 +36,8 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 CKPT="runs/diffusion_3d/seg/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_time_shift_exp14_1"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_time_shift_exp14_1"
 COMMON_ARGS="--checkpoint ${CKPT} --data-root ${DATA_ROOT} --mode seg --ref-modality seg --image-size 256 --num-volumes 25 --seed 42 --search --search-lo 1.0 --search-hi 5.0 --search-tol 0.1"
 
 echo ""

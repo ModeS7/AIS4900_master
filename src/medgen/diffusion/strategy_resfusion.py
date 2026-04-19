@@ -143,10 +143,6 @@ class ResfusionStrategy(DiffusionStrategy):
         epsilon = torch.randn_like(x0)
         x_t = sqrt_ah * x0 + (1.0 - sqrt_ah) * R + sqrt_1m_ah * epsilon
 
-        # Store epsilon for compute_loss (fragile but matches official pattern)
-        self._last_epsilon = epsilon
-        self._last_R = R
-
         return self._to_01(x_t)  # Back to [0, 1] for trainer interface
 
     def sample_timesteps(
@@ -196,19 +192,26 @@ class ResfusionStrategy(DiffusionStrategy):
         assert self._betas is not None
 
         device = prediction.device
+        assert self._sqrt_alphas_hat is not None
+        assert self._sqrt_1m_alphas_hat is not None
 
-        # Get stored epsilon and R from add_noise (in [-1, 1] space)
-        epsilon = self._last_epsilon.to(device)
-        R = self._last_R.to(device)
+        # Deterministically recover epsilon + R from the inputs rather than relying on
+        # stored instance state from add_noise — avoids race/reentrancy hazards under
+        # gradient accumulation.
+        x0_m1p1 = self._to_m1p1(target_images)
+        degraded_m1p1 = self._to_m1p1(noise)
+        R = degraded_m1p1 - x0_m1p1
+        x_t_m1p1 = self._to_m1p1(noisy_images)
+        sqrt_ah = self._sqrt_alphas_hat.to(device)[timesteps]
+        sqrt_ah = self._expand(sqrt_ah, prediction)
+        sqrt_1m_ah = self._sqrt_1m_alphas_hat.to(device)[timesteps]
+        sqrt_1m_ah = self._expand(sqrt_1m_ah, prediction)
+        epsilon = (x_t_m1p1 - sqrt_ah * x0_m1p1 - (1.0 - sqrt_ah) * R) / sqrt_1m_ah.clamp(min=1e-8)
 
         # α_t (SINGLE STEP, not cumulative) — this is the critical difference
         alpha_t = self._alphas.to(device)[timesteps]
         alpha_t = self._expand(alpha_t, prediction)
         sqrt_alpha_t = torch.sqrt(alpha_t)
-
-        # √(1-ᾱ_t) (cumulative, for the noise scaling)
-        sqrt_1m_ah = self._sqrt_1m_alphas_hat.to(device)[timesteps]
-        sqrt_1m_ah = self._expand(sqrt_1m_ah, prediction)
 
         # β_t
         beta_t = self._betas.to(device)[timesteps]

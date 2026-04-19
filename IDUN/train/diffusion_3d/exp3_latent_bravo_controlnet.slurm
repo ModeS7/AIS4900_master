@@ -23,6 +23,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -48,7 +52,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 # - Visualization: Generated_3D_CenterSlice
 # ============================================================================
 
-COMPRESSION_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_best.pt"
+COMPRESSION_CHECKPOINT="${CLUSTER_BASE}/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_best.pt"
 
 # Check if checkpoint exists
 if [ ! -f "$COMPRESSION_CHECKPOINT" ]; then
@@ -56,7 +60,7 @@ if [ ! -f "$COMPRESSION_CHECKPOINT" ]; then
     echo "  $COMPRESSION_CHECKPOINT"
     echo ""
     echo "Please update COMPRESSION_CHECKPOINT to point to the exp8_1 checkpoint."
-    echo "Example: find /cluster/work/modestas/AIS4900_master/runs/compression_3d -name 'checkpoint_best.pt' | grep exp8_1"
+    echo "Example: find ${CLUSTER_BASE}/AIS4900_master/runs/compression_3d -name 'checkpoint_best.pt' | grep exp8_1"
     exit 1
 fi
 

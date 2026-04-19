@@ -27,7 +27,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.loaders.common import DataLoaderConfig, create_dataloader
 from medgen.data.loaders.volume_3d import build_3d_transform
-from medgen.data.utils import make_binary
+from medgen.data.utils import binarize_seg, make_binary
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ def _to_tensor(data: Any) -> torch.Tensor:
 
 
 def _binarize_seg(seg: torch.Tensor) -> torch.Tensor:
-    """Binarize segmentation mask."""
-    return _to_tensor(make_binary(seg.numpy()))
+    """Binarize segmentation mask (clamp to [0,1] then threshold via SSOT in data/utils.py)."""
+    return binarize_seg(seg)
 
 
 def _build_transform(spatial_dims: int, image_size: int):

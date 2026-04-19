@@ -38,7 +38,7 @@ class ScoreAugConfig:
     patterns_grid_dropout: bool = True
     patterns_coarse_dropout: bool = True
     patterns_patch_dropout: bool = True
-    use_omega_conditioning: bool = False
+    use_omega_conditioning: bool = True
     use_mode_intensity_scaling: bool = False
     brightness: bool = False
     brightness_range: float = 1.2
@@ -87,7 +87,7 @@ class ScoreAugConfig:
                 'coarse_dropout', score_aug_cfg.get('patterns_coarse_dropout', True)),
             patterns_patch_dropout=patterns_cfg.get(
                 'patch_dropout', score_aug_cfg.get('patterns_patch_dropout', True)),
-            use_omega_conditioning=score_aug_cfg.get('use_omega_conditioning', False),
+            use_omega_conditioning=score_aug_cfg.get('use_omega_conditioning', True),
             use_mode_intensity_scaling=score_aug_cfg.get('mode_intensity_scaling', False),
             brightness=score_aug_cfg.get('brightness', False),
             brightness_range=score_aug_cfg.get('brightness_range', 1.2),
@@ -570,10 +570,24 @@ class DiffusionTrainerConfig:
             volume_height = 256
             volume_width = 256
         else:
-            image_size = cfg.volume.get('height', 256)
-            volume_depth = cfg.volume.get('depth', 160)
-            volume_height = cfg.volume.get('height', 256)
-            volume_width = cfg.volume.get('width', 256)
+            # Require explicit volume config for 3D so silent 256x160x256 defaults
+            # don't mask a missing override. Add configs/volume/default.yaml to
+            # the Hydra `defaults:` list (see configs/diffusion_3d.yaml).
+            if 'volume' not in cfg:
+                raise ValueError(
+                    "spatial_dims=3 requires a `volume` config section with "
+                    "`height`, `width`, and `depth`. Add `volume: default` to the "
+                    "Hydra defaults list or pass volume=default on the CLI."
+                )
+            for _required in ('height', 'width', 'depth'):
+                if _required not in cfg.volume:
+                    raise ValueError(
+                        f"spatial_dims=3 requires volume.{_required} to be set."
+                    )
+            image_size = cfg.volume.height
+            volume_depth = cfg.volume.depth
+            volume_height = cfg.volume.height
+            volume_width = cfg.volume.width
 
         # Perceptual weight (disabled for seg modes)
         perceptual_weight = 0.0 if is_seg_mode else cfg.training.get('perceptual_weight', 0.0)
@@ -590,7 +604,10 @@ class DiffusionTrainerConfig:
             use_amp = cfg.training.get('use_amp', False)
             use_gradient_checkpointing = cfg.training.get('gradient_checkpointing', False)
 
-        n_epochs = cfg.training.get('epochs', None) or cfg.training.get('max_epochs', None)
+        # Explicit None check — `or` chain would treat a deliberate epochs=0 as missing.
+        n_epochs = cfg.training.get('epochs', None)
+        if n_epochs is None:
+            n_epochs = cfg.training.get('max_epochs', None)
         if n_epochs is None:
             raise ValueError("Config must have training.epochs or training.max_epochs")
 

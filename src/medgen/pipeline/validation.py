@@ -482,17 +482,23 @@ def compute_validation_losses(
                 clear_metric_caches()
                 gen_model = trainer.ema.ema_model if trainer.ema is not None else trainer.model_raw
 
-                # 1. Move optimizer state to CPU
+                # 1. Move optimizer state to CPU.
+                # Set the flag ONLY after the move fully completes — otherwise the
+                # finally-block at the bottom tries to restore state that was never
+                # moved and may leave the optimizer in a mixed-device state.
                 optimizer_offloaded = False
-                try:
-                    if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                if hasattr(trainer, 'optimizer') and trainer.optimizer is not None:
+                    try:
                         for state in trainer.optimizer.state.values():
                             for k, v in state.items():
                                 if isinstance(v, torch.Tensor) and v.is_cuda:
                                     state[k] = v.cpu()
                         optimizer_offloaded = True
-                except Exception:
-                    pass
+                    except Exception as e:
+                        logger.warning(
+                            f"Optimizer offload to CPU failed at epoch {epoch}: "
+                            f"{type(e).__name__}: {e}. Leaving optimizer on current device."
+                        )
 
                 # 2. Move model to CPU to free all scattered GPU allocations
                 model_device = next(gen_model.parameters()).device
@@ -552,8 +558,12 @@ def compute_validation_losses(
                                 for k, v in state.items():
                                     if isinstance(v, torch.Tensor) and not v.is_cuda:
                                         state[k] = v.to(trainer.device)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.error(
+                                f"Optimizer state restore to GPU failed at epoch {epoch}: "
+                                f"{type(e).__name__}: {e}. "
+                                f"Next optimizer step may crash — consider halting training."
+                            )
                     gc.collect()
                     torch.cuda.empty_cache()
 

@@ -329,8 +329,11 @@ class BaseTrainingConfig:
         t = cfg.training
         logging_cfg = t.get('logging', {})
 
-        # Support both 'epochs' (diffusion) and 'max_epochs' (compression) keys
-        n_epochs = t.get('epochs', None) or t.get('max_epochs', None)
+        # Support both 'epochs' (diffusion) and 'max_epochs' (compression) keys.
+        # Explicit None check — `or` would treat a deliberate epochs=0 as missing.
+        n_epochs = t.get('epochs', None)
+        if n_epochs is None:
+            n_epochs = t.get('max_epochs', None)
         if n_epochs is None:
             raise ValueError("Config must have training.epochs or training.max_epochs")
 

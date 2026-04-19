@@ -732,25 +732,33 @@ def main():
                 'n_gen_tumors': morph.n_gen_tumors,
             })
 
-        # FID/KID/CMMD metrics
+        # FID/KID/CMMD metrics — wrap in try/except so PCA/morph results already
+        # accumulated in `entry` aren't lost if feature extraction OOMs or fails.
         if eval_ref is not None:
-            split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
-            ref_metrics = split_metrics.get(args.ref_split)
-            if ref_metrics is None:
-                raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
-            from dataclasses import asdict
-            m = asdict(ref_metrics)
-            result.update({
-                'fid': m['fid'], 'kid': m['kid_mean'], 'cmmd': m['cmmd'],
-                'fid_radimagenet': m['fid_radimagenet'],
-                'kid_radimagenet': m['kid_radimagenet_mean'],
-            })
-            entry.update({
-                'fid': m['fid'], 'kid_mean': m['kid_mean'], 'kid_std': m['kid_std'],
-                'cmmd': m['cmmd'], 'fid_radimagenet': m['fid_radimagenet'],
-                'kid_radimagenet_mean': m['kid_radimagenet_mean'],
-                'kid_radimagenet_std': m['kid_radimagenet_std'],
-            })
+            try:
+                split_metrics = compute_all_metrics(volumes, eval_ref, device, args.trim_slices)
+                ref_metrics = split_metrics.get(args.ref_split)
+                if ref_metrics is None:
+                    raise ValueError(f"Reference split '{args.ref_split}' not in metrics")
+                from dataclasses import asdict
+                m = asdict(ref_metrics)
+                result.update({
+                    'fid': m['fid'], 'kid': m['kid_mean'], 'cmmd': m['cmmd'],
+                    'fid_radimagenet': m['fid_radimagenet'],
+                    'kid_radimagenet': m['kid_radimagenet_mean'],
+                })
+                entry.update({
+                    'fid': m['fid'], 'kid_mean': m['kid_mean'], 'kid_std': m['kid_std'],
+                    'cmmd': m['cmmd'], 'fid_radimagenet': m['fid_radimagenet'],
+                    'kid_radimagenet_mean': m['kid_radimagenet_mean'],
+                    'kid_radimagenet_std': m['kid_radimagenet_std'],
+                })
+            except Exception as e:
+                logger.warning(
+                    f"FID/KID/CMMD computation failed at step {num_steps}: "
+                    f"{type(e).__name__}: {e}. Saving PCA/morph results only."
+                )
+                entry['fid_error'] = f"{type(e).__name__}: {e}"
 
         elapsed = time.time() - t0
         entry['eval_time_s'] = elapsed

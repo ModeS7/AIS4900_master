@@ -21,6 +21,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -39,15 +43,15 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 #   phase_64/best.pt, phase_128/best.pt, phase_256/best.pt
 #   final_model.pt (copy of phase_256/best.pt)
 
-PRETRAINED_CHECKPOINT="/cluster/work/modestas/AIS4900_master/runs/vae_2d/progressive/exp1_20251221-234218/phase_256/best.pt"
+PRETRAINED_CHECKPOINT="${CLUSTER_BASE}/AIS4900_master/runs/vae_2d/progressive/exp1_20251221-234218/phase_256/best.pt"
 
 # Verify checkpoint exists
 if [ ! -f "$PRETRAINED_CHECKPOINT" ]; then
     echo "ERROR: Pretrained checkpoint not found: $PRETRAINED_CHECKPOINT"
     echo "Available exp1 phase_256 checkpoints:"
-    ls -la /cluster/work/modestas/AIS4900_master/runs/vae_2d/progressive/exp1_*/phase_256/best.pt 2>/dev/null || echo "No exp1 phase_256 checkpoints found"
+    ls -la ${CLUSTER_BASE}/AIS4900_master/runs/vae_2d/progressive/exp1_*/phase_256/best.pt 2>/dev/null || echo "No exp1 phase_256 checkpoints found"
     echo "Or use final_model.pt:"
-    ls -la /cluster/work/modestas/AIS4900_master/runs/vae_2d/progressive/exp1_*/final_model.pt 2>/dev/null || echo "No final_model.pt found"
+    ls -la ${CLUSTER_BASE}/AIS4900_master/runs/vae_2d/progressive/exp1_*/final_model.pt 2>/dev/null || echo "No final_model.pt found"
     exit 1
 fi
 

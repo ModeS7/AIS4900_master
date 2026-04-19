@@ -28,10 +28,14 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate nnunet
 
-NNUNET_BASE="/cluster/work/modestas/MedicalDataSets/nnunet"
-NNUNET_RESULTS="/cluster/work/modestas/AIS4900_master/runs/downstream/nnunet"
+NNUNET_BASE="${CLUSTER_BASE}/MedicalDataSets/nnunet"
+NNUNET_RESULTS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
 COMMON="--nnunet-base ${NNUNET_BASE} --nnunet-results ${NNUNET_RESULTS} --trainer nnUNetTrainerBrainMets --plans nnUNetResEncUNetLPlans --folds 0 1 2 3 4"
 
 evaluate() {

@@ -179,9 +179,13 @@ def validate_training_config(cfg: DictConfig) -> list[str]:
 
     # Check compile + gradient_checkpointing conflict
     # torch.compile with reduce-overhead mode uses CUDA graphs which conflict
-    # with gradient checkpointing's dynamic recomputation
+    # with gradient checkpointing's dynamic recomputation.
+    # IMPORTANT: defaults must match diffusion_config.py's from_hydra (spatial-dims
+    # aware) — otherwise a real conflict at runtime goes unreported.
+    spatial_dims = cfg.get('model', {}).get('spatial_dims', 2)
+    default_gradckpt = (spatial_dims == 3)  # matches diffusion_config.py:588-591
     use_compile = training.get('use_compile', False)
-    use_checkpointing = training.get('gradient_checkpointing', False)
+    use_checkpointing = training.get('gradient_checkpointing', default_gradckpt)
 
     if use_compile and use_checkpointing:
         errors.append(

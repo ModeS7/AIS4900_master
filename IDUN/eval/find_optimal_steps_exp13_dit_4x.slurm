@@ -26,6 +26,10 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -34,13 +38,13 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # === PATHS ===
 # Diffusion model checkpoint (DiT-S LDM 4x, bravo_seg_cond)
-CHECKPOINT=$(ls -d /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo_latent/exp13_dit_4x_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
+CHECKPOINT=$(ls -d ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo_latent/exp13_dit_4x_bravo_*/checkpoint_latest.pt 2>/dev/null | head -1)
 
 # VQ-VAE 4x compression model (exp8_1) — needed for latent -> pixel decode
-COMPRESSION_CHECKPOINT=/cluster/work/modestas/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt
+COMPRESSION_CHECKPOINT=${CLUSTER_BASE}/AIS4900_master/runs/compression_3d/multi_modality/exp8_1_256x160_20260107-031153/checkpoint_latest.pt
 
-DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
-OUTPUT_DIR="/cluster/work/modestas/MedicalDataSets/eval_optimal_steps_exp13_dit_4x"
+DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
+OUTPUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp13_dit_4x"
 
 if [ -z "$CHECKPOINT" ]; then
     echo "ERROR: No checkpoint found for exp13_dit_4x_bravo_*"

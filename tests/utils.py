@@ -1,7 +1,70 @@
 """Shared test utilities and assertions."""
 import math
 import torch
-from typing import Tuple
+from typing import Literal, Tuple
+
+
+def make_mock_dataset(
+    spatial_dims: int = 2,
+    fmt: Literal["tuple", "dict", "seg_tuple", "seg_dict"] = "dict",
+    length: int = 10,
+    image_size: int = 64,
+    depth: int = 16,
+    num_bins: int = 7,
+):
+    """Build a small Dataset-like object for tests without fixture boilerplate.
+
+    Consolidates the MockDataset pattern that was duplicated ~10+ times across
+    tests/integration (finding M-15). Returns an object with `__len__` and
+    `__getitem__`; NOT a torch.utils.data.Dataset subclass so it's cheap.
+
+    Args:
+        spatial_dims: 2 or 3.
+        fmt: Output format per item:
+            - "tuple":    `(image, seg)`
+            - "dict":     `{'image': ..., 'seg': ..., 'patient': ...}`
+            - "seg_tuple": `(seg, size_bins)` for seg_conditioned mode
+            - "seg_dict":  `{'image': seg, 'size_bins': ...}`
+        length: Number of items the dataset exposes.
+        image_size: H == W (square).
+        depth: D for 3D only.
+        num_bins: Size-bin vector length.
+
+    Returns:
+        A dataset-like object. Items are reproducible per-index via seeded RNG.
+    """
+    def _shape(c: int = 1) -> tuple[int, ...]:
+        if spatial_dims == 2:
+            return (c, image_size, image_size)
+        return (c, depth, image_size, image_size)
+
+    class _MockDataset:
+        def __len__(self) -> int:
+            return length
+
+        def __getitem__(self, idx: int):
+            torch.manual_seed(idx)  # reproducible per item
+            if fmt == "tuple":
+                image = torch.rand(*_shape(1))
+                seg = (torch.rand(*_shape(1)) > 0.5).float()
+                return (image, seg)
+            if fmt == "dict":
+                return {
+                    "image": torch.rand(*_shape(1)),
+                    "seg": (torch.rand(*_shape(1)) > 0.5).float(),
+                    "patient": f"patient_{idx}",
+                }
+            if fmt == "seg_tuple":
+                seg = (torch.rand(*_shape(1)) > 0.5).float()
+                size_bins = torch.randint(0, 5, (num_bins,))
+                return (seg, size_bins)
+            if fmt == "seg_dict":
+                seg = (torch.rand(*_shape(1)) > 0.5).float()
+                size_bins = torch.randint(0, 5, (num_bins,))
+                return {"image": seg, "size_bins": size_bins}
+            raise ValueError(f"Unknown fmt: {fmt}")
+
+    return _MockDataset()
 
 
 def assert_valid_probability(value: float, name: str = "value") -> None:

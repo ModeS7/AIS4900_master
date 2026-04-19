@@ -8,6 +8,7 @@ Computes per-voxel statistics and KL divergence from N(0,1) under different norm
 Also reports Wasserstein-2 distance (1D marginal) and overlap coefficient.
 """
 
+import argparse
 import glob
 import math
 import os
@@ -16,14 +17,18 @@ import nibabel as nib
 import numpy as np
 from tqdm import tqdm
 
-DATA_DIR = "/home/mode/NTNU/MedicalDataSets/brainmetshare-3/train"
+# Default dataset root — override with --data-dir on the CLI.
+DEFAULT_DATA_DIR = "/home/mode/NTNU/MedicalDataSets/brainmetshare-3/train"
+
+# SHIFT / SCALE: brain-voxel mean and std computed with compute_pixel_stats.py
+# over the BrainMetShare-3 training split (exp1c reference values, Jan 2026).
 SHIFT = 0.2033
 SCALE = 0.0832
 
 
-def load_bravo_volumes():
-    """Load all bravo volumes, scale to [0, 1]."""
-    patients = sorted(glob.glob(os.path.join(DATA_DIR, "Mets_*")))
+def load_bravo_volumes(data_dir: str):
+    """Load all bravo volumes from data_dir, scale to [0, 1]."""
+    patients = sorted(glob.glob(os.path.join(data_dir, "Mets_*")))
     all_voxels = []
     brain_voxels = []
     for p in tqdm(patients, desc="Loading volumes"):
@@ -82,8 +87,15 @@ def report(name: str, data: np.ndarray):
 
 
 def main():
-    print("Loading training data...")
-    all_voxels, brain_voxels = load_bravo_volumes()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--data-dir', type=str, default=DEFAULT_DATA_DIR,
+        help=f'Training-split directory containing Mets_* patients (default: {DEFAULT_DATA_DIR})',
+    )
+    args = parser.parse_args()
+
+    print(f"Loading training data from {args.data_dir}...")
+    all_voxels, brain_voxels = load_bravo_volumes(args.data_dir)
     print(f"Total voxels: {len(all_voxels):,}")
     print(f"Brain voxels: {len(brain_voxels):,}")
 

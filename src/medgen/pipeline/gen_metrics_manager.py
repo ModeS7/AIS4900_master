@@ -197,10 +197,12 @@ class GenerationMetricsManager:
         # Match logic from visualization.py for consistency
         if self.mode_name in ('seg_conditioned', 'seg_conditioned_input', 'seg'):
             seg_channel_idx = 0  # Single channel: seg
-        elif self.mode_name in ('bravo', 'multi', 'multi_modality'):
+        elif self.mode_name in ('bravo', 'bravo_seg_cond', 'multi', 'multi_modality'):
             seg_channel_idx = 1  # Channel layout: [image, seg]
         elif self.mode_name == 'dual':
             seg_channel_idx = 2  # Channel layout: [t1_pre, t1_gd, seg]
+        elif self.mode_name == 'triple':
+            seg_channel_idx = 3  # Channel layout: [t1_pre, t1_gd, flair, seg]
         else:
             # Default fallback with warning
             logger.warning(f"Unknown mode '{self.mode_name}' for seg_channel_idx, defaulting to 2")

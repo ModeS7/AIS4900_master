@@ -26,10 +26,12 @@ from medgen.data.dataset import (
 from medgen.data.loaders.common import (
     DataLoaderConfig,
     DistributedArgs,
+    GroupedBatchSampler,
     get_validated_split_dir,
     setup_distributed_sampler,
     validate_mode_requirements,
 )
+from medgen.data.loaders.datasets import MultiDiffusionDataset
 from medgen.data.loaders.common import (
     create_dataloader as create_dataloader_from_dataset,
 )
@@ -491,8 +493,45 @@ def _create_manual_dataloader(
     rank: int,
     world_size: int,
 ) -> DataLoader:
-    """Create DataLoader manually (for multi_diffusion which bypasses common.create_dataloader)."""
+    """Create DataLoader manually (for multi_diffusion which bypasses common.create_dataloader).
+
+    For training on MultiDiffusionDataset (which contains mixed-modality samples),
+    we use GroupedBatchSampler to guarantee every batch contains samples from a
+    single mode_id. Mode embedding training requires this invariant (CLAUDE.md).
+    """
     dl_cfg = DataLoaderConfig.from_cfg(cfg)
+
+    # Guard: GroupedBatchSampler doesn't combine with DistributedSampler out of the box.
+    # Mode embedding + DDP is separately banned by diffusion_model_setup.py, so this
+    # branch should never be reached — fail loudly if it is.
+    if split == 'train' and isinstance(dataset, MultiDiffusionDataset):
+        if use_distributed:
+            raise NotImplementedError(
+                "GroupedBatchSampler does not yet support DDP. "
+                "Multi-mode training + DDP is also forbidden by "
+                "diffusion_model_setup.py (embedding wrappers can't sync across GPUs). "
+                "Use single-GPU for multi-mode runs."
+            )
+        # Each sample is (image, seg, mode_id); extract mode_ids as group keys.
+        group_ids = [int(sample[2]) for sample in dataset.samples]
+        generator = torch.Generator()
+        # Honor any user-set global seed so shuffling is reproducible.
+        generator.manual_seed(int(torch.empty((), dtype=torch.int64).random_().item()))
+        batch_sampler = GroupedBatchSampler(
+            group_ids,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=False,
+            generator=generator,
+        )
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            pin_memory=dl_cfg.pin_memory,
+            num_workers=dl_cfg.num_workers,
+            prefetch_factor=dl_cfg.prefetch_factor,
+            persistent_workers=dl_cfg.persistent_workers,
+        )
 
     if split == 'train':
         sampler, batch_size_per_gpu, shuffle = setup_distributed_sampler(

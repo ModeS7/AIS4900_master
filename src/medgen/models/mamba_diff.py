@@ -442,8 +442,9 @@ class MambaDiff(nn.Module):
         self.final_linear = nn.Linear(
             dims[0], out_channels * patch_size ** spatial_dims,
         )
-        nn.init.zeros_(self.final_linear.weight)
-        nn.init.zeros_(self.final_linear.bias)
+        # Note: don't zero-init final_linear here — _init_weights handles it as
+        # the authoritative final step (AdaLN-Zero convention). Any constructor-side
+        # init would be overwritten by self.apply(_init) inside _init_weights anyway.
 
         self._init_weights()
 
@@ -528,8 +529,9 @@ class MambaDiff(nn.Module):
             skips.append(x)
             x = self.downsamples[i](x)
 
-        # Bottleneck (with residual)
-        x = x + self.bottleneck(x, c)
+        # Bottleneck — MambaDiffBlock already contains internal residuals,
+        # so no outer residual here (keeps encoder/decoder/bottleneck symmetric).
+        x = self.bottleneck(x, c)
 
         # Decoder: upsample → skip_add → blocks
         for i in range(self.num_stages):
