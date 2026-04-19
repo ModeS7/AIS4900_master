@@ -18,6 +18,9 @@
 # Used as the "broken-brain" sample for the PCA filter ablation (exp23 has
 # known ScoreAug structural issues). Same seg input as exp1_1_1000 companion
 # SLURM so the only varying factor is the bravo model.
+# Both SLURMs use ImageNet-FID optima:
+#   exp1_1_1000 → 32 steps, no shift
+#   exp23       → 27 steps, shift=1.22
 
 CHAIN_MAX=5
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -82,8 +85,8 @@ time python -m medgen.scripts.generate \
     +real_seg_dir="${DATA_ROOT}/test1" \
     num_images=150 \
     current_image=${CURRENT} \
-    num_steps_bravo=48 \
-    shift_ratio_bravo=1.14 \
+    num_steps_bravo=27 \
+    shift_ratio_bravo=1.22 \
     validate_size_bins=false \
     validate_brain_mask=true \
     brain_atlas_path=auto \

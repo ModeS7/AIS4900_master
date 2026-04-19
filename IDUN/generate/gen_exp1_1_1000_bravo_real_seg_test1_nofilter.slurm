@@ -69,6 +69,9 @@ fi
 echo "Resuming from sample ${CURRENT}/150"
 
 # NO brain_pca_path — PCA filter disabled. Atlas + single-component kept.
+# 32 steps = current ImageNet-FID optimum for exp1_1_1000 (repeat run, FID 20.84).
+# Matches exp23's ImageNet-FID optimum (27/1.22) as closely as possible so the
+# only meaningful difference between the two nofilter runs is the bravo model.
 time python -m medgen.scripts.generate \
     paths=cluster \
     spatial_dims=3 \
@@ -79,7 +82,7 @@ time python -m medgen.scripts.generate \
     +real_seg_dir="${DATA_ROOT}/test1" \
     num_images=150 \
     current_image=${CURRENT} \
-    num_steps_bravo=27 \
+    num_steps_bravo=32 \
     validate_size_bins=false \
     validate_brain_mask=true \
     brain_atlas_path=auto \
