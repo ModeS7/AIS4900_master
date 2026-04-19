@@ -14,6 +14,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp31_1: Combined techniques WITHOUT ScoreAug — 67M UNet @ 256x256x160, 1000ep
 # Same as exp31_0 but with exp20_4 small model (67M)
 # Channels: [8, 16, 32, 128, 256, 256], norm_num_groups=8
@@ -70,10 +74,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

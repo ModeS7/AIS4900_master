@@ -10,14 +10,14 @@
 #SBATCH --output=IDUN/output/debug/nnunet_diagnose_%j.out
 #SBATCH --error=IDUN/output/debug/nnunet_diagnose_%j.err
 
-cd ${SLURM_SUBMIT_DIR}
-
-module purge
-module load Anaconda3/2024.02-1
 # CLUSTER_BASE default (override via env before sbatch)
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
 
+cd ${SLURM_SUBMIT_DIR}
+
+module purge
+module load Anaconda3/2024.02-1
 conda activate nnunet
 
 python misc/diagnose_nnunet.py \

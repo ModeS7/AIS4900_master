@@ -13,6 +13,10 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # exp1_1_1000 (repeat run): Pixel-space RFlow bravo 256x256x160, 1000 epochs
 # Find optimal steps for: ImageNet FID, RadImageNet FID, PCA
 # Uses LATEST checkpoint only (not best)
@@ -26,10 +30,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

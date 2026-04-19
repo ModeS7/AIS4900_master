@@ -11,6 +11,10 @@
 #SBATCH --mem=96G
 #SBATCH --account=share-ie-idi
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # =============================================================================
 # TensorBoard Tag Verification - Complete Test Suite (All Trainers)
 # =============================================================================
@@ -33,10 +37,6 @@ echo "============================================================"
 module purge
 module load Anaconda3/2024.02-1
 source $(conda info --base)/etc/profile.d/conda.sh
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 # Verify GPU

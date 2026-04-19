@@ -14,6 +14,10 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # =============================================================================
 # exp12_1: Evaluate Pretrained MAISI VAE Compression
 # =============================================================================
@@ -58,10 +62,6 @@ nvidia-smi
 module purge
 module load Anaconda3/2024.02-1
 source $(conda info --base)/etc/profile.d/conda.sh
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"

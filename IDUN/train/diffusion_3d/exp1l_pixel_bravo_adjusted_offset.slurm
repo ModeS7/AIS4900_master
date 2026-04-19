@@ -15,6 +15,10 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp1l: Pixel-Space Bravo 128x128x160 + Adjusted Offset Noise (Kutsuna 2024)
 # Baseline: exp1k (standard offset noise, strength=0.1)
 # Change: offset_noise.adjusted=true — generation also starts from N(strength*xi, I)
@@ -71,10 +75,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

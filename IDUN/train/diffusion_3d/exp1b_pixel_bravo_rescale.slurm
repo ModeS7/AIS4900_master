@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1b/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # exp1b: Same as exp1 but with [-1,1] rescaling
 # 3D Pixel-Space Diffusion: Bravo conditioned on Seg Mask
 # Architecture: 270M UNet (default_3d), Resolution: 128x128x160
@@ -65,10 +69,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

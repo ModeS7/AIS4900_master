@@ -15,6 +15,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Downstream segmentation dual input 3D (auto-chaining)
 
 CHAIN_MAX=10
@@ -64,10 +68,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate nnunet
 
 time python -m medgen.scripts.train_segmentation \

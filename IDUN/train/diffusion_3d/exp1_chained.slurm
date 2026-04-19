@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp1_chained/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # === Auto-chain configuration ===
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -70,10 +74,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

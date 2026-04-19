@@ -13,6 +13,10 @@
 #SBATCH --output=IDUN/output/eval/diagnose_mean_blur_exp37_2_%j.out
 #SBATCH --error=IDUN/output/eval/diagnose_mean_blur_exp37_2_%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Mean-blur diagnostic for exp37_2 intermediate checkpoint (LPIPS + FFL)
 # Uses same settings as baseline (exp1_1_1000) so results are directly comparable.
 
@@ -24,10 +28,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

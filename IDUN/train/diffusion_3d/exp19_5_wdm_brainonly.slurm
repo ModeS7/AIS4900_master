@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp19_5/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # WDM 256x256x160: Brain-only per-subband N(0,1) normalization
 # DDPM x₀ prediction, 74M params, batch=1, LR=1e-4
 # Tests: does brain-only normalization help? (compare vs exp19_0 all-voxel)
@@ -67,10 +71,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

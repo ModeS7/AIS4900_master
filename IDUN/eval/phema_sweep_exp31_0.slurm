@@ -13,15 +13,15 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # PostHocEMA sweep: exp31_0 (bravo 270M, combined no ScoreAug, 1000ep)
 
 cd ${SLURM_SUBMIT_DIR}
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 

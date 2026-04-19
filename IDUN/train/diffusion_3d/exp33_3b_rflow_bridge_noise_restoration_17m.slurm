@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp33_3b/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # exp33_3b: RFlow Bridge + Noise restoration with 17M UNet
 # Same as exp33_2b but adds small Gaussian noise to the degraded endpoint.
 # 17M UNet: channels=[8,16,32,64,128,128], ~17M params
@@ -65,10 +69,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

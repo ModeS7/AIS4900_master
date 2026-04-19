@@ -14,6 +14,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp1t: Baseline + Diffusion Mixup @ 128x128x160, 500 epochs
 # Same as exp1t_1 (mixup alpha=0.2, prob=0.5) but at 128x128 resolution
 # Direct comparison with exp1 (128x128, 500ep, no mixup)
@@ -66,10 +70,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

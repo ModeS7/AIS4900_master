@@ -7,23 +7,27 @@
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="exp34_mamba_l"
+#SBATCH --job-name="exp34_0_mamba_s"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/train/diffusion_3d/exp34_1000/%j.out
-#SBATCH --error=IDUN/output/train/diffusion_3d/exp34_1000/%j.err
+#SBATCH --output=IDUN/output/train/diffusion_3d/exp34_0_1000/%j.out
+#SBATCH --error=IDUN/output/train/diffusion_3d/exp34_0_1000/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# Exp34_1000: MambaDiff-L, patch_size=4, WITH gradient checkpointing
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
+# Exp34_0_1000: MambaDiff-S, patch_size=4, NO gradient checkpointing
 # Architecture: LaMamba U-Net (SS2D + WindowAttention + FFN)
-#   - Variant L: embed_dim=256, dims=[256,512,1024,1024], heads=16
+#   - Variant S: embed_dim=128, dims=[128,256,512,512], heads=4
 #   - patch_size=4: 256x256x160 → 64x64x40 = 163,840 tokens at stage 0
-#   - ~458M params, ~34.6GB VRAM (with grad ckpt)
-#   - Comparable VRAM to 270M UNet baseline but 70% more params
+#   - ~125M params, ~46.5GB VRAM (no grad ckpt)
+# First Mamba-based 3D diffusion experiment
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
-EXP_NAME="exp34_1000_mamba_l_p4_gc"
+EXP_NAME="exp34_0_1000_mamba_s_p4"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -62,17 +66,13 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp34_1000: MambaDiff-L p=4 (grad ckpt) ==="
+echo "=== Exp34_0_1000: MambaDiff-S p=4 (no grad ckpt) ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 echo "Run dir: ${CHAIN_RUN_DIR}"
 nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
@@ -85,7 +85,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     strategy=rflow \
     mode=bravo \
     model=mamba_3d \
-    model.variant=L \
+    model.variant=S \
     model.patch_size=4 \
     volume.height=256 \
     volume.width=256 \
@@ -94,7 +94,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.learning_rate=1e-4 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
-    training.gradient_checkpointing=true \
+    training.gradient_checkpointing=false \
     training.use_compile=false \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &

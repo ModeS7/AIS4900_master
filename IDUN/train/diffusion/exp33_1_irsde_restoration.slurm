@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion/exp33_1/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # exp33_1: IR-SDE restoration — 2D (paper-faithful)
 # Paper: Luo et al., ICML 2023
 # 128x128 random 2D crops from axial slices, batch_size=16, 500K iterations
@@ -67,10 +71,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

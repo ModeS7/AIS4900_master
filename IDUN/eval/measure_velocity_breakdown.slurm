@@ -13,6 +13,10 @@
 #SBATCH --output=IDUN/output/eval/velocity_breakdown_%j.out
 #SBATCH --error=IDUN/output/eval/velocity_breakdown_%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Velocity prediction breakdown analysis for exp1_1_1000
 # 21 timesteps × 10 volumes × 1 forward pass each ≈ 210 predictions
 # ~10 minutes on H100 (no generation, just single forward passes)
@@ -25,10 +29,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

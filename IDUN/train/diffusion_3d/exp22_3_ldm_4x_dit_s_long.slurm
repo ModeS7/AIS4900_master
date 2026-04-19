@@ -15,6 +15,10 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp22_3: LDM 4x DiT-S long training — 40M params, 6GB VRAM
 # Same as exp13_dit_4x_bravo_nonorm but 2000 epochs.
 # exp7 DiT pixel needed 2000ep to match UNet at 500ep — test if same holds for latent.
@@ -69,10 +73,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

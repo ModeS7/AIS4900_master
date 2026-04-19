@@ -13,6 +13,10 @@
 #SBATCH --output=IDUN/output/eval/light_sdedit_%j.out
 #SBATCH --error=IDUN/output/eval/light_sdedit_%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Light SDEdit sweep: t₀ from 0.02 to 0.50
 # Shows the transition from texture-only smoothing to structure destruction
 # 5 volumes × 9 t₀ values × 32 steps each ≈ 1-2 hours on A100
@@ -25,10 +29,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

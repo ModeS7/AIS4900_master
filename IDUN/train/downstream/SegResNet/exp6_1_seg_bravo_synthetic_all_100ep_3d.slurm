@@ -16,6 +16,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Downstream segmentation: Synthetic only, all 525 samples, 100 epochs (3D)
 # Same total gradient updates as exp5 (105 samples x 500 epochs ≈ 525 samples x 100 epochs)
 
@@ -66,10 +70,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate nnunet
 
 SYNTHETIC_DIR="${CLUSTER_BASE}/MedicalDataSets/generated/exp1_1_3d_256_525_baseline"

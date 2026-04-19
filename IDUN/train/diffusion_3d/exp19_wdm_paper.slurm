@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp19_paper/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # WDM true to paper (Friedrich et al. 2024):
 #   - Rescale [-1,1] before DWT, NO per-subband normalization
 #   - DDPM, x₀ prediction, linear beta schedule (β1=1e-4, βT=0.02)
@@ -69,10 +73,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

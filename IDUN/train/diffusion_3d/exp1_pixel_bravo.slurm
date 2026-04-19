@@ -15,6 +15,10 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp1: 3D Pixel-Space Diffusion — Bravo conditioned on Seg Mask
 # Architecture: 270M UNet (default_3d), RFlow, 128x128x160
 #   - channels: [16, 32, 64, 256, 512, 512]
@@ -68,10 +72,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

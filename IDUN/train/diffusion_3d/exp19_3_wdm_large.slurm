@@ -14,6 +14,10 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp19_3/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # WDM 256x256x160: Per-subband N(0,1) normalization
 # DDPM, x₀ prediction, ~662M params [64,128,256,512,1024] attn L3+L4, batch=1, LR=1e-4
 # Bigger model than exp19_2 [32,64,256,512,512] — wider early + deeper bottleneck
@@ -66,10 +70,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

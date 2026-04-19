@@ -15,6 +15,10 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp19_6: Wavelet DiT-S — DDPM x₀ prediction (based on exp19_2)
 # Same as exp19_2 but with DiT-S architecture instead of WDM UNet.
 # DDPM, x₀ prediction, linear_beta schedule, batch=1, LR=1e-4
@@ -69,10 +73,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True

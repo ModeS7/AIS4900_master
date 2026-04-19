@@ -13,6 +13,10 @@
 #SBATCH --output=IDUN/output/eval/diagnose_mean_blur_%j.out
 #SBATCH --error=IDUN/output/eval/diagnose_mean_blur_%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Mean-blur diagnostic for exp1_1_1000
 # Diagnostic 1: 7 t-values × 5 volumes × 8 noise seeds ≈ 280 forward passes
 # Diagnostic 2: 7 t-values × 5 volumes × (1 single + 32 chain) ≈ 1155 forward passes
@@ -26,10 +30,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

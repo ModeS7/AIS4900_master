@@ -16,6 +16,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # nnU-Net exp7_1: Mixed 105 real + 105 synthetic, 5-fold CV
 # FOLD=0 sbatch exp7_1_mixed_105syn.slurm
 
@@ -49,10 +53,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate nnunet
 
 NNUNET_BASE="${CLUSTER_BASE}/MedicalDataSets/nnunet"

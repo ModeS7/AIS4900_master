@@ -13,6 +13,10 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Convert real + two synthetic datasets to nnU-Net format and preprocess.
 #
 # Dataset 501: BRAVO real + ImageNet-optimized synthetic (32 steps, shift 1.0)
@@ -30,10 +34,6 @@ echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST}"
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate nnunet
 
 # === Paths ===

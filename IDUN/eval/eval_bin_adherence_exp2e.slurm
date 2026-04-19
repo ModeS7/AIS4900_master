@@ -14,6 +14,10 @@
 #SBATCH --mail-type=ALL
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Bin adherence evaluation for exp2e (multi-level auxiliary bin prediction)
 # Model: seg_conditioned FiLM, 128x128x160, multi-level aux, regional weighting
 # Compare against exp2c_1 baseline (same FiLM approach, no multi-level)
@@ -28,10 +32,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

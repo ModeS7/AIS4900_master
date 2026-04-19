@@ -13,6 +13,10 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Compare exp1_1 (baseline MSE) vs exp32 (LPIPS fine-tune) vs exp32_1 (FFL fine-tune)
 # All three evaluated at 32 steps (ImageNet FID optimum) with same noise seeds.
 # Metrics: FID, RadImageNet FID, KID, CMMD, PCA, FWD (per-frequency-band)
@@ -25,10 +29,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

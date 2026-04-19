@@ -11,6 +11,10 @@
 #SBATCH --output=IDUN/output/eval/compare_degradation/%j.out
 #SBATCH --error=IDUN/output/eval/compare_degradation/%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Compare empirical vs Wiener filter degradation methods
 # CPU-only job — no GPU needed (just FFT operations)
 # ~10 min for 20 volumes
@@ -19,10 +23,6 @@ cd ${SLURM_SUBMIT_DIR}
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)

@@ -11,6 +11,10 @@
 #SBATCH --output=IDUN/output/eval/fft_comparison/%j.out
 #SBATCH --error=IDUN/output/eval/fft_comparison/%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # FFT amplitude comparison: real vs generated brain MRI
 # CPU-only — no GPU needed
 
@@ -18,10 +22,6 @@ cd ${SLURM_SUBMIT_DIR}
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)

@@ -20,15 +20,17 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-WORKDIR=${SLURM_SUBMIT_DIR}
-cd ${WORKDIR}
-
 # Cluster base path — defaults to /cluster/work/$USER but can be overridden by
 # setting CLUSTER_BASE in the environment (e.g. `export CLUSTER_BASE=...` before
 # sbatch, or via an --export flag). This lets other users reuse these scripts
 # without forking them.
+# NOTE: this MUST come before any path variable that uses ${CLUSTER_BASE},
+# otherwise the empty expansion produces /AIS4900_master/... (unwritable).
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
+
+WORKDIR=${SLURM_SUBMIT_DIR}
+cd ${WORKDIR}
 
 # Print job information
 echo "Job Name:          $SLURM_JOB_NAME"

@@ -15,6 +15,10 @@
 #SBATCH --signal=B:SIGUSR1@120
 #SBATCH --exclude=idun-06-02
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Exp21_2: LDM 4x UNet — MAISI-style (167M params)
 # MAISI v2 architecture: [64, 128, 256, 512], r=[2,2,2,2], attn L2+L3, h=32
 # Compression: VQ-VAE 4x (exp8_1), latent 64x64x40
@@ -67,10 +71,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"

@@ -12,6 +12,10 @@
 #SBATCH --error=IDUN/output/tensorboard/%j.err
 #SBATCH --signal=B:SIGUSR1@60
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # === Auto-chain configuration ===
 CHAIN_MAX=50
 CHAIN_COUNT=${CHAIN_COUNT:-0}
@@ -53,10 +57,6 @@ cd ${SLURM_SUBMIT_DIR}
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 LOGDIR=${CLUSTER_BASE}/AIS4900_master/runs

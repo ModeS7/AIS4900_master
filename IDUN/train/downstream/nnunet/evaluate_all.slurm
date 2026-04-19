@@ -14,6 +14,10 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Evaluate all trained nnU-Net experiments on the 51-volume test set.
 # Runs 5-fold ensemble inference (checkpoint_best.pth) + MedGen metrics.
 #
@@ -28,10 +32,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate nnunet
 
 NNUNET_BASE="${CLUSTER_BASE}/MedicalDataSets/nnunet"

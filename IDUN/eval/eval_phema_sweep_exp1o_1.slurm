@@ -13,6 +13,10 @@
 #SBATCH --output=IDUN/output/eval/phema_sweep_exp1o_1_%j.out
 #SBATCH --error=IDUN/output/eval/phema_sweep_exp1o_1_%j.err
 
+# CLUSTER_BASE default (override via env before sbatch)
+: "${CLUSTER_BASE:=/cluster/work/${USER}}"
+export CLUSTER_BASE
+
 # Post-hoc EMA sweep for exp1o_1 (270M bravo, sigma_rels=[0.05, 0.10])
 # Evaluates: raw model + EMA at sigma_rel=0.05 + EMA at sigma_rel=0.10
 # 25 volumes × 25 steps each, FID/KID/CMMD/FWD/PCA metrics
@@ -28,10 +32,6 @@ nvidia-smi
 
 module purge
 module load Anaconda3/2024.02-1
-# CLUSTER_BASE default (override via env before sbatch)
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-
 conda activate AIS4900
 
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
