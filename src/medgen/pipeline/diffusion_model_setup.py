@@ -40,13 +40,9 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
         train_dataset: Training dataset for model config extraction.
     """
     from monai.networks.nets import DiffusionModelUNet
-    from torch.optim import AdamW
 
     from medgen.core import (
         ModeType,
-        create_plateau_scheduler,
-        create_warmup_constant_scheduler,
-        create_warmup_cosine_scheduler,
         wrap_model_for_training,
     )
     from medgen.evaluation import ValidationVisualizer

@@ -31,10 +31,10 @@ from medgen.data.loaders.common import (
     setup_distributed_sampler,
     validate_mode_requirements,
 )
-from medgen.data.loaders.datasets import MultiDiffusionDataset
 from medgen.data.loaders.common import (
     create_dataloader as create_dataloader_from_dataset,
 )
+from medgen.data.loaders.datasets import MultiDiffusionDataset
 from medgen.data.utils import (
     CFGDropoutDataset,
     extract_slices_dual,

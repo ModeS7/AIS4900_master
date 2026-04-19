@@ -405,10 +405,9 @@ class ConditionalSampler:
             # Don't clamp here — latent/wavelet coefficients can be outside [0, 1]
             all_samples.append(samples.float().cpu())
 
-            # Cleanup
+            # Cleanup — noise_channels were folded into model_input already,
+            # so deleting model_input + the per-channel refs is redundant.
             del samples, model_input, noise, masks
-            if out_channels == 2:
-                del noise_pre, noise_gd
 
         result = torch.cat(all_samples, dim=0)
         del all_samples

@@ -27,7 +27,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 from medgen.data.dataset import NiFTIDataset, build_standard_transform, validate_modality_exists
 from medgen.data.loaders.common import DataLoaderConfig, create_dataloader
 from medgen.data.loaders.volume_3d import build_3d_transform
-from medgen.data.utils import binarize_seg, make_binary
+from medgen.data.utils import binarize_seg
 
 logger = logging.getLogger(__name__)
 
