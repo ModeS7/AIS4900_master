@@ -210,9 +210,13 @@ class TestEncodeOmega:
     """Tests for encode_omega()."""
 
     def test_none_returns_identity(self):
+        # Per paper (Hou et al. 2025, §Sampling): identity must encode to all
+        # zeros so the condition is "set to ... zeros to generate an
+        # untransformed image". Previously this dim was 1.0 (collided with
+        # spatial-active bit) and caused augmentation leakage at generation.
         from medgen.augmentation.score_aug_omega import encode_omega
         enc = encode_omega(None, torch.device('cpu'))
-        assert enc[0, 0] == 1.0  # identity marker
+        assert torch.all(enc == 0)
 
     def test_output_shape(self):
         from medgen.augmentation.score_aug_omega import encode_omega

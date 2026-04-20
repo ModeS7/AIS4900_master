@@ -1808,53 +1808,134 @@ class DiffusionTrainer(DiffusionTrainerBase):
         """Load training state from a checkpoint for resume.
 
         Restores model weights, optimizer, scheduler, EMA, and best_loss.
-        Handles missing keys gracefully for older checkpoints.
+        If the checkpoint is a bare model but the current model has been wrapped
+        (ScoreAug / Omega / Mode conditioning), keys are auto-remapped and
+        optimizer/EMA/scheduler are reset (fresh fine-tune mode).
 
         Args:
             checkpoint_path: Path to checkpoint file (.pt).
 
         Returns:
-            start_epoch: The epoch to resume from (saved epoch + 1).
+            start_epoch: The epoch to resume from (saved epoch + 1), or 0 on
+            topology mismatch / reset_scheduler.
         """
         logger.info(f"Resuming from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
-        self.model_raw.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        ckpt_sd = checkpoint['model_state_dict']
+        topology_mismatch = self._detect_bare_to_wrapped_mismatch(ckpt_sd)
 
-        reset_scheduler = self.cfg.training.get('reset_scheduler', False)
+        if topology_mismatch:
+            remapped_sd = self._remap_bare_to_wrapped(ckpt_sd)
+            missing, unexpected = self.model_raw.load_state_dict(remapped_sd, strict=False)
+            # Only new wrapper-added params (omega_mlp, _omega_encoding, mode_embed,
+            # size_bin_*, etc.) may be missing — they're zero-init by design.
+            if unexpected:
+                raise RuntimeError(
+                    f"Bare→wrapper remap failed: {len(unexpected)} unexpected keys remain "
+                    f"(first 3: {unexpected[:3]}). Checkpoint topology does not match model."
+                )
+            logger.warning(
+                f"Topology mismatch: checkpoint is a bare model but current model is wrapped. "
+                f"Remapped pretrained weights; left {len(missing)} wrapper-added params at zero-init "
+                f"(e.g. {missing[:2] if missing else []}). "
+                f"Optimizer/EMA/scheduler will be reset (fresh fine-tune)."
+            )
+        else:
+            self.model_raw.load_state_dict(ckpt_sd)
+
+        # Optimizer param list only matches when topology matches. Fresh optimizer
+        # under mismatch is correct — the wrapper adds/removes params the saved
+        # optimizer doesn't know about.
+        if not topology_mismatch:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        reset_scheduler = self.cfg.training.get('reset_scheduler', False) or topology_mismatch
         if reset_scheduler:
-            logger.info("Skipping scheduler restore (reset_scheduler=true) — using fresh scheduler")
+            reason = "reset_scheduler=true" if self.cfg.training.get('reset_scheduler', False) else "topology mismatch"
+            logger.info(f"Skipping scheduler restore ({reason}) — using fresh scheduler")
         elif 'scheduler_state_dict' in checkpoint and self.lr_scheduler is not None:
             self.lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             logger.info("Restored LR scheduler state")
 
-        if 'ema_state_dict' in checkpoint and self.ema is not None:
+        if 'ema_state_dict' in checkpoint and self.ema is not None and not topology_mismatch:
             self.ema.load_state_dict(checkpoint['ema_state_dict'])
             logger.info("Restored EMA state")
+        elif topology_mismatch and self.ema is not None:
+            logger.info("EMA not restored (topology mismatch) — starting fresh EMA from new model")
 
         # Restore best metric for checkpoint tracking.
         # Prefer best_metric (CM's authoritative value) over best_loss, because
         # self.best_loss is never updated when CM is active — it stays at inf.
-        if 'best_metric' in checkpoint:
-            self.best_loss = checkpoint['best_metric']
-            logger.info(f"Restored best_loss (from best_metric): {self.best_loss:.6f}")
-        elif 'best_loss' in checkpoint:
-            self.best_loss = checkpoint['best_loss']
-            logger.info(f"Restored best_loss: {self.best_loss:.6f}")
+        # On topology mismatch the old loss isn't comparable to new-model loss.
+        if not topology_mismatch:
+            if 'best_metric' in checkpoint:
+                self.best_loss = checkpoint['best_metric']
+                logger.info(f"Restored best_loss (from best_metric): {self.best_loss:.6f}")
+            elif 'best_loss' in checkpoint:
+                self.best_loss = checkpoint['best_loss']
+                logger.info(f"Restored best_loss: {self.best_loss:.6f}")
 
-        # Sync to CheckpointManager to prevent best model regression on resume
-        if self.best_loss < float('inf') and self.checkpoint_manager is not None:
-            self.checkpoint_manager.set_best_metric(self.best_loss)
+            # Sync to CheckpointManager to prevent best model regression on resume
+            if self.best_loss < float('inf') and self.checkpoint_manager is not None:
+                self.checkpoint_manager.set_best_metric(self.best_loss)
 
         saved_epoch = checkpoint['epoch']
-        if reset_scheduler:
+        if reset_scheduler or topology_mismatch:
             start_epoch = 0
             logger.info(f"Fine-tuning: starting from epoch 0 (source checkpoint was epoch {saved_epoch})")
         else:
             start_epoch = saved_epoch + 1
             logger.info(f"Resuming from epoch {start_epoch} (checkpoint saved at epoch {saved_epoch})")
         return start_epoch
+
+    def _detect_bare_to_wrapped_mismatch(self, ckpt_sd: dict) -> bool:
+        """True when checkpoint is a bare model but current model is wrapped.
+
+        Signature: current model has top-level `model.` submodule (the wrapper
+        pattern) that the checkpoint lacks.
+        """
+        current_sd = self.model_raw.state_dict()
+        current_has_model_prefix = any(k.startswith('model.') for k in current_sd)
+        ckpt_has_model_prefix = any(k.startswith('model.') for k in ckpt_sd)
+        return current_has_model_prefix and not ckpt_has_model_prefix
+
+    def _remap_bare_to_wrapped(self, ckpt_sd: dict) -> dict:
+        """Remap bare-UNet/DiT keys into wrapped-model keys.
+
+        - Prefixes every key with `model.`
+        - Redirects `time_embed.N.*` → `model.time_embed.original.N.*` (UNet)
+        - Redirects `t_embedder.*` → `model.t_embedder.original.*` (DiT/HDiT/UViT)
+        - Mirrors to the `omega_time_embed.*` top-level alias when present in the
+          target state_dict, so both aliased paths are populated (PyTorch treats
+          them as the same underlying tensor).
+        """
+        import re
+
+        current_sd = self.model_raw.state_dict()
+        time_embed_re = re.compile(r'^time_embed\.(\d+)\.(.+)$')
+        t_embedder_re = re.compile(r'^t_embedder\.(.+)$')
+        remapped: dict = {}
+
+        for k, v in ckpt_sd.items():
+            m_time = time_embed_re.match(k)
+            m_t_emb = t_embedder_re.match(k)
+            if m_time:
+                idx, tail = m_time.group(1), m_time.group(2)
+                remapped[f'model.time_embed.original.{idx}.{tail}'] = v
+                alias = f'omega_time_embed.original.{idx}.{tail}'
+                if alias in current_sd:
+                    remapped[alias] = v
+            elif m_t_emb:
+                tail = m_t_emb.group(1)
+                remapped[f'model.t_embedder.original.{tail}'] = v
+                alias = f'omega_time_embed.original.{tail}'
+                if alias in current_sd:
+                    remapped[alias] = v
+            else:
+                remapped[f'model.{k}'] = v
+
+        return remapped
 
     def _measure_model_flops(self, train_loader: DataLoader) -> None:
         """Measure model FLOPs using batch_size=1 to avoid OOM during torch.compile."""

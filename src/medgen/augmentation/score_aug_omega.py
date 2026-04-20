@@ -109,10 +109,21 @@ def inverse_mode_intensity_scale(
 #   Dims 4-9: Spatial type (rot90, hflip, vflip, rot90_hflip/flip_d, flip_h, flip_w)
 #   Dim 10: rot_k normalized (0-1)
 #   Dims 11-13: translation params (dx/dd, dy/dh, dw)
-#   Dims 14-15: reserved
-#   Dims 16-31: Pattern ID one-hot (16 patterns)
+#   Dims 14-15: cutout size (2D: size_y, size_x)
+#   Dims 16-31: Pattern ID one-hot (16 patterns) OR cutout size (3D) — see below
 #   Dims 32-35: Mode one-hot (4 modalities) - for mode intensity scaling
 #
+# 3D cutout size overload:
+#   For 3D cutout, dims 14, 15 encode size_h, size_w; dim 16 encodes size_d.
+#   Dim 16 is safe to overload because pattern-ID one-hot (dims 16-31) is only
+#   set when dim 3 (pattern active) = 1, and cutout/pattern are mutually exclusive.
+#   The model disambiguates via the active mask (dims 0-3).
+#
+# Identity convention (per paper, Hou et al. 2025 §Sampling):
+#   When omega is None, encoding is ALL ZEROS (except mode bits). This matches
+#   the paper's "set condition to zeros ... to generate untransformed image"
+#   prescription and prevents the identity bit from colliding with any
+#   single-transform encoding at generation time.
 OMEGA_ENCODING_DIM = 36
 
 
@@ -153,8 +164,11 @@ def encode_omega(
             enc[0, 32 + int(idx)] = 1.0
 
     if omega is None:
-        # Identity: type_onehot[0] = 1, rest = 0
-        enc[0, 0] = 1.0
+        # Per paper: zero vector for identity (plus any mode bits already set).
+        # Why: previously set enc[0, 0] = 1.0, which collided with the "spatial
+        # active" bit used by rotation/flip. That made the identity signal
+        # ambiguous with zero-parameter translation (dim 1 absent, dims 11-13
+        # zero) and caused augmentation leakage at generation time (exp23).
         return enc
 
     # Check for v2 mode
@@ -242,9 +256,19 @@ def _encode_single_transform(
             enc[0, 12] = params['dh']
             enc[0, 13] = params['dw']
 
-    # Cutout
+    # Cutout (paper: "only the cutout size ω_c = (h, w) is kept").
+    # Center coords (cx, cy, cz) are intentionally NOT encoded — leaking the
+    # location to the denoiser would let it cheat. Sizes ARE encoded so the
+    # model can learn the spatial extent of the masked region.
     elif transform_type == 'cutout':
         enc[0, 2] = 1.0  # cutout active
+        if 'size_x' in params:  # 2D
+            enc[0, 14] = float(params['size_y'])
+            enc[0, 15] = float(params['size_x'])
+        else:  # 3D — overloads dim 16 (safe: pattern one-hot is only set when dim 3 active)
+            enc[0, 14] = float(params['size_h'])
+            enc[0, 15] = float(params['size_w'])
+            enc[0, 16] = float(params['size_d'])
 
     # Fixed pattern
     elif transform_type == 'pattern':
