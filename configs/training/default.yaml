@@ -29,6 +29,8 @@ num_figures: 20            # Total figure/extended-metric events during training
 collapse_window: 10        # Stop if MSE spikes >3x best and stays flat for this many epochs
 augment: false             # Data augmentation (disabled by default for diffusion)
 augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "vae" (aggressive)
+augmentation_level: basic  # 3D aug suite: 'basic' (flips+rot90), 'medium' (adds affine+intensity), 'mri' (adds bias field + noise)
+augmentation_t_schedule: null  # [t_on, t_full, t_off] ramp for in-trainer t-gated augmentation. null = dataloader-level (uniform, controlled by augment flag)
 rescale_data: false        # Rescale [0,1] data to [-1,1] for pixel-space diffusion (opt-in)
 
 # Batch-level augmentations (VAE only - mixup/cutmix/mosaic/copy-paste)
@@ -52,6 +54,7 @@ batch_augment:
 # - rotation/flip: REQUIRES omega conditioning (noise distribution is invariant)
 # - translation/cutout: Work without conditioning but risk data leakage
 # - brightness: Linear transform, works without conditioning
+scoreaug_t_schedule: null    # [t_on, t_full, t_off] ramp for t-gated ScoreAug. null = uniform (apply every step when score_aug.enabled=true)
 score_aug:
   enabled: false             # Disabled by default
   # Transforms - each enabled transform has equal probability

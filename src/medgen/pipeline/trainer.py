@@ -606,6 +606,62 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Ramp from t_on → t_full
         return (t_val - t_on) / max(t_full - t_on, 1e-6)
 
+    def _maybe_apply_inner_augmentation(
+        self,
+        images: torch.Tensor | dict[str, torch.Tensor],
+        labels: torch.Tensor | None,
+        timesteps: torch.Tensor,
+    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], torch.Tensor | None]:
+        """Apply t-gated 3D augmentation to clean images (and labels) pre-noise.
+
+        Enabled when ``training.augmentation_t_schedule`` is set to a 3-value
+        ramp ``[t_on, t_full, t_off]``. For each training step (batch_size=1),
+        compute the ramp weight at the sample's t, draw a uniform random, and
+        apply the augmentation when ``u < weight``. Augmentation level taken
+        from ``training.augmentation_level`` ('basic' | 'medium' | 'mri').
+
+        Safe no-ops:
+        - Returns inputs unchanged when schedule is None.
+        - Skipped for dual-modality (dict images) — augmentation dispatch
+          assumes single-tensor layout.
+        """
+        aug_schedule = self.cfg.training.get('augmentation_t_schedule', None)
+        if aug_schedule is None:
+            return images, labels
+        if isinstance(images, dict):
+            return images, labels
+        # Batch assumption — trainer uses bs=1 for 3D; other paths don't hit this.
+        if images.shape[0] != 1:
+            return images, labels
+
+        t_val = float(timesteps.max().item())
+        w = self._compute_t_schedule_weight(t_val, aug_schedule, self.num_timesteps)
+        if w <= 0 or torch.rand(1).item() >= w:
+            return images, labels
+
+        # Build and cache the MONAI Compose on first use.
+        include_seg = labels is not None
+        aug_level = str(self.cfg.training.get('augmentation_level', 'basic'))
+        cache_key = (aug_level, include_seg)
+        if getattr(self, '_inner_aug_cache_key', None) != cache_key:
+            from medgen.data.loaders.volume_3d import build_3d_augmentation
+            self._inner_aug_transform = build_3d_augmentation(
+                seg_mode=False, include_seg=include_seg, level=aug_level,
+            )
+            self._inner_aug_cache_key = cache_key
+
+        # MONAI dict transform on 4D tensors (C, D, H, W). Squeeze/unsqueeze batch dim.
+        sample = {'image': images[0]}
+        if include_seg:
+            sample['seg'] = labels[0]
+        out = self._inner_aug_transform(sample)
+        aug_images = out['image'].unsqueeze(0).to(device=images.device, dtype=images.dtype)
+        aug_labels = (
+            out['seg'].unsqueeze(0).to(device=labels.device, dtype=labels.dtype)
+            if include_seg else None
+        )
+        return aug_images, aug_labels
+
     def _apply_noise_augmentation(
         self,
         noise: torch.Tensor | dict[str, torch.Tensor],
@@ -849,6 +905,18 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Apply timestep jitter (adds noise-level diversity)
             timesteps = self._apply_timestep_jitter(timesteps)
 
+            # Optional in-trainer t-gated augmentation.
+            # When training.augmentation_t_schedule is set, apply MONAI Compose
+            # transform to images (and labels) before noise addition, with
+            # probability = weight(t). Augmentation level chosen via
+            # training.augmentation_level ('basic' | 'medium' | 'mri').
+            # Noise (IID Gaussian) is invariant under spatial transforms so we
+            # reuse the pre-sampled noise tensor directly.
+            if not _is_restoration:
+                images, labels = self._maybe_apply_inner_augmentation(
+                    images, labels, timesteps,
+                )
+
             noisy_images = self.strategy.add_noise(images, noise, timesteps)
 
             # DC-AE 1.5: Augmented Diffusion Training - apply channel masking
@@ -911,8 +979,22 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 )
 
             else:
-                # ScoreAug path: transform noisy input and target together
-                if self.score_aug is not None:
+                # ScoreAug path: transform noisy input and target together.
+                # Optional t-scheduled gating: if scoreaug_t_schedule is set, apply
+                # ScoreAug stochastically with probability = weight(t). Fall through
+                # to standard MSE path when gate is closed.
+                apply_scoreaug = self.score_aug is not None
+                if apply_scoreaug:
+                    _scoreaug_schedule = self.cfg.training.get('scoreaug_t_schedule', None)
+                    if _scoreaug_schedule is not None:
+                        t_val_sa = timesteps.max().item()
+                        w_sa = self._compute_t_schedule_weight(
+                            t_val_sa, _scoreaug_schedule, self.num_timesteps,
+                        )
+                        if torch.rand(1).item() >= w_sa:
+                            apply_scoreaug = False
+
+                if apply_scoreaug:
                     from .training_tricks import compute_scoreaug_loss
                     base_loss, p_loss, predicted_clean = compute_scoreaug_loss(
                         self, model_input, timesteps, images, noise, noisy_images, mode_id

@@ -561,7 +561,10 @@ def _create_3d_multi_channel_loader(
     if not os.path.isdir(data_dir):
         raise ValueError(f"No 3D {split} data found at {data_dir}")
 
-    aug = build_3d_augmentation(seg_mode=False, include_seg=True) if (augment and split == 'train') else None
+    aug_level = str(cfg.training.get('augmentation_level', 'basic'))
+    aug = build_3d_augmentation(
+        seg_mode=False, include_seg=True, level=aug_level,
+    ) if (augment and split == 'train') else None
 
     h = vcfg.train_height if split == 'train' else vcfg.height
     w = vcfg.train_width if split == 'train' else vcfg.width

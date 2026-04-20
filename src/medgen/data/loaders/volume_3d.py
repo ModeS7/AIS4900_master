@@ -28,8 +28,13 @@ from monai.transforms import (
     Compose,
     EnsureChannelFirst,
     LoadImage,
+    RandAdjustContrastd,
+    RandAffined,
+    RandBiasFieldd,
     RandFlipd,
+    RandGaussianNoised,
     RandRotate90d,
+    RandScaleIntensityd,
     ScaleIntensity,
     ScaleIntensityRange,
 )
@@ -172,7 +177,11 @@ class VolumeConfig:
 logger = logging.getLogger(__name__)
 
 
-def build_3d_augmentation(seg_mode: bool = False, include_seg: bool = False) -> Callable:
+def build_3d_augmentation(
+    seg_mode: bool = False,
+    include_seg: bool = False,
+    level: str = 'basic',
+) -> Callable:
     """Build 3D augmentation pipeline using MONAI transforms.
 
     Args:
@@ -181,20 +190,24 @@ def build_3d_augmentation(seg_mode: bool = False, include_seg: bool = False) -> 
         include_seg: If True, augmentations apply to both 'image' and 'seg' keys.
                      Used for conditional modes (bravo, dual) where both must be
                      augmented consistently.
+        level: Augmentation suite. One of:
+            - 'basic':  RandFlip (3 axes) + RandRotate90 (axial) — current default
+            - 'medium': basic + RandAffined + RandScaleIntensityd + RandAdjustContrastd
+            - 'mri':    medium + RandBiasFieldd + RandGaussianNoised
+            Intensity transforms apply to 'image' only, not 'seg'.
 
     Returns:
         MONAI Compose transform that operates on dict with 'image' key
         (and optionally 'seg' key if include_seg=True).
     """
-    # Determine which keys to augment
+    # Determine which keys to augment spatially
     if include_seg:
         keys = ['image', 'seg']
     else:
         keys = ['image']
 
-    # For seg masks, we need to preserve binary values
-    # RandFlip and RandRotate90 don't interpolate, so they're safe for binary masks
-    transforms = [
+    # Spatial transforms (applied to all keys, no interpolation in basic => safe for seg)
+    transforms: list[Any] = [
         # Random flips along each axis (p=0.5 each)
         RandFlipd(keys=keys, prob=0.5, spatial_axis=0),  # Flip along depth
         RandFlipd(keys=keys, prob=0.5, spatial_axis=1),  # Flip along height
@@ -202,6 +215,37 @@ def build_3d_augmentation(seg_mode: bool = False, include_seg: bool = False) -> 
         # Random 90° rotations in axial plane (H, W)
         RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
     ]
+
+    if level not in ('basic', 'medium', 'mri'):
+        raise ValueError(f"Unknown augmentation level {level!r}; expected 'basic' | 'medium' | 'mri'")
+
+    if level in ('medium', 'mri'):
+        # Small affine perturbation (simulates patient positioning variance).
+        # Seg uses nearest-neighbor so binary values are preserved.
+        aff_mode = ('bilinear', 'nearest') if include_seg else 'bilinear'
+        transforms.append(
+            RandAffined(
+                keys=keys,
+                prob=0.5,
+                rotate_range=(0.087, 0.087, 0.087),  # ±5° (radians)
+                translate_range=(0.05, 0.05, 0.05),  # ±5% of spatial extent
+                scale_range=(0.05, 0.05, 0.05),       # scale ∈ [0.95, 1.05]
+                mode=aff_mode,
+                padding_mode='zeros',
+            )
+        )
+        # Intensity transforms apply to 'image' only (not seg).
+        transforms.extend([
+            RandScaleIntensityd(keys=['image'], prob=0.5, factors=0.15),   # ±15% brightness
+            RandAdjustContrastd(keys=['image'], prob=0.5, gamma=(0.8, 1.2)),
+        ])
+
+    if level == 'mri':
+        # MRI-specific transforms on 'image' only.
+        transforms.extend([
+            RandBiasFieldd(keys=['image'], prob=0.4, coeff_range=(0.0, 0.3)),
+            RandGaussianNoised(keys=['image'], prob=0.3, mean=0.0, std=0.01),
+        ])
 
     return Compose(transforms)
 
@@ -1310,8 +1354,13 @@ def create_single_modality_dataloader_with_seg(
     # CFG dropout for 3D - get from config (default 15%)
     cfg_dropout_prob = float(cfg.mode.get('cfg_dropout_prob', 0.15))
 
-    # include_seg=True ensures both image and seg are augmented consistently
-    aug = build_3d_augmentation(seg_mode=False, include_seg=True) if augment else None
+    # include_seg=True ensures both image and seg are augmented consistently.
+    # augmentation_level: 'basic' (flips+rot90) | 'medium' (adds affine+intensity)
+    # | 'mri' (adds bias field + noise). Controlled by training.augmentation_level.
+    aug_level = str(cfg.training.get('augmentation_level', 'basic'))
+    aug = build_3d_augmentation(
+        seg_mode=False, include_seg=True, level=aug_level,
+    ) if augment else None
 
     intensity_transform = _build_intensity_transform(cfg, modality)
 
