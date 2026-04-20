@@ -7,7 +7,6 @@
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --exclude=idun-01-05
 #SBATCH --job-name="exp35_1"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
