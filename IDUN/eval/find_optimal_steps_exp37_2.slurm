@@ -7,7 +7,6 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --exclude=idun-01-05
 #SBATCH --job-name="optim_37_2"
 #SBATCH --output=IDUN/output/eval/find_optimal_steps_exp37_2_%j.out
 #SBATCH --error=IDUN/output/eval/find_optimal_steps_exp37_2_%j.err
