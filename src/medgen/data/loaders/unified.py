@@ -983,15 +983,34 @@ def _create_restoration_3d_loader(
 
     vol_cfg = VolumeConfig.from_cfg(cfg)
 
-    # Restoration data lives in a separate directory
+    # Check whether synthetic degradation is requested — if so, we can use the
+    # standard BRAVO dataset directly (no precomputed pairs needed).
+    restoration_cfg_peek = cfg.get('restoration', {})
+    _degradation_peek = restoration_cfg_peek.get('degradation', None)
+    _is_synthetic = (_degradation_peek is not None
+                     and _degradation_peek.get('type', 'precomputed') == 'synthetic')
+
+    # Choose data root: restoration_data_dir (precomputed pairs) or data_dir (synthetic).
     restoration_root = cfg.paths.get('restoration_data_dir', None)
     if restoration_root is None:
-        raise ValueError(
-            "Restoration mode requires paths.restoration_data_dir config. "
-            "Set it to the directory containing restoration_pairs/{train,val,...}/"
-        )
+        if _is_synthetic:
+            restoration_root = cfg.paths.data_dir
+            logger.info(
+                "Restoration (synthetic) using paths.data_dir as root: %s",
+                restoration_root,
+            )
+        else:
+            raise ValueError(
+                "Restoration mode requires paths.restoration_data_dir config "
+                "(or restoration.degradation.type=synthetic to use BRAVO data)."
+            )
 
-    split_name = 'test_new' if split == 'test' else split
+    # Split-name remapping: precomputed layout uses 'test_new'; synthetic layout
+    # (standard BRAVO dataset) uses 'test'.
+    if _is_synthetic:
+        split_name = split  # {train, val, test} — match BRAVO dataset
+    else:
+        split_name = 'test_new' if split == 'test' else split
     data_dir = os.path.join(restoration_root, split_name)
     if not os.path.isdir(data_dir):
         raise ValueError(f"Restoration data directory not found: {data_dir}")
@@ -1017,6 +1036,13 @@ def _create_restoration_3d_loader(
     patch_size_2d_cfg = restoration_cfg.get('patch_size_2d', None)
     patch_size_2d = tuple(patch_size_2d_cfg) if patch_size_2d_cfg else None
 
+    # Synthetic degradation (IR-SDE style) — generate degraded volumes on-the-fly
+    # from clean BRAVO. When enabled, the data dir can be the standard BRAVO dataset.
+    degradation_cfg = restoration_cfg.get('degradation', None)
+    if degradation_cfg is not None:
+        from omegaconf import OmegaConf
+        degradation_cfg = OmegaConf.to_container(degradation_cfg, resolve=True)
+
     dataset = Restoration3DDataset(
         data_dir=data_dir,
         height=height,
@@ -1029,6 +1055,7 @@ def _create_restoration_3d_loader(
         samples_per_epoch=samples_per_epoch,
         slice_2d=slice_2d,
         patch_size_2d=patch_size_2d,
+        degradation_cfg=degradation_cfg,
     )
 
     bs = batch_size or vol_cfg.batch_size

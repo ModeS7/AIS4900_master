@@ -8,13 +8,26 @@ Supports three modes:
 For patch/slice modes, all volumes are cached in RAM at init to avoid
 repeated NIfTI loading (the main bottleneck for small-patch training).
 
-Directory structure expected:
+Two degradation sources:
+- **precomputed** (default): expects `degraded_*.nii.gz` files alongside
+  `clean_bravo.nii.gz` in each patient dir.
+- **synthetic**: generates degraded volumes on-the-fly from the clean
+  volume via random Gaussian blur + additive noise. Requires only
+  `bravo.nii.gz` (or `clean_bravo.nii.gz`); no paired files needed.
+
+Precomputed directory structure:
     data_dir/
         patient_001/
             clean_bravo.nii.gz
             seg.nii.gz
             degraded_001.nii.gz
             ...
+
+Synthetic directory structure (same as BRAVO training data):
+    data_dir/
+        patient_001/
+            bravo.nii.gz       # (or clean_bravo.nii.gz)
+            seg.nii.gz
 """
 import logging
 import os
@@ -23,6 +36,7 @@ from collections.abc import Callable
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from monai.transforms import Compose, RandFlipd, RandRotate90d
 
 from .volume_3d import Base3DVolumeDataset
@@ -39,6 +53,58 @@ def build_restoration_augmentation() -> Callable:
         RandFlipd(keys=keys, prob=0.5, spatial_axis=2),
         RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
     ])
+
+
+def _gaussian_kernel_1d(sigma: float, radius: int | None = None) -> torch.Tensor:
+    """1D Gaussian kernel for separable 3D convolution."""
+    if radius is None:
+        radius = max(1, int(3.0 * sigma + 0.5))
+    x = torch.arange(-radius, radius + 1, dtype=torch.float32)
+    k = torch.exp(-0.5 * (x / sigma) ** 2)
+    return k / k.sum()
+
+
+def _gaussian_smooth_3d(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Separable 3D Gaussian smooth applied independently along D, H, W.
+
+    Much cheaper than a full 3D kernel (O(3k) vs O(k^3)).
+
+    Args:
+        x: [C, D, H, W]
+        sigma: Gaussian std in voxel units
+    Returns:
+        Same shape, smoothed.
+    """
+    kernel = _gaussian_kernel_1d(sigma)
+    radius = (kernel.numel() - 1) // 2
+    kernel = kernel.to(x.device)
+    c = x.shape[0]
+    # [C, 1, 1, 1, K] for conv along W (last axis)
+    out = x.unsqueeze(0)  # [1, C, D, H, W]
+    for axis in (2, 3, 4):
+        # Reshape kernel to the right axis
+        shape = [1, 1, 1, 1, 1]
+        shape[axis] = kernel.numel()
+        k = kernel.view(*shape).expand(c, 1, *shape[2:])
+        pad = [0, 0, 0, 0, 0, 0]
+        # F.conv3d pad layout: (W_left, W_right, H_top, H_bot, D_front, D_back)
+        # axis 2 (D) -> indices 4,5 ; axis 3 (H) -> 2,3 ; axis 4 (W) -> 0,1
+        pad_idx = {2: (4, 5), 3: (2, 3), 4: (0, 1)}[axis]
+        pad[pad_idx[0]] = radius
+        pad[pad_idx[1]] = radius
+        out = F.pad(out, pad, mode='replicate')
+        out = F.conv3d(out, k, groups=c)
+    return out.squeeze(0)
+
+
+def _downsample_upsample_3d(x: torch.Tensor, factor: float = 2.0) -> torch.Tensor:
+    """Downsample then upsample — kills some HF content in a more aggressive
+    way than pure blur. Used occasionally during synthetic degradation.
+    """
+    x5 = x.unsqueeze(0)
+    down = F.interpolate(x5, scale_factor=1.0 / factor, mode='trilinear', align_corners=False)
+    up = F.interpolate(down, size=x.shape[1:], mode='trilinear', align_corners=False)
+    return up.squeeze(0)
 
 
 class Restoration3DDataset(Base3DVolumeDataset):
@@ -72,6 +138,7 @@ class Restoration3DDataset(Base3DVolumeDataset):
         samples_per_epoch: int = 10000,
         slice_2d: bool = False,
         patch_size_2d: tuple[int, int] | None = None,
+        degradation_cfg: dict | None = None,
     ) -> None:
         augmentation = build_restoration_augmentation() if (augment and not slice_2d) else None
         super().__init__(
@@ -90,37 +157,54 @@ class Restoration3DDataset(Base3DVolumeDataset):
         self.slice_2d = slice_2d
         self.patch_size_2d = patch_size_2d
         self._use_cache = patch_size is not None or slice_2d
+        self.degradation_cfg = degradation_cfg or {}
+        self.degradation_type = self.degradation_cfg.get('type', 'precomputed')
 
         # Discover patients and degraded variants
         self.patients: list[str] = []
         self._degraded_files: dict[str, list[str]] = {}
+        self._clean_filenames: dict[str, str] = {}   # patient -> clean filename
 
         for patient in sorted(os.listdir(data_dir)):
             patient_dir = os.path.join(data_dir, patient)
             if not os.path.isdir(patient_dir):
                 continue
 
-            clean_path = os.path.join(patient_dir, "clean_bravo.nii.gz")
+            # Accept either naming convention
+            clean_name = None
+            for candidate in ("clean_bravo.nii.gz", "bravo.nii.gz"):
+                if os.path.exists(os.path.join(patient_dir, candidate)):
+                    clean_name = candidate
+                    break
             seg_path = os.path.join(patient_dir, "seg.nii.gz")
-            if not os.path.exists(clean_path) or not os.path.exists(seg_path):
+            if clean_name is None or not os.path.exists(seg_path):
                 continue
 
-            degraded = sorted([
-                f for f in os.listdir(patient_dir)
-                if f.startswith("degraded_") and f.endswith(".nii.gz")
-            ])
-            if not degraded:
-                continue
+            if self.degradation_type == 'precomputed':
+                degraded = sorted([
+                    f for f in os.listdir(patient_dir)
+                    if f.startswith("degraded_") and f.endswith(".nii.gz")
+                ])
+                if not degraded:
+                    continue
+                self._degraded_files[patient] = [
+                    os.path.join(patient_dir, f) for f in degraded
+                ]
 
             self.patients.append(patient)
-            self._degraded_files[patient] = [
-                os.path.join(patient_dir, f) for f in degraded
-            ]
+            self._clean_filenames[patient] = clean_name
 
         if not self.patients:
-            raise ValueError(f"No valid restoration pairs found in {data_dir}")
+            raise ValueError(
+                f"No valid restoration inputs found in {data_dir} "
+                f"(degradation_type={self.degradation_type})"
+            )
 
-        total_degraded = sum(len(v) for v in self._degraded_files.values())
+        if self.degradation_type == 'precomputed':
+            total_degraded = sum(len(v) for v in self._degraded_files.values())
+            deg_str = f"{total_degraded} precomputed degraded variants"
+        else:
+            deg_str = f"synthetic degradation ({self.degradation_cfg})"
         if self.slice_2d:
             crop_str = f" crop {patch_size_2d}" if patch_size_2d else ""
             mode_str = f"2D slices{crop_str}, {samples_per_epoch}/epoch"
@@ -131,7 +215,7 @@ class Restoration3DDataset(Base3DVolumeDataset):
 
         logger.info(
             f"Restoration3DDataset: {len(self.patients)} patients, "
-            f"{total_degraded} degraded variants ({mode_str})"
+            f"{deg_str} ({mode_str})"
         )
 
         # Pre-load all volumes into RAM for patch/slice mode
@@ -140,16 +224,24 @@ class Restoration3DDataset(Base3DVolumeDataset):
             logger.info("Caching all volumes in RAM...")
             for patient in self.patients:
                 patient_dir = os.path.join(data_dir, patient)
-                clean = self._load_volume(os.path.join(patient_dir, "clean_bravo.nii.gz"))
+                clean = self._load_volume(os.path.join(patient_dir, self._clean_filenames[patient]))
                 seg = self._load_seg(patient_dir)
                 if seg is None:
                     seg = torch.zeros_like(clean)
 
-                for deg_path in self._degraded_files[patient]:
-                    degraded = self._load_volume(deg_path)
+                if self.degradation_type == 'precomputed':
+                    for deg_path in self._degraded_files[patient]:
+                        degraded = self._load_volume(deg_path)
+                        self._cache.append({
+                            'image': clean,
+                            'degraded': degraded,
+                            'seg': seg,
+                        })
+                else:
+                    # Synthetic: cache only clean; degradation generated per __getitem__
                     self._cache.append({
                         'image': clean,
-                        'degraded': degraded,
+                        'degraded': None,
                         'seg': seg,
                     })
 
@@ -167,7 +259,9 @@ class Restoration3DDataset(Base3DVolumeDataset):
             pair = self._cache[random.randint(0, len(self._cache) - 1)]
             result = {
                 'image': pair['image'],
-                'degraded': pair['degraded'],
+                'degraded': pair['degraded']
+                            if pair['degraded'] is not None
+                            else self._apply_synthetic_degradation(pair['image']),
                 'seg': pair['seg'],
                 'patient': '',
             }
@@ -185,9 +279,12 @@ class Restoration3DDataset(Base3DVolumeDataset):
         patient = self.patients[idx]
         patient_dir = os.path.join(self.data_dir, patient)
 
-        clean = self._load_volume(os.path.join(patient_dir, "clean_bravo.nii.gz"))
-        degraded_path = random.choice(self._degraded_files[patient])
-        degraded = self._load_volume(degraded_path)
+        clean = self._load_volume(os.path.join(patient_dir, self._clean_filenames[patient]))
+        if self.degradation_type == 'precomputed':
+            degraded_path = random.choice(self._degraded_files[patient])
+            degraded = self._load_volume(degraded_path)
+        else:
+            degraded = self._apply_synthetic_degradation(clean)
         seg = self._load_seg(patient_dir)
         if seg is None:
             seg = torch.zeros_like(clean)
@@ -200,6 +297,34 @@ class Restoration3DDataset(Base3DVolumeDataset):
         }
         result = self._apply_augmentation(result)
         return result
+
+    def _apply_synthetic_degradation(self, clean: torch.Tensor) -> torch.Tensor:
+        """Generate a synthetic degraded volume from a clean one.
+
+        Mimics the MSE-posterior-mean-blur phenotype: Gaussian blur + mild
+        additive noise. Optionally a downsample-upsample pass for lower-frequency
+        information loss.
+
+        Args:
+            clean: [C, D, H, W] float32 tensor in [0, 1].
+        Returns:
+            Same shape, with random per-call blur sigma and noise sigma.
+        """
+        blur_range = self.degradation_cfg.get('blur_sigma', [0.8, 1.6])
+        noise_range = self.degradation_cfg.get('noise_sigma', [0.005, 0.02])
+        ds_prob = float(self.degradation_cfg.get('downsample_upsample_prob', 0.0))
+
+        sigma = random.uniform(float(blur_range[0]), float(blur_range[1]))
+        noise_sigma = random.uniform(float(noise_range[0]), float(noise_range[1]))
+
+        # 3D Gaussian smooth via separable 1D kernels (much cheaper than a full 3D kernel).
+        degraded = _gaussian_smooth_3d(clean, sigma=sigma)
+
+        if ds_prob > 0 and random.random() < ds_prob:
+            degraded = _downsample_upsample_3d(degraded)
+
+        degraded = degraded + noise_sigma * torch.randn_like(degraded)
+        return degraded
 
     def _random_slice_2d(self, result: dict[str, Any]) -> dict[str, Any]:
         """Extract random axial slice and optional 2D crop. Returns [C, H, W]."""

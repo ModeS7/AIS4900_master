@@ -318,6 +318,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Region-weighted loss
         self._setup_regional_weighting()
 
+        # PatchGAN discriminator (exp40 — opt-in adversarial fine-tuning)
+        self._setup_discriminator()
+
         # Generation quality metrics (KID, CMMD) for overfitting detection
         self._gen_metrics: GenerationMetrics | None = None
         from medgen.metrics.generation import GenerationMetricsConfig
@@ -405,6 +408,50 @@ class DiffusionTrainer(DiffusionTrainerBase):
         """Initialize region-weighted loss computer."""
         from .diffusion_init_helpers import setup_regional_weighting
         setup_regional_weighting(self)
+
+    def _setup_discriminator(self) -> None:
+        """Initialize PatchGAN discriminator for exp40-style adversarial fine-tuning.
+
+        Disabled unless `training.discriminator.enabled=true`. When enabled,
+        creates a DiscriminatorManager wired with its own optimizer and
+        (optional) warmup-cosine scheduler. The discriminator operates on the
+        generator's `predicted_clean` center slice (2.5D) by default.
+        """
+        self.disc_manager = None
+        disc_cfg = self.cfg.training.get('discriminator', None)
+        if disc_cfg is None or not disc_cfg.get('enabled', False):
+            return
+
+        from .discriminator_manager import DiscriminatorManager
+
+        self.disc_manager = DiscriminatorManager(
+            spatial_dims=int(disc_cfg.get('spatial_dims', 2)),
+            in_channels=int(disc_cfg.get('channels', 1)),
+            num_layers=int(disc_cfg.get('num_layers', 3)),
+            num_channels=int(disc_cfg.get('num_channels', 32)),
+            learning_rate=float(disc_cfg.get('learning_rate', 1.0e-4)),
+            optimizer_betas=(0.5, 0.999),
+            warmup_epochs=int(disc_cfg.get('warmup_epochs', 1)),
+            total_epochs=int(self.cfg.training.get('epochs', 100)),
+            device=self.device,
+            enabled=True,
+            gradient_clip_norm=float(self.cfg.training.get('gradient_clip_norm', 1.0)),
+            is_main_process=self.is_main_process,
+        )
+        self.disc_manager.create()
+        self.disc_manager.create_loss_fn()
+        self.disc_manager.setup_optimizer(use_constant_lr=False)
+        if self.is_main_process:
+            logger.info(
+                "Discriminator enabled: spatial_dims=%d, channels=%d, num_layers=%d, "
+                "warmup_steps=%d, step_frequency=%d, adv_weight=%.4f",
+                int(disc_cfg.get('spatial_dims', 2)),
+                int(disc_cfg.get('channels', 1)),
+                int(disc_cfg.get('num_layers', 3)),
+                int(disc_cfg.get('warmup_steps', 500)),
+                int(disc_cfg.get('step_frequency', 2)),
+                float(disc_cfg.get('adv_weight', 0.02)),
+            )
 
     def _setup_controlnet(self) -> None:
         """Initialize ControlNet configuration."""
@@ -1062,6 +1109,20 @@ class DiffusionTrainer(DiffusionTrainerBase):
                                 prediction, images, noise, seg_for_weighting
                             )
 
+                    # MSE t-schedule gating — optionally ramp/zero base_loss by t.
+                    # When mse_t_schedule=[t_on, t_full, t_off] is set, lets auxiliary
+                    # losses (perceptual, FFL) dominate in the HF-deficit phase without
+                    # competing MSE gradient. Applied AFTER all MSE variants above.
+                    _mse_schedule = self.cfg.training.get('mse_t_schedule', None)
+                    if _mse_schedule is not None:
+                        _t_val = timesteps.max().item()
+                        _mse_scale = self._compute_t_schedule_weight(
+                            _t_val, _mse_schedule, self.num_timesteps,
+                        )
+                        _mse_floor = float(self.cfg.training.get('mse_t_schedule_min', 0.0))
+                        _mse_scale = max(_mse_scale, _mse_floor)
+                        base_loss = base_loss * _mse_scale
+
                     # Compute perceptual loss (decode for latent space)
                     # For 3D: use 2.5D approach (center slice) for efficiency
                     # t-weighting options (precedence: high-t schedule > low-t max-only):
@@ -1132,6 +1193,49 @@ class DiffusionTrainer(DiffusionTrainerBase):
                                 target_ffl = target_ffl.permute(0, 2, 1, 3, 4).reshape(B * D, C, H, W)
                             ffl_loss = self.focal_frequency_loss_fn(pred_ffl, target_ffl)
                             total_loss = total_loss + self.focal_frequency_weight * _ffl_scale * ffl_loss
+
+                    # PatchGAN adversarial loss on predicted_clean (exp40 — opt-in).
+                    # Only runs once D has had its warmup period; ramps adv_weight from
+                    # 0 over adv_weight_ramp_steps to avoid shocking the generator.
+                    # Optionally gated by adv_t_schedule for low-t-only supervision.
+                    if (self.disc_manager is not None and self.disc_manager.enabled
+                            and self._global_step >= int(self.cfg.training.discriminator.get('warmup_steps', 500))):
+                        _adv_schedule = self.cfg.training.discriminator.get('adv_t_schedule', None)
+                        _adv_scale = 1.0
+                        if _adv_schedule is not None:
+                            _t_val_g = timesteps.max().item()
+                            _adv_scale = self._compute_t_schedule_weight(
+                                _t_val_g, _adv_schedule, self.num_timesteps,
+                            )
+                        if _adv_scale > 0:
+                            _warmup = int(self.cfg.training.discriminator.get('warmup_steps', 500))
+                            _ramp_steps = max(1, int(
+                                self.cfg.training.discriminator.get('adv_weight_ramp_steps', 2000)
+                            ))
+                            _ramp = min(1.0, (self._global_step - _warmup) / _ramp_steps)
+                            pred_for_disc = predicted_clean.float()
+                            if self.spatial_dims == 3 and int(
+                                self.cfg.training.discriminator.get('spatial_dims', 2)
+                            ) == 2:
+                                pred_for_disc = self._extract_center_slice(pred_for_disc)
+                            adv_g_loss = self.disc_manager.compute_generator_loss(pred_for_disc)
+                            _adv_weight = float(self.cfg.training.discriminator.get('adv_weight', 0.02))
+                            total_loss = total_loss + _ramp * _adv_weight * _adv_scale * adv_g_loss
+                            # Cache for D train step (avoid a second forward pass)
+                            self._last_disc_pred = pred_for_disc
+                            self._last_disc_real = (
+                                self._extract_center_slice(images.float())
+                                if self.spatial_dims == 3 and int(
+                                    self.cfg.training.discriminator.get('spatial_dims', 2)
+                                ) == 2
+                                else images.float()
+                            )
+                        else:
+                            self._last_disc_pred = None
+                            self._last_disc_real = None
+                    else:
+                        self._last_disc_pred = None
+                        self._last_disc_real = None
 
                     # Self-conditioning consistency loss
                     tt = self._training_tricks
@@ -1226,6 +1330,35 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
             if self.use_ema:
                 self._update_ema()
+
+            # Discriminator training step — alternating with G. Runs at accum_end
+            # boundary (same cadence as the G update). Uses cached pred/real from
+            # the forward pass above (no second forward needed).
+            if (self.disc_manager is not None and self.disc_manager.enabled
+                    and self.cfg.training.discriminator.get('enabled', False)):
+                _step_freq = max(1, int(self.cfg.training.discriminator.get('step_frequency', 2)))
+                # Run D step every Nth global step. During warmup (before G sees adv),
+                # still train D on detached generator predictions.
+                if self._global_step % _step_freq == 0:
+                    _disc_pred = getattr(self, '_last_disc_pred', None)
+                    _disc_real = getattr(self, '_last_disc_real', None)
+                    # Fallback: if we're still in warmup (adv not coupled), extract
+                    # fresh slices now so D can still train.
+                    if _disc_pred is None:
+                        _disc_pred = predicted_clean.detach().float()
+                        _disc_real_src = images.float()
+                        if self.spatial_dims == 3 and int(
+                            self.cfg.training.discriminator.get('spatial_dims', 2)
+                        ) == 2:
+                            _disc_pred = self._extract_center_slice(_disc_pred)
+                            _disc_real_src = self._extract_center_slice(_disc_real_src)
+                        _disc_real = _disc_real_src
+                    _d_dtype = torch.bfloat16 if self.use_amp else torch.float32
+                    self.disc_manager.train_step(
+                        real=_disc_real,
+                        fake=_disc_pred,
+                        weight_dtype=_d_dtype,
+                    )
 
         self._accum_step += 1
 
@@ -1588,6 +1721,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def _on_epoch_end(self, epoch: int, avg_losses: dict[str, float], val_metrics: dict[str, float]) -> None:
         super()._on_epoch_end(epoch, avg_losses, val_metrics)
 
+        # Step discriminator LR scheduler (independent of generator's)
+        if self.disc_manager is not None and self.disc_manager.enabled:
+            self.disc_manager.on_epoch_end()
+
         # Store for _on_training_end metadata finalization
         self._last_avg_losses = avg_losses
 
@@ -1792,6 +1929,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
     def _save_checkpoint(self, epoch: int, name: str) -> None:
         """Save checkpoint using standardized format."""
         model_config = self._get_model_config()
+        extra_state = {'best_loss': self.best_loss}
+        if self.disc_manager is not None and self.disc_manager.enabled:
+            extra_state['discriminator'] = self.disc_manager.state_dict()
         save_full_checkpoint(
             model=self.model_raw,
             optimizer=self.optimizer,
@@ -1801,7 +1941,7 @@ class DiffusionTrainer(DiffusionTrainerBase):
             model_config=model_config,
             scheduler=self.lr_scheduler,
             ema=self.ema,
-            extra_state={'best_loss': self.best_loss},
+            extra_state=extra_state,
         )
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
@@ -1879,6 +2019,17 @@ class DiffusionTrainer(DiffusionTrainerBase):
             # Sync to CheckpointManager to prevent best model regression on resume
             if self.best_loss < float('inf') and self.checkpoint_manager is not None:
                 self.checkpoint_manager.set_best_metric(self.best_loss)
+
+        # Restore discriminator state if present and discriminator is enabled.
+        # Topology mismatch (bare→wrapped) doesn't affect the discriminator —
+        # it's a separate model — so we can restore it unconditionally.
+        if (self.disc_manager is not None
+                and self.disc_manager.enabled
+                and 'discriminator' in checkpoint):
+            self.disc_manager.load_state_dict(
+                checkpoint['discriminator'],
+                load_optimizer=not reset_scheduler,
+            )
 
         saved_epoch = checkpoint['epoch']
         if reset_scheduler or topology_mismatch:

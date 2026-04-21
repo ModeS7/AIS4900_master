@@ -205,6 +205,46 @@ perceptual_t_schedule: null    # High-t schedule [t_on, t_full, t_off]: piecewis
 focal_frequency_weight: 0.0  # Weight for FFL term (0 = disabled). Try 1.0.
 focal_frequency_t_schedule: null  # Same [t_on, t_full, t_off] semantics as perceptual_t_schedule
 
+# MSE (base loss) t-schedule gating — zeros or ramps the base diffusion loss by t.
+# Motivated by the MSE posterior-mean collapse at low t: auxiliary losses (perceptual,
+# FFL) are more useful than MSE for HF detail, and MSE's gradient fights them when both
+# are active at low t. Setting mse_t_schedule=[t_on, t_full, t_off] ramps MSE weight
+# 0 → 1 as t goes from t_on → t_full, plateau to 1, then 1 → 0 from t_off onward.
+# null = weight=1 at all t (current behavior).
+# Normalized [0,1] or integer [0,T]. Uses the same _compute_t_schedule_weight() helper
+# as perceptual/FFL, applied AFTER all base-loss paths (plain MSE, min-SNR, RFlow-SNR,
+# pseudo-huber, lpips-huber, regional-weighted).
+mse_t_schedule: null
+mse_t_schedule_min: 0.0      # Floor for the MSE weight (set >0 for soft-zero anchor).
+
+# PatchGAN adversarial fine-tuning (optional, used for exp40).
+# When enabled, adds a 2D/2.5D PatchDiscriminator and alternating G/D training
+# steps to the main diffusion loop. Adversarial supervision penalizes blurry
+# outputs directly — something MSE/LPIPS/FFL only approximate.
+#
+# The discriminator sees the center-slice of `predicted_clean` (for 3D, via
+# self._extract_center_slice) alongside the matching real slice. Generator
+# adversarial loss is added to total_loss with an optional t-schedule gate
+# (recommended: low-t only, where blur lives).
+#
+# WARNING: GAN training is unstable. Use small adv_weight (0.01-0.05), warm
+# up D alone for N steps, and ramp adv_weight from 0 to avoid shocking the
+# generator. Monitor D_loss: if it crashes <0.1, pause D updates.
+discriminator:
+  enabled: false             # Master switch (keep false for non-GAN training)
+  spatial_dims: 2            # 2 = 2.5D on center slice (recommended), 3 = full 3D
+  channels: 1                # PatchDiscriminator input channels (1 for grayscale BRAVO)
+  num_layers: 3              # Number of conv layers in the discriminator
+  num_channels: 32           # Base channel count (small to avoid memorization)
+  learning_rate: 1.0e-4
+  warmup_epochs: 1           # D-scheduler warmup (used by create_warmup_cosine_scheduler)
+  warmup_steps: 500          # Steps of D-alone training before coupling G to adv loss
+  step_frequency: 2          # Run D step every N G steps (G:D ratio = step_frequency:1)
+  adv_weight: 0.02           # Scalar for generator adversarial loss term
+  adv_weight_ramp_steps: 2000  # Ramp adv_weight 0 → full over this many G steps post-warmup
+  adv_t_schedule: null       # [t_on, t_full, t_off] to gate adv loss by t. e.g. [0.0, 0.02, 0.15]
+                              # for low-t-only adversarial. null = all t.
+
 # Multi-GPU (DDP)
 use_multi_gpu: false
 disable_ddp_optimizer: false  # Disable DDP optimizer for large models (saves memory)

@@ -1,0 +1,28 @@
+# Restoration mode with on-the-fly synthetic degradation (no precomputed pairs).
+#
+# Uses the standard BRAVO training dataset (paths.data_dir) directly. Each
+# __getitem__ call:
+#   1. Loads a clean BRAVO volume
+#   2. Applies a random Gaussian smooth (σ ∈ blur_sigma range)
+#   3. Optionally a downsample-upsample pass (probability `downsample_upsample_prob`)
+#   4. Adds mild Gaussian noise (σ ∈ noise_sigma range)
+# This mimics the MSE-blur phenotype that exp37_3 produces, so the restoration
+# model learns to reverse that specific kind of degradation.
+#
+# Compared to pure restoration.yaml:
+#   - No need for precomputed `degraded_*.nii.gz` files
+#   - No need for `clean_bravo.nii.gz` symlinks (uses `bravo.nii.gz` directly)
+#   - Uses test/val splits in the standard BRAVO naming convention
+
+defaults:
+  - restoration
+
+# Keep the 2-channel input/output from restoration.yaml.
+
+# (This section is picked up by _create_restoration_3d_loader in unified.py.)
+restoration:
+  degradation:
+    type: synthetic
+    blur_sigma: [0.8, 1.6]
+    noise_sigma: [0.005, 0.02]
+    downsample_upsample_prob: 0.3
