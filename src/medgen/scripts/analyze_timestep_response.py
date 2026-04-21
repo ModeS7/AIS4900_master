@@ -382,14 +382,17 @@ def main() -> None:
     logger.info(f"Saved: {output_dir / 'timestep_response_results.json'}")
 
     if args.thesis_dir:
-        thesis_dir = Path(args.thesis_dir)
-        thesis_dir.mkdir(parents=True, exist_ok=True)
-        for name in ('mse_mean', 'mse_per_volume', 'mse_derivative', 'mse_histograms'):
-            for ext in ('png', 'pdf'):
-                src = output_dir / f'{name}.{ext}'
-                if src.exists():
-                    (thesis_dir / f'{name}.{ext}').write_bytes(src.read_bytes())
-        logger.info(f"Copied figures to thesis dir: {thesis_dir}")
+        try:
+            thesis_dir = Path(args.thesis_dir)
+            thesis_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('mse_mean', 'mse_per_volume', 'mse_derivative', 'mse_histograms'):
+                for ext in ('png', 'pdf'):
+                    src = output_dir / f'{name}.{ext}'
+                    if src.exists():
+                        (thesis_dir / f'{name}.{ext}').write_bytes(src.read_bytes())
+            logger.info(f"Copied figures to thesis dir: {thesis_dir}")
+        except OSError as e:
+            logger.warning(f"Could not copy to thesis dir {args.thesis_dir}: {e}")
 
 
 if __name__ == '__main__':
