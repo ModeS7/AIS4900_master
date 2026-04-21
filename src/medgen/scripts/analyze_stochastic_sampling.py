@@ -377,6 +377,8 @@ def main() -> None:
                                  in_channels=2, out_channels=1,
                                  spatial_dims=3).eval()
     strategy = RFlowStrategy()
+    strategy.setup_scheduler(num_timesteps=1000, image_size=256,
+                             depth_size=args.depth, spatial_dims=3)
     T = strategy.scheduler.num_train_timesteps
 
     # Paired seg conditioning — same seg across σ values for every seed
