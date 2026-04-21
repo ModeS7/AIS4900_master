@@ -453,17 +453,20 @@ def main() -> None:
 
     # -- Also copy the canonical figures to the thesis dir
     if args.thesis_dir:
-        thesis_dir = Path(args.thesis_dir)
-        thesis_dir.mkdir(parents=True, exist_ok=True)
-        for name in ('pca_cumulative_comparison', 'pca_auc_vs_k',
-                     'pca_recon_fidelity', 'pca_error_histograms',
-                     'pca_threshold_vs_k', 'pca_pass_rates',
-                     'pca_histograms_with_threshold'):
-            for ext in ('png', 'pdf'):
-                src = output_dir / f'{name}.{ext}'
-                dst = thesis_dir / f'{name}.{ext}'
-                dst.write_bytes(src.read_bytes())
-        logger.info(f"Copied to thesis: {thesis_dir}")
+        try:
+            thesis_dir = Path(args.thesis_dir)
+            thesis_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('pca_cumulative_comparison', 'pca_auc_vs_k',
+                         'pca_recon_fidelity', 'pca_error_histograms',
+                         'pca_threshold_vs_k', 'pca_pass_rates',
+                         'pca_histograms_with_threshold'):
+                for ext in ('png', 'pdf'):
+                    src = output_dir / f'{name}.{ext}'
+                    dst = thesis_dir / f'{name}.{ext}'
+                    dst.write_bytes(src.read_bytes())
+            logger.info(f"Copied to thesis: {thesis_dir}")
+        except OSError as e:
+            logger.warning(f"Could not copy to thesis dir {args.thesis_dir}: {e}")
 
     # -- JSON for the thesis caption
     json_path = output_dir / 'ablation_results.json'

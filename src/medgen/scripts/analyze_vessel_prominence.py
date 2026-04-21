@@ -386,16 +386,19 @@ def main() -> None:
 
     # Thesis copy
     if args.thesis_dir:
-        thesis_dir = Path(args.thesis_dir)
-        thesis_dir.mkdir(parents=True, exist_ok=True)
-        for name in ('vessel_mean_bars', 'vessel_frac_bars',
-                     'vessel_mean_violin', 'vessel_frac_violin',
-                     'vessel_axial_overlay'):
-            for ext in ('png', 'pdf'):
-                src = output_dir / f'{name}.{ext}'
-                if src.exists():
-                    (thesis_dir / f'{name}.{ext}').write_bytes(src.read_bytes())
-        logger.info(f"Copied figures to thesis dir: {thesis_dir}")
+        try:
+            thesis_dir = Path(args.thesis_dir)
+            thesis_dir.mkdir(parents=True, exist_ok=True)
+            for name in ('vessel_mean_bars', 'vessel_frac_bars',
+                         'vessel_mean_violin', 'vessel_frac_violin',
+                         'vessel_axial_overlay'):
+                for ext in ('png', 'pdf'):
+                    src = output_dir / f'{name}.{ext}'
+                    if src.exists():
+                        (thesis_dir / f'{name}.{ext}').write_bytes(src.read_bytes())
+            logger.info(f"Copied figures to thesis dir: {thesis_dir}")
+        except OSError as e:
+            logger.warning(f"Could not copy to thesis dir {args.thesis_dir}: {e}")
 
 
 if __name__ == '__main__':
