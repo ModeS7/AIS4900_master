@@ -1564,12 +1564,27 @@ SDEdit calibration found t₀=0.50 best matches the actual MSE-smoothing of gene
 
 | Experiment | Method | Loss | Steps | Status |
 |-----------|--------|------|-------|--------|
-| exp33_1 | IR-SDE (Luo ICML23) | L1 ML objective | 100 | Collapsed at ep12 — numerically unstable |
-| exp33_2 | RFlow Bridge | MSE on velocity | 25 (Euler) | Training |
-| exp33_3 | RFlow Bridge + Noise | MSE on velocity + σ=0.05 noise | 25 (Euler) | Training |
-| exp33_4 | Resfusion (Shi NeurIPS24) | MSE on resnoise | ~5 (truncated) | Training |
+| exp33_1 | IR-SDE (Luo ICML23) | L1 ML objective | 100 | Abandoned — task-data mismatch (see below) |
+| exp33_1b | IR-SDE patch (40M, 32×64×64) | L1 ML objective | 100 | Abandoned — trained stably, full-volume eval OOM |
+| exp33_1c | IR-SDE 17M variant | L1 ML objective | 100 | Abandoned |
+| exp33_2 / 2b | RFlow Bridge | MSE on velocity | 25 (Euler) | Abandoned |
+| exp33_3 / 3b | RFlow Bridge + Noise | MSE on velocity + σ=0.05 noise | 25 (Euler) | Abandoned |
+| exp33_4 / 4c | Resfusion (Shi NeurIPS24) | MSE on resnoise | ~5 (truncated) | Abandoned |
+| exp33_5 | Bridge restoration 17M | MSE | — | Abandoned |
 
-**IR-SDE collapse**: Loss dropped 0.0034→0.0006 (ep1-11), then jumped to 0.0032 and stayed flat. ML objective denominator (1-B²) is tiny at low timesteps, causing instability. Needs lower LR (1e-5) and tighter gradient clip (0.01).
+**Why abandoned**: **We could not construct a training dataset that faithfully represented the actual generator-output degradation.** The restoration task itself was ill-posed under every dataset-construction method we tried; this was not a training-instability or architecture issue.
+
+Multiple degradation-proxy approaches were attempted:
+
+1. **SDEdit pairs at calibrated t₀** (initial plan) — calibrate_degradation found t₀=0.50 gave best-case spectral distance of 0.047-0.051 against generator outputs, and SDEdit pairs were pre-computed at t₀ ∈ [0.35, 0.65] per that calibration.
+2. **Light SDEdit sweeps** (runs/eval/light_sdedit_*) — reduced t₀ to [0.02, 0.50] looking for a smoother regime. Produced spectral match errors that were *all over the map* across t₀ values (from 0.05 at some t₀ to 18.85 at others with no monotonic trend) — the SDEdit process at different t₀ doesn't cleanly interpolate through the generator's phenotype, so no single "right" t₀ exists.
+3. **Gaussian blur / Wiener transfer function fits** (compare_degradation_methods.py, runs/eval/degradation_comparison_*) — spectral match MSE 0.020 (empirical transfer function) vs 0.021 (analytic Wiener fit) to target. Close in aggregate but insufficient in practice — the transfer functions differ in phase and across frequency bands, not just magnitude.
+
+**The underlying issue**: the MSE-trained bravo model's output phenotype is a specific, complex distribution-level degradation. No synthetic proxy we tried (SDEdit partial-noise-restart, Gaussian+noise, Wiener filter fit) captured its structure well enough that a model trained to invert the proxy would transfer to inverting actual generator outputs. Pre-computing actual generator outputs for every training sample was not done — the required pre-generation volume (500+ volumes × 10+ variants = 5000+ generated 256³×160 volumes) was prohibitively expensive at the time.
+
+**Training itself was stable**: the 3D exp33_1 L1 loss descended smoothly 0.002572 → 0.000263 across epochs 1-24; exp33_1b likewise trained cleanly through 24+ epochs before dying at the eval step (50GB allocation trying full-volume inference on a model trained on 32³ patches — a separate bug). Prior versions of this doc described an "ep12 numerical collapse" that is **not visible in any of the logs**.
+
+**Takeaway for future restoration attempts**: synthetic degradation proxies failed. If restoration is revisited, the right path is almost certainly to pre-generate a large corpus of actual generator outputs (on the training volumes, not test) and train on those true (real, generated) pairs. Anything cheaper did not produce a transferable restoration network in this project.
 
 ### FWD Tracking
 

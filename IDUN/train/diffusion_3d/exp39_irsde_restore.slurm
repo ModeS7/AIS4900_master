@@ -78,10 +78,14 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
+# Synthetic-degradation restoration: uses mode=restoration + CLI overrides to
+# enable synthetic degradation (rather than a separate mode config file, which
+# Hydra would place at cfg.mode.* not cfg.restoration.* where the loader reads).
+# The loader auto-falls-back to paths.data_dir when synthetic mode is detected.
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=irsde \
-    mode=restoration_synthetic \
+    mode=restoration \
     model=default_3d \
     model.spatial_dims=3 \
     volume.height=256 \
@@ -92,6 +96,10 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.warmup_epochs=5 \
     training.eta_min=1e-7 \
     training.gradient_clip_norm=0.5 \
+    '+restoration.degradation.type=synthetic' \
+    '+restoration.degradation.blur_sigma=[0.8,1.6]' \
+    '+restoration.degradation.noise_sigma=[0.005,0.02]' \
+    +restoration.degradation.downsample_upsample_prob=0.3 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
