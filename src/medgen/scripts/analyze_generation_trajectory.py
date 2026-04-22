@@ -351,11 +351,42 @@ def main() -> None:
         raise SystemExit(f"Need {args.num_seeds} seg files, found {len(segs)}")
     logger.info(f"Using {len(segs)} seg masks from {args.seg_split}")
 
+    # Resume support: if emergence_metrics.json already exists in output_dir,
+    # load the seeds already processed and skip them on this run.
+    results_path = output_dir / 'emergence_metrics.json'
     all_trajectories: list[list[dict]] = []
     all_snapshots: list[list[np.ndarray]] = []
     all_snap_ts: list[list[float]] = []
+    resume_completed = 0
+    if results_path.exists():
+        try:
+            with open(results_path) as f:
+                prior = json.load(f)
+            if prior.get('num_steps') == args.num_steps \
+                    and prior.get('seg_split') == args.seg_split \
+                    and prior.get('checkpoint') == args.bravo_model:
+                prior_trajs = prior.get('seed_trajectories', [])
+                all_trajectories = prior_trajs
+                resume_completed = len(prior_trajs)
+                # Snapshots are not persisted in JSON; resumed seeds will miss
+                # their snapshot slices — montage shows only newly-computed ones.
+                all_snapshots = [[] for _ in range(resume_completed)]
+                all_snap_ts = [[] for _ in range(resume_completed)]
+                logger.info(
+                    f"RESUMING: found existing {results_path} with {resume_completed} "
+                    f"seeds already completed. Skipping to seed {resume_completed}."
+                )
+            else:
+                logger.warning(
+                    f"Existing {results_path} has different args "
+                    f"(num_steps/seg_split/checkpoint), starting fresh."
+                )
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not parse existing {results_path} ({e}); starting fresh.")
 
     for i, seg_path in enumerate(segs):
+        if i < resume_completed:
+            continue
         logger.info(f"=== Seed {i} (seg={seg_path.parent.name}) ===")
         seg_np = load_seg(seg_path, args.depth)
         seg = torch.from_numpy(seg_np).unsqueeze(0).unsqueeze(0).to(device)
@@ -376,23 +407,26 @@ def main() -> None:
         # Cleanup GPU between seeds
         torch.cuda.empty_cache()
 
-    # Plots
+        # Incremental save — survives SLURM timeout / OOM / cancellation.
+        # Overwrites previous partial file; new file contains all seeds so far.
+        with open(results_path, 'w') as f:
+            json.dump({
+                'checkpoint': args.bravo_model,
+                'num_seeds': args.num_seeds,
+                'num_steps': args.num_steps,
+                'snapshot_ts_norm': SNAPSHOT_T,
+                'seg_split': args.seg_split,
+                'vessel_every_n_steps': args.vessel_every_n_steps,
+                'seed_trajectories': all_trajectories,
+            }, f, indent=2)
+        logger.info(f"  Saved progress: {len(all_trajectories)}/{len(segs)} seeds → {results_path}")
+
+    # Plots (JSON was already saved incrementally per-seed above).
+    # Snapshot montage uses only this-run snapshots; seeds resumed from a prior
+    # run will show as gaps — this is a recoverable cosmetic artifact.
     logger.info("Plotting emergence curves")
     plot_emergence_curves(all_trajectories, output_dir / 'emergence_curves')
     plot_snapshot_montage(all_snapshots, all_snap_ts, output_dir / 'snapshot_montage')
-
-    # JSON dump of trajectories
-    with open(output_dir / 'emergence_metrics.json', 'w') as f:
-        json.dump({
-            'checkpoint': args.bravo_model,
-            'num_seeds': args.num_seeds,
-            'num_steps': args.num_steps,
-            'snapshot_ts_norm': SNAPSHOT_T,
-            'seg_split': args.seg_split,
-            'vessel_every_n_steps': args.vessel_every_n_steps,
-            'seed_trajectories': all_trajectories,
-        }, f, indent=2)
-    logger.info(f"Saved: {output_dir / 'emergence_metrics.json'}")
 
     # Simple summary: at what t does each metric reach 90% of its final value?
     print()

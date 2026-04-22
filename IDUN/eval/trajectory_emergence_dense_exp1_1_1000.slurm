@@ -40,8 +40,10 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 DATA_ROOT="/cluster/work/modestas/MedicalDataSets/brainmetshare-3"
 RUNS_ROOT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/bravo"
 CKPT="${RUNS_ROOT}/exp1_1_1000_pixel_bravo_20260402-121556/checkpoint_latest.pt"
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-OUT_DIR="/cluster/work/modestas/AIS4900_master/runs/eval/trajectory_emergence_dense_exp1_1_1000_${TIMESTAMP}"
+# FIXED output dir (no timestamp) — enables seed-level resume from a prior
+# timed-out run. The script detects existing emergence_metrics.json in this
+# directory and skips seeds already completed.
+OUT_DIR="/cluster/work/modestas/AIS4900_master/runs/eval/trajectory_emergence_dense_exp1_1_1000"
 
 if [ ! -f "$CKPT" ]; then
     echo "ERROR: Checkpoint not found: $CKPT"
