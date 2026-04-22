@@ -679,12 +679,19 @@ def main():
         logger.info(f"\n  Evaluating euler/{num_steps} ...")
 
         t0 = time.time()
+        # strategy._parse_model_input uses `latent_channels` to dispatch:
+        #   >1 = latent space (expects num_channels == latent_channels or 2×latent_channels)
+        #   ==1 = pixel space (handles 1/2/3/4 channel conditional layouts directly)
+        # For pixel-space dual/triple modes (out=2/3), pass 1 so the 3/4-channel
+        # branch fires; else pass the actual latent channel count.
+        is_pixel_space = (args.space == 'pixel')
+        latent_channels_arg = 1 if is_pixel_space else model_out_channels
         volumes, total_nfe, wall_time = generate_volumes(
             model, strategy, noise_list, cond_list, solver_cfg, device,
             is_seg=is_seg,
             encode_cond_fn=encode_cond_fn,
             decode_fn=decode_fn,
-            latent_channels=model_out_channels,
+            latent_channels=latent_channels_arg,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
