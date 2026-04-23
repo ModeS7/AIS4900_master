@@ -460,12 +460,18 @@ def main():
         logger.info(f"\n  Evaluating {ratio_label} (ratio={ratio:.2f}, base_numel={base_numel:,}) ...")
 
         t0 = time.time()
+        # Pixel-space dual/triple: pass latent_channels=1 so the strategy's
+        # _parse_model_input dispatches to the pixel branch. Mirror fix applied
+        # in find_optimal_steps.py (the parser's `latent_channels` is a
+        # latent-vs-pixel flag, not a channel count).
+        is_pixel_space = (args.space == 'pixel')
+        latent_channels_arg = 1 if is_pixel_space else model_out_channels
         volumes, total_nfe, wall_time = generate_volumes(
             model, strategy, noise_list, cond_list, solver_cfg, device,
             is_seg=is_seg,
             encode_cond_fn=encode_cond_fn,
             decode_fn=decode_fn,
-            latent_channels=model_out_channels,
+            latent_channels=latent_channels_arg,
         )
         logger.info(f"  Generated {len(volumes)} volumes in {wall_time:.1f}s "
                      f"(NFE={total_nfe}, {total_nfe/args.num_volumes:.0f}/vol)")
