@@ -13,7 +13,6 @@
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
-#SBATCH --exclude=idun-06-02
 
 # CLUSTER_BASE default (override via env before sbatch)
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
