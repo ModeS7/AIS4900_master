@@ -82,8 +82,17 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-# Spectrum-matched Gaussian degradation: σ ∈ [0.37, 0.47] bracket around fitted σ=0.42.
-# No additive noise, no downsample — pure Gaussian to match the fitted transfer function.
+# Anti-overfitting config for IR-SDE restoration:
+#   - Widened blur σ ∈ [0.20, 0.70] — 3× the range of exp41a, covers exp37 variants
+#     (σ≈0.29) through far-over-blurred (σ=0.70). Each __getitem__ draws a fresh σ,
+#     so the network sees a continuous distribution of blur severities rather than
+#     memorising a narrow operating regime.
+#   - Noise σ ∈ [0.003, 0.015] — texture-noise diversity
+#   - Downsample-upsample: 30% probability — introduces a second failure-mode family
+#     alongside pure Gaussian (mixes the two degradation types)
+#   - augmentation_level=heavy — adds RandAffined, intensity jitter (contrast + scale),
+#     bias field, and Gaussian noise on top of the basic flips/rotations. All applied
+#     consistently to clean and degraded to preserve the pair semantics.
 time python -m medgen.scripts.train --config-name=diffusion_3d \
     paths=cluster \
     strategy=irsde \
@@ -99,9 +108,10 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.eta_min=1e-7 \
     training.gradient_clip_norm=0.5 \
     '+restoration.degradation.type=synthetic' \
-    '+restoration.degradation.blur_sigma=[0.35,0.50]' \
-    '+restoration.degradation.noise_sigma=[0.003,0.008]' \
-    +restoration.degradation.downsample_upsample_prob=0.0 \
+    '+restoration.degradation.blur_sigma=[0.20,0.70]' \
+    '+restoration.degradation.noise_sigma=[0.003,0.015]' \
+    +restoration.degradation.downsample_upsample_prob=0.3 \
+    +restoration.augmentation_level=heavy \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 

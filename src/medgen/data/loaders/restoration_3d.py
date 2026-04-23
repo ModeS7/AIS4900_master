@@ -37,22 +37,69 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from monai.transforms import Compose, RandFlipd, RandRotate90d
+from monai.transforms import (
+    Compose,
+    RandAdjustContrastd,
+    RandAffined,
+    RandBiasFieldd,
+    RandFlipd,
+    RandGaussianNoised,
+    RandRotate90d,
+    RandScaleIntensityd,
+)
 
 from .volume_3d import Base3DVolumeDataset
 
 logger = logging.getLogger(__name__)
 
 
-def build_restoration_augmentation() -> Callable:
-    """Build augmentation for all three keys (image, degraded, seg)."""
+def build_restoration_augmentation(level: str = 'basic') -> Callable:
+    """Build augmentation transform for (clean, degraded, seg) triples.
+
+    Levels:
+      basic  — flips (×3 axes) + axial 90° rotations. Original behaviour.
+      medium — basic + affine (small rot/translate/scale) + intensity jitter
+               (contrast, brightness). Applied consistently to all keys so the
+               (clean, degraded) pairing is preserved.
+      heavy  — medium + MRI bias field + mild noise. Best anti-overfitting
+               option for small-dataset restoration training. Noise is paired
+               so the network sees degraded-plus-noise with the same noise
+               profile on clean — avoids breaking the pair semantics.
+
+    Intensity transforms are applied WITH THE SAME RANDOM DRAW to all keys
+    (via Compose) so brightness shifts match clean/degraded consistently.
+    """
     keys = ['image', 'degraded', 'seg']
-    return Compose([
+    transforms: list = [
         RandFlipd(keys=keys, prob=0.5, spatial_axis=0),
         RandFlipd(keys=keys, prob=0.5, spatial_axis=1),
         RandFlipd(keys=keys, prob=0.5, spatial_axis=2),
         RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
-    ])
+    ]
+    if level in ('medium', 'heavy'):
+        # Intensity transforms only on image+degraded (seg is binary, must stay
+        # binary — applying intensity ops on it would destroy the mask).
+        img_keys = ['image', 'degraded']
+        transforms.extend([
+            RandAffined(
+                keys=keys,
+                prob=0.3,
+                rotate_range=(0.05, 0.05, 0.05),    # ±~3°
+                translate_range=(5, 5, 5),          # ±5 voxels
+                scale_range=(0.05, 0.05, 0.05),     # 0.95–1.05
+                mode=['bilinear', 'bilinear', 'nearest'],
+                padding_mode='border',
+            ),
+            RandScaleIntensityd(keys=img_keys, prob=0.3, factors=0.15),       # ±15%
+            RandAdjustContrastd(keys=img_keys, prob=0.3, gamma=(0.85, 1.15)),
+        ])
+    if level == 'heavy':
+        img_keys = ['image', 'degraded']
+        transforms.extend([
+            RandBiasFieldd(keys=img_keys, prob=0.2, coeff_range=(0.0, 0.2)),
+            RandGaussianNoised(keys=img_keys, prob=0.2, mean=0.0, std=0.01),
+        ])
+    return Compose(transforms)
 
 
 def _gaussian_kernel_1d(sigma: float, radius: int | None = None) -> torch.Tensor:
@@ -139,8 +186,12 @@ class Restoration3DDataset(Base3DVolumeDataset):
         slice_2d: bool = False,
         patch_size_2d: tuple[int, int] | None = None,
         degradation_cfg: dict | None = None,
+        augmentation_level: str = 'basic',
     ) -> None:
-        augmentation = build_restoration_augmentation() if (augment and not slice_2d) else None
+        augmentation = (
+            build_restoration_augmentation(level=augmentation_level)
+            if (augment and not slice_2d) else None
+        )
         super().__init__(
             data_dir=data_dir,
             height=height,

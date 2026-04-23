@@ -1056,6 +1056,7 @@ def _create_restoration_3d_loader(
         slice_2d=slice_2d,
         patch_size_2d=patch_size_2d,
         degradation_cfg=degradation_cfg,
+        augmentation_level=str(restoration_cfg.get('augmentation_level', 'basic')),
     )
 
     bs = batch_size or vol_cfg.batch_size
