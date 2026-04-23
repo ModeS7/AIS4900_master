@@ -73,6 +73,10 @@ class PerceptualLossManager:
         Creates either LPIPS (VGG backbone) or RadImageNet (ResNet50) loss.
         LPIPS only supports 2D; falls back to RadImageNet for 3D.
 
+        When `use_2_5d=True` and `spatial_dims==3`, the underlying loss is
+        built as 2D — `_compute_2_5d` will feed per-slice 4D tensors into it.
+        Without this, a 3D loss would receive post-slice 4D input and crash.
+
         Returns:
             Perceptual loss module, or None if weight <= 0.
         """
@@ -81,12 +85,15 @@ class PerceptualLossManager:
             return None
 
         loss_type = self.loss_type
+        # 2.5D workflow slices to 2D before calling the loss, so the underlying
+        # network must be 2D even when the volumes are 3D.
+        effective_dims = 2 if (self.spatial_dims == 3 and self.use_2_5d) else self.spatial_dims
 
         if loss_type == 'lpips':
-            if self.spatial_dims != 2:
+            if effective_dims != 2:
                 logger.warning(
-                    f"LPIPS only supports 2D images. Got spatial_dims={self.spatial_dims}. "
-                    "Falling back to RadImageNet perceptual loss."
+                    f"LPIPS only supports 2D images. Got spatial_dims={self.spatial_dims} "
+                    f"and use_2_5d={self.use_2_5d}. Falling back to RadImageNet perceptual loss."
                 )
                 loss_type = 'radimagenet'
             else:
@@ -100,10 +107,12 @@ class PerceptualLossManager:
                 return self._loss_fn
 
         # Default: RadImageNet perceptual loss
-        logger.info("Using RadImageNet ResNet50 perceptual loss")
+        logger.info(
+            f"Using RadImageNet ResNet50 perceptual loss (spatial_dims={effective_dims})"
+        )
         from medgen.losses import PerceptualLoss
         self._loss_fn = PerceptualLoss(
-            spatial_dims=self.spatial_dims,
+            spatial_dims=effective_dims,
             network_type="radimagenet_resnet50",
             cache_dir=self.cache_dir,
             pretrained=True,

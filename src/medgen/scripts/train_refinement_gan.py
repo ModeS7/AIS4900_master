@@ -277,7 +277,7 @@ def main() -> None:
     perceptual_manager = PerceptualLossManager(
         spatial_dims=3,
         weight=args.lambda_perc,
-        loss_type='lpips',           # auto-falls to radimagenet for 3D in its create()
+        loss_type='lpips',           # with use_2_5d=True, manager builds 2D LPIPS internally
         device=device,
         use_2_5d=True,
         slice_fraction=0.25,
