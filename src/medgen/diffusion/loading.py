@@ -291,6 +291,81 @@ def load_diffusion_model_with_metadata(
         else:
             model: nn.Module = base_model
 
+    elif model_type == 'mamba':
+        from medgen.models.mamba_diff import MAMBA_VARIANTS, create_mamba_diff
+
+        variant = arch_config.get('variant')
+        patch_size = arch_config.get('patch_size', 2)
+
+        # Infer variant from patch_embed output channels (= embed_dim).
+        # patch_embed.proj.weight shape: [embed_dim, in_channels, *patch_size_per_dim]
+        if variant is None and 'patch_embed.proj.weight' in state_dict:
+            embed_dim = state_dict['patch_embed.proj.weight'].shape[0]
+            for v, cfg_dict in MAMBA_VARIANTS.items():
+                if cfg_dict['embed_dim'] == embed_dim:
+                    variant = v
+                    break
+            if variant is None:
+                logger.warning(
+                    f"Could not match embed_dim={embed_dim} to known MAMBA_VARIANTS; falling back to 'S'"
+                )
+                variant = 'S'
+
+        # Infer depths per encoder stage from state dict (block counts).
+        encoder_depths = []
+        stage_idx = 0
+        while True:
+            block_keys = [k for k in state_dict if k.startswith(f'encoder_stages.{stage_idx}.blocks.')]
+            if not block_keys:
+                break
+            max_block = max(int(k.split('.')[3]) for k in block_keys)
+            encoder_depths.append(max_block + 1)
+            stage_idx += 1
+        if not encoder_depths:
+            encoder_depths = [2, 2, 2, 2]  # fallback default
+
+        bottleneck_block_keys = [k for k in state_dict if k.startswith('bottleneck.blocks.')]
+        if bottleneck_block_keys:
+            bottleneck_depth = max(int(k.split('.')[2]) for k in bottleneck_block_keys) + 1
+        else:
+            bottleneck_depth = 2
+
+        # Spatial dims from arch_config (image_size / depth_size)
+        mamba_input_size = arch_config.get('image_size', 256)
+        mamba_depth_size = arch_config.get('depth_size', 160) if resolved_spatial_dims == 3 else None
+
+        base_model = create_mamba_diff(
+            variant=variant,
+            spatial_dims=resolved_spatial_dims,
+            input_size=mamba_input_size,
+            patch_size=patch_size,
+            in_channels=resolved_in_channels,
+            out_channels=resolved_out_channels,
+            depth_size=mamba_depth_size,
+            depths=encoder_depths,
+            bottleneck_depth=bottleneck_depth,
+            window_size=arch_config.get('window_size', 8),
+            skip=arch_config.get('skip', 2),
+            ssm_d_state=arch_config.get('ssm_d_state', 1),
+            ssm_ratio=arch_config.get('ssm_ratio', 2.0),
+            mlp_ratio=arch_config.get('mlp_ratio', 4.0),
+            num_heads=arch_config.get('num_heads'),
+        )
+        logger.info(
+            f"Using MambaDiff-{variant} from checkpoint: input_size={mamba_input_size}, "
+            f"depth_size={mamba_depth_size}, patch_size={patch_size}, "
+            f"in_ch={resolved_in_channels}, out_ch={resolved_out_channels}, "
+            f"depths={encoder_depths}, bottleneck_depth={bottleneck_depth}"
+        )
+        if wrapper_type == 'score_aug':
+            embed_dim = MAMBA_VARIANTS[variant]['embed_dim']
+            model, wrapper_name = create_conditioning_wrapper(
+                model=base_model, use_omega=True, use_mode=False, embed_dim=embed_dim,
+            )
+            logger.info(f"Applied {wrapper_name} conditioning wrapper")
+        else:
+            model = base_model
+
     elif model_type in ('uvit',):
         from medgen.models.uvit import create_uvit
 
@@ -525,9 +600,13 @@ def _detect_model_arch_from_state_dict(state_dict: dict[str, Any]) -> str:
     """Detect model architecture from state dict key patterns.
 
     Returns:
-        'hdit', 'uvit', 'dit', 'sit', or 'unet'.
+        'hdit', 'uvit', 'dit', 'sit', 'mamba', or 'unet'.
     """
     keys = set(state_dict.keys())
+
+    # MambaDiff: has encoder_stages.N.blocks.M.ssm.* (SSM state-space blocks)
+    if any('.ssm.in_proj.weight' in k for k in keys):
+        return 'mamba'
 
     # HDiT: has encoder_levels, decoder_levels, mergers, splitters
     if any(k.startswith('encoder_levels.') for k in keys):
