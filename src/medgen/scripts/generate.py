@@ -549,6 +549,41 @@ def _generate_bravo(
     return torch.clamp(bravo[0, 0], 0, 1).cpu().numpy()  # [D, H, W]
 
 
+def _generate_dual(
+    seg_binary: np.ndarray,
+    dual_model: torch.nn.Module,
+    strategy: DiffusionStrategy,
+    steps_bravo: int,
+    device: torch.device,
+    cfg: DictConfig,
+    dual_space: object | None,
+    offset_adjusted: bool = False,
+    offset_strength: float = 0.0,
+) -> np.ndarray:
+    """Generate a dual-modality (T1pre + T1gd) volume conditioned on a seg mask.
+
+    Returns:
+        Dual image as numpy array [2, D, H, W] in [0, 1], where channel 0 is
+        T1pre and channel 1 is T1gd.
+    """
+    seg_tensor = torch.from_numpy(seg_binary).float().unsqueeze(0).unsqueeze(0).to(device)
+    if dual_space is not None:
+        seg_tensor = dual_space.encode(seg_tensor)
+
+    # Dual: 2 noise channels (T1pre + T1gd) concatenated with 1 seg channel → 3 input
+    noise = torch.randn(get_noise_shape(1, 2, 3, cfg.image_size, cfg.depth), device=device)
+    noise = _maybe_add_generation_offset(noise, offset_adjusted, offset_strength)
+    dual = generate_batch(dual_model, strategy, noise, steps_bravo, device,
+                          conditioning=seg_tensor,
+                          cfg_scale=cfg.cfg_scale_bravo,
+                          cfg_scale_end=cfg.get('cfg_scale_bravo_end', None),
+                          cfg_mode=cfg.get('cfg_mode', 'standard'),
+                          cfg_zero_init_steps=cfg.get('cfg_zero_init_steps', 1))
+    if dual_space is not None:
+        dual = dual_space.decode(dual)
+    return torch.clamp(dual[0], 0, 1).cpu().numpy()  # [2, D, H, W]
+
+
 def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     """Run 3D generation pipeline: size_bins -> seg -> bravo.
 
@@ -558,7 +593,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         - {id}/bravo.nii.gz: BRAVO image volume [H, W, D] (bravo mode only)
     """
     # Validate gen_mode (fail-fast before loading models)
-    VALID_3D_MODES = {'bravo', 'seg_conditioned', 'seg_conditioned_input'}
+    VALID_3D_MODES = {'bravo', 'dual', 'seg_conditioned', 'seg_conditioned_input'}
     if cfg.gen_mode not in VALID_3D_MODES:
         raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 3D. Valid: {VALID_3D_MODES}")
 
@@ -772,7 +807,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             logger.info(f"Generation complete. Total retries: {total_retries}")
 
     # Mode: bravo (full pipeline: seg -> bravo)
-    elif cfg.gen_mode == 'bravo':
+    elif cfg.gen_mode in ('bravo', 'dual'):
+        # Dual mode: 2 image channels (T1pre + T1gd) + 1 seg conditioning = 3 in, 2 out.
+        is_dual = (cfg.gen_mode == 'dual')
+        image_in_ch = 3 if is_dual else 2
+        image_out_ch = 2 if is_dual else 1
+
         # Load real seg masks if provided (skip seg generation)
         real_seg_dir = cfg.get('real_seg_dir', None)
         real_seg_files = None
@@ -789,10 +829,11 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
             )
 
-        logger.info("Loading bravo model...")
+        logger.info(f"Loading {cfg.gen_mode} model (in={image_in_ch}, out={image_out_ch})...")
         bravo_model = load_diffusion_model(
             cfg.image_model, device=device,
-            in_channels=2, out_channels=1, compile_model=True, spatial_dims=3
+            in_channels=image_in_ch, out_channels=image_out_ch,
+            compile_model=True, spatial_dims=3,
         )
 
         # Config from bravo checkpoint
@@ -965,15 +1006,28 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Inner loop: generate bravo, validate, retry bravo or restart seg
             bravo_accepted = False
+            dual_channels = None   # Holds [2, D, H, W] array when dual mode; else None
             for bravo_attempt in range(max_brain_retries):
-                # Generate BRAVO conditioned on seg mask
+                # Generate BRAVO (or dual) conditioned on seg mask
                 _apply_shift(shift_bravo)
-                bravo_np = _generate_bravo(
-                    seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
-                    bravo_space, diffrs_disc, diffrs_cfg,
-                    offset_adjusted=_bravo_offset_adjusted,
-                    offset_strength=_bravo_offset_strength,
-                )
+                if is_dual:
+                    dual_channels = _generate_dual(
+                        seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                        bravo_space,
+                        offset_adjusted=_bravo_offset_adjusted,
+                        offset_strength=_bravo_offset_strength,
+                    )
+                    # Use channel 0 (T1pre) for brain-mask / PCA validation — same
+                    # anatomy is visible across both channels, T1pre has more uniform
+                    # intensity so the brain threshold works consistently.
+                    bravo_np = dual_channels[0]
+                else:
+                    bravo_np = _generate_bravo(
+                        seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
+                        bravo_space, diffrs_disc, diffrs_cfg,
+                        offset_adjusted=_bravo_offset_adjusted,
+                        offset_strength=_bravo_offset_strength,
+                    )
 
                 # Stage 2a — Reject disconnected brain volumes
                 if validate_brain_mask and not has_single_brain_component(bravo_np, threshold=brain_threshold):
@@ -1031,18 +1085,28 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary_save = np.transpose(seg_binary, (1, 2, 0))
             bravo_np = np.transpose(bravo_np, (1, 2, 0))
+            if is_dual:
+                # dual_channels is [2, D, H, W]; permute each channel to [H, W, D]
+                dual_channels_save = np.transpose(dual_channels, (0, 2, 3, 1))
 
             # Trim last N slices to match training data (training pads, so we remove padding)
             if trim_slices > 0:
                 seg_binary_save = seg_binary_save[:, :, :-trim_slices]  # [H, W, D-trim]
                 bravo_np = bravo_np[:, :, :-trim_slices]
+                if is_dual:
+                    dual_channels_save = dual_channels_save[:, :, :, :-trim_slices]
 
-            # Save in subdirectory: 00000/seg.nii.gz and 00000/bravo.nii.gz
+            # Save in subdirectory: 00000/{seg,bravo}.nii.gz for bravo mode
+            # or 00000/{seg,t1_pre,t1_gd}.nii.gz for dual mode.
             sample_dir = output_dir / f"{generated:05d}"
             sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
             save_nifti(seg_binary_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
-            save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
+            if is_dual:
+                save_nifti(dual_channels_save[0], str(sample_dir / "t1_pre.nii.gz"), voxel_size=voxel)
+                save_nifti(dual_channels_save[1], str(sample_dir / "t1_gd.nii.gz"), voxel_size=voxel)
+            else:
+                save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
             all_bins.append((generated, bins))
 
             generated += 1
@@ -1164,7 +1228,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             logger.info(f"Generation complete. Total retries: {total_retries}")
 
     else:
-        raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned', 'seg_conditioned_input', or 'bravo'.")
+        raise ValueError(f"Mode '{cfg.gen_mode}' not supported for 3D. Use 'seg_conditioned', 'seg_conditioned_input', 'bravo', or 'dual'.")
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")
