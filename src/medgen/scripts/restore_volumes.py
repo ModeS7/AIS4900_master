@@ -125,8 +125,10 @@ def main():
     parser.add_argument("--restoration-model", type=str, required=True,
                         help="Path to trained restoration checkpoint")
     parser.add_argument("--strategy", type=str, default="rflow",
-                        choices=["rflow", "irsde", "resfusion", "bridge"],
-                        help="Restoration strategy (default: rflow)")
+                        choices=["rflow", "irsde", "resfusion", "bridge", "refinement"],
+                        help="Restoration strategy (default: rflow). "
+                             "'refinement' is a single-forward-pass Pix2Pix-style generator "
+                             "(exp42) — does not use iterative sampling.")
     parser.add_argument("--input-dir", type=str, required=True,
                         help="Directory with generated volumes (*/bravo.nii.gz or flat *.nii.gz)")
     parser.add_argument("--output-dir", type=str, required=True,
@@ -162,18 +164,26 @@ def main():
     logger.info(f"Found {len(files)} volumes to restore")
 
     # ── Load model ───────────────────────────────────────────────────
+    # exp42 refinement: single-channel in/out, no conditioning.
+    # IR-SDE / RFlow Bridge: 2-channel in (x_t + degraded), 1 channel out.
+    is_refinement = (args.strategy == 'refinement')
     logger.info(f"Loading restoration model: {args.restoration_model}")
     model = load_diffusion_model(
         args.restoration_model, device=device,
-        in_channels=2, out_channels=1,
+        in_channels=1 if is_refinement else 2,
+        out_channels=1,
         compile_model=False, spatial_dims=3,
     )
 
-    # ── Setup strategy ───────────────────────────────────────────────
-    logger.info(f"Setting up {args.strategy} strategy...")
-    strategy = load_strategy(
-        args.strategy, args.num_timesteps, args.image_size, args.depth,
-    )
+    # ── Setup strategy (skip for refinement — it's a one-pass generator) ──
+    strategy = None
+    if not is_refinement:
+        logger.info(f"Setting up {args.strategy} strategy...")
+        strategy = load_strategy(
+            args.strategy, args.num_timesteps, args.image_size, args.depth,
+        )
+    else:
+        logger.info("Refinement mode: single forward pass per volume (no iterative sampling)")
 
     # ── Restore volumes ──────────────────────────────────────────────
     t_start = time.time()
@@ -185,7 +195,14 @@ def main():
         vol = load_volume(fpath, args.depth)
         vol_t = torch.from_numpy(vol).unsqueeze(0).unsqueeze(0).to(device)
 
-        restored_t = restore_volume(model, strategy, vol_t, args.num_steps, device)
+        if is_refinement:
+            # Single forward pass: refined = G(degraded, t=0)
+            from torch.amp import autocast
+            with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
+                t_zero = torch.zeros(1, dtype=torch.long, device=device)
+                restored_t = model(x=vol_t, timesteps=t_zero).float().clamp(0, 1)
+        else:
+            restored_t = restore_volume(model, strategy, vol_t, args.num_steps, device)
 
         restored_np = restored_t.squeeze().cpu().numpy()  # [D, H, W]
         restored_volumes.append(restored_np)

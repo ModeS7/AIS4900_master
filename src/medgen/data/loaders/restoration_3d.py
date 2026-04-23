@@ -39,6 +39,7 @@ import torch
 import torch.nn.functional as F
 from monai.transforms import (
     Compose,
+    Rand3DElasticd,
     RandAdjustContrastd,
     RandAffined,
     RandBiasFieldd,
@@ -57,23 +58,27 @@ def build_restoration_augmentation(level: str = 'basic') -> Callable:
     """Build augmentation transform for (clean, degraded, seg) triples.
 
     Levels:
-      basic  — flips (×3 axes) + axial 90° rotations. Original behaviour.
-      medium — basic + affine (small rot/translate/scale) + intensity jitter
+      basic  — flips (×3 axes) + 90° rotations in all three orthogonal planes.
+               Fully 3D baseline — rotations aren't axial-only.
+      medium — basic + 3D affine (rotation/translate/scale along all three
+               axes with wider ranges than previously) + intensity jitter
                (contrast, brightness). Applied consistently to all keys so the
                (clean, degraded) pairing is preserved.
-      heavy  — medium + MRI bias field + mild noise. Best anti-overfitting
-               option for small-dataset restoration training. Noise is paired
-               so the network sees degraded-plus-noise with the same noise
-               profile on clean — avoids breaking the pair semantics.
-
-    Intensity transforms are applied WITH THE SAME RANDOM DRAW to all keys
-    (via Compose) so brightness shifts match clean/degraded consistently.
+      heavy  — medium + 3D elastic deformation + MRI bias field + mild noise.
+               Best anti-overfitting option for small-dataset training. Elastic
+               deformation adds smooth non-rigid warping — important for small
+               real datasets where memorization risk is high. Spatial transforms
+               are applied identically to all three keys (paired semantics).
     """
     keys = ['image', 'degraded', 'seg']
     transforms: list = [
         RandFlipd(keys=keys, prob=0.5, spatial_axis=0),
         RandFlipd(keys=keys, prob=0.5, spatial_axis=1),
         RandFlipd(keys=keys, prob=0.5, spatial_axis=2),
+        # Full 3D 90° rotations — three orthogonal axis pairs (D-H, D-W, H-W)
+        # so the network sees all rotational orientations, not just axial.
+        RandRotate90d(keys=keys, prob=0.5, spatial_axes=(0, 1)),
+        RandRotate90d(keys=keys, prob=0.5, spatial_axes=(0, 2)),
         RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
     ]
     if level in ('medium', 'heavy'):
@@ -81,12 +86,15 @@ def build_restoration_augmentation(level: str = 'basic') -> Callable:
         # binary — applying intensity ops on it would destroy the mask).
         img_keys = ['image', 'degraded']
         transforms.extend([
+            # Wide 3D affine: independent rotation/translate/scale per axis.
+            # rotate_range in radians — (0.15, 0.15, 0.15) ≈ ±8.6° per axis.
             RandAffined(
                 keys=keys,
-                prob=0.3,
-                rotate_range=(0.05, 0.05, 0.05),    # ±~3°
-                translate_range=(5, 5, 5),          # ±5 voxels
-                scale_range=(0.05, 0.05, 0.05),     # 0.95–1.05
+                prob=0.5,
+                rotate_range=(0.15, 0.15, 0.15),      # ±~8° per axis (3D)
+                translate_range=(10, 10, 10),         # ±10 voxels per axis (3D)
+                scale_range=(0.10, 0.10, 0.10),       # 0.90–1.10 per axis
+                shear_range=(0.05, 0.05, 0.05),       # mild shear
                 mode=['bilinear', 'bilinear', 'nearest'],
                 padding_mode='border',
             ),
@@ -96,8 +104,22 @@ def build_restoration_augmentation(level: str = 'basic') -> Callable:
     if level == 'heavy':
         img_keys = ['image', 'degraded']
         transforms.extend([
-            RandBiasFieldd(keys=img_keys, prob=0.2, coeff_range=(0.0, 0.2)),
-            RandGaussianNoised(keys=img_keys, prob=0.2, mean=0.0, std=0.01),
+            # 3D elastic deformation — smooth non-rigid warping. Adds biological
+            # variability that rigid transforms can't. sigma_range controls
+            # smoothness (larger=smoother), magnitude_range the deformation size.
+            Rand3DElasticd(
+                keys=keys,
+                prob=0.3,
+                sigma_range=(5, 8),                   # smoothness (voxels)
+                magnitude_range=(50, 150),            # voxel-level max displacement
+                rotate_range=(0.0, 0.0, 0.0),         # deformation only (affine above)
+                translate_range=(0, 0, 0),
+                scale_range=(0.0, 0.0, 0.0),
+                mode=['bilinear', 'bilinear', 'nearest'],
+                padding_mode='border',
+            ),
+            RandBiasFieldd(keys=img_keys, prob=0.3, coeff_range=(0.0, 0.3)),
+            RandGaussianNoised(keys=img_keys, prob=0.3, mean=0.0, std=0.01),
         ])
     return Compose(transforms)
 
