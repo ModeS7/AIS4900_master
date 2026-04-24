@@ -386,8 +386,14 @@ def main() -> None:
                 real_for_r1 = clean.detach().clone().requires_grad_(True)
                 # fp32 to keep gradient stable
                 logits_real = disc_manager.discriminator(real_for_r1.contiguous())
+                # MONAI's PatchDiscriminator returns a list of multi-scale
+                # feature maps; sum all of them into a single scalar.
+                if isinstance(logits_real, (list, tuple)):
+                    logits_scalar = sum(t.sum() for t in logits_real)
+                else:
+                    logits_scalar = logits_real.sum()
                 grad_real = torch.autograd.grad(
-                    outputs=logits_real.sum(), inputs=real_for_r1,
+                    outputs=logits_scalar, inputs=real_for_r1,
                     create_graph=True, retain_graph=False,
                 )[0]
                 r1 = grad_real.pow(2).flatten(1).sum(1).mean()
