@@ -114,8 +114,17 @@ def main() -> None:
     parser.add_argument('--real-dir', required=True)
     parser.add_argument('--output-dir', required=True)
     parser.add_argument('--sigmas', type=float, nargs='+', default=[2.0, 4.0, 6.0],
-                        help='Gaussian σ values (voxels) to sweep. Smaller σ → '
+                        help='Gaussian σ (voxels) for LP/HP split. Smaller σ → '
                              'narrower LP, more HF replaced from real.')
+    parser.add_argument('--hf-smooth-sigma', type=float, default=0.0,
+                        help='Extra Gaussian σ applied to real HF before adding. '
+                             '0=no smoothing (pure transplant, anatomically noisy); '
+                             '>0=spatially diffuse real HF to destroy specific '
+                             'anatomy while keeping statistical texture. Converts '
+                             'HP(real) → bandpass(real).')
+    parser.add_argument('--hf-scale', type=float, default=1.0,
+                        help='Amplitude scale for HF contribution (default 1.0). '
+                             'Try 0.5 or 0.3 to dilute real HF contribution.')
     parser.add_argument('--num-volumes', type=int, default=5)
     parser.add_argument('--num-real-ref', type=int, default=10,
                         help='Real volumes averaged into reference spectrum')
@@ -183,8 +192,14 @@ def main() -> None:
     }
 
     for sigma in args.sigmas:
-        log.info(f"\n========== σ = {sigma} ==========")
-        sig_dir = out_dir / f"sigma_{sigma:.1f}"
+        log.info(f"\n========== σ = {sigma}  "
+                 f"(hf_smooth={args.hf_smooth_sigma}, hf_scale={args.hf_scale}) ==========")
+        tag = f"sigma_{sigma:.1f}"
+        if args.hf_smooth_sigma > 0:
+            tag += f"_smooth{args.hf_smooth_sigma:.1f}"
+        if args.hf_scale != 1.0:
+            tag += f"_scale{args.hf_scale:.2f}"
+        sig_dir = out_dir / tag
         mixed_vol_dir = sig_dir / 'mixed'
         mixed_vol_dir.mkdir(parents=True, exist_ok=True)
 
@@ -196,6 +211,10 @@ def main() -> None:
             real_t = _to5d(real_arr)
             synth_lp = gaussian_blur_3d(synth_t, sigma)
             real_hp = real_t - gaussian_blur_3d(real_t, sigma)
+            # Spatially diffuse HF to destroy specific anatomy while keeping texture stats.
+            if args.hf_smooth_sigma > 0:
+                real_hp = gaussian_blur_3d(real_hp, args.hf_smooth_sigma)
+            real_hp = real_hp * args.hf_scale
             mixed_t = (synth_lp + real_hp).clamp(0, 1)
             mixed_arr = mixed_t.squeeze().cpu().numpy()
             mixed_np.append(mixed_arr)
