@@ -91,6 +91,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--r1-every', type=int, default=4,
                         help='Apply R1 penalty every N D steps (lazy R1, common '
                              'pattern that halves R1 cost without hurting effect).')
+    parser.add_argument('--use-residual-learning', action='store_true',
+                        help='Predict residual (clean - degraded) instead of full clean. '
+                             'DnCNN-style. Effective for paired deblur because the '
+                             'network only needs to learn the small delta. At inference: '
+                             'refined = degraded + G(degraded).')
+    parser.add_argument('--use-feature-matching', action='store_true',
+                        help='Add Pix2PixHD-style feature-matching loss: L1 between '
+                             'intermediate D features (multi-scale) on real vs fake. '
+                             'Stabilizes adversarial training.')
+    parser.add_argument('--lambda-fm', type=float, default=10.0,
+                        help='Feature-matching loss weight. Only used if '
+                             '--use-feature-matching is set.')
     parser.add_argument('--ema-beta', type=float, default=0.9999)
     parser.add_argument('--use-compile', action='store_true')
     # Logging / checkpointing
@@ -148,6 +160,7 @@ def run_validation(
     perceptual_manager: PerceptualLossManager,
     device: torch.device,
     max_batches: int = 0,
+    use_residual_learning: bool = False,
 ) -> dict[str, float]:
     """Evaluate the EMA generator on the val split.
 
@@ -168,7 +181,8 @@ def run_validation(
             bs, torch.zeros(bs, dtype=torch.long, device=device),
         )
         with autocast('cuda', dtype=torch.bfloat16):
-            refined = g_ema(x=degraded, timesteps=t_zero)
+            g_out = g_ema(x=degraded, timesteps=t_zero)
+            refined = (g_out + degraded).clamp(0, 1) if use_residual_learning else g_out
         refined = refined.float()
 
         l1 = torch.mean(torch.abs(refined - clean)).item()
@@ -329,7 +343,8 @@ def main() -> None:
     for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
         generator.train()
-        epoch_losses = {'total': 0.0, 'l1': 0.0, 'perc': 0.0, 'adv_g': 0.0, 'd': 0.0, 'r1': 0.0}
+        epoch_losses = {'total': 0.0, 'l1': 0.0, 'perc': 0.0, 'adv_g': 0.0,
+                        'd': 0.0, 'r1': 0.0, 'fm': 0.0}
         n_batches = 0
         for step, batch in enumerate(train_loader):
             if args.max_steps_per_epoch and step >= args.max_steps_per_epoch:
@@ -343,7 +358,15 @@ def main() -> None:
             # ───── Generator step ─────
             optimizer_g.zero_grad(set_to_none=True)
             with autocast('cuda', dtype=torch.bfloat16):
-                refined = generator(x=degraded, timesteps=t_zero)
+                g_out = generator(x=degraded, timesteps=t_zero)
+
+            # Residual learning: G predicts (clean - degraded). Add input back to
+            # reconstruct the full clean estimate. Network only learns the small
+            # delta the degradation removed (DnCNN style).
+            if args.use_residual_learning:
+                refined = (g_out + degraded).clamp(0, 1)
+            else:
+                refined = g_out
 
             refined_fp32 = refined.float()
             l1 = l1_fn(refined_fp32, clean)
@@ -352,13 +375,30 @@ def main() -> None:
                     else torch.zeros((), device=device))
 
             adv_g = torch.zeros((), device=device)
+            fm_loss = torch.zeros((), device=device)
             if global_step >= args.d_warmup_steps:
                 ramp = min(1.0, (global_step - args.d_warmup_steps)
                            / max(1, args.adv_ramp_steps))
                 adv_raw = disc_manager.compute_generator_loss(refined_fp32)
                 adv_g = ramp * args.adv_weight * adv_raw
 
-            total_g = args.lambda_l1 * l1 + args.lambda_perc * perc + adv_g
+                # Pix2PixHD feature-matching: L1 between intermediate D features
+                # on real vs fake. MONAI PatchDiscriminator returns a list of
+                # multi-scale feature maps; use all but the last (final logits).
+                if (args.use_feature_matching
+                        and disc_manager.discriminator is not None):
+                    feats_real = disc_manager.discriminator(clean.detach().contiguous())
+                    feats_fake = disc_manager.discriminator(refined_fp32.contiguous())
+                    if isinstance(feats_real, (list, tuple)) and len(feats_real) > 1:
+                        # Skip final element (final logits map) — supervise intermediate features.
+                        fm_terms = [
+                            torch.nn.functional.l1_loss(ff.float(), fr.float().detach())
+                            for ff, fr in zip(feats_fake[:-1], feats_real[:-1])
+                        ]
+                        if fm_terms:
+                            fm_loss = ramp * args.lambda_fm * torch.stack(fm_terms).mean()
+
+            total_g = args.lambda_l1 * l1 + args.lambda_perc * perc + adv_g + fm_loss
             total_g.backward()
             torch.nn.utils.clip_grad_norm_(
                 generator.parameters(), max_norm=args.gradient_clip_norm,
@@ -411,6 +451,7 @@ def main() -> None:
             epoch_losses['adv_g'] += adv_g.item() if isinstance(adv_g, torch.Tensor) else float(adv_g)
             epoch_losses['d'] += d_loss
             epoch_losses['r1'] += r1_value
+            epoch_losses['fm'] += fm_loss.item() if isinstance(fm_loss, torch.Tensor) else float(fm_loss)
             n_batches += 1
             global_step += 1
 
@@ -423,6 +464,8 @@ def main() -> None:
                 writer.add_scalar('train/d_loss', d_loss, global_step)
                 if args.r1_weight > 0:
                     writer.add_scalar('train/r1', r1_value, global_step)
+                if args.use_feature_matching:
+                    writer.add_scalar('train/fm', fm_loss.item() if isinstance(fm_loss, torch.Tensor) else fm_loss, global_step)
                 writer.add_scalar('train/lr_g', optimizer_g.param_groups[0]['lr'], global_step)
                 logger.info(
                     f"ep{epoch} step{step} global{global_step} | "
@@ -448,6 +491,7 @@ def main() -> None:
             val_metrics = run_validation(
                 ema.ema_model, val_loader, perceptual_manager, device,
                 max_batches=(3 if args.max_steps_per_epoch else 0),
+                use_residual_learning=args.use_residual_learning,
             )
             for k, v in val_metrics.items():
                 writer.add_scalar(f'val/{k}', v, epoch)
