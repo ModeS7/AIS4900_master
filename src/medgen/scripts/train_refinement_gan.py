@@ -394,7 +394,7 @@ def main() -> None:
                     logits_scalar = logits_real.sum()
                 grad_real = torch.autograd.grad(
                     outputs=logits_scalar, inputs=real_for_r1,
-                    create_graph=True, retain_graph=False,
+                    create_graph=True,  # retain_graph defaults to True when create_graph=True
                 )[0]
                 r1 = grad_real.pow(2).flatten(1).sum(1).mean()
                 # Scale by r1_every since we apply only every N steps (lazy R1).
