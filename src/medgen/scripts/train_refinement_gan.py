@@ -84,6 +84,13 @@ def parse_args() -> argparse.Namespace:
                         help='Steps over which adversarial weight ramps 0→1')
     parser.add_argument('--disc-num-layers', type=int, default=3)
     parser.add_argument('--disc-num-channels', type=int, default=32)
+    parser.add_argument('--r1-weight', type=float, default=0.0,
+                        help='R1 gradient penalty weight on D (0 = disabled). '
+                             'Penalizes |∇D(real)|² to prevent D saturation. '
+                             '~0.1 is a typical starting value.')
+    parser.add_argument('--r1-every', type=int, default=4,
+                        help='Apply R1 penalty every N D steps (lazy R1, common '
+                             'pattern that halves R1 cost without hurting effect).')
     parser.add_argument('--ema-beta', type=float, default=0.9999)
     parser.add_argument('--use-compile', action='store_true')
     # Logging / checkpointing
@@ -322,7 +329,7 @@ def main() -> None:
     for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
         generator.train()
-        epoch_losses = {'total': 0.0, 'l1': 0.0, 'perc': 0.0, 'adv_g': 0.0, 'd': 0.0}
+        epoch_losses = {'total': 0.0, 'l1': 0.0, 'perc': 0.0, 'adv_g': 0.0, 'd': 0.0, 'r1': 0.0}
         n_batches = 0
         for step, batch in enumerate(train_loader):
             if args.max_steps_per_epoch and step >= args.max_steps_per_epoch:
@@ -361,13 +368,35 @@ def main() -> None:
 
             # ───── Discriminator step ─────
             with torch.no_grad():
-                # Recompute refined in eval-mode detach — avoids G gradient leak.
-                # Alternative: reuse `refined_fp32.detach()` directly (cheaper).
                 fake_for_d = refined_fp32.detach()
             d_loss = disc_manager.train_step(
                 real=clean, fake=fake_for_d,
                 weight_dtype=torch.bfloat16,
             )
+
+            # ───── R1 gradient penalty (lazy: every r1_every steps) ─────
+            # R1 = |∇_x D(x)|² evaluated at real x. Penalizing this prevents D
+            # from saturating (gradients vanishing as D approaches certainty),
+            # which keeps adversarial signal flowing to G. See Mescheder 2018.
+            r1_value = 0.0
+            if (args.r1_weight > 0
+                    and disc_manager.discriminator is not None
+                    and disc_manager.optimizer is not None
+                    and global_step % args.r1_every == 0):
+                real_for_r1 = clean.detach().clone().requires_grad_(True)
+                # fp32 to keep gradient stable
+                logits_real = disc_manager.discriminator(real_for_r1.contiguous())
+                grad_real = torch.autograd.grad(
+                    outputs=logits_real.sum(), inputs=real_for_r1,
+                    create_graph=True, retain_graph=False,
+                )[0]
+                r1 = grad_real.pow(2).flatten(1).sum(1).mean()
+                # Scale by r1_every since we apply only every N steps (lazy R1).
+                r1_loss = (args.r1_weight * args.r1_every * 0.5) * r1
+                disc_manager.optimizer.zero_grad(set_to_none=True)
+                r1_loss.backward()
+                disc_manager.optimizer.step()
+                r1_value = float(r1.detach())
 
             # Stats
             epoch_losses['total'] += total_g.item()
@@ -375,6 +404,7 @@ def main() -> None:
             epoch_losses['perc'] += (perc.item() if perceptual_manager.is_enabled else 0.0)
             epoch_losses['adv_g'] += adv_g.item() if isinstance(adv_g, torch.Tensor) else float(adv_g)
             epoch_losses['d'] += d_loss
+            epoch_losses['r1'] += r1_value
             n_batches += 1
             global_step += 1
 
@@ -385,6 +415,8 @@ def main() -> None:
                     writer.add_scalar('train/perceptual', perc.item(), global_step)
                 writer.add_scalar('train/adv_g', adv_g.item() if isinstance(adv_g, torch.Tensor) else adv_g, global_step)
                 writer.add_scalar('train/d_loss', d_loss, global_step)
+                if args.r1_weight > 0:
+                    writer.add_scalar('train/r1', r1_value, global_step)
                 writer.add_scalar('train/lr_g', optimizer_g.param_groups[0]['lr'], global_step)
                 logger.info(
                     f"ep{epoch} step{step} global{global_step} | "
