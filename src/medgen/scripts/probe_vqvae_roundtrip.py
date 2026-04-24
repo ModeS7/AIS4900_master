@@ -114,56 +114,114 @@ def main() -> None:
         latent_shift=None, latent_scale=None,  # no normalization — raw roundtrip
     )
 
-    # ── Input synthetic volumes ──
+    def roundtrip_volume(vol: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return (reconstruction, latent) for one [D,H,W] volume."""
+        x = torch.from_numpy(vol).float().unsqueeze(0).unsqueeze(0).to(device)
+        with torch.no_grad():
+            z = space.encode(x)
+            x_hat = space.decode(z)
+        return (
+            x_hat.squeeze().cpu().numpy().clip(0, 1),
+            z.squeeze(0).cpu().numpy(),  # [C, D/sf, H/sf, W/sf]
+        )
+
+    # ── Synthetic: load, encode, decode ──
     synth_files = find_volumes(Path(args.input_dir), args.num_volumes)
     logger.info(f"{len(synth_files)} synthetic volumes")
 
     synth_np: list[np.ndarray] = []
-    recon_np: list[np.ndarray] = []
+    synth_recon_np: list[np.ndarray] = []
+    synth_latents: list[np.ndarray] = []
     for idx, fpath in enumerate(synth_files):
-        logger.info(f"[{idx + 1}/{len(synth_files)}] {fpath.name}")
-        vol = load_volume(fpath, args.depth)  # [D,H,W] in [0,1]
+        logger.info(f"[synth {idx + 1}/{len(synth_files)}] {fpath.name}")
+        vol = load_volume(fpath, args.depth)
         synth_np.append(vol)
-
-        x = torch.from_numpy(vol).float().unsqueeze(0).unsqueeze(0).to(device)  # [1,1,D,H,W]
-        with torch.no_grad():
-            z = space.encode(x)
-            x_hat = space.decode(z)
-        recon = x_hat.squeeze().cpu().numpy().clip(0, 1)  # [D,H,W]
-        recon_np.append(recon)
-
-        # mirror input layout: if nested, use parent name
+        recon, z = roundtrip_volume(vol)
+        synth_recon_np.append(recon)
+        synth_latents.append(z)
         subj = fpath.parent.name if fpath.parent != Path(args.input_dir) else fpath.stem
-        save_nifti(np.transpose(recon, (1, 2, 0)), str(recon_dir / f"{subj}_roundtrip.nii.gz"))
+        save_nifti(np.transpose(recon, (1, 2, 0)),
+                   str(recon_dir / f"synth_{subj}_roundtrip.nii.gz"))
 
-    # ── Real reference spectrum ──
+    # ── Real: load, and also roundtrip a subset to measure decoder ceiling ──
     real_files = find_volumes(Path(args.real_dir), args.num_real)
     logger.info(f"{len(real_files)} real volumes for reference")
     real_np = [load_volume(f, args.depth) for f in real_files]
 
+    # Roundtrip the first `num_volumes` real volumes to measure the ceiling.
+    real_recon_np: list[np.ndarray] = []
+    real_latents: list[np.ndarray] = []
+    for idx in range(min(args.num_volumes, len(real_np))):
+        logger.info(f"[real  {idx + 1}/{args.num_volumes}] {real_files[idx].name}")
+        recon, z = roundtrip_volume(real_np[idx])
+        real_recon_np.append(recon)
+        real_latents.append(z)
+        subj = real_files[idx].parent.name
+        save_nifti(np.transpose(recon, (1, 2, 0)),
+                   str(recon_dir / f"real_{subj}_roundtrip.nii.gz"))
+
     # ── Spectra ──
     bins, synth_spec = average_spectrum(synth_np)
-    _, recon_spec = average_spectrum(recon_np)
+    _, recon_spec = average_spectrum(synth_recon_np)
     _, real_spec = average_spectrum(real_np)
+    _, real_recon_spec = average_spectrum(real_recon_np)
+
+    # ── Latent stats (per-channel mean/std/min/max across volumes) ──
+    def latent_stats(latents: list[np.ndarray]) -> dict[str, list[float]]:
+        arr = np.stack(latents, axis=0)  # [N, C, ...]
+        C = arr.shape[1]
+        return {
+            'mean_per_channel': [float(arr[:, c].mean()) for c in range(C)],
+            'std_per_channel':  [float(arr[:, c].std())  for c in range(C)],
+            'min_per_channel':  [float(arr[:, c].min())  for c in range(C)],
+            'max_per_channel':  [float(arr[:, c].max())  for c in range(C)],
+            'global_mean': float(arr.mean()),
+            'global_std':  float(arr.std()),
+        }
+    stats_synth = latent_stats(synth_latents)
+    stats_real = latent_stats(real_latents)
+    logger.info(
+        f"Latent global mean  — real={stats_real['global_mean']:.4f}  "
+        f"synth={stats_synth['global_mean']:.4f}  "
+        f"Δ={stats_synth['global_mean'] - stats_real['global_mean']:+.4f}"
+    )
+    logger.info(
+        f"Latent global std   — real={stats_real['global_std']:.4f}  "
+        f"synth={stats_synth['global_std']:.4f}  "
+        f"Δ={stats_synth['global_std'] - stats_real['global_std']:+.4f}"
+    )
+    logger.info("Per-channel mean (real | synth):")
+    for c, (rm, sm) in enumerate(zip(stats_real['mean_per_channel'],
+                                     stats_synth['mean_per_channel'])):
+        logger.info(f"  ch{c}: {rm:+.4f} | {sm:+.4f}   Δ={sm - rm:+.4f}")
+    logger.info("Per-channel std  (real | synth):")
+    for c, (rs, ss) in enumerate(zip(stats_real['std_per_channel'],
+                                     stats_synth['std_per_channel'])):
+        logger.info(f"  ch{c}: {rs:.4f} | {ss:.4f}   ratio={ss / rs if rs else float('nan'):.3f}")
 
     # ── Plots ──
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    for name, spec, color in [
-        ('real', real_spec, 'black'),
-        ('exp1_1_1000 (synthetic)', synth_spec, 'gray'),
-        ('VQ-VAE roundtrip', recon_spec, 'tab:red'),
+    for name, spec, color, style in [
+        ('real', real_spec, 'black', '-'),
+        ('real→VQ-VAE (ceiling)', real_recon_spec, 'tab:green', '--'),
+        ('exp1_1_1000 (synthetic)', synth_spec, 'gray', '-'),
+        ('synth→VQ-VAE', recon_spec, 'tab:red', '-'),
     ]:
-        ax1.loglog(bins[1:], spec[1:], label=name, color=color, linewidth=2)
+        ax1.loglog(bins[1:], spec[1:], label=name, color=color,
+                   linewidth=2, linestyle=style)
     ax1.set_xlabel('Radial frequency (Nyquist=0.5)')
     ax1.set_ylabel('Power')
     ax1.set_title('Radial power spectrum')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
+    ax2.semilogx(bins[1:], real_recon_spec[1:] / real_spec[1:],
+                 label='real roundtrip / real (ceiling)',
+                 color='tab:green', linestyle='--', linewidth=2)
     ax2.semilogx(bins[1:], synth_spec[1:] / real_spec[1:],
                  label='synthetic / real', color='gray', linewidth=2)
     ax2.semilogx(bins[1:], recon_spec[1:] / real_spec[1:],
-                 label='roundtrip / real', color='tab:red', linewidth=2)
+                 label='synth roundtrip / real', color='tab:red', linewidth=2)
     ax2.axhline(1.0, color='black', linestyle='--', alpha=0.5)
     ax2.set_xlabel('Radial frequency (Nyquist=0.5)')
     ax2.set_ylabel('Power ratio to real')
@@ -181,31 +239,40 @@ def main() -> None:
         'compression_type': ctype,
         'n_synthetic': len(synth_np),
         'n_real': len(real_np),
+        'n_real_roundtrip': len(real_recon_np),
         'bins': bins.tolist(),
         'spectrum': {
             'real': real_spec.tolist(),
+            'real_roundtrip': real_recon_spec.tolist(),
             'synthetic': synth_spec.tolist(),
-            'roundtrip': recon_spec.tolist(),
+            'synth_roundtrip': recon_spec.tolist(),
         },
         'band_energy': {
             'real': band_energy(bins, real_spec),
+            'real_roundtrip': band_energy(bins, real_recon_spec),
             'synthetic': band_energy(bins, synth_spec),
-            'roundtrip': band_energy(bins, recon_spec),
+            'synth_roundtrip': band_energy(bins, recon_spec),
+        },
+        'latent_stats': {
+            'real': stats_real,
+            'synthetic': stats_synth,
         },
     }
 
-    # Quick verdict
+    # Quick verdict: ceiling (real→rt/real) and synth→rt vs synth
     real_bands = results['band_energy']['real']
+    real_rt_bands = results['band_energy']['real_roundtrip']
     synth_bands = results['band_energy']['synthetic']
-    recon_bands = results['band_energy']['roundtrip']
+    synth_rt_bands = results['band_energy']['synth_roundtrip']
     verdict_rows = []
     for band in BANDS:
-        r, s, c = real_bands[band], synth_bands[band], recon_bands[band]
-        s_ratio = s / r if r else float('nan')
-        c_ratio = c / r if r else float('nan')
-        delta = c_ratio - s_ratio  # positive = moved toward real (if s_ratio < 1)
+        r = real_bands[band]
+        rrt = real_rt_bands[band] / r if r else float('nan')   # decoder ceiling
+        s = synth_bands[band] / r if r else float('nan')
+        srt = synth_rt_bands[band] / r if r else float('nan')
         verdict_rows.append(
-            f"  {band:10s}  synth/real={s_ratio:6.3f}  rt/real={c_ratio:6.3f}  Δ={delta:+.3f}"
+            f"  {band:10s}  ceiling={rrt:6.3f}  synth={s:6.3f}  "
+            f"synth_rt={srt:6.3f}  headroom(synth_rt→ceiling)={rrt - srt:+.3f}"
         )
     logger.info("Band energy ratios to real:\n" + "\n".join(verdict_rows))
     results['band_verdict'] = verdict_rows
