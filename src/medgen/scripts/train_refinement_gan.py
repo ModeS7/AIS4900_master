@@ -103,6 +103,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--lambda-fm', type=float, default=10.0,
                         help='Feature-matching loss weight. Only used if '
                              '--use-feature-matching is set.')
+    parser.add_argument('--extra-blur-sigma-max', type=float, default=0.0,
+                        help='If >0, apply random Gaussian blur to the degraded '
+                             'input only (training only, not val). σ uniform in '
+                             '[0, this]. 0 = disabled. Use ~0.4 to approximate '
+                             'diffusion-MSE blur on top of VQ-VAE compression.')
+    parser.add_argument('--extra-noise-std-max', type=float, default=0.0,
+                        help='If >0, add Gaussian noise (training only) with std '
+                             'uniform in [0, this]. 0 = disabled. Use ~0.015 to '
+                             'simulate residual diffusion-sampler noise.')
+    parser.add_argument('--extra-aug-prob', type=float, default=0.5,
+                        help='Per-step probability of applying each extra aug.')
     parser.add_argument('--ema-beta', type=float, default=0.9999)
     parser.add_argument('--use-compile', action='store_true')
     # Logging / checkpointing
@@ -148,6 +159,64 @@ def build_generator(
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Generator params: {n_params:,}")
     return model
+
+
+# ────────────────────────────────────────────────────────────────
+# Extra training-time augmentation on degraded input
+# ────────────────────────────────────────────────────────────────
+def _gaussian_blur_3d(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Separable 3D Gaussian blur on a 5D tensor [B, C, D, H, W]."""
+    if sigma <= 0:
+        return x
+    import math
+    radius = max(1, int(math.ceil(3.0 * sigma)))
+    coords = torch.arange(-radius, radius + 1, dtype=x.dtype, device=x.device)
+    kernel = torch.exp(-(coords ** 2) / (2.0 * sigma * sigma))
+    kernel = kernel / kernel.sum()
+
+    def _conv_axis(vol: torch.Tensor, axis: int) -> torch.Tensor:
+        shape = [1, 1, 1, 1, 1]
+        shape[axis] = kernel.numel()
+        k = kernel.view(*shape)
+        pad = [0, 0, 0, 0, 0, 0]  # W_left, W_right, H_left, H_right, D_left, D_right
+        idx = (4 - axis) * 2  # axis=2 (D) → pad[4:6]; axis=3 (H) → pad[2:4]; axis=4 (W) → pad[0:2]
+        pad[idx] = radius
+        pad[idx + 1] = radius
+        vol = torch.nn.functional.pad(vol, pad, mode='reflect')
+        return torch.nn.functional.conv3d(vol, k)
+
+    out = _conv_axis(x, 2)
+    out = _conv_axis(out, 3)
+    out = _conv_axis(out, 4)
+    return out
+
+
+def maybe_apply_extra_aug(
+    degraded: torch.Tensor,
+    blur_sigma_max: float,
+    noise_std_max: float,
+    prob: float,
+) -> torch.Tensor:
+    """Random blur + noise on the degraded input at training time only.
+    Applied to nudge the model's training distribution toward the actual
+    inference phenotype (e.g., diffusion-MSE blur + residual noise on top of
+    a deterministic VQ-VAE roundtrip).
+
+    Each augmentation is independently sampled with probability `prob`. Sigma
+    and std are then sampled uniformly in [0, max]. If sampled magnitude is
+    too small (< 0.05 sigma or < 0.002 std), the aug is skipped to avoid no-op
+    convolutions.
+    """
+    if blur_sigma_max > 0 and torch.rand(1).item() < prob:
+        sigma = torch.rand(1).item() * blur_sigma_max
+        if sigma > 0.05:
+            with torch.no_grad():
+                degraded = _gaussian_blur_3d(degraded, sigma)
+    if noise_std_max > 0 and torch.rand(1).item() < prob:
+        noise_std = torch.rand(1).item() * noise_std_max
+        if noise_std > 0.002:
+            degraded = (degraded + torch.randn_like(degraded) * noise_std).clamp(0, 1)
+    return degraded
 
 
 # ────────────────────────────────────────────────────────────────
@@ -352,6 +421,15 @@ def main() -> None:
 
             clean = batch['image'].float().to(device, non_blocking=True)       # [B, 1, D, H, W]
             degraded = batch['degraded'].float().to(device, non_blocking=True)
+            # Extra augmentation on the degraded input only (training only).
+            # Nudges the training input distribution toward the inference phenotype.
+            if args.extra_blur_sigma_max > 0 or args.extra_noise_std_max > 0:
+                degraded = maybe_apply_extra_aug(
+                    degraded,
+                    blur_sigma_max=args.extra_blur_sigma_max,
+                    noise_std_max=args.extra_noise_std_max,
+                    prob=args.extra_aug_prob,
+                )
             bs = degraded.shape[0]
             t_zero = torch.zeros(bs, dtype=torch.long, device=device)
 
