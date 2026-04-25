@@ -197,7 +197,7 @@ class StrategyConfig:
         )
         if self.ode_solver not in valid_solvers:
             raise ValueError(f"ode_solver must be one of {valid_solvers}, got '{self.ode_solver}'")
-        valid_loss_types = ('mse', 'pseudo_huber', 'lpips_huber')
+        valid_loss_types = ('mse', 'pseudo_huber', 'lpips_huber', 'l1')
         if self.loss_type not in valid_loss_types:
             raise ValueError(f"loss_type must be one of {valid_loss_types}, got '{self.loss_type}'")
 
