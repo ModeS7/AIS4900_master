@@ -145,6 +145,10 @@ def main():
                         help="Compute metrics after restoration")
     parser.add_argument("--data-root", type=str, default=None,
                         help="Real data root for evaluation (required if --eval)")
+    parser.add_argument("--use-residual", action="store_true",
+                        help="Add input back to model output: refined = degraded + G(degraded). "
+                             "Required at inference for models trained with residual learning "
+                             "(e.g. exp44). Single-pass refinement only.")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -228,7 +232,12 @@ def main():
             from torch.amp import autocast
             with torch.no_grad(), autocast('cuda', dtype=torch.bfloat16):
                 t_zero = torch.zeros(1, dtype=torch.long, device=device)
-                restored_t = model(x=vol_t, timesteps=t_zero).float().clamp(0, 1)
+                g_out = model(x=vol_t, timesteps=t_zero).float()
+            if args.use_residual:
+                # Model predicted residual; add input back to reconstruct.
+                restored_t = (g_out + vol_t).clamp(0, 1)
+            else:
+                restored_t = g_out.clamp(0, 1)
         else:
             restored_t = restore_volume(model, strategy, vol_t, args.num_steps, device)
 

@@ -128,13 +128,34 @@ time python -m medgen.scripts.restore_volumes \
 
 echo ""
 echo "=== [4/4] exp44 (Pix2Pix + residual + FM, input=raw synth) ==="
+# exp44 was trained with residual learning: G predicts (clean - degraded).
+# At inference we must add the input back: refined = degraded + G(degraded).
 time python -m medgen.scripts.restore_volumes \
     --restoration-model "${CKPT_44_PT}" \
     --strategy refinement \
+    --use-residual \
     --input-dir "${RAW_SYNTH}" \
     --output-dir "${DIR_44}" \
     --max-volumes ${NUM_VOLS} \
     --depth 160 --image-size 256
+
+# ── Diagnostic: per-method volume stats (range, mean, NaN check) ──
+echo ""
+echo "=== Volume diagnostics ==="
+python3 - <<'EOF'
+from pathlib import Path
+import nibabel as nib, numpy as np
+root = Path("${OUT_ROOT}/refined")
+for d in sorted(root.iterdir()):
+    files = list(d.glob('**/bravo.nii.gz'))[:3]
+    if not files: continue
+    print(f"\n{d.name}: {len(list(d.glob('**/bravo.nii.gz')))} volumes")
+    for f in files:
+        v = nib.load(str(f)).get_fdata()
+        nan_pct = 100 * np.isnan(v).sum() / v.size
+        print(f"  {f.parent.name}: shape={v.shape} min={v.min():.3f} max={v.max():.3f} "
+              f"mean={v.mean():.3f} std={v.std():.3f} nan%={nan_pct:.1f}")
+EOF
 
 # ── Final 6-way comparison ────────────────────────────────────────
 echo ""
