@@ -653,6 +653,40 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Ramp from t_on → t_full
         return (t_val - t_on) / max(t_full - t_on, 1e-6)
 
+    @staticmethod
+    def _compute_t_schedule_weight_falling(
+        t_val: float,
+        schedule: list[float] | tuple[float, float],
+        num_timesteps: int,
+    ) -> float:
+        """Falling t-weighting for low-t-targeted auxiliary losses (e.g. ScoreAug
+        as a detail-emergence regularizer).
+
+        schedule = [t_full_end, t_off] in normalized units (0-1) or integer
+        timesteps (0-num_timesteps). Auto-detected: any value > 1.0 => integer.
+
+        Shape:
+            t < t_full_end          → 1.0  (full strength at low/clean t)
+            t_full_end → t_off      → ramps 1.0 → 0  (smooth fade-out as noise grows)
+            t >= t_off              → 0    (off at high noise)
+
+        Use this for ScoreAug, perceptual, or any loss that should be active
+        at low-t (where details emerge) and progressively disabled as we move
+        toward pure noise.
+        """
+        if schedule is None or len(schedule) != 2:
+            return 1.0
+        t_full_end, t_off = float(schedule[0]), float(schedule[1])
+        if max(t_full_end, t_off) <= 1.0:
+            t_full_end *= num_timesteps
+            t_off *= num_timesteps
+        if t_val < t_full_end:
+            return 1.0
+        if t_val >= t_off:
+            return 0.0
+        # Ramp from 1.0 at t_full_end down to 0 at t_off
+        return 1.0 - (t_val - t_full_end) / max(t_off - t_full_end, 1e-6)
+
     def _maybe_apply_inner_augmentation(
         self,
         images: torch.Tensor | dict[str, torch.Tensor],
@@ -1032,14 +1066,25 @@ class DiffusionTrainer(DiffusionTrainerBase):
                 # to standard MSE path when gate is closed.
                 apply_scoreaug = self.score_aug is not None
                 if apply_scoreaug:
+                    # Falling schedule (preferred for ScoreAug-as-detail): full
+                    # strength at low-t, ramps down to 0 at high-t. Takes priority
+                    # over the legacy bandpass `scoreaug_t_schedule` if both set.
+                    _sa_falling = self.cfg.training.get('scoreaug_t_schedule_falling', None)
                     _scoreaug_schedule = self.cfg.training.get('scoreaug_t_schedule', None)
-                    if _scoreaug_schedule is not None:
+                    w_sa = 1.0
+                    if _sa_falling is not None:
+                        t_val_sa = timesteps.max().item()
+                        w_sa = self._compute_t_schedule_weight_falling(
+                            t_val_sa, _sa_falling, self.num_timesteps,
+                        )
+                    elif _scoreaug_schedule is not None:
                         t_val_sa = timesteps.max().item()
                         w_sa = self._compute_t_schedule_weight(
                             t_val_sa, _scoreaug_schedule, self.num_timesteps,
                         )
-                        if torch.rand(1).item() >= w_sa:
-                            apply_scoreaug = False
+                    if (_sa_falling is not None or _scoreaug_schedule is not None) \
+                            and torch.rand(1).item() >= w_sa:
+                        apply_scoreaug = False
 
                 if apply_scoreaug:
                     from .training_tricks import compute_scoreaug_loss

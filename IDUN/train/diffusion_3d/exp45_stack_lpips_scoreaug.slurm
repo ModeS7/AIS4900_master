@@ -112,7 +112,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.perceptual_weight=0.1 \
     training.perceptual_max_timestep=250 \
     training.score_aug.enabled=true \
-    'training.scoreaug_t_schedule=[0.05,0.15,0.45]' \
+    '+training.scoreaug_t_schedule_falling=[0.325,0.45]' \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
