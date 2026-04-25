@@ -206,9 +206,9 @@ def evaluate(cfg, t):
     if shifted_type == 'lpips_huber':
         # exp47c: MSE faded out, lpips_huber faded in inside [0, t_shift_max_t]
         out['MSE'] = mse_weight(t, t_shift_max_t=t_shift_max_t, shifted_type='generic_pixel')
-        h, l = lpips_huber_internal(t, t_shift_max_t)
+        h, lp = lpips_huber_internal(t, t_shift_max_t)
         out['Huber (in lpips_huber)'] = h
-        out['LPIPS (in lpips_huber)'] = l
+        out['LPIPS (in lpips_huber)'] = lp
         return out
 
     out[base_label] = mse_weight(
