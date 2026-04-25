@@ -91,12 +91,12 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
     strategy.loss_type=lpips_huber \
-    +training.curriculum.enabled=true \
-    +training.curriculum.warmup_epochs=1 \
-    +training.curriculum.min_t_start=0.0 \
-    +training.curriculum.min_t_end=0.0 \
-    +training.curriculum.max_t_start=0.25 \
-    +training.curriculum.max_t_end=0.25 \
+    training.curriculum.enabled=true \
+    training.curriculum.warmup_epochs=1 \
+    training.curriculum.min_t_start=0.0 \
+    training.curriculum.min_t_end=0.0 \
+    training.curriculum.max_t_start=0.25 \
+    training.curriculum.max_t_end=0.25 \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
