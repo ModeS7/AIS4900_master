@@ -168,12 +168,40 @@ def main():
     # IR-SDE / RFlow Bridge: 2-channel in (x_t + degraded), 1 channel out.
     is_refinement = (args.strategy == 'refinement')
     logger.info(f"Loading restoration model: {args.restoration_model}")
-    model = load_diffusion_model(
-        args.restoration_model, device=device,
-        in_channels=1 if is_refinement else 2,
-        out_channels=1,
-        compile_model=False, spatial_dims=3,
-    )
+    if is_refinement:
+        # Refinement checkpoints (exp42*, exp43_pix2pix, exp44) come from
+        # train_refinement_gan.py which doesn't save arch_config metadata.
+        # Build the generator with the matching architecture explicitly
+        # (mirrors train_refinement_gan.build_generator).
+        from monai.networks.nets import DiffusionModelUNet
+        model = DiffusionModelUNet(
+            spatial_dims=3,
+            in_channels=1,
+            out_channels=1,
+            channels=(16, 32, 64, 256, 512, 512),
+            attention_levels=(False, False, False, False, True, True),
+            num_res_blocks=(1, 1, 1, 2, 2, 2),
+            num_head_channels=256,
+            norm_num_groups=16,
+        ).to(device)
+        ckpt = torch.load(args.restoration_model, map_location=device, weights_only=False)
+        # Try common keys: 'model_state_dict', 'state_dict', or raw dict
+        sd = ckpt.get('model_state_dict') or ckpt.get('state_dict') or ckpt
+        if isinstance(sd, dict) and any(k.startswith('module.') for k in sd):
+            sd = {k.removeprefix('module.'): v for k, v in sd.items()}
+        # Strip ema. prefix if checkpoint stored EMA weights at top
+        if isinstance(sd, dict) and any(k.startswith('ema_model.') for k in sd):
+            sd = {k.removeprefix('ema_model.'): v for k, v in sd.items() if k.startswith('ema_model.')}
+        model.load_state_dict(sd, strict=True)
+        model.eval()
+        logger.info("Loaded refinement generator (270M, 6-level UNet)")
+    else:
+        model = load_diffusion_model(
+            args.restoration_model, device=device,
+            in_channels=2,
+            out_channels=1,
+            compile_model=False, spatial_dims=3,
+        )
 
     # ── Setup strategy (skip for refinement — it's a one-pass generator) ──
     strategy = None
