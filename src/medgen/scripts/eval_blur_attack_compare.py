@@ -37,6 +37,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from medgen.metrics.feature_extractors import ResNet50Features
+from medgen.metrics.generation_3d import compute_fid_3d
 from medgen.metrics.quality import compute_lpips_3d
 from medgen.scripts.analyze_generation_spectrum import (
     BANDS,
@@ -135,6 +137,9 @@ def main() -> None:
     parser.add_argument('--hf-max', type=float, default=0.45)
     parser.add_argument('--grid-subjects', type=int, default=5,
                         help='Number of subjects in the visual grid')
+    parser.add_argument('--fid-network', default='radimagenet',
+                        choices=['imagenet', 'radimagenet'])
+    parser.add_argument('--fid-chunk', type=int, default=64)
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -160,6 +165,37 @@ def main() -> None:
         dim=0,
     )
 
+    # ── FID feature extractor (loaded once, reused) ────────────────
+    log.info(f"Loading FID extractor: ResNet50 / {args.fid_network}")
+    extractor = ResNet50Features(
+        device=device, network_type=args.fid_network, compile_model=False,
+    )
+    real_full_t = torch.cat(
+        [torch.from_numpy(a).unsqueeze(0).unsqueeze(0).to(device).float() for a in real_np],
+        dim=0,
+    )
+
+    # ── Real-vs-real baselines: split real set in halves ──────────
+    # LPIPS floor: cross-pair LPIPS within the real set (anatomical variation).
+    # FID  floor: FID(real_half_A, real_half_B) — irreducible at this sample size.
+    log.info("\n========== real-vs-real baseline ==========")
+    half = len(real_np) // 2
+    if half >= 2:
+        real_A_t = real_full_t[:half]
+        real_B_t = real_full_t[half:2 * half]
+        real_A_np = real_np[:half]
+        real_B_np = real_np[half:2 * half]
+        baseline_lpips = cross_lpips(real_A_t, real_B_t, device)
+        baseline_l1 = cross_l1(real_A_np, real_B_np)
+        baseline_fid = compute_fid_3d(real_A_t, real_B_t, extractor, chunk_size=args.fid_chunk)
+        log.info(
+            f"  LPIPS={baseline_lpips:.4f}  L1={baseline_l1:.4f}  "
+            f"FID={baseline_fid:.4f}  (n_per_half={half})"
+        )
+    else:
+        baseline_lpips = baseline_l1 = baseline_fid = float('nan')
+        log.warning(f"Too few real volumes ({len(real_np)}) for split baseline.")
+
     # ── Per-method metrics ─────────────────────────────────────────
     method_results: dict[str, dict] = {}
     method_arrays: dict[str, list[np.ndarray]] = {}
@@ -183,32 +219,39 @@ def main() -> None:
         )
         lpips = cross_lpips(real_lpips_t, m_t, device)
         l1 = cross_l1(real_np[:args.num_real_lpips], arrs)
+        fid = compute_fid_3d(real_full_t, m_t, extractor, chunk_size=args.fid_chunk)
 
         method_results[name] = {
             'dir': str(mdir.resolve()),
             'n_volumes': len(arrs),
             'lpips_vs_real': lpips,
             'l1_vs_real': l1,
+            'fid_vs_real': fid,
             'hf_psd_slope': slope,
             'hf_psd_slope_real': real_slope,
             'slope_diff_to_real': slope - real_slope,
             'band_ratio_to_real': {b: bands[b] / real_bands[b] if real_bands[b] else None for b in BANDS},
         }
         log.info(
-            f"  LPIPS={lpips:.4f}  L1={l1:.4f}  slope={slope:.3f} "
-            f"(Δreal={slope - real_slope:+.3f})"
+            f"  LPIPS={lpips:.4f}  L1={l1:.4f}  FID={fid:.4f}  "
+            f"slope={slope:.3f} (Δreal={slope - real_slope:+.3f})"
         )
 
     # ── CSV + JSON ─────────────────────────────────────────────────
     csv_path = out_dir / 'results.csv'
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['method', 'lpips', 'l1', 'hf_psd_slope', 'slope_diff_to_real']
+        w.writerow(['method', 'lpips', 'l1', 'fid',
+                    'hf_psd_slope', 'slope_diff_to_real']
                    + [f'band_{b}' for b in BANDS])
+        # Baseline row first
+        w.writerow(['real_vs_real_BASELINE', baseline_lpips, baseline_l1,
+                    baseline_fid, '', '']
+                   + ['' for _ in BANDS])
         for name in method_results:
             r = method_results[name]
-            row = [name, r['lpips_vs_real'], r['l1_vs_real'], r['hf_psd_slope'],
-                   r['slope_diff_to_real']]
+            row = [name, r['lpips_vs_real'], r['l1_vs_real'], r['fid_vs_real'],
+                   r['hf_psd_slope'], r['slope_diff_to_real']]
             row += [r['band_ratio_to_real'][b] if r['band_ratio_to_real'][b] is not None else ''
                     for b in BANDS]
             w.writerow(row)
@@ -218,33 +261,49 @@ def main() -> None:
         'real_dir': str(Path(args.real_dir).resolve()),
         'num_real': len(real_np),
         'num_real_lpips': len(real_lpips_np),
+        'fid_network': args.fid_network,
         'hf_window': [args.hf_min, args.hf_max],
         'real_hf_psd_slope': real_slope,
         'real_band_energy': real_bands,
+        'real_vs_real_baseline': {
+            'lpips': baseline_lpips,
+            'l1': baseline_l1,
+            'fid': baseline_fid,
+            'n_per_half': len(real_np) // 2,
+        },
         'methods': method_results,
     }
     with open(out_dir / 'results.json', 'w') as f:
         json.dump(summary, f, indent=2)
 
-    # ── Bar chart: LPIPS + L1 ─────────────────────────────────────
+    # ── Bar chart: LPIPS + L1 + FID + |Δslope| with real-vs-real baseline ──
     names = list(method_results.keys())
     lpips_vals = [method_results[n]['lpips_vs_real'] for n in names]
     l1_vals = [method_results[n]['l1_vs_real'] for n in names]
+    fid_vals = [method_results[n]['fid_vs_real'] for n in names]
     slope_diffs = [abs(method_results[n]['slope_diff_to_real']) for n in names]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    axes[0].bar(names, lpips_vals, color='tab:red')
-    axes[0].set_title('LPIPS vs real (lower = better)')
-    axes[0].set_ylabel('LPIPS')
-    axes[0].tick_params(axis='x', rotation=30)
-    axes[1].bar(names, l1_vals, color='tab:blue')
-    axes[1].set_title('L1 vs real (lower = better)')
-    axes[1].set_ylabel('L1')
-    axes[1].tick_params(axis='x', rotation=30)
-    axes[2].bar(names, slope_diffs, color='tab:green')
-    axes[2].set_title('|Δ HF PSD slope vs real| (lower = better)')
-    axes[2].set_ylabel('|Δslope|')
-    axes[2].tick_params(axis='x', rotation=30)
+    fig, axes = plt.subplots(1, 4, figsize=(22, 5))
+
+    def _bar_panel(ax, vals, baseline, title, ylabel, color):
+        ax.bar(names, vals, color=color)
+        if not (isinstance(baseline, float) and (baseline != baseline)):  # not NaN
+            ax.axhline(baseline, color='black', linestyle='--', linewidth=1.5,
+                       label=f'real-vs-real ({baseline:.4f})')
+            ax.legend(fontsize=8)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.tick_params(axis='x', rotation=30)
+
+    _bar_panel(axes[0], lpips_vals, baseline_lpips,
+               'LPIPS vs real (lower = better)', 'LPIPS', 'tab:red')
+    _bar_panel(axes[1], l1_vals, baseline_l1,
+               'L1 vs real (lower = better)', 'L1', 'tab:blue')
+    _bar_panel(axes[2], fid_vals, baseline_fid,
+               f'FID vs real ({args.fid_network}, lower = better)', 'FID', 'tab:purple')
+    _bar_panel(axes[3], slope_diffs, None,
+               '|Δ HF PSD slope vs real| (lower = better)', '|Δslope|', 'tab:green')
+
     fig.tight_layout()
     fig.savefig(out_dir / 'bar_chart.png', dpi=120)
     plt.close(fig)
@@ -293,10 +352,14 @@ def main() -> None:
 
     log.info(f"\nSaved: {out_dir}/{{results.csv,results.json,bar_chart.png,visual_grid.png,spectrum_overlay.png}}")
     log.info("\nSummary table:")
-    log.info(f"{'method':<20} {'LPIPS':>8} {'L1':>8} {'slope':>7} {'Δslope':>7}")
+    log.info(f"{'method':<22} {'LPIPS':>8} {'L1':>8} {'FID':>8} {'slope':>7} {'Δslope':>7}")
+    log.info(f"{'real-vs-real BASELINE':<22} "
+             f"{baseline_lpips:>8.4f} {baseline_l1:>8.4f} {baseline_fid:>8.4f} "
+             f"{'—':>7} {'—':>7}")
     for name in names:
         r = method_results[name]
-        log.info(f"{name:<20} {r['lpips_vs_real']:>8.4f} {r['l1_vs_real']:>8.4f} "
+        log.info(f"{name:<22} {r['lpips_vs_real']:>8.4f} {r['l1_vs_real']:>8.4f} "
+                 f"{r['fid_vs_real']:>8.4f} "
                  f"{r['hf_psd_slope']:>7.3f} {r['slope_diff_to_real']:>+7.3f}")
 
 

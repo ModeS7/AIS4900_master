@@ -142,14 +142,16 @@ time python -m medgen.scripts.restore_volumes \
 # ── Diagnostic: per-method volume stats (range, mean, NaN check) ──
 echo ""
 echo "=== Volume diagnostics ==="
-python3 - <<'EOF'
+DIAG_ROOT="${OUT_ROOT}/refined" python3 <<'EOF'
+import os
 from pathlib import Path
 import nibabel as nib, numpy as np
-root = Path("${OUT_ROOT}/refined")
+root = Path(os.environ['DIAG_ROOT'])
 for d in sorted(root.iterdir()):
     files = list(d.glob('**/bravo.nii.gz'))[:3]
     if not files: continue
-    print(f"\n{d.name}: {len(list(d.glob('**/bravo.nii.gz')))} volumes")
+    n_total = len(list(d.glob('**/bravo.nii.gz')))
+    print(f"\n{d.name}: {n_total} volumes")
     for f in files:
         v = nib.load(str(f)).get_fdata()
         nan_pct = 100 * np.isnan(v).sum() / v.size
