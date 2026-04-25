@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/sdedit_%j.out
 #SBATCH --error=IDUN/output/eval/sdedit_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # T1A: SDEdit refinement using exp1_1_1000 as the in-distribution refiner.
 # Sweep t₀ ∈ {0.02, 0.05, 0.10, 0.20, 0.30}. No new training.

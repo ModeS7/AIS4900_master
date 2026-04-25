@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/fid_eq_%j.out
 #SBATCH --error=IDUN/output/eval/fid_eq_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # Test: does VQ-VAE compression equalize synth & real distributions?
 #   FID(real, synth)         — raw

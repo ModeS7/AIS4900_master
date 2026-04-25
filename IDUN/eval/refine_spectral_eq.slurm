@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/spectral_eq_%j.out
 #SBATCH --error=IDUN/output/eval/spectral_eq_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # T1B: Spectral equalization probe (no training).
 # Apply gain(f)=sqrt(P_real/P_synth) per radial frequency to each synth volume.

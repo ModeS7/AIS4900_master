@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/vqvae_probe_%j.out
 #SBATCH --error=IDUN/output/eval/vqvae_probe_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # Cheap VQ-VAE roundtrip probe (≤3 synthetic volumes through the 3D VQ-VAE).
 # Goal: see whether vector-quantization manifold projection moves the mid/high

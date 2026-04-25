@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/blur_attack_cmp_%j.out
 #SBATCH --error=IDUN/output/eval/blur_attack_cmp_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # Final comparison across all blur-attack methods.
 # Run AFTER all individual experiments have produced refined volumes.

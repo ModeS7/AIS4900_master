@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/fid_vqvae_rt_%j.out
 #SBATCH --error=IDUN/output/eval/fid_vqvae_rt_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # FID compare: original synth vs VQ-VAE-roundtripped synth, against real.
 # Roundtrips first 20 of each dir, computes FID over baseline 100 + subset 20.

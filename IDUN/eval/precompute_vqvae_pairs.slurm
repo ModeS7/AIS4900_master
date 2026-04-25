@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/eval/precompute_vqvae_pairs_%j.out
 #SBATCH --error=IDUN/output/eval/precompute_vqvae_pairs_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=ALL
 
 # Precompute (real, real_rt) training pairs for exp43 VQ-VAE deblur.
 # Creates symlinks to clean + seg, writes degraded_000.nii.gz per subject.
