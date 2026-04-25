@@ -1100,6 +1100,36 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             prediction, target, timesteps, self.num_timesteps,
                         )
 
+                    # ── Base-loss t-shift: MSE at high-t, custom at low-t ────
+                    # When `base_loss_t_shift_max_t` is set, compute BOTH MSE
+                    # (current base_loss) and a `shifted_loss_type` (l1 or
+                    # pseudo_huber) and blend by alpha(t):
+                    #   alpha = 1.0 - clamp(t / max_t, 0, 1)
+                    #   base_loss = (1-alpha)*base_loss + alpha*shifted_loss
+                    # alpha is 0 at t≥max_t (pure base_loss), 1 at t=0 (pure custom).
+                    # Mirrors the perceptual_max_timestep ramp on the OTHER side
+                    # so the two transitions can crossover at the same t.
+                    _t_shift_max_t = self.cfg.training.get('base_loss_t_shift_max_t', None)
+                    if _t_shift_max_t is not None:
+                        _shifted_type = str(self.cfg.training.get('shifted_loss_type', 'pseudo_huber'))
+                        target = self.strategy.compute_target(images, noise)
+                        if _shifted_type == 'l1':
+                            shifted_loss = torch.nn.functional.l1_loss(prediction, target)
+                        elif _shifted_type == 'pseudo_huber':
+                            from .losses import compute_pseudo_huber_loss
+                            shifted_loss = compute_pseudo_huber_loss(prediction, target)
+                        elif _shifted_type == 'lpips_huber':
+                            from .losses import compute_lpips_huber_loss
+                            shifted_loss = compute_lpips_huber_loss(
+                                prediction, target, timesteps, self.num_timesteps,
+                            )
+                        else:
+                            shifted_loss = base_loss  # no-op fallback
+                        _t_val = timesteps.max().item()
+                        _max_t = float(_t_shift_max_t)
+                        alpha = max(0.0, 1.0 - _t_val / _max_t) if _max_t > 0 else 0.0
+                        base_loss = (1.0 - alpha) * base_loss + alpha * shifted_loss
+
                     # Apply regional weighting (per-pixel weights by tumor size)
                     if self.regional_weight_computer is not None:
                         # For seg_conditioned: images IS the seg mask (labels=None)
