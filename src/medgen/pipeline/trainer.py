@@ -1099,6 +1099,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         base_loss = compute_lpips_huber_loss(
                             prediction, target, timesteps, self.num_timesteps,
                         )
+                    elif self.velocity_loss_type == 'l1':
+                        target = self.strategy.compute_target(images, noise)
+                        base_loss = torch.nn.functional.l1_loss(prediction, target)
 
                     # ── Base-loss t-shift: MSE at high-t, custom at low-t ────
                     # When `base_loss_t_shift_max_t` is set, compute BOTH MSE
