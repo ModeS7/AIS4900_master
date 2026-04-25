@@ -287,7 +287,7 @@ def main() -> None:
 
     def _bar_panel(ax, vals, baseline, title, ylabel, color):
         ax.bar(names, vals, color=color)
-        if not (isinstance(baseline, float) and (baseline != baseline)):  # not NaN
+        if baseline is not None and not (isinstance(baseline, float) and baseline != baseline):
             ax.axhline(baseline, color='black', linestyle='--', linewidth=1.5,
                        label=f'real-vs-real ({baseline:.4f})')
             ax.legend(fontsize=8)
