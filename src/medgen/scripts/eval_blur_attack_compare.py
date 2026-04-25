@@ -121,6 +121,56 @@ def cross_l1(real_arrs: list[np.ndarray], method_arrs: list[np.ndarray]) -> floa
     return float(np.mean(vals)) if vals else float('nan')
 
 
+def diversity_lpips(method_t: torch.Tensor, device: torch.device,
+                     n_pairs: int = 50, seed: int = 0) -> float:
+    """Within-method cross-pair LPIPS — diversity diagnostic for mode-collapse.
+    Samples up to n_pairs random distinct (i, j) pairs from the same method's
+    output set. Lower than method-vs-real → method outputs cluster tightly
+    (mode-collapsed). Similar to method-vs-real → method has real-like diversity.
+    """
+    n = method_t.shape[0]
+    if n < 2:
+        return float('nan')
+    rng = np.random.default_rng(seed)
+    pairs = []
+    seen = set()
+    max_unique = n * (n - 1) // 2
+    target = min(n_pairs, max_unique)
+    while len(pairs) < target:
+        i, j = rng.integers(0, n, size=2)
+        if i == j or (i, j) in seen or (j, i) in seen:
+            continue
+        seen.add((i, j))
+        pairs.append((int(i), int(j)))
+    vals = []
+    for i, j in pairs:
+        vals.append(float(compute_lpips_3d(
+            method_t[i:i + 1], method_t[j:j + 1], device=device, chunk_size=32,
+        )))
+    return float(np.mean(vals)) if vals else float('nan')
+
+
+def diversity_l1(method_arrs: list[np.ndarray], n_pairs: int = 50,
+                  seed: int = 0) -> float:
+    """Within-method cross-pair L1 — diversity diagnostic."""
+    n = len(method_arrs)
+    if n < 2:
+        return float('nan')
+    rng = np.random.default_rng(seed)
+    pairs = []
+    seen = set()
+    max_unique = n * (n - 1) // 2
+    target = min(n_pairs, max_unique)
+    while len(pairs) < target:
+        i, j = rng.integers(0, n, size=2)
+        if i == j or (i, j) in seen or (j, i) in seen:
+            continue
+        seen.add((i, j))
+        pairs.append((int(i), int(j)))
+    vals = [float(np.mean(np.abs(method_arrs[i] - method_arrs[j]))) for i, j in pairs]
+    return float(np.mean(vals)) if vals else float('nan')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--methods', nargs='+', required=True,
@@ -140,6 +190,8 @@ def main() -> None:
     parser.add_argument('--fid-network', default='radimagenet',
                         choices=['imagenet', 'radimagenet'])
     parser.add_argument('--fid-chunk', type=int, default=64)
+    parser.add_argument('--diversity-pairs', type=int, default=50,
+                        help='Random within-method (and within-real) pairs for diversity check.')
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -176,9 +228,11 @@ def main() -> None:
     )
 
     # ── Real-vs-real baselines: split real set in halves ──────────
-    # LPIPS floor: cross-pair LPIPS within the real set (anatomical variation).
-    # FID  floor: FID(real_half_A, real_half_B) — irreducible at this sample size.
-    log.info("\n========== real-vs-real baseline ==========")
+    # LPIPS / L1 / FID measured between two disjoint halves of the real set.
+    # Caveat: this is NOT a "floor" — it captures anatomical-diversity variance
+    # across different real subjects. Mode-collapsed synth distributions may
+    # score lower than this on cross-pair metrics because they cluster tighter.
+    log.info("\n========== real-vs-real reference ==========")
     half = len(real_np) // 2
     if half >= 2:
         real_A_t = real_full_t[:half]
@@ -188,12 +242,22 @@ def main() -> None:
         baseline_lpips = cross_lpips(real_A_t, real_B_t, device)
         baseline_l1 = cross_l1(real_A_np, real_B_np)
         baseline_fid = compute_fid_3d(real_A_t, real_B_t, extractor, chunk_size=args.fid_chunk)
+        # Real-set self-diversity (within-real cross-pair) — anchor for the
+        # diversity_lpips column. If a method's diversity ≪ this, it's
+        # mode-collapsed.
+        real_div_lpips = diversity_lpips(real_full_t, device, n_pairs=args.diversity_pairs)
+        real_div_l1 = diversity_l1(real_np, n_pairs=args.diversity_pairs)
         log.info(
-            f"  LPIPS={baseline_lpips:.4f}  L1={baseline_l1:.4f}  "
+            f"  cross-half  LPIPS={baseline_lpips:.4f}  L1={baseline_l1:.4f}  "
             f"FID={baseline_fid:.4f}  (n_per_half={half})"
+        )
+        log.info(
+            f"  within-real diversity  LPIPS={real_div_lpips:.4f}  L1={real_div_l1:.4f}  "
+            f"(n_pairs={args.diversity_pairs})"
         )
     else:
         baseline_lpips = baseline_l1 = baseline_fid = float('nan')
+        real_div_lpips = real_div_l1 = float('nan')
         log.warning(f"Too few real volumes ({len(real_np)}) for split baseline.")
 
     # ── Per-method metrics ─────────────────────────────────────────
@@ -220,6 +284,9 @@ def main() -> None:
         lpips = cross_lpips(real_lpips_t, m_t, device)
         l1 = cross_l1(real_np[:args.num_real_lpips], arrs)
         fid = compute_fid_3d(real_full_t, m_t, extractor, chunk_size=args.fid_chunk)
+        # Within-method diversity (subsampled cross-pairs over the method's own outputs).
+        div_lpips = diversity_lpips(m_t, device, n_pairs=args.diversity_pairs)
+        div_l1 = diversity_l1(arrs, n_pairs=args.diversity_pairs)
 
         method_results[name] = {
             'dir': str(mdir.resolve()),
@@ -227,6 +294,8 @@ def main() -> None:
             'lpips_vs_real': lpips,
             'l1_vs_real': l1,
             'fid_vs_real': fid,
+            'diversity_lpips': div_lpips,
+            'diversity_l1': div_l1,
             'hf_psd_slope': slope,
             'hf_psd_slope_real': real_slope,
             'slope_diff_to_real': slope - real_slope,
@@ -234,6 +303,7 @@ def main() -> None:
         }
         log.info(
             f"  LPIPS={lpips:.4f}  L1={l1:.4f}  FID={fid:.4f}  "
+            f"div_LPIPS={div_lpips:.4f}  div_L1={div_l1:.4f}  "
             f"slope={slope:.3f} (Δreal={slope - real_slope:+.3f})"
         )
 
@@ -242,15 +312,20 @@ def main() -> None:
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['method', 'lpips', 'l1', 'fid',
+                    'diversity_lpips', 'diversity_l1',
                     'hf_psd_slope', 'slope_diff_to_real']
                    + [f'band_{b}' for b in BANDS])
-        # Baseline row first
-        w.writerow(['real_vs_real_BASELINE', baseline_lpips, baseline_l1,
-                    baseline_fid, '', '']
+        # Baseline rows first
+        w.writerow(['real_cross_half', baseline_lpips, baseline_l1, baseline_fid,
+                    '', '', '', '']
+                   + ['' for _ in BANDS])
+        w.writerow(['real_within_diversity', '', '', '',
+                    real_div_lpips, real_div_l1, '', '']
                    + ['' for _ in BANDS])
         for name in method_results:
             r = method_results[name]
             row = [name, r['lpips_vs_real'], r['l1_vs_real'], r['fid_vs_real'],
+                   r['diversity_lpips'], r['diversity_l1'],
                    r['hf_psd_slope'], r['slope_diff_to_real']]
             row += [r['band_ratio_to_real'][b] if r['band_ratio_to_real'][b] is not None else ''
                     for b in BANDS]
@@ -266,10 +341,13 @@ def main() -> None:
         'real_hf_psd_slope': real_slope,
         'real_band_energy': real_bands,
         'real_vs_real_baseline': {
-            'lpips': baseline_lpips,
-            'l1': baseline_l1,
-            'fid': baseline_fid,
+            'lpips_cross_half': baseline_lpips,
+            'l1_cross_half': baseline_l1,
+            'fid_cross_half': baseline_fid,
+            'lpips_within_diversity': real_div_lpips,
+            'l1_within_diversity': real_div_l1,
             'n_per_half': len(real_np) // 2,
+            'diversity_pairs': args.diversity_pairs,
         },
         'methods': method_results,
     }
@@ -352,15 +430,18 @@ def main() -> None:
 
     log.info(f"\nSaved: {out_dir}/{{results.csv,results.json,bar_chart.png,visual_grid.png,spectrum_overlay.png}}")
     log.info("\nSummary table:")
-    log.info(f"{'method':<22} {'LPIPS':>8} {'L1':>8} {'FID':>8} {'slope':>7} {'Δslope':>7}")
-    log.info(f"{'real-vs-real BASELINE':<22} "
+    log.info(f"{'method':<22} {'LPIPS':>8} {'L1':>8} {'FID':>8} {'div_LPIPS':>10} {'div_L1':>8}")
+    log.info(f"{'real_cross_half':<22} "
              f"{baseline_lpips:>8.4f} {baseline_l1:>8.4f} {baseline_fid:>8.4f} "
-             f"{'—':>7} {'—':>7}")
+             f"{'—':>10} {'—':>8}")
+    log.info(f"{'real_within_diversity':<22} "
+             f"{'—':>8} {'—':>8} {'—':>8} "
+             f"{real_div_lpips:>10.4f} {real_div_l1:>8.4f}")
     for name in names:
         r = method_results[name]
         log.info(f"{name:<22} {r['lpips_vs_real']:>8.4f} {r['l1_vs_real']:>8.4f} "
                  f"{r['fid_vs_real']:>8.4f} "
-                 f"{r['hf_psd_slope']:>7.3f} {r['slope_diff_to_real']:>+7.3f}")
+                 f"{r['diversity_lpips']:>10.4f} {r['diversity_l1']:>8.4f}")
 
 
 if __name__ == '__main__':

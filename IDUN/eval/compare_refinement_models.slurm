@@ -1,10 +1,10 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-06:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --mem=256G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
 #SBATCH --job-name="cmp_ref"
@@ -37,7 +37,7 @@ conda activate AIS4900
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-NUM_VOLS=10
+NUM_VOLS=525    # Use full set (525-cap; will use however many are available)
 DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 REAL_DIR="${DATA_ROOT}/test_new"
 RAW_SYNTH="${CLUSTER_BASE}/MedicalDataSets/generated/exp1_1_bravo_imagenet_525"
@@ -176,9 +176,17 @@ time python -m medgen.scripts.eval_blur_attack_compare \
     --real-dir "${REAL_DIR}" \
     --output-dir "${EVAL_DIR}" \
     --num-volumes ${NUM_VOLS} \
-    --num-real 10 \
-    --num-real-lpips 5 \
+    --num-real 26 \
+    --num-real-lpips 10 \
+    --diversity-pairs 100 \
     --grid-subjects 5
+
+# ── Cleanup: delete intermediate refined volumes (40MB × 525 × 4 ≈ 80GB) ──
+echo ""
+echo "=== Cleanup: deleting intermediate refined volumes ==="
+du -sh "${OUT_ROOT}/refined" 2>/dev/null || true
+rm -rf "${OUT_ROOT}/refined"
+echo "Cleanup done. Only comparison/ outputs retained."
 
 echo ""
 echo "=== Done ==="
