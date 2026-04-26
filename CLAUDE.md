@@ -25,6 +25,12 @@ Before marking ANY task complete, STOP and verify:
 
 ---
 
+## Do Not Assume
+
+Don't assume anything that wasn't explicitly stated. If something is unclear or ambiguous, **ask before implementing**.
+
+---
+
 ## Key Terminology (Don't Confuse)
 
 | Term | Meaning |
