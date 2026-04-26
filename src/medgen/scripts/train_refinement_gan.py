@@ -169,7 +169,7 @@ def _gaussian_blur_3d(x: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0:
         return x
     import math
-    radius = max(1, int(math.ceil(3.0 * sigma)))
+    radius = max(1, math.ceil(3.0 * sigma))
     coords = torch.arange(-radius, radius + 1, dtype=x.dtype, device=x.device)
     kernel = torch.exp(-(coords ** 2) / (2.0 * sigma * sigma))
     kernel = kernel / kernel.sum()
