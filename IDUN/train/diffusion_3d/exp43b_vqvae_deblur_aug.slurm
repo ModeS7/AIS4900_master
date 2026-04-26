@@ -14,24 +14,14 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp43b/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp43b: VQ-VAE deblur refinement + extra augmentation, +100 epochs from exp43.
-#
-# Motivation: exp43_pix2pix (no aug) was a near-no-op on synth_rt because
-# train inputs (real_rt = VQ-VAE(real)) and inference inputs (synth_rt =
-# VQ-VAE(synth)) live in different sub-distributions. Adding random Gaussian
-# blur + low additive noise to the degraded side at training time bridges
-# that gap by simulating "diffusion-MSE blur on top of VQ-VAE compression".
-#
-# Continues training from exp43's last checkpoint by another 100 epochs
-# (epoch 100 -> 200) with the augmentation enabled.
+# exp43b: VQ-VAE deblur refinement with extra blur+noise augmentation.
+# Same data + arch as exp43, FROM-SCRATCH 200-epoch training (not a continuation
+# of exp43). The augmentation widens the corruption distribution at training
+# time so the model learns to handle inputs spanning real_rt → synth_rt.
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 EXP_NAME="exp43b_vqvae_deblur_aug"
-
-# Seed checkpoint: exp43's final checkpoint. Used only on first launch
-# when this exp43b chain has no own checkpoint yet.
-SEED_CKPT="/cluster/work/modestas/AIS4900_master/runs/diffusion_3d/refinement/exp43_vqvae_deblur_20260425-022346/checkpoint_latest.pt"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -39,18 +29,10 @@ if [ -z "${CHAIN_RUN_DIR:-}" ]; then
 fi
 
 RESUME_ARG=""
-OWN_CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
-if [ -f "${OWN_CKPT}" ] && [ -s "${OWN_CKPT}" ]; then
-    RESUME_ARG="--resume-from ${OWN_CKPT}"
-    echo "Resuming from own checkpoint: ${OWN_CKPT}"
-elif [ -f "${SEED_CKPT}" ] && [ -s "${SEED_CKPT}" ]; then
-    RESUME_ARG="--resume-from ${SEED_CKPT}"
-    echo "First launch: seeding from exp43 checkpoint: ${SEED_CKPT}"
-else
-    echo "ERROR: neither own checkpoint nor seed checkpoint found."
-    echo "  own:  ${OWN_CKPT}"
-    echo "  seed: ${SEED_CKPT}"
-    exit 1
+CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
+if [ -f "${CKPT}" ] && [ -s "${CKPT}" ]; then
+    RESUME_ARG="--resume-from ${CKPT}"
+    echo "Resuming from own checkpoint: ${CKPT}"
 fi
 
 handle_timeout() {
@@ -78,7 +60,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp43b: VQ-VAE deblur + blur/noise augmentation ==="
+echo "=== Exp43b: VQ-VAE deblur + blur/noise aug, fresh 200-epoch run ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 

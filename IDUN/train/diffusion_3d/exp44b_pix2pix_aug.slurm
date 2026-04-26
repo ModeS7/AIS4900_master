@@ -15,31 +15,16 @@
 #SBATCH --signal=B:SIGUSR1@120
 
 # exp44b: Pix2Pix refinement on synthetic-blur pairs + STRONG extra augmentation.
-#
-# Same premise as exp44 (synthetic Gaussian-blur pairs, raw_synth at inference)
-# but:
-#   - REMOVED feature-matching loss (non-stationary D features → unstable G).
-#   - REMOVED residual learning (amplifies OOD artifacts on raw_synth input).
-#   - ADDED strong on-the-fly aug to widen the training corruption distribution
-#     so it covers raw_synth's actual statistics (σ_max=0.6, noise_std=0.025,
-#     prob=0.8 — heavier than exp43b's 0.4/0.015/0.5).
-#   - LOWERED adv_weight 0.3 → 0.05 and increased d-warmup-steps 500 → 2000
-#     to fix the GAN instability that plagued exp44.
-#
-# Seeds from exp42b's last checkpoint (clean Pix2Pix ancestor, same data,
-# no residual/FM bad weights). Continues +100 epochs.
-#
-# Differentiator from exp43b in the thesis 3-way:
-#   exp43b: real VQ-VAE artifact pairs, synth_rt input,    aug σ=0.4
-#   exp44b: synthetic Gauss-blur pairs,  raw_synth input,  aug σ=0.6 (this one)
+# Same data (restoration_pairs_real) + arch as exp42b, FROM-SCRATCH 200-epoch
+# training. Differences vs exp42b:
+#   - Strong on-the-fly blur+noise augmentation (σ_max=0.6, noise=0.025, p=0.8).
+#   - Lower adv_weight (0.05 vs 0.3) + longer D warmup (2000 vs 500) +
+#     less frequent R1 (every 8 vs 4) for GAN stability.
+#   - No FM loss, no residual learning (those destabilized exp44).
 
 CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 EXP_NAME="exp44b_pix2pix_aug"
-
-# Seed: most recent exp42b run dir, checkpoint_latest.pt
-SEED_RUN=$(ls -td /cluster/work/modestas/AIS4900_master/runs/diffusion_3d/refinement/exp42b_pix2pix_refinement_* 2>/dev/null | head -1)
-SEED_CKPT="${SEED_RUN}/checkpoint_latest.pt"
 
 if [ -z "${CHAIN_RUN_DIR:-}" ]; then
     TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -47,18 +32,10 @@ if [ -z "${CHAIN_RUN_DIR:-}" ]; then
 fi
 
 RESUME_ARG=""
-OWN_CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
-if [ -f "${OWN_CKPT}" ] && [ -s "${OWN_CKPT}" ]; then
-    RESUME_ARG="--resume-from ${OWN_CKPT}"
-    echo "Resuming from own checkpoint: ${OWN_CKPT}"
-elif [ -n "${SEED_RUN}" ] && [ -f "${SEED_CKPT}" ] && [ -s "${SEED_CKPT}" ]; then
-    RESUME_ARG="--resume-from ${SEED_CKPT}"
-    echo "First launch: seeding from exp42b checkpoint: ${SEED_CKPT}"
-else
-    echo "ERROR: neither own checkpoint nor exp42b seed checkpoint found."
-    echo "  own:  ${OWN_CKPT}"
-    echo "  seed: ${SEED_CKPT}"
-    exit 1
+CKPT="${CHAIN_RUN_DIR}/checkpoint_latest.pt"
+if [ -f "${CKPT}" ] && [ -s "${CKPT}" ]; then
+    RESUME_ARG="--resume-from ${CKPT}"
+    echo "Resuming from own checkpoint: ${CKPT}"
 fi
 
 handle_timeout() {
@@ -86,7 +63,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Exp44b: Pix2Pix on synth-blur pairs + strong extra aug ==="
+echo "=== Exp44b: Pix2Pix on synth-blur pairs + strong aug, fresh 200-epoch run ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
