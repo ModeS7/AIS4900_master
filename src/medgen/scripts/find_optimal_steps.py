@@ -82,6 +82,44 @@ GR = (math.sqrt(5) - 1) / 2  # Golden ratio conjugate ≈ 0.618
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Two-model handoff wrapper
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class HandoffWrapper(torch.nn.Module):
+    """Routes forward calls to one of two models based on the current timestep.
+
+    Used for low-t-fine-tuned variants (e.g. exp48 family) where the network
+    only learned t∈[0, handoff_t]. At inference we use a different model
+    (the seed) for t > handoff_t and the fine-tuned model for t <= handoff_t.
+
+    MONAI timestep convention: timesteps∈[0, num_train_timesteps],
+    timesteps=0 → clean, timesteps=T → noise. So `timesteps > threshold`
+    means we are in the noisier (high-t) regime.
+    """
+
+    def __init__(
+        self,
+        high_t_model: torch.nn.Module,
+        low_t_model: torch.nn.Module,
+        handoff_t: float,
+        num_train_timesteps: int = 1000,
+    ) -> None:
+        super().__init__()
+        self.high_t_model = high_t_model
+        self.low_t_model = low_t_model
+        if not 0.0 < handoff_t < 1.0:
+            raise ValueError(f"handoff_t must be in (0, 1), got {handoff_t}")
+        self.handoff_threshold = handoff_t * num_train_timesteps
+        self.handoff_t_norm = handoff_t
+
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor, **kwargs):
+        t_val = timesteps.flatten()[0].item()
+        if t_val > self.handoff_threshold:
+            return self.high_t_model(x=x, timesteps=timesteps, **kwargs)
+        return self.low_t_model(x=x, timesteps=timesteps, **kwargs)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Golden section search
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -293,6 +331,18 @@ def main():
     # Model
     parser.add_argument('--checkpoint', '--bravo-model', default=None, dest='checkpoint',
                         help='Path to trained model checkpoint')
+    parser.add_argument('--high-t-checkpoint', default=None,
+                        help='High-t (noisy) model for two-model handoff. Used '
+                             'with --low-t-checkpoint and --handoff-t. Mutually '
+                             'exclusive with --checkpoint.')
+    parser.add_argument('--low-t-checkpoint', default=None,
+                        help='Low-t (clean) model for two-model handoff. '
+                             'Mutually exclusive with --checkpoint.')
+    parser.add_argument('--handoff-t', type=float, default=0.25,
+                        help='Normalized timestep at which to switch from '
+                             'high-t-model to low-t-model. (default: 0.25). '
+                             'MONAI convention: t=0 clean, t=1 noise → for '
+                             't>handoff_t use high_t_model, else low_t_model.')
     parser.add_argument('--mode', default=None,
                         help='Generation mode (auto-detected from checkpoint if omitted)')
     parser.add_argument('--strategy', default=None, choices=['rflow', 'ddpm'],
@@ -375,8 +425,17 @@ def main():
         _run_smoke_test(args)
         return
 
+    # Mutually-exclusive: single-model vs two-model handoff.
+    handoff_mode = bool(args.high_t_checkpoint or args.low_t_checkpoint)
+    if handoff_mode:
+        if args.checkpoint:
+            parser.error("--checkpoint cannot be combined with --high-t-checkpoint / --low-t-checkpoint")
+        if not (args.high_t_checkpoint and args.low_t_checkpoint):
+            parser.error("--high-t-checkpoint and --low-t-checkpoint must both be provided")
+        # Use the low-t (fine-tuned) checkpoint for config auto-detection
+        args.checkpoint = args.low_t_checkpoint
     if not args.checkpoint:
-        parser.error("--checkpoint is required (unless --smoke-test)")
+        parser.error("--checkpoint (or --high-t-checkpoint + --low-t-checkpoint) is required (unless --smoke-test)")
     if not args.data_root:
         parser.error("--data-root is required (unless --smoke-test)")
 
@@ -606,11 +665,33 @@ def main():
 
     logger.info("Loading model...")
     # For non-pixel spaces, pass actual model channels (not mode-level)
-    model = load_diffusion_model(
-        args.checkpoint, device=device,
-        in_channels=model_in_channels, out_channels=model_out_channels,
-        compile_model=False, spatial_dims=spatial_dims,
-    )
+    if handoff_mode:
+        logger.info(
+            f"Two-model handoff: high-t (t > {args.handoff_t}) ← "
+            f"{args.high_t_checkpoint} | low-t ← {args.low_t_checkpoint}"
+        )
+        high_t_model = load_diffusion_model(
+            args.high_t_checkpoint, device=device,
+            in_channels=model_in_channels, out_channels=model_out_channels,
+            compile_model=False, spatial_dims=spatial_dims,
+        )
+        low_t_model = load_diffusion_model(
+            args.low_t_checkpoint, device=device,
+            in_channels=model_in_channels, out_channels=model_out_channels,
+            compile_model=False, spatial_dims=spatial_dims,
+        )
+        model = HandoffWrapper(
+            high_t_model=high_t_model,
+            low_t_model=low_t_model,
+            handoff_t=args.handoff_t,
+            num_train_timesteps=1000,
+        )
+    else:
+        model = load_diffusion_model(
+            args.checkpoint, device=device,
+            in_channels=model_in_channels, out_channels=model_out_channels,
+            compile_model=False, spatial_dims=spatial_dims,
+        )
 
     # ── Setup strategy ────────────────────────────────────────────────────
     if strategy_name == 'ddpm':
