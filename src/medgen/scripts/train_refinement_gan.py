@@ -116,6 +116,17 @@ def parse_args() -> argparse.Namespace:
                         help='Per-step probability of applying each extra aug.')
     parser.add_argument('--ema-beta', type=float, default=0.9999)
     parser.add_argument('--use-compile', action='store_true')
+    # Generator architecture
+    parser.add_argument('--generator-arch', default='unet', choices=['unet', 'mamba'],
+                        help='Generator backbone (default: unet, MONAI 270M).')
+    parser.add_argument('--mamba-variant', default='B', choices=['S', 'B', 'L', 'XL'],
+                        help='Mamba size when --generator-arch=mamba.')
+    parser.add_argument('--mamba-patch-size', type=int, default=4,
+                        help='Patch size for Mamba PatchEmbed3D. At 256×256×160, '
+                             'patch=4 → 64×64×40 grid (164k tokens), patch=8 → '
+                             '32×32×20 (20k tokens). (default: 4)')
+    parser.add_argument('--mamba-window-size', type=int, default=8,
+                        help='Window size for Mamba windowed attention. (default: 8)')
     # Logging / checkpointing
     parser.add_argument('--log-every', type=int, default=20)
     parser.add_argument('--val-every-epoch', type=int, default=1)
@@ -135,29 +146,56 @@ def parse_args() -> argparse.Namespace:
 def build_generator(
     spatial_dims: int,
     device: torch.device,
+    arch: str = 'unet',
+    image_size: int = 256,
+    depth_size: int = 160,
+    mamba_variant: str = 'B',
+    mamba_patch_size: int = 4,
+    mamba_window_size: int = 8,
 ) -> nn.Module:
     """Instantiate the refinement generator.
 
-    Architecture: matches `configs/model/default_3d.yaml` (~270M params), the
-    same backbone used by the exp1_1_1000 bravo model. 6-level U-Net with
-    attention at the two deepest levels (L4, L5) and narrow first level (16ch)
-    to keep memory manageable at full 256×256×160.
+    arch='unet' (default): MONAI DiffusionModelUNet, ~270M params, 6-level
+        U-Net with attention at the two deepest levels (L4, L5). Same backbone
+        as exp1_1_1000 bravo.
 
-    We pass a constant t=0 tensor at forward time; the FiLM time embedding
-    becomes a constant bias that the network absorbs as a no-op over training.
+    arch='mamba': MambaDiff with variant ∈ {S, B, L, XL}. Patch_size controls
+        token count: at 256×256×160 with patch=4, grid is 64×64×40 ≈ 164k
+        tokens; patch=8 gives 32×32×20 ≈ 20k tokens.
+
+    Both forwards are model(x=..., timesteps=...) — we pass a constant t=0.
     """
-    model = DiffusionModelUNet(
-        spatial_dims=spatial_dims,
-        in_channels=1,
-        out_channels=1,
-        channels=(16, 32, 64, 256, 512, 512),
-        attention_levels=(False, False, False, False, True, True),
-        num_res_blocks=(1, 1, 1, 2, 2, 2),
-        num_head_channels=256,
-        norm_num_groups=16,
-    ).to(device)
+    if arch == 'unet':
+        model = DiffusionModelUNet(
+            spatial_dims=spatial_dims,
+            in_channels=1,
+            out_channels=1,
+            channels=(16, 32, 64, 256, 512, 512),
+            attention_levels=(False, False, False, False, True, True),
+            num_res_blocks=(1, 1, 1, 2, 2, 2),
+            num_head_channels=256,
+            norm_num_groups=16,
+        ).to(device)
+    elif arch == 'mamba':
+        from medgen.models.mamba_diff import MAMBA_VARIANTS, MambaDiff
+        if mamba_variant not in MAMBA_VARIANTS:
+            raise ValueError(f"Unknown Mamba variant {mamba_variant}; valid: {sorted(MAMBA_VARIANTS)}")
+        var_cfg = MAMBA_VARIANTS[mamba_variant]
+        model = MambaDiff(
+            spatial_dims=spatial_dims,
+            input_size=image_size,
+            depth_size=depth_size,
+            patch_size=mamba_patch_size,
+            in_channels=1,
+            out_channels=1,
+            embed_dim=var_cfg['embed_dim'],
+            num_heads=var_cfg['num_heads'],
+            window_size=mamba_window_size,
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown generator arch '{arch}', valid: unet|mamba")
     n_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Generator params: {n_params:,}")
+    logger.info(f"Generator arch={arch} params: {n_params:,}")
     return model
 
 
@@ -336,7 +374,16 @@ def main() -> None:
         logger.info(f"Val: {len(val_ds)} subjects, {len(val_loader)} batches")
 
     # ─── Generator ──────────────────────────────────────────────
-    generator = build_generator(spatial_dims=3, device=device)
+    generator = build_generator(
+        spatial_dims=3,
+        device=device,
+        arch=args.generator_arch,
+        image_size=args.image_size,
+        depth_size=args.depth,
+        mamba_variant=args.mamba_variant,
+        mamba_patch_size=args.mamba_patch_size,
+        mamba_window_size=args.mamba_window_size,
+    )
     ema = EMA(generator, beta=args.ema_beta, update_after_step=0, update_every=1)
 
     # ─── Discriminator ──────────────────────────────────────────
