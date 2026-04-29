@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-12:00:00
+#SBATCH --time=0-16:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -35,7 +35,10 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
-CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp32_1_1000_pixel_bravo_ffl_20260412-151416/checkpoint_latest.pt"
+# Auto-detect latest matching run dir.
+_RUN_DIR=$(ls -td ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp32_1_1000_pixel_bravo_ffl_* 2>/dev/null | head -1)
+
+CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/${_RUN_DIR##*/}/checkpoint_latest.pt"
 OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp32_1_1000"
 
 if [ ! -f "$CKPT" ]; then
@@ -51,7 +54,7 @@ time python -m medgen.scripts.find_optimal_steps \
     --data-root "${DATA_ROOT}" \
     --image-size 256 \
     --num-volumes 25 \
-    --lo 10 --hi 100 \
+    --step-grid 20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100 --num-seeds 3 \
     --ref-split test \
     --seed 42
 

@@ -7,28 +7,28 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="opt_exp47a"
-#SBATCH --output=IDUN/output/eval/find_optimal_steps_exp47a_%j.out
-#SBATCH --error=IDUN/output/eval/find_optimal_steps_exp47a_%j.err
+#SBATCH --job-name="opt_exp48e_st"
+#SBATCH --output=IDUN/output/eval/find_optimal_steps_exp48e_standalone_%j.out
+#SBATCH --error=IDUN/output/eval/find_optimal_steps_exp48e_standalone_%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 
-# exp47a — dense step-grid sweep × 3 seeds, RadImageNet FID.
-# Grid: 20,25,...,100 (17 points). Seeds: 42, 43, 44.
+# exp48e — standalone optima sweep (full t=1→0 trajectory uses only exp48e weights).
+# Grid 20-100 step 5, 3 seeds, RadImageNet FID.
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== Dense optima sweep: exp47a ==="
+echo "=== Optima sweep: exp48e standalone ==="
 nvidia-smi
 module purge && module load Anaconda3/2024.02-1 && conda activate AIS4900
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 DATA_ROOT="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
-RUN_DIR=$(ls -td ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp47a_lpips_strong_* 2>/dev/null | head -1)
+RUN_DIR=$(ls -td ${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo/exp48e_lowt_only_perceptual_floor_* 2>/dev/null | head -1)
 CKPT="${RUN_DIR}/checkpoint_latest.pt"
-OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp47a"
+OUT_DIR="${CLUSTER_BASE}/MedicalDataSets/eval_optimal_steps_exp48e/standalone"
 
 [ ! -f "$CKPT" ] && { echo "ERROR: ckpt not found: $CKPT"; exit 1; }
 echo "Checkpoint: $CKPT"
@@ -46,5 +46,5 @@ time python -m medgen.scripts.find_optimal_steps \
     --seed 42
 
 echo ""
-echo "=== Results: exp47a ==="
+echo "=== Results: exp48e standalone ==="
 cat "${OUT_DIR}/search_results.json" 2>/dev/null

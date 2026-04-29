@@ -374,6 +374,20 @@ def main():
                         help='Upper bound for step count search (default: 50)')
     parser.add_argument('--tol', type=int, default=1,
                         help='Stop when interval width <= tol (default: 1)')
+    parser.add_argument('--step-grid', default=None,
+                        help='Dense step-count grid as comma-separated ints, '
+                             'e.g. "20,25,30,...,100". When provided, REPLACES '
+                             'golden-section search with an explicit grid sweep. '
+                             'Recommended over GSS because the FID-vs-steps '
+                             'function is empirically multimodal at small '
+                             'sample counts; GSS gets stuck in local minima.')
+    parser.add_argument('--num-seeds', type=int, default=1,
+                        help='Number of independent seeds for dense grid '
+                             'sweep. For each step count, runs --num-seeds '
+                             'evaluations with consecutive seeds (base, base+1, '
+                             '...) and reports mean±std per step. (default: 1, '
+                             'recommended: 3+ to smooth trajectory-integration '
+                             'variance). Ignored when --step-grid is not set.')
 
     # Volume config
     parser.add_argument('--cond-split', default='val',
@@ -412,6 +426,19 @@ def main():
     parser.add_argument('--smoke-test', action='store_true',
                         help='Smoke test with tiny dummy model')
     args = parser.parse_args()
+
+    # Parse --step-grid into a sorted list of integers, if provided.
+    args.step_grid_list = None
+    if args.step_grid:
+        try:
+            grid = [int(s.strip()) for s in args.step_grid.split(',') if s.strip()]
+        except ValueError:
+            parser.error(f"--step-grid must be comma-separated integers, got: {args.step_grid!r}")
+        if not grid:
+            parser.error("--step-grid is empty")
+        args.step_grid_list = sorted(set(grid))
+        if args.num_seeds < 1:
+            parser.error("--num-seeds must be >= 1")
 
     # Parse comma-separated metrics
     VALID_METRICS = {'fid', 'kid', 'cmmd', 'fid_radimagenet', 'kid_radimagenet', 'morphological', 'pca'}
@@ -728,11 +755,13 @@ def main():
         strategy.set_preconditioning(sigma_data, model_out_channels)
 
     # ── Pre-generate noise (shared across all evaluations) ────────────────
+    # In GSS mode this is generated once and reused. In dense-grid mode
+    # `noise_list_holder[0]` is reassigned per seed below.
     logger.info(f"Pre-generating {args.num_volumes} noise tensors (seed={args.seed})...")
-    noise_list = generate_noise_tensors(
+    noise_list_holder = [generate_noise_tensors(
         args.num_volumes, noise_depth, noise_image_size, device, args.seed,
         out_channels=model_out_channels,
-    )
+    )]
 
     # ── Load PCA brain shape model (auto-discover) ──────────────────────
     brain_pca = None
@@ -768,7 +797,7 @@ def main():
         is_pixel_space = (args.space == 'pixel')
         latent_channels_arg = 1 if is_pixel_space else model_out_channels
         volumes, total_nfe, wall_time = generate_volumes(
-            model, strategy, noise_list, cond_list, solver_cfg, device,
+            model, strategy, noise_list_holder[0], cond_list, solver_cfg, device,
             is_seg=is_seg,
             encode_cond_fn=encode_cond_fn,
             decode_fn=decode_fn,
@@ -871,10 +900,10 @@ def main():
 
         return result
 
-    # ── Run golden section search (multi-metric with shared cache) ────────
     total_start = time.time()
 
-    # Shared evaluation cache: step_count -> dict of all metric values
+    # Shared evaluation cache: step_count -> dict of all metric values.
+    # In dense-grid + multi-seed mode the cache is cleared between seeds.
     eval_cache: dict[int, dict[str, float]] = {}
 
     def evaluate_and_cache(num_steps: int) -> dict[str, float]:
@@ -886,30 +915,107 @@ def main():
         return eval_cache[num_steps]
 
     search_results: dict[str, tuple[int, float, dict[int, float]]] = {}
+    grid_sweep_results: dict | None = None
 
-    for i, metric in enumerate(args.metrics):
+    if args.step_grid_list:
+        # ── Dense grid sweep with multi-seed averaging ─────────────────
         logger.info(f"\n{'=' * 70}")
-        logger.info(f"Golden section search [{i+1}/{len(args.metrics)}]: {metric.upper()}")
+        logger.info(
+            f"Dense grid sweep: {len(args.step_grid_list)} step counts "
+            f"× {args.num_seeds} seed(s) = {len(args.step_grid_list) * args.num_seeds} evaluations"
+        )
+        logger.info(f"  Step grid: {args.step_grid_list}")
+        logger.info(f"  Base seed: {args.seed} (using seeds {args.seed}..{args.seed + args.num_seeds - 1})")
         logger.info(f"{'=' * 70}")
 
-        # Pre-populate per-metric cache from previously evaluated steps
-        metric_cache: dict[int, float] = {}
-        for steps, all_m in eval_cache.items():
-            if metric in all_m:
-                metric_cache[steps] = all_m[metric]
-        if metric_cache:
-            logger.info(f"  Pre-populated {len(metric_cache)} cached evaluations from previous searches")
+        # per_seed_metrics[seed_idx][steps] = {metric: value}
+        per_seed_metrics: list[dict[int, dict[str, float]]] = []
 
-        def _make_eval_fn(m: str):
-            def _eval_fn(n: int) -> float:
-                return evaluate_and_cache(n)[m]
-            return _eval_fn
+        for seed_idx in range(args.num_seeds):
+            current_seed = args.seed + seed_idx
+            logger.info(f"\n--- Seed {seed_idx + 1}/{args.num_seeds} (seed={current_seed}) ---")
+            # Regenerate noise tensors with the current seed.
+            noise_list_holder[0] = generate_noise_tensors(
+                args.num_volumes, noise_depth, noise_image_size, device, current_seed,
+                out_channels=model_out_channels,
+            )
+            # Reset eval_cache so each seed re-evaluates the full grid.
+            eval_cache.clear()
+            for steps in args.step_grid_list:
+                evaluate_and_cache(steps)
+            # Capture this seed's results before the cache is cleared next loop.
+            per_seed_metrics.append({s: dict(m) for s, m in eval_cache.items()})
 
-        best_steps, best_val, all_evals = golden_section_search(
-            _make_eval_fn(metric), args.lo, args.hi,
-            tol=args.tol, cache=metric_cache,
-        )
-        search_results[metric] = (best_steps, best_val, all_evals)
+        # Aggregate per-step mean ± std across seeds.
+        # aggregated[steps][metric] = {'mean': ..., 'std': ..., 'values': [...]}
+        aggregated: dict[int, dict[str, dict]] = {}
+        for steps in args.step_grid_list:
+            agg_metrics: dict[str, dict] = {}
+            for metric in args.metrics:
+                vals = [
+                    per_seed_metrics[s][steps][metric]
+                    for s in range(args.num_seeds)
+                    if metric in per_seed_metrics[s].get(steps, {})
+                ]
+                if vals:
+                    agg_metrics[metric] = {
+                        'mean': float(np.mean(vals)),
+                        'std': float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0,
+                        'values': [float(v) for v in vals],
+                        'n_seeds': len(vals),
+                    }
+            aggregated[steps] = agg_metrics
+
+        # Pick best per metric by lowest mean.
+        for metric in args.metrics:
+            candidates = {
+                s: aggregated[s][metric]['mean']
+                for s in args.step_grid_list
+                if metric in aggregated[s]
+            }
+            if not candidates:
+                continue
+            best_steps = min(candidates, key=candidates.get)
+            best_val = candidates[best_steps]
+            best_std = aggregated[best_steps][metric]['std']
+            search_results[metric] = (best_steps, best_val, candidates)
+            logger.info(
+                f"  {metric.upper():>20}: best = {best_steps} steps, "
+                f"{metric} = {best_val:.4f} ± {best_std:.4f} (mean ± std over {args.num_seeds} seeds)"
+            )
+
+        grid_sweep_results = {
+            'mode': 'dense_grid',
+            'step_grid': args.step_grid_list,
+            'num_seeds': args.num_seeds,
+            'base_seed': args.seed,
+            'per_step': aggregated,
+        }
+    else:
+        # ── Golden section search (legacy mode) ────────────────────────
+        for i, metric in enumerate(args.metrics):
+            logger.info(f"\n{'=' * 70}")
+            logger.info(f"Golden section search [{i+1}/{len(args.metrics)}]: {metric.upper()}")
+            logger.info(f"{'=' * 70}")
+
+            # Pre-populate per-metric cache from previously evaluated steps
+            metric_cache: dict[int, float] = {}
+            for steps, all_m in eval_cache.items():
+                if metric in all_m:
+                    metric_cache[steps] = all_m[metric]
+            if metric_cache:
+                logger.info(f"  Pre-populated {len(metric_cache)} cached evaluations from previous searches")
+
+            def _make_eval_fn(m: str):
+                def _eval_fn(n: int) -> float:
+                    return evaluate_and_cache(n)[m]
+                return _eval_fn
+
+            best_steps, best_val, all_evals = golden_section_search(
+                _make_eval_fn(metric), args.lo, args.hi,
+                tol=args.tol, cache=metric_cache,
+            )
+            search_results[metric] = (best_steps, best_val, all_evals)
 
     total_time = time.time() - total_start
 
@@ -969,7 +1075,8 @@ def main():
         marker = " <--" if h['steps'] in best_steps_set else ""
         logger.info(f"  {'  '.join(parts)}{marker}")
 
-    _save_history(output_dir, history, args, search_results=search_results)
+    _save_history(output_dir, history, args, search_results=search_results,
+                  grid_sweep_results=grid_sweep_results)
 
 
 def _save_history(
@@ -977,6 +1084,7 @@ def _save_history(
     history: list[dict],
     args,
     search_results: dict[str, tuple[int, float, dict[int, float]]] | None = None,
+    grid_sweep_results: dict | None = None,
 ) -> None:
     """Save search history to JSON."""
     data = {
@@ -997,6 +1105,8 @@ def _save_history(
             metric: {'best_steps': best, 'best_value': val}
             for metric, (best, val, _) in search_results.items()
         }
+    if grid_sweep_results:
+        data['grid_sweep'] = grid_sweep_results
     with open(output_dir / "search_results.json", 'w') as f:
         json.dump(data, f, indent=2)
 
