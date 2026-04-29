@@ -47,32 +47,29 @@ class Result:
     error: str | None = None
 
 
-# (label, in_channels, H, W, D)
+# (label, in_channels, H, W, D, allowed_patch_sizes)
+# WDM and VQ-VAE: spatial is large, sweep patches 1-4.
+# DC-AE: spatial is already aggressively compressed, only 1-2 make sense.
 LATENT_CONFIGS = [
-    ('WDM_8x128x128x80',   8, 128, 128, 80),
-    ('VQVAE_4x64x64x40',   4,  64,  64, 40),
-    ('DCAE_128x8x8x160', 128,   8,   8, 160),
-    ('DCAE_512x4x4x160', 512,   4,   4, 160),
-    ('DCAE_2048x2x2x160', 2048, 2,   2, 160),
+    ('WDM_8x128x128x80',   8, 128, 128, 80,  [1, 2, 3, 4]),
+    ('VQVAE_4x64x64x40',   4,  64,  64, 40,  [1, 2, 3, 4]),
+    ('DCAE_128x8x8x160', 128,   8,   8, 160, [1, 2]),
+    ('DCAE_512x4x4x160', 512,   4,   4, 160, [1, 2]),
+    ('DCAE_2048x2x2x160', 2048, 2,   2, 160, [1, 2]),
 ]
 VARIANTS = ['S', 'B', 'L', 'XL']
 
 
-def pick_patch_window(h: int, w: int, d: int) -> tuple[int, int]:
-    """Pick patch_size and window_size that work for this input."""
-    smallest_spatial = min(h, w)
-    # patch=2 unless smallest spatial dim is < 4 (would over-compress).
-    patch = 2 if smallest_spatial >= 4 else 1
-    # window must fit the smallest grid dim after patch embedding.
+def pick_window(h: int, w: int, d: int, patch: int) -> int:
+    """Window size = min(8, smallest grid dim after patching)."""
     grid_min = min(h // patch, w // patch, d // patch)
-    window = min(8, max(1, grid_min))
-    return patch, window
+    return min(8, max(1, grid_min))
 
 
-def profile_one(variant: str, cfg: tuple, batch_size: int, grad_ckpt: bool,
-                device: torch.device) -> Result:
-    label, ch, h, w, d = cfg
-    patch, window = pick_patch_window(h, w, d)
+def profile_one(variant: str, cfg: tuple, patch: int, batch_size: int,
+                grad_ckpt: bool, device: torch.device) -> Result:
+    label, ch, h, w, d = cfg[:5]
+    window = pick_window(h, w, d, patch)
     grid = (h // patch, w // patch, d // patch)
     tokens = grid[0] * grid[1] * grid[2]
 
@@ -164,17 +161,22 @@ def main():
 
     results: list[Result] = []
     for cfg in LATENT_CONFIGS:
-        for variant in VARIANTS:
-            label = cfg[0]
-            print(f"  {variant:<3}  {label:<22} ", end='', flush=True)
-            r = profile_one(variant, cfg, args.batch_size, args.grad_ckpt, device)
-            results.append(r)
-            if r.error:
-                print(f"  ✗ {r.error}")
-            else:
-                print(f"  params={r.params_m:6.1f}M  vram={r.peak_vram_gb:5.2f}GB  "
-                      f"fwd={r.fwd_ms:6.1f}ms  bwd={r.bwd_ms:6.1f}ms  "
-                      f"tokens={r.tokens}  patch={r.patch} win={r.window}")
+        label, ch, h, w, dd, patches = cfg
+        for patch in patches:
+            if patch > min(h, w, dd):
+                print(f"  -    {label:<22} patch={patch}  -- skipped (smallest dim < patch) --")
+                continue
+            for variant in VARIANTS:
+                print(f"  {variant:<3}  {label:<22} patch={patch} ", end='', flush=True)
+                r = profile_one(variant, cfg, patch, args.batch_size,
+                                args.grad_ckpt, device)
+                results.append(r)
+                if r.error:
+                    print(f"  ✗ {r.error}")
+                else:
+                    print(f"  params={r.params_m:6.1f}M  vram={r.peak_vram_gb:5.2f}GB  "
+                          f"fwd={r.fwd_ms:6.1f}ms  bwd={r.bwd_ms:6.1f}ms  "
+                          f"tokens={r.tokens}  win={r.window}")
 
     # Summary table.
     print()
