@@ -28,6 +28,12 @@ gen_mode: bravo           # bravo, dual, seg_conditioned
 seg_model: null           # Path to trained segmentation model
 image_model: null         # Path to trained image model (bravo or dual)
 
+# Two-model bravo handoff (optional, for low-t-fine-tuned variants like exp48).
+# When `image_model_high_t` is set, sampling uses `image_model_high_t` for
+# t > handoff_t * 1000 and `image_model` (the low-t fine-tune) for the rest.
+image_model_high_t: null  # Optional high-t bravo checkpoint
+handoff_t: 0.25           # Normalized timestep at which to switch (MONAI t in [0, 1])
+
 # Dimensions
 image_size: 128           # Image height/width
 depth: 160                # Volume depth for 3D (generation depth)

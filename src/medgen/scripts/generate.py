@@ -376,6 +376,23 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         in_channels=in_ch, out_channels=out_ch, compile_model=True
     )
 
+    # Optional two-model handoff: load high-t model and wrap.
+    high_t_path = cfg.get('image_model_high_t')
+    if high_t_path:
+        from medgen.models.handoff import HandoffWrapper
+        logger.info(f"Two-model handoff: high-t ← {high_t_path}, "
+                    f"low-t ← {cfg.image_model}, handoff_t={cfg.handoff_t}")
+        high_t_model = load_diffusion_model(
+            high_t_path, device=device,
+            in_channels=in_ch, out_channels=out_ch, compile_model=False,
+        )
+        image_model = HandoffWrapper(
+            high_t_model=high_t_model,
+            low_t_model=image_model,
+            handoff_t=float(cfg.handoff_t),
+            num_train_timesteps=1000,
+        )
+
     # DiffRS (opt-in, applied to image model only)
     diffrs_disc, diffrs_cfg = _build_diffrs(cfg, image_model, device)
 
