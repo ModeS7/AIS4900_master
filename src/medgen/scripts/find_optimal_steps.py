@@ -61,6 +61,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from medgen.models.handoff import HandoffWrapper
 from medgen.scripts.eval_ode_solvers import (
     SolverConfig,
     compute_all_metrics,
@@ -79,8 +80,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 GR = (math.sqrt(5) - 1) / 2  # Golden ratio conjugate ≈ 0.618
-
-from medgen.models.handoff import HandoffWrapper
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
