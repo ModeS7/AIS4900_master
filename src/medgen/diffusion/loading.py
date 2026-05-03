@@ -358,7 +358,10 @@ def load_diffusion_model_with_metadata(
             f"depths={encoder_depths}, bottleneck_depth={bottleneck_depth}"
         )
         if wrapper_type == 'score_aug':
-            embed_dim = MAMBA_VARIANTS[variant]['embed_dim']
+            # MambaDiff's cond_dim is dims[-1] (the largest stage), exposed as
+            # `hidden_size`. Don't use MAMBA_VARIANTS['embed_dim'] — that's
+            # the first-stage dim, which is smaller for L/XL.
+            embed_dim = base_model.hidden_size
             model, wrapper_name = create_conditioning_wrapper(
                 model=base_model, use_omega=True, use_mode=False, embed_dim=embed_dim,
             )
