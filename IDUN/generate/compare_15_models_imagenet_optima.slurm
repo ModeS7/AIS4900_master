@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-08:00:00
+#SBATCH --time=0-02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
@@ -64,7 +64,7 @@ run_model () {
             echo "  SKIP [${label}]: high-t ckpt not found at ${high_run_dir}"
             return
         fi
-        handoff_args="+image_model_high_t=${high_ckpt} +handoff_t=0.25"
+        handoff_args="+image_model_high_t=${high_ckpt} handoff_t=0.25"
     fi
 
     echo ""
