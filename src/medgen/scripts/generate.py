@@ -923,6 +923,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_brain_retries = cfg.get('max_brain_retries', 5)
         outer_retries = 0  # retries per sample (reset on successful save)
         max_outer_retries = cfg.get('max_outer_retries', 20)
+        mask_outside_brain = cfg.get('mask_outside_brain', True)
+        mask_outside_dilate = cfg.get('mask_outside_brain_dilate_pixels', 2)
+        if mask_outside_brain:
+            logger.info(f"Final brain-mask zeroing: enabled (threshold={brain_threshold}, dilate={mask_outside_dilate}px)")
 
         while generated < cfg.num_images:
             if outer_retries >= max_outer_retries:
@@ -1098,6 +1102,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 total_retries += 1
                 outer_retries += 1
                 continue
+
+            # Stage 3 — Zero everything outside the predicted brain mask so
+            # downstream segmentation is not distracted by background noise.
+            if mask_outside_brain:
+                final_brain_mask = create_brain_mask(
+                    bravo_np, threshold=brain_threshold,
+                    dilate_pixels=mask_outside_dilate,
+                )
+                bravo_np = bravo_np * final_brain_mask.astype(bravo_np.dtype)
+                if is_dual:
+                    dual_channels = dual_channels * final_brain_mask[None].astype(dual_channels.dtype)
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
             seg_binary_save = np.transpose(seg_binary, (1, 2, 0))
