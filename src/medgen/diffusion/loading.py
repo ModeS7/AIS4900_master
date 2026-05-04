@@ -330,9 +330,37 @@ def load_diffusion_model_with_metadata(
         else:
             bottleneck_depth = 2
 
-        # Spatial dims from arch_config (image_size / depth_size)
+        # Spatial dims from arch_config (image_size / depth_size).
+        # Override from saved pos_embed shape when available — checkpoints
+        # trained in wavelet/latent space have model depth_size != pixel
+        # depth_size, but arch_config['depth_size'] often holds the pixel
+        # value (e.g. 160) instead of the model value (e.g. 80).
+        # pos_embed shape: 3D = [1, D_grid, H_grid, W_grid, dim],
+        #                  2D = [1, H_grid, W_grid, dim].
         mamba_input_size = arch_config.get('image_size', 256)
         mamba_depth_size = arch_config.get('depth_size', 160) if resolved_spatial_dims == 3 else None
+        if 'pos_embed' in state_dict:
+            pe_shape = state_dict['pos_embed'].shape
+            if resolved_spatial_dims == 3 and len(pe_shape) == 5:
+                d_grid, h_grid, w_grid = pe_shape[1], pe_shape[2], pe_shape[3]
+                inferred_depth = d_grid * patch_size
+                inferred_input = h_grid * patch_size
+                if inferred_depth != mamba_depth_size or inferred_input != mamba_input_size:
+                    logger.info(
+                        f"  pos_embed inferred shape: depth_size={inferred_depth} "
+                        f"(was {mamba_depth_size}), input_size={inferred_input} (was {mamba_input_size})"
+                    )
+                mamba_depth_size = inferred_depth
+                mamba_input_size = inferred_input
+            elif resolved_spatial_dims == 2 and len(pe_shape) == 4:
+                h_grid, w_grid = pe_shape[1], pe_shape[2]
+                inferred_input = h_grid * patch_size
+                if inferred_input != mamba_input_size:
+                    logger.info(
+                        f"  pos_embed inferred input_size={inferred_input} "
+                        f"(was {mamba_input_size})"
+                    )
+                mamba_input_size = inferred_input
 
         base_model = create_mamba_diff(
             variant=variant,
