@@ -44,6 +44,7 @@ src/medgen/
 │       ├── single.py            # Single modality loaders (seg, bravo)
 │       ├── unified.py           # Unified loader dispatch
 │       ├── vae.py               # VAE dataloaders
+│       ├── restoration_3d.py    # Paired (degraded, clean) 3D loader for restoration mode
 │       └── volume_3d.py         # 3D volumetric loaders + VolumeConfig
 ├── diffusion/                   # Diffusion strategies, modes, spaces
 │   ├── batch_data.py            # BatchData standardized unpacking
@@ -55,7 +56,10 @@ src/medgen/
 │   ├── spaces.py                # Pixel/Latent/SpaceToDepth/Wavelet space
 │   ├── strategies.py            # Shared strategy base
 │   ├── strategy_ddpm.py         # DDPM strategy
-│   └── strategy_rflow.py        # RFlow strategy
+│   ├── strategy_rflow.py        # RFlow strategy
+│   ├── strategy_bridge.py       # Diffusion Bridge (paired restoration; Zhang et al. 2025)
+│   ├── strategy_irsde.py        # IR-SDE mean-reverting SDE (Luo et al., ICML 2023)
+│   └── strategy_resfusion.py    # Resfusion residual noise diffusion (Shi et al., NeurIPS 2024)
 ├── downstream/                  # Downstream task evaluation
 │   ├── data.py                  # Segmentation data loading
 │   ├── segmentation_trainer.py  # SegResNet trainer (2D/3D)
@@ -81,10 +85,11 @@ src/medgen/
 │   ├── unified_visualization.py # Metric visualization
 │   ├── quality.py               # MS-SSIM, PSNR, LPIPS
 │   ├── generation.py            # KID, CMMD, FID (2D)
-│   ├── generation_3d.py         # Generation metrics for 3D
+│   ├── generation_3d.py         # Generation metrics for 3D (incl. triplanar features)
 │   ├── generation_computation.py # Metric computation helpers
 │   ├── generation_sampling.py   # Sample generation for metrics
-│   ├── feature_extractors.py    # ResNet50, BiomedCLIP extractors
+│   ├── fwd.py                   # Fréchet Wavelet Distance (Veeramacheneni et al., ICLR 2025)
+│   ├── feature_extractors.py    # ResNet50 (ImageNet/RadImageNet), BiomedCLIP extractors
 │   ├── figures.py               # Reconstruction figures
 │   ├── constants.py             # RANO-BM tumor size thresholds
 │   ├── brain_mask.py            # Brain mask utilities
@@ -108,11 +113,14 @@ src/medgen/
 │       ├── gradient.py         # Gradient norm tracking
 │       └── worst_batch.py      # Worst batch capture
 ├── models/                      # Model architectures
-│   ├── factory.py               # Model factory (UNet, DiT, HDiT, UViT)
+│   ├── factory.py               # Model factory (UNet, DiT, HDiT, UViT, Mamba, WDM)
 │   ├── dit.py                   # DiT (Scalable Interpolant Transformer)
 │   ├── dit_blocks.py            # Transformer blocks with adaLN-Zero
 │   ├── hdit.py                  # HDiT (Hierarchical Diffusion Transformer)
 │   ├── uvit.py                  # UViT (ViT with Skip Connections)
+│   ├── mamba_diff.py            # LaMamba-Diff (state-space model, pixel-space only)
+│   ├── mamba_blocks.py          # Mamba SSM blocks
+│   ├── handoff.py               # HandoffWrapper (two-stage low-t/high-t inference)
 │   ├── embeddings.py            # Patch/timestep/conditioning embeddings
 │   ├── controlnet.py            # ControlNet for latent diffusion
 │   ├── autoencoder_dc_3d.py     # 3D DC-AE architecture
@@ -215,6 +223,8 @@ configs/
 ├── model/hdit_3d.yaml           # HDiT architecture (3D, hierarchical transformer)
 ├── model/uvit_3d.yaml           # UViT architecture (3D, skip-connection ViT)
 ├── model/wdm_3d.yaml            # WDM UNet (3D wavelet diffusion)
+├── model/mamba.yaml             # Mamba (LaMamba-Diff, 2D, pixel-space)
+├── model/mamba_3d.yaml          # Mamba (LaMamba-Diff, 3D, pixel-space)
 ├── model/smoke_test.yaml        # Minimal model for fast testing
 ├── vae/default.yaml             # VAE architecture
 ├── vae_3d/default.yaml          # 3D VAE architecture
@@ -233,11 +243,12 @@ configs/
 ├── pixel_norm/t1_pre.yaml       # Brain-only N(0,1) stats for T1 pre-contrast
 ├── pixel_norm/t1_gd.yaml        # Brain-only N(0,1) stats for T1 post-contrast
 ├── paths/{local,cluster}.yaml
-├── strategy/{ddpm,rflow}.yaml
-├── mode/{seg,bravo,bravo_seg_cond,dual,multi,multi_modality,...}.yaml
-├── mode/{seg_compression,seg_conditioned,seg_conditioned_3d,...}.yaml
+├── strategy/{ddpm,rflow,bridge,irsde,resfusion}.yaml
+├── mode/{seg,bravo,bravo_seg_cond,dual,multi,multi_modality}.yaml
+├── mode/{seg_compression,seg_conditioned,seg_conditioned_3d}.yaml
 ├── mode/{seg_conditioned_input,seg_conditioned_input_3d}.yaml
 ├── mode/triple.yaml             # Triple mode (T1pre + T1gd + FLAIR)
+├── mode/restoration.yaml        # Paired (degraded, clean) training
 └── training/{default,fast_debug,smoke_test}.yaml
 ```
 
@@ -637,6 +648,71 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
 
 **Important**: Structured latent space requires latent diffusion (not pixel space). The `augmented_diffusion.enabled` setting is ignored in pixel space.
 
+### Mamba (LaMamba-Diff, pixel-space only)
+
+State-space model (SSM) backbone, pixel-space only. Linear scaling with
+sequence length, lower VRAM than DiT/UNet at similar param counts.
+
+```yaml
+# configs/model/mamba.yaml (2D), configs/model/mamba_3d.yaml (3D)
+mamba:
+  variant: S      # S / B / L
+  d_state: 16     # SSM state size
+  d_conv: 4       # Local convolution width
+  expand: 2       # SSM expansion factor
+```
+
+**Variants:** S (~30M), B (~80M), L (~250M).
+
+**Usage:** `model=mamba` or `model=mamba_3d`. **No latent-space variant**
+— Mamba's sequence-flatten step does not compose with the latent codecs
+in this repo. See `src/medgen/models/mamba_diff.py` and `mamba_blocks.py`.
+
+Reference: LaMamba-Diff (citation in `papers/PAPERS.md`).
+
+### WDM (Wavelet Diffusion Model, 3D-only)
+
+Diffusion in the wavelet domain. The forward model decomposes each
+volume into wavelet coefficients (Haar by default, lossless), runs DDPM
+on the coefficients, and decomposes back. **x₀-prediction is essential**
+— ε-prediction does not converge in this domain (per Friedrich et al.).
+
+```yaml
+# configs/model/wdm_3d.yaml
+wdm:
+  wavelet: haar              # Haar (lossless) recommended
+  per_subband_norm: true     # Critical for stable training
+  prediction: x0             # NOT epsilon
+```
+
+**Status:** Implemented and trained through 1000 epochs (exp19 era).
+Overfitting observed beyond 500ep on bravo (FID 77 at 1000ep vs 67 at
+500ep). See `papers/WDM/WDM_PAPER_FINDINGS.md` for the literature
+review and `docs/experiment_results_3d.md` for run results.
+
+Reference: Friedrich et al. 2024, MICCAI.
+
+### HandoffWrapper (two-stage inference)
+
+Inference-time wrapper that combines two checkpoints: a high-t (seed)
+model handles t > `handoff_t`, a low-t (fine-tuned) model handles
+t ≤ `handoff_t`. Used for low-t fine-tunes (exp48 family) where the
+fine-tune only sees t ∈ [0, handoff_t] during training.
+
+**No `configs/model/handoff.yaml`.** The wrapper is constructed at
+generation time:
+
+```bash
+python -m medgen.scripts.generate \
+    --high-t-checkpoint <base.pt> \
+    --low-t-checkpoint <fine-tuned.pt> \
+    --handoff-t 0.25
+```
+
+The `find_optimal_steps` script also accepts these flags so step-search
+runs over the composed two-stage model. See
+`src/medgen/models/handoff.py`.
+
 ---
 
 ## SAM Optimizer
@@ -733,10 +809,30 @@ def train(
 
 ## Strategies
 
-| Strategy | Predicts | Target | Timestep Sampling |
-|----------|----------|--------|-------------------|
-| DDPM | Noise (epsilon) | `noise` | Uniform random (discrete) |
-| RFlow | Velocity | `images - noise` | Logit-normal (continuous, biased to middle) |
+| Strategy | Predicts | Target | Timestep Sampling | Use case |
+|----------|----------|--------|-------------------|----------|
+| DDPM | Noise (epsilon) | `noise` | Uniform random (discrete) | Pixel + latent generation |
+| RFlow | Velocity | `images - noise` | Logit-normal (continuous, biased to middle) | Pixel + latent generation (default) |
+| Bridge | x̂₀ | clean | Uniform t∈[0,1] | Paired restoration; γ_max=0.125 for 3D brain |
+| IR-SDE | score | mean-reverting | Uniform t∈[0,1] | Paired restoration (Luo et al., ICML 2023) |
+| Resfusion | residual noise | clean | Discrete T=12 | Paired restoration; ~5–12 reverse steps |
+
+**Restoration strategies (Bridge / IR-SDE / Resfusion)** — see
+`src/medgen/diffusion/strategy_{bridge,irsde,resfusion}.py`. All three
+operate on **paired (degraded, clean)** data and require
+`mode=restoration`. They differ in their forward dynamics and number
+of inference steps:
+
+- **Bridge**: x_t = (1-t)·x₀ + t·x₁ + γ_max·√(4t(1-t))·ε. Predicts x̂₀
+  (Zhang et al. 2025, arXiv:2504.15267).
+- **IR-SDE**: dx = θ_t(μ - x)dt + σ_t·dw, mean-reverting toward the
+  degraded image. L1 loss (eq. 15), posterior sampling at inference
+  (Luo et al., ICML 2023; reimplementation of
+  github.com/Algolzw/image-restoration-sde).
+- **Resfusion**: Short linear schedule (T=12). Resnoise = ε + coeff·R
+  where R = degraded − clean. Reaches good quality in ~5–12 reverse
+  steps (Shi et al., NeurIPS 2024; reimplementation of
+  github.com/nkicsl/Resfusion).
 
 **RFlow Defaults** (configurable in `configs/strategy/rflow.yaml`):
 - `use_discrete_timesteps: false` - Continuous timesteps (floats, not integers)
@@ -768,7 +864,9 @@ def train(
 | `bravo_seg_cond` | 8 | 4 | Latent seg mask | `[B, 8, ...]` = [bravo_latent(4), seg_latent(4)] |
 | `seg_conditioned` | 1 + size_bins | 1 | Size bins (FiLM) | `[B, 1, H, W]` seg + size bin embedding |
 | `seg_conditioned_input` | 1 + 7 bin maps | 1 | Size bins (channel concat) | `[B, 8, H, W]` seg + 7 binary bin maps |
-| `seg_conditioned_3d` | 1 + size_bins | 1 | Size bins (FiLM) | `[B, 1, D, H, W]` seg + size bin embedding |
+| `seg_conditioned_3d` | 1 + size_bins | 1 | Size bins (FiLM, 3D) | `[B, 1, D, H, W]` seg + 3D RANO-BM size bins |
+| `seg_conditioned_input_3d` | 1 + 7 bin maps | 1 | Size bins (channel concat, 3D) | `[B, 8, D, H, W]` seg + 7 binary bin maps |
+| `restoration` | 2 | 1 | Degraded image | `[B, 2, D, H, W]` = [degraded, clean]; paired training |
 
 **Note**: `bravo_seg_cond` is for latent diffusion only — generates BRAVO latents conditioned on VQ-VAE-encoded seg masks. Requires `latent.enabled=true`.
 
@@ -842,11 +940,31 @@ def train(
 
 ### Diffusion Training
 ```python
-total_loss = mse_loss + perceptual_weight * perceptual_loss
-# Default perceptual_weight: 0.0 (disabled by default - saves ~200MB GPU memory)
-# To enable: training.perceptual_weight=0.001
+total_loss = mse_loss + perceptual_weight * perceptual_loss + ffl_weight * focal_frequency_loss
+# Default weights: perceptual_weight=0.0, ffl_weight=0.0 (both disabled by default)
+# To enable LPIPS: training.perceptual_weight=0.001
 # NOTE: Seg mode auto-disables perceptual loss (pretrained features don't apply to binary masks)
 ```
+
+### Loss schedules (per-timestep weighting)
+
+LPIPS and Focal Frequency loss can be weighted by a piecewise-linear
+schedule of the diffusion timestep, so the auxiliary loss only fires in
+specific noise regimes. Implemented in `pipeline/trainer.py` via
+`_compute_t_schedule_weight()`.
+
+| Knob (`training.<name>`) | Default | Effect |
+|---|---|---|
+| `perceptual_weight` | `0.0` | Global LPIPS coefficient |
+| `perceptual_max_timestep` | `null` | Legacy: enable LPIPS only for `t < value/num_train_timesteps` (e.g. `250` enables LPIPS for low-t bottom-25%) |
+| `perceptual_t_schedule` | `null` | `[t_on, t_full, t_off]` in normalized [0,1] units. Zero below `t_on`, ramps to 1 at `t_full`, plateaus, drops to 0 at `t_off`. Overrides `perceptual_max_timestep` when set |
+| `focal_frequency_weight` | `0.0` | Global FFL coefficient (slice-wise FFT for 3D) |
+| `focal_frequency_t_schedule` | `null` | Same `[t_on, t_full, t_off]` semantics as above, applied to FFL |
+
+Examples used in production runs (set via SLURM hydra overrides):
+- `exp32_2_*`: `perceptual_max_timestep=250` — LPIPS only at low t
+- `exp37_*`:   `perceptual_t_schedule=[0.05, 0.20, 0.70]` — LPIPS at high t
+- Mid/high-t FFL experiments: `focal_frequency_t_schedule=[0.20, 0.50, 0.85]`
 
 ### VAE Training
 ```python
@@ -989,7 +1107,9 @@ training:
 
 ## Score Augmentation (ScoreAug)
 
-Reference: [arxiv.org/abs/2508.07926](https://arxiv.org/abs/2508.07926)
+Reference: [arxiv.org/abs/2508.07926](https://arxiv.org/abs/2508.07926). For
+the omega-vector encoding spec (layout, identity-as-zeros invariant, 3D dim
+overload), see [`@docs/scoreaug_omega.md`](scoreaug_omega.md).
 
 ScoreAug applies transforms to **noisy data** (after noise addition) rather than clean data. This teaches equivariant denoising without changing the output distribution.
 
@@ -1333,11 +1453,14 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/core/schedulers.py`: LR schedulers (cosine, warmup, plateau)
 
 ### Models
-- `src/medgen/models/factory.py`: Model factory (UNet, DiT, HDiT, UViT)
+- `src/medgen/models/factory.py`: Model factory (UNet, DiT, HDiT, UViT, Mamba, WDM)
 - `src/medgen/models/dit.py`: DiT model (Scalable Interpolant Transformer)
 - `src/medgen/models/dit_blocks.py`: Transformer blocks with adaLN-Zero
 - `src/medgen/models/hdit.py`: HDiT (Hierarchical Diffusion Transformer)
 - `src/medgen/models/uvit.py`: UViT (Vision Transformer with Skip Connections)
+- `src/medgen/models/mamba_diff.py`: LaMamba-Diff (state-space backbone, pixel-space only)
+- `src/medgen/models/mamba_blocks.py`: Mamba SSM blocks
+- `src/medgen/models/handoff.py`: HandoffWrapper (two-stage low-t/high-t inference)
 - `src/medgen/models/embeddings.py`: Patch, timestep, conditioning embeddings
 - `src/medgen/models/controlnet.py`: ControlNet for latent diffusion
 - `src/medgen/models/autoencoder_dc_3d.py`: 3D DC-AE architecture
@@ -1362,6 +1485,7 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/data/loaders/builder_2d.py`: LoaderSpec pattern for standardized 2D dataloader construction
 - `src/medgen/data/loaders/unified.py`: Unified dataloader dispatch (routes mode → correct factory)
 - `src/medgen/data/loaders/compression_detection.py`: Auto-detect compression model type from checkpoint
+- `src/medgen/data/loaders/restoration_3d.py`: Paired (degraded, clean) 3D loader for restoration mode (used by Bridge / IR-SDE / Resfusion)
 - `src/medgen/data/lossless_mask_codec.py`: Lossless binary mask encoding to DC-AE latent
 
 ### Augmentation
@@ -1373,7 +1497,10 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/diffusion/strategies.py`: Strategy base class and registry
 - `src/medgen/diffusion/strategy_ddpm.py`: DDPM strategy (noise prediction, discrete timesteps)
 - `src/medgen/diffusion/strategy_rflow.py`: RFlow strategy (velocity prediction, continuous timesteps)
-- `src/medgen/diffusion/modes.py`: Seg, Bravo, Dual, Multi, SegConditioned modes
+- `src/medgen/diffusion/strategy_bridge.py`: Diffusion Bridge for paired restoration (Zhang et al. 2025)
+- `src/medgen/diffusion/strategy_irsde.py`: IR-SDE mean-reverting SDE (Luo et al., ICML 2023)
+- `src/medgen/diffusion/strategy_resfusion.py`: Resfusion residual noise diffusion (Shi et al., NeurIPS 2024)
+- `src/medgen/diffusion/modes.py`: Seg, Bravo, Dual, Multi, SegConditioned, Restoration modes
 - `src/medgen/diffusion/spaces.py`: Pixel/Latent/SpaceToDepth/Wavelet space abstraction
 - `src/medgen/diffusion/diffrs.py`: DiffRS rejection sampling discriminator
 - `src/medgen/diffusion/batch_data.py`: BatchData standardized batch unpacking
@@ -1423,6 +1550,8 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 - `src/medgen/metrics/mc_dropout.py`: Monte Carlo dropout for uncertainty estimation
 - `src/medgen/metrics/regional/`: Per-tumor regional metrics by size category
 - `src/medgen/metrics/generation.py`: KID, CMMD, FID (ResNet50 + BiomedCLIP)
+- `src/medgen/metrics/generation_3d.py`: 3D generation metrics + `extract_features_3d_triplanar` (axial+coronal+sagittal feature extraction)
+- `src/medgen/metrics/fwd.py`: Fréchet Wavelet Distance (Veeramacheneni et al., ICLR 2025) — domain-agnostic, no pretrained backbone
 - `src/medgen/metrics/morphological.py`: Morphological comparison (Wasserstein on tumor volume/feret/spatial/count)
 - `src/medgen/metrics/figures.py`: Reconstruction figures
 - `src/medgen/metrics/tracking/`: Gradient, FLOPs, codebook, worst batch trackers
@@ -1807,10 +1936,12 @@ Tracks generation quality during diffusion training using distributional metrics
 - **KID** (Kernel Inception Distance): Unbiased MMD using polynomial kernel on ResNet50 features (2048-dim). Lower = better. Returns mean ± std across subsets.
 - **CMMD** (CLIP Maximum Mean Discrepancy): RBF kernel-based MMD on BiomedCLIP embeddings (512-dim). Lower = better. Medical domain-aware.
 - **FID** (Fréchet Inception Distance): Fréchet distance between feature distributions. Lower = better. Only computed at test time.
+- **FwD** (Fréchet Wavelet Distance, `metrics/fwd.py`): Per-frequency-band Fréchet distance using wavelet packet decomposition (Haar, configurable). Computes mean/covariance per packet, then Fréchet (Gaussian divergence). Returns overall + per-band scores. **Domain-agnostic** (no pretrained backbone — robust to domain shift). For 3D, slice-wise (axial). Reference: Veeramacheneni et al., ICLR 2025 (arXiv:2312.15289). Used in restoration eval logging.
 
 **Feature Extractors:**
-- **ResNet50Features**: ImageNet pretrained (default) or RadImageNet (medical domain). Uses `torch.compile(mode="reduce-overhead")` and AMP (bfloat16).
+- **ResNet50Features**: ImageNet pretrained (default) or **RadImageNet** (medical domain — `feature_extractor=radimagenet_resnet50`). Uses `torch.compile(mode="reduce-overhead")` and AMP (bfloat16).
 - **BiomedCLIPFeatures**: `microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`. Uses `torch.compile` and AMP.
+- **Triplanar 3D features** (`extract_features_3d_triplanar` in `generation_3d.py`): Extracts axial + coronal + sagittal planes for 3D volumes, then runs each through a 2D feature extractor and concatenates. Captures orientation-sensitive structure that pure axial-slice extraction misses.
 
 **Optimizations:**
 - Batched generation (batch_size inherited from `training.batch_size`)

@@ -1,6 +1,42 @@
 # 3D Diffusion Experiment Results
 
-Last updated: April 13, 2026. Data extracted from IDUN logs and TensorBoard runs.
+Last updated: May 5, 2026. Data extracted from IDUN logs and TensorBoard runs.
+
+---
+
+## Tier 1 Optima Search (April 2026)
+
+Step-count golden-section search across mediocre-looking experiments, run
+because TensorBoard extended-eval often used a non-optimal step count.
+Results from `IDUN/eval/tier1/` SLURM logs, three metrics per checkpoint:
+**FID** (ImageNet ResNet50), **FID_RadImageNet** (medical-domain ResNet50),
+**PCA mean error** on 256×256×160 brain shapes (lower = better).
+
+| Experiment | Architecture | FID best | @ steps | FID_Rad best | @ steps | PCA best | @ steps | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| exp34_1_1000 | Mamba L (pixel) | **35.77** | 14 | **0.718** | 15 | 0.00557 | 5 | **vindicated** — TB looked mediocre, optima reveals strong model |
+| exp34_0_1000 | Mamba S (pixel) | 44.57 | 7 | 1.006 | 15 | 0.00528 | 6 | strong at very low step counts |
+| exp20_6 (17M tiny) | UNet 17M (pixel) | **30.79** | 76 | **0.693** | 40 | **0.00605** | 5 | **vindicated** — best FID of the exp20 family despite tiny size |
+| exp20_5 | UNet (pixel) | 37.12 | 60 | 1.514 | 74 | 0.00522 | 10 | mid-strength |
+| exp20_7 | UNet (pixel) | 39.12 | 58 | 2.047 | 40 | 0.00939 | 16 | weaker than exp20_6 |
+| exp20_4 | UNet (pixel) | 43.54 | 54 | 1.595 | 40 | 0.01376 | 16 | mid-strength |
+| exp29 | UNet (pixel) | 42.65 | 91 | 1.721 | 95 | 0.00682 | 95 | high-step optimum, suggests still-improving model |
+| exp17_2 | HDiT-S (pixel) | 135.45 | 87 | 1.932 | 18 | 0.00695 | 15 | weak — HDiT-S struggles at 256³ |
+| exp17_3 | HDiT-B (pixel) | 110.93 | 87 | 1.516 | 17 | 0.00564 | 15 | weak — HDiT-B improves over S but still poor |
+| exp18 | UViT-L (pixel) | 97.03 | 32 | 1.614 | 20 | 0.00803 | 10 | weaker than UNet at the same scale |
+
+**Failed Tier 1 (no checkpoint found at run time):** exp15 (UViT bug,
+checkpoint dir empty), exp20_2 (deep+wide), exp20_3 (deep+wide+attn_l3).
+Both exp20_{2,3} need their training to complete before re-running.
+
+**Key finding:** Mamba L (exp34_1_1000) and the 17M UNet (exp20_6) both
+beat exp1_1's old 19.12 FID benchmark *only when* given the right step
+count. They had been shelved as mediocre based on TB extended-eval
+metrics that used a default step count far from their optima. Both are
+now candidate continuation targets — exp32_2-style LPIPS-lowt fine-tunes.
+
+The matching SLURMs are in `IDUN/eval/tier1/find_optimal_steps_*.slurm`,
+results captured in `IDUN_LOG_SUMMARIES.md` per-job blocks.
 
 ---
 
@@ -10,6 +46,8 @@ Last updated: April 13, 2026. Data extracted from IDUN logs and TensorBoard runs
 |----------|-----------|----------|-----|--------|-------|
 | **Bravo pixel 256 (post-hoc)** | exp1_1 (1000ep) | 0.00230 | **19.12** | 1000 | Post-hoc eval, 27 Euler steps |
 | **Bravo pixel 256 (post-hoc)** | exp23 (ScoreAug) | **0.00200** | **20.38** | 1000 | Post-hoc, best RadImageNet FID (0.659) |
+| **Bravo pixel 256 (Tier 1)** | exp20_6 (17M UNet) | — | **30.79** | 500 | Tier 1 optima @ 76 steps; LPIPS-lowt fine-tune in progress (`exp32_2_1000_exp20_6`) |
+| **Bravo pixel 256 (Tier 1)** | exp34_1_1000 (Mamba L) | — | **35.77** | 1000 | Tier 1 optima @ 14 steps; vindicated |
 | **Bravo pixel 256 (in-train)** | exp1p_1 (uniform T) | 0.00256 | **58.85** | 500 | Best 256x256 in-training FID at 500ep |
 | **Bravo pixel 256 (combined)** | exp24 (all techniques) | 0.00347 | **62.87** | 1000 | ScoreAug+AdjOffset+PHEMA+UniformT |
 | **Bravo pixel 256 (loss)** | exp23 (ScoreAug) | **0.00200** | 62.57 | 1000 | Best val loss of any experiment |

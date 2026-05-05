@@ -567,6 +567,190 @@ python -m medgen.scripts.find_optimal_steps \
 
 ---
 
+## Analysis & Evaluation Scripts
+
+A categorized inventory of analysis and evaluation tools beyond the
+"Post-hoc Evaluation Scripts" section. Most run on a trained checkpoint
+and write JSON / NIfTI / figures into a sub-folder of `runs/eval/`.
+
+### Generation evaluation (FID / KID / step search / sampler choice)
+
+```bash
+# FID floor of a compression model (VAE / VQ-VAE / DC-AE)
+python -m medgen.scripts.eval_compression_fid \
+    --compression-checkpoint runs/compression_3d/.../checkpoint_best.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3
+
+# Test whether VQ-VAE compression equalizes synth vs real distributions
+python -m medgen.scripts.fid_compression_equalize \
+    --synth-dir <synth-volumes> --real-dir <real-volumes> \
+    --compression-checkpoint runs/compression_3d/...
+
+# FID comparison: original synth vs VQ-VAE-roundtripped synth vs real
+python -m medgen.scripts.fid_vqvae_roundtrip_compare \
+    --synth-dir <synth-volumes> --real-dir <real-volumes>
+
+# Restart Sampling vs baseline Euler for RFlow generation
+python -m medgen.scripts.eval_restart \
+    --checkpoint runs/checkpoint_best.pt --output-dir eval_restart
+
+# Light SDEdit at very low t₀ (compare across t₀ values for refinement)
+python -m medgen.scripts.eval_light_sdedit \
+    --checkpoint runs/checkpoint_best.pt --output-dir eval_light_sdedit
+
+# Final comparison across blur-attack experiments
+python -m medgen.scripts.eval_blur_attack_compare \
+    --variant-dirs <dir-A> <dir-B> ...
+```
+
+### Spectrum / feature-emergence analysis (Phase 1 diagnostics)
+
+These were used to diagnose the mean-blur / vessel-deficit problem and
+inform exp37/exp32 fine-tunes. All take a trained checkpoint and a real
+data root.
+
+```bash
+# Radial 3D power spectrum across fine-tuned generators
+python -m medgen.scripts.analyze_generation_spectrum --checkpoints A.pt B.pt ...
+
+# Frangi vesselness across generators
+python -m medgen.scripts.analyze_vessel_prominence --checkpoints A.pt B.pt ...
+
+# Cortical-shell vesselness (vessel-only restricted to cortex)
+python -m medgen.scripts.analyze_cortical_vessels --checkpoints A.pt B.pt ...
+
+# Per-t hybrid generation ablation (real-x₀ for t∈[lo,hi], gen otherwise)
+python -m medgen.scripts.analyze_hybrid_generation --checkpoint runs/...
+
+# Generation trajectory emergence (per-t feature emergence)
+python -m medgen.scripts.analyze_generation_trajectory --checkpoint runs/...
+
+# Post-process the trajectory JSONs into a timeline figure
+python -m medgen.scripts.analyze_emergence_timeline --input-dir <traj-dir>
+
+# Per-t velocity divergence map
+python -m medgen.scripts.analyze_velocity_divergence --checkpoint runs/...
+
+# Stochastic-Euler ablation (RFlow with noise injection)
+python -m medgen.scripts.analyze_stochastic_sampling --checkpoint runs/...
+
+# Timestep-response diagnostic (model output as t varies)
+python -m medgen.scripts.analyze_timestep_response --checkpoint runs/...
+
+# SR feasibility: does real_ds_us spectrum match generated-output spectrum?
+python -m medgen.scripts.analyze_sr_feasibility --real-dir <r> --gen-dir <g>
+
+# Velocity prediction quality across the noise schedule
+python -m medgen.scripts.measure_velocity_breakdown --checkpoint runs/...
+
+# Distinguishability: training distribution vs N(0,1) noise prior
+python -m medgen.scripts.measure_distinguishability --data-root <r>
+
+# Mean-blur diagnostic: stochastic prediction diversity at each t
+python -m medgen.scripts.diagnose_mean_blur --checkpoint runs/...
+
+# Frequency-mixing probe (HP real + LP synth)
+python -m medgen.scripts.probe_freq_mix --real-dir <r> --gen-dir <g>
+
+# VQ-VAE roundtrip probe on synthetic outputs
+python -m medgen.scripts.probe_vqvae_roundtrip \
+    --synth-dir <s> --vqvae-checkpoint runs/compression_3d/...
+```
+
+### Restoration / refinement (IR-SDE / Bridge / Resfusion / SDEdit)
+
+```bash
+# Apply a trained restoration model to (generated or degraded) volumes
+python -m medgen.scripts.restore_volumes \
+    --restoration-checkpoint runs/diffusion_3d/.../checkpoint_best.pt \
+    --input-dir <volumes-to-restore> --output-dir <restored>
+
+# Calibrate SDEdit degradation strength for restoration training
+python -m medgen.scripts.calibrate_degradation \
+    --diffusion-checkpoint runs/...
+
+# Compare frequency-domain degradation methods (Gaussian blur, downsample, ...)
+python -m medgen.scripts.compare_degradation_methods --real-dir <r>
+
+# Pre-generate paired (degraded, clean) volumes for restoration training
+python -m medgen.scripts.generate_degradation_pairs \
+    --diffusion-checkpoint runs/... --output-dir <pairs>
+
+# Pre-generate exp1_1_1000 outputs for IR-SDE restoration pair training (exp43b)
+python -m medgen.scripts.pregen_restoration_pairs \
+    --checkpoint runs/exp1_1_1000/checkpoint_best.pt --output-dir <pairs>
+
+# Precompute (real, real_rt) pairs for exp43 VQ-VAE deblur training
+python -m medgen.scripts.precompute_vqvae_pairs \
+    --vqvae-checkpoint runs/compression_3d/... --output-dir <pairs>
+
+# SDEdit-style refinement of synthetic volumes (blur-attack T1A)
+python -m medgen.scripts.refine_sdedit_synth --synth-dir <s> --checkpoint runs/...
+
+# Spectral equalization refinement (Wiener-style, blur-attack T1B)
+python -m medgen.scripts.refine_spectral_eq --synth-dir <s> --real-dir <r>
+
+# Pix2Pix refinement GAN training (exp42)
+python -m medgen.scripts.train_refinement_gan --pairs-dir <pairs>
+```
+
+### Latent / wavelet / DC-AE pipeline tools
+
+```bash
+# Pre-encode images to latent space using a trained VAE/VQ-VAE/DC-AE
+python -m medgen.scripts.encode_latents \
+    --compression-checkpoint runs/compression_3d/.../checkpoint_best.pt \
+    --data-root ~/MedicalDataSets/brainmetshare-3
+
+# Recompute latent normalization stats from existing cache
+python -m medgen.scripts.recompute_latent_stats --latent-dir <encoded-dir>
+
+# Verify LDM training+generation pipeline before launching a real run
+python -m medgen.scripts.verify_ldm_pipeline --config-name=diffusion_3d ...
+
+# Verify WDM (wavelet diffusion) training+generation pipeline
+python -m medgen.scripts.verify_wdm_pipeline --config-name=diffusion_3d ...
+
+# Diagnose LDM by partial denoising round-trips
+python -m medgen.scripts.debug_ldm_roundtrip --checkpoint runs/...
+```
+
+### PCA / atlas / morphology setup (one-time)
+
+```bash
+# Compute brain atlas (union of all training brain masks)
+python -m medgen.scripts.compute_brain_atlas --data-root <r> --output-path data/brain_atlas.npz
+
+# Compute PCA shape model from real brain masks
+python -m medgen.scripts.compute_brain_pca --data-root <r> \
+    --output-path data/brain_pca_256x256x160.npz --n-components 30
+
+# Generate PCA explained-variance plots for thesis
+python -m medgen.scripts.plot_pca_components --pca-path data/brain_pca_*.npz
+
+# Ablation: PCA shape filter across resolution and component count
+python -m medgen.scripts.ablate_pca_filter --pca-path data/brain_pca_*.npz
+```
+
+### Visualization & misc
+
+```bash
+# Visualize FFT amplitude: real vs generated volumes
+python -m medgen.scripts.visualize_fft_comparison --real-dir <r> --gen-dir <g>
+
+# Visualize per-timestep loss-weight schedules across all fine-tune experiments
+python -m medgen.scripts.visualize_loss_schedules --output-dir docs/figures/
+
+# Plot per-tumor detection analysis from saved JSON records
+python -m medgen.scripts.plot_tumor_detection --json <results.json>
+
+# Learning rate finder (diffusion + VAE)
+python -m medgen.scripts.lr_finder --config-name=diffusion_3d \
+    mode=bravo strategy=rflow model.spatial_dims=3
+```
+
+---
+
 ## Pixel Normalization Statistics
 
 ```bash

@@ -1,4 +1,9 @@
-# Future Work
+# Future Work (v1, archived May 2026)
+
+> **Archived.** This was the original feature-tracking checklist. The
+> canonical inventory is now [`docs/future_work_v2.md`](docs/future_work_v2.md),
+> which is the comprehensive 67-entry diffusion-tricks catalog with paper
+> refs and per-experiment evidence. Kept for history.
 
 Potential improvements and experiments for the diffusion-based medical image synthesis project.
 

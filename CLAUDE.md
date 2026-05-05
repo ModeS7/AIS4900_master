@@ -35,16 +35,23 @@ Don't assume anything that wasn't explicitly stated. If something is unclear or 
 
 | Term | Meaning |
 |------|---------|
-| **Mode** | WHAT to generate: seg, bravo, dual, triple, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond, restoration |
+| **Mode** | WHAT to generate: seg, bravo, dual, triple, multi, multi_modality, seg_conditioned{,_3d}, seg_conditioned_input{,_3d}, bravo_seg_cond, seg_compression, restoration |
 | **Strategy** | HOW to denoise: ddpm, rflow (continuous timesteps by default), bridge, irsde, resfusion |
-| **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT), Mamba (LaMamba-Diff, pixel-space only) |
+| **Architecture** | UNet, DiT/SiT, HDiT (hierarchical), UViT (skip-connection ViT), Mamba (LaMamba-Diff, pixel-space only), WDM (Wavelet Diffusion Model, 3D-only) |
 | **VAE dual** | 2 channels (t1_pre, t1_gd) - NO seg |
 | **Diffusion dual** | 3 channels (t1_pre, t1_gd, seg) - HAS seg |
 | **Diffusion triple** | 4 channels (t1_pre, t1_gd, flair, seg) - HAS seg |
-| **seg_conditioned** | Generate seg masks conditioned on tumor sizes (FiLM embedding) |
-| **seg_conditioned_input** | Generate seg masks with size bins as channel-concat input |
+| **seg_conditioned** | Generate seg masks conditioned on tumor sizes (FiLM embedding); 3D variant in `seg_conditioned_3d.yaml` |
+| **seg_conditioned_input** | Generate seg masks with size bins as channel-concat input; 3D variant in `seg_conditioned_input_3d.yaml` |
 | **bravo_seg_cond** | Latent diffusion: generate BRAVO latents conditioned on VQ-VAE seg latents |
+| **multi_modality** | VAE/VQ-VAE/DC-AE pre-training on mixed slices from all modalities (single-channel, non-conditional) |
+| **seg_compression** | DC-AE compression of segmentation masks (BCE+Dice+Boundary loss, Dice/IoU metrics) |
 | **DiffRS** | Diffusion Rejection Sampling - post-hoc discriminator for quality filtering |
+| **HandoffWrapper** | Two-stage inference: seed/base model for t > handoff_t, fine-tuned model for t ≤ handoff_t (e.g. exp48 low-t fine-tunes). Configured at generation time, not via `configs/model/` |
+| **bridge strategy** | Diffusion Bridge Model for paired restoration (Zhang et al. 2025, arXiv:2504.15267); γ_max=0.125 for 3D brain MRI |
+| **irsde strategy** | IR-SDE mean-reverting SDE (Luo et al., ICML 2023); L1 loss, posterior sampling at inference |
+| **resfusion strategy** | Resfusion residual noise diffusion (Shi et al., NeurIPS 2024); short T=12 schedule, ~5–12 reverse steps |
+| **WDM** | Wavelet Diffusion Model (Friedrich et al. 2024, MICCAI); 3D-only, x₀-prediction in wavelet domain. Config: `model=wdm_3d` |
 | `train.py` | Diffusion (2D default, use `model.spatial_dims=3` for 3D) |
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
@@ -80,8 +87,25 @@ python -m medgen.scripts.train model=uvit_3d model.variant=S mode=bravo strategy
 python -m medgen.scripts.train model=mamba model.variant=S mode=bravo strategy=rflow   # 2D
 python -m medgen.scripts.train model=mamba_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # 3D
 
-# === RESTORATION (IR-SDE) ===
+# === DIFFUSION (WDM, wavelet-domain, 3D only) ===
+python -m medgen.scripts.train model=wdm_3d mode=bravo strategy=ddpm model.spatial_dims=3
+
+# === RESTORATION (IR-SDE / Bridge / Resfusion) ===
 python -m medgen.scripts.train mode=restoration strategy=irsde model.spatial_dims=3
+python -m medgen.scripts.train mode=restoration strategy=bridge model.spatial_dims=3
+python -m medgen.scripts.train mode=restoration strategy=resfusion model.spatial_dims=3
+
+# === RESTORE GENERATED VOLUMES (post-hoc) ===
+python -m medgen.scripts.restore_volumes \
+    --restoration-checkpoint runs/diffusion_3d/.../checkpoint_best.pt \
+    --input-dir <path-to-generated-volumes> \
+    --output-dir <restored-output-dir>
+
+# === GENERATE WITH HANDOFF (two-stage low-t/high-t) ===
+python -m medgen.scripts.generate \
+    --high-t-checkpoint <base-model.pt> \
+    --low-t-checkpoint <fine-tuned-low-t-model.pt> \
+    --handoff-t 0.25
 
 # === VAE ===
 python -m medgen.scripts.train_compression --config-name=vae mode=multi_modality
@@ -140,8 +164,9 @@ This catches:
 | `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
 | `@docs/proven_techniques.md` | Confirmed positive/negative techniques for 3D brain MRI generation |
 | `@docs/future_work_v2.md` | 125 diffusion tricks inventory (67 implemented, 58+ not) |
+| `@docs/scoreaug_omega.md` | ScoreAug omega-vector encoding spec (paper conformance, layout, identity-as-zeros invariant) |
 | `@docs/notes_for_report.txt` | Historical design notes (Dec 2025) — VAE features, ScoreAug, DiT, VQ-VAE |
-| `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) — **check here FIRST before web search** |
+| `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) — **check here FIRST before web search.** Note: directory is in `.gitignore`, so the file is local-only |
 
 ---
 
@@ -177,6 +202,17 @@ BaseTrainer
 - Use `BatchData.from_raw(data)` for standardized batch unpacking (tensor batches)
 - Handles: Tensor, 2-tuple (images/labels or seg/size_bins), 3-tuple, dict formats
 - For numpy arrays from raw datasets, convert to tensors first
+
+**Loss schedules (in `training/default.yaml`, applied via `_compute_t_schedule_weight()`):**
+- `training.perceptual_weight: 0.1` + `training.perceptual_max_timestep: 250` — LPIPS at low t (legacy mode)
+- `training.perceptual_t_schedule: [t_on, t_full, t_off]` — piecewise-linear schedule in normalized [0,1] units (zero below t_on, ramps to 1 at t_full, drops to 0 at t_off)
+- `training.focal_frequency_weight: 0.0` + `training.focal_frequency_t_schedule: [...]` — focal frequency loss with same piecewise schedule (slice-wise FFT for 3D)
+- All schedules disabled by default; enable per-experiment in SLURM overrides
+
+**Two-stage inference (`src/medgen/models/handoff.py`):**
+- `HandoffWrapper` combines two checkpoints: high-t (seed/base) and low-t (fine-tuned)
+- Used at inference only; configured via `--high-t-checkpoint`, `--low-t-checkpoint`, `--handoff-t` flags on `generate.py`
+- No `configs/model/handoff.yaml` — wrapper is constructed at runtime from the two model paths
 
 ---
 

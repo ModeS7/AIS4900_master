@@ -8,6 +8,30 @@ primarily UNet architecture, single A100/H100 GPU, pixel-space best so far.
 
 ---
 
+## Updates since March 2026
+
+The catalog below was last revised March 14. Items below have shipped since
+then and are not yet inlined into the per-section tables — to be merged in
+a future pass.
+
+| Item | What | Where |
+|---|---|---|
+| **HandoffWrapper** | Two-stage low-t/high-t inference: high-t base + low-t fine-tune composed at generation time via `--handoff-t` | `src/medgen/models/handoff.py`, used in `generate.py` and `find_optimal_steps.py` |
+| **ScoreAug omega encoding fix** | Paper-conformance correction (D1: 3D cutout dim overload, D2: identity = zeros not `[1,0,..]`); removes the exp23 translation leak | `src/medgen/augmentation/score_aug_omega.py`, see `docs/scoreaug_omega.md` |
+| **Restoration strategies** | Bridge (Zhang et al. 2025), IR-SDE (Luo et al. ICML 2023), Resfusion (Shi et al. NeurIPS 2024) on `mode=restoration` | `src/medgen/diffusion/strategy_{bridge,irsde,resfusion}.py` |
+| **Fréchet Wavelet Distance (FwD)** | Domain-agnostic generation metric; per-frequency-band Fréchet on Haar wavelet packets; no pretrained backbone | `src/medgen/metrics/fwd.py`, Veeramacheneni et al. ICLR 2025 |
+| **Loss schedules (perceptual + FFL)** | Piecewise-linear `[t_on, t_full, t_off]` schedules for LPIPS and Focal Frequency Loss; enables low-t-only or high-t-only auxiliary loss | `pipeline/trainer.py::_compute_t_schedule_weight()`, configs `training.{perceptual,focal_frequency}_t_schedule` |
+| **Triplanar 3D feature extraction** | Axial+coronal+sagittal slices fed through 2D feature extractors; captures orientation-sensitive structure for KID/CMMD/FID on 3D | `metrics/generation_3d.py::extract_features_3d_triplanar` |
+| **Mamba (LaMamba-Diff)** | State-space backbone; 2D + 3D, pixel-space only. exp34_1_1000 vindicated by Tier 1 optima (FID 35.77 @ 14 steps) | `src/medgen/models/mamba_{diff,blocks}.py`, `model=mamba` / `model=mamba_3d` |
+| **WDM (Wavelet Diffusion)** | x₀-prediction in Haar wavelet domain, 3D-only. Overfits past 500ep | `model=wdm_3d`, see `papers/WDM/WDM_PAPER_FINDINGS.md` |
+| **17M tiny UNet (exp20_6) vindicated** | Tiny 17M UNet beats 270M variants at FID 30.79 (Tier 1 optima @ 76 steps); `exp32_2_1000_exp20_6` LPIPS-lowt fine-tune in progress | `IDUN/eval/tier1/find_optimal_steps_exp20_6.slurm` |
+| **Tier 1 step-count search** | Multi-metric (FID + FID_RadImageNet + PCA) golden-section search across 13 mediocre-looking experiments. Found correct optima for Mamba and exp20 family | `IDUN/eval/tier1/`, `find_optimal_steps --metric fid,fid_radimagenet,pca` |
+
+See `docs/proven_techniques.md` for the validated/refuted summary and
+`docs/experiment_results_3d.md` §"Tier 1 Optima Search" for the data.
+
+---
+
 ## IMPLEMENTED (67 entries, 66 functional + 1 dead config)
 
 ### Loss Functions & Weighting
