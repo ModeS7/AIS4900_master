@@ -41,9 +41,9 @@ python -m medgen.scripts.lr_finder mode=dual strategy=rflow
 ## Features
 
 ### Diffusion Training
-- **Two strategies**: DDPM (noise prediction) and Rectified Flow (velocity prediction, continuous timesteps)
-- **Multiple modes**: seg, bravo, dual, multi, seg_conditioned, seg_conditioned_input, bravo_seg_cond
-- **Four architectures**: UNet (MONAI), DiT/SiT (Transformer), HDiT (Hierarchical Transformer), UViT (Skip-Connection ViT)
+- **Five strategies**: DDPM (noise prediction), RFlow (velocity prediction, continuous timesteps), Bridge (paired restoration, x̂₀ prediction), IR-SDE (mean-reverting SDE for restoration), Resfusion (residual noise, T=12 short schedule)
+- **Multiple modes**: seg, bravo, dual, triple, multi, multi_modality, seg_conditioned{,_3d}, seg_conditioned_input{,_3d}, bravo_seg_cond, seg_compression, restoration
+- **Six architectures**: UNet (MONAI), DiT/SiT (Transformer), HDiT (Hierarchical Transformer), UViT (Skip-Connection ViT), Mamba/LaMamba-Diff (state-space, pixel-space only), WDM (Wavelet Diffusion, 3D-only)
 - **Pixel and latent space**: Direct pixel diffusion or compressed latent diffusion
 - **DiffRS**: Diffusion Rejection Sampling for post-hoc quality filtering
 - **2D and 3D**: Unified trainer via `model.spatial_dims` parameter
@@ -122,10 +122,12 @@ BaseTrainer
 | `seg` | 1 | 1 | None |
 | `bravo` | 2 | 1 | Seg mask |
 | `dual` | 3 | 2 | Seg mask |
+| `triple` | 4 | 3 | Seg mask (T1pre + T1gd + FLAIR) |
 | `multi` | 2 | 1 | Seg mask + mode_id |
-| `seg_conditioned` | 1 | 1 | Tumor size bins (FiLM embedding) |
-| `seg_conditioned_input` | 1 + 7 bin maps | 1 | Tumor size bins (channel concat) |
+| `seg_conditioned` | 1 | 1 | Tumor size bins (FiLM embedding); 3D variant in `seg_conditioned_3d` |
+| `seg_conditioned_input` | 1 + 7 bin maps | 1 | Tumor size bins (channel concat); 3D variant in `seg_conditioned_input_3d` |
 | `bravo_seg_cond` | 8 | 4 | Latent seg mask (for latent diffusion) |
+| `restoration` | 2 | 1 | Degraded volume (paired training; works with rflow / irsde / bridge / resfusion strategies) |
 
 ### Compression Modes (no seg conditioning)
 
@@ -164,7 +166,7 @@ AIS4900_master/
 │   ├── wavelet/                     # 3D Haar wavelet transform
 │   ├── dcae/{f32,f64,f128}.yaml     # DC-AE compression variants
 │   ├── model/{default,dit,hdit_3d,uvit_3d,wdm_3d,...}.yaml  # Model architectures
-│   ├── strategy/{ddpm,rflow}.yaml   # Diffusion strategies
+│   ├── strategy/{ddpm,rflow,bridge,irsde,resfusion}.yaml   # Diffusion strategies
 │   ├── mode/{seg,bravo,...}.yaml    # Generation modes
 │   ├── training/                    # Training hyperparameters
 │   └── paths/{local,cluster}.yaml   # Data paths
@@ -217,7 +219,7 @@ AIS4900_master/
 │   ├── local_ci.sh                  # Local CI (mirrors GitHub Actions)
 │   └── validate_before_submit.sh    # Pre-submission validation
 │
-├── tests/                           # Test suite (1135 tests)
+├── tests/                           # Test suite (1383 tests, verified via `pytest --collect-only`)
 │   ├── unit/                        # Unit tests
 │   ├── integration/                 # Integration tests
 │   ├── e2e/                         # End-to-end pipeline tests
@@ -226,10 +228,15 @@ AIS4900_master/
 ├── docs/                            # Documentation
 │   ├── architecture.md              # Architecture reference, TensorBoard metrics
 │   ├── commands.md                  # Full command reference
-│   ├── common-pitfalls.md           # 74 known issues and solutions
+│   ├── common-pitfalls.md           # 87 known issues and solutions
 │   ├── eval-ode-solvers.md          # ODE solver evaluation results
-│   ├── experiment_results.md        # Comprehensive experiment results
-│   └── profiling_results.md         # VRAM profiling (DiT, UNet, HDiT, UViT)
+│   ├── experiment_results.md        # 2D experiment results
+│   ├── experiment_results_3d.md     # 3D experiment results (pixel/latent/compression/downstream)
+│   ├── profiling_results.md         # VRAM profiling (DiT, UNet, HDiT, UViT)
+│   ├── proven_techniques.md         # Confirmed positive/negative techniques for 3D brain MRI
+│   ├── future_work_v2.md            # Diffusion-tricks inventory (67 implemented)
+│   ├── scoreaug_omega.md            # ScoreAug omega encoding spec (paper conformance)
+│   └── notes_for_report.txt         # Historical design notes (Dec 2025)
 │
 └── papers/                          # Reference papers + PAPERS.md catalog
 ```
@@ -335,13 +342,13 @@ pip install -e .
 
 ```bash
 # Submit training jobs
-sbatch IDUN/train/compression/exp9_dcae_f32.slurm
+sbatch IDUN/train/compression/exp9_1_dcae_f32.slurm
 
 # Prefer H100, fallback to A100 after 10 min
-./IDUN/submit_prefer_h100.sh IDUN/train/compression/exp9_dcae_f32.slurm
+./IDUN/submit_prefer_h100.sh IDUN/train/compression/exp9_1_dcae_f32.slurm
 
 # Run in background
-./IDUN/submit_prefer_h100.sh IDUN/train/compression/exp9_dcae_f32.slurm --bg
+./IDUN/submit_prefer_h100.sh IDUN/train/compression/exp9_1_dcae_f32.slurm --bg
 
 # Validate before submit (catches syntax/import/config errors)
 ./misc/validate_before_submit.sh IDUN/train/your_job.slurm
@@ -391,9 +398,10 @@ logging:
 |-----|----------|
 | `docs/architecture.md` | Architecture reference, TensorBoard metrics, config details |
 | `docs/commands.md` | Full command reference with all options |
-| `docs/common-pitfalls.md` | 74 known issues, bug fixes, and gotchas |
+| `docs/common-pitfalls.md` | 87 known issues, bug fixes, and gotchas |
 | `docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal) |
-| `docs/experiment_results.md` | Comprehensive 2D + 3D experiment results |
+| `docs/experiment_results.md` | 2D experiment results (3D moved to `experiment_results_3d.md`) |
+| `docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |
 | `docs/profiling_results.md` | VRAM profiling (DiT, UNet, HDiT, UViT) |
 | `papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
 | `CLAUDE.md` | Claude Code context file |

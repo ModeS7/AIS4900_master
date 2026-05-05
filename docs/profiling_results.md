@@ -276,7 +276,7 @@ Profiled on IDUN cluster, January 31, 2026.
 ```yaml
 model.channels: [256, 512, 1024, 2048]
 model.attention_levels: [false, false, true, true]
-model.num_res_blocks: [2, 2, 2, 2]
+model.num_res_blocks: [3, 3, 3, 3]   # verbatim from IDUN/train/diffusion_3d/exp9_ldm_4x_bravo.slurm
 model.num_head_channels: 64
 ```
 
@@ -316,7 +316,7 @@ model.num_head_channels: 64
 ```yaml
 model.channels: [512, 1024, 2048]
 model.attention_levels: [false, true, true]
-model.num_res_blocks: [2, 2, 2]
+model.num_res_blocks: [3, 3, 3]   # verbatim from IDUN/train/diffusion_3d/exp9_ldm_8x_bravo.slurm
 model.num_head_channels: 64
 ```
 
@@ -657,26 +657,18 @@ Scaling ratio depends heavily on where parameters sit in the network.
 
 ### exp11 / exp12: S2D/Wavelet 128x128x160
 
-Uses `model=default_3d_5lvl`:
+Uses `model=default_3d_5lvl` (verbatim from `configs/model/default_3d_5lvl.yaml`, 1424M params per its header comment):
 ```yaml
-# 5-level, [32,64,256,512,512], attn L3+L4
-# ~270M params, ~5.2G profiling / ~8-10G training
-model.channels: [32, 64, 256, 512, 512]
+model.channels: [64, 128, 512, 1024, 1024]
 model.attention_levels: [false, false, false, true, true]
-model.num_res_blocks: 2
+model.num_res_blocks: [2, 2, 3, 3, 3]
 model.num_head_channels: 32
 ```
+Note: the original profiling cited `[32, 64, 256, 512, 512]` with 270M params; the YAML has since been widened. VRAM numbers below are from the older config — flagged historical.
 
 ### exp11_1 / exp12_1: S2D/Wavelet 256x256x160
 
-Uses `model=default_3d_5lvl` (same):
-```yaml
-# ~270M params, ~19.6G profiling / ~30-35G training
-model.channels: [32, 64, 256, 512, 512]
-model.attention_levels: [false, false, false, true, true]
-model.num_res_blocks: 2
-model.num_head_channels: 32
-```
+Uses `model=default_3d_5lvl` (same — see above for current spec).
 
 ---
 ---

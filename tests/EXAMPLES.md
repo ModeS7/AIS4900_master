@@ -48,34 +48,33 @@ class TestComputePSNR:
 ## Unit Test: Metric Class
 
 ```python
-"""Test metric tracker classes."""
+"""Test the unified metrics system (`UnifiedMetrics`)."""
 import pytest
 from unittest.mock import MagicMock, patch
 
-from medgen.pipeline.metrics.tracker import MetricsTracker
+from medgen.metrics.unified import UnifiedMetrics, SimpleLossAccumulator
 
 
-class TestMetricsTracker:
-    """Tests for MetricsTracker class."""
+class TestSimpleLossAccumulator:
+    """Tests for the SimpleLossAccumulator helper used by UnifiedMetrics."""
 
     @pytest.fixture
-    def tracker(self):
-        """Create tracker with mocked writer."""
-        with patch("medgen.pipeline.metrics.tracker.SummaryWriter"):
-            return MetricsTracker(log_dir="/tmp/test")
+    def acc(self):
+        return SimpleLossAccumulator()
 
-    def test_log_scalar_writes_to_tensorboard(self, tracker):
-        """log_scalar should call writer.add_scalar."""
-        tracker.log_scalar("loss", 0.5, step=100)
-        tracker.writer.add_scalar.assert_called_once_with("loss", 0.5, 100)
-
-    def test_compute_epoch_summary_returns_dict(self, tracker):
-        """compute_epoch_summary should return all logged metrics."""
-        tracker.log_scalar("loss", 0.5, step=1)
-        tracker.log_scalar("loss", 0.3, step=2)
-        summary = tracker.compute_epoch_summary()
+    def test_update_and_compute_returns_mean(self, acc):
+        """compute() should return per-key mean over all updates."""
+        acc.update({"loss": 0.5})
+        acc.update({"loss": 0.3})
+        summary = acc.compute()
         assert "loss" in summary
         assert summary["loss"] == pytest.approx(0.4, abs=0.01)
+
+    def test_reset_clears_state(self, acc):
+        acc.update({"loss": 1.0})
+        acc.reset()
+        # After reset, compute returns empty dict (no entries)
+        assert acc.compute() == {}
 ```
 
 ---
@@ -189,18 +188,19 @@ class TestSSIMProperties:
 import pytest
 import torch
 
-from medgen.pipeline.strategies import RFlowStrategy
+from medgen.diffusion.strategy_rflow import RFlowStrategy
 
 
 class TestRFlowTimestepBug:
-    """Regression test for pitfall #42: continuous timesteps."""
+    """Regression test for the RFlow continuous-timestep bug (test class:
+    TestRFlowGenerationScalingRegression in test_regression_bugs.py)."""
 
     def test_continuous_timesteps_in_zero_one_range(self):
         """
         Bug: RFlow was using discrete timesteps [0, 999] instead of continuous [0, 1].
         Fix: Added use_discrete_timesteps=false and proper scaling.
 
-        Reference: docs/common-pitfalls.md #42
+        Reference: docs/common-pitfalls.md (search for "RFlow" / "continuous timesteps").
         """
         strategy = RFlowStrategy(num_train_timesteps=1000, use_discrete_timesteps=False)
 
@@ -217,14 +217,15 @@ class TestRFlowTimestepBug:
 
 
 class TestBF16PrecisionBug:
-    """Regression test for pitfall #15: BF16 precision loss."""
+    """Regression test for BF16 precision loss in compiled forward functions."""
 
     def test_loss_computed_in_float32(self):
         """
         Bug: Computing loss in BF16 caused precision issues.
         Fix: Always call .float() before loss computation.
 
-        Reference: docs/common-pitfalls.md #15
+        Reference: docs/common-pitfalls.md "BF16 Precision in Compiled Forward
+        Functions" (currently #41).
         """
         pred = torch.randn(2, 1, 64, 64, dtype=torch.bfloat16)
         target = torch.randn(2, 1, 64, 64, dtype=torch.bfloat16)

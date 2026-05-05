@@ -21,19 +21,30 @@ Results from `IDUN/eval/tier1/` SLURM logs, three metrics per checkpoint:
 | exp20_7 | UNet (pixel) | 39.12 | 58 | 2.047 | 40 | 0.00939 | 16 | weaker than exp20_6 |
 | exp20_4 | UNet (pixel) | 43.54 | 54 | 1.595 | 40 | 0.01376 | 16 | mid-strength |
 | exp29 | UNet (pixel) | 42.65 | 91 | 1.721 | 95 | 0.00682 | 95 | high-step optimum, suggests still-improving model |
-| exp17_2 | HDiT-S (pixel) | 135.45 | 87 | 1.932 | 18 | 0.00695 | 15 | weak — HDiT-S struggles at 256³ |
-| exp17_3 | HDiT-B (pixel) | 110.93 | 87 | 1.516 | 17 | 0.00564 | 15 | weak — HDiT-B improves over S but still poor |
+| exp17_2 | HDiT-L (pixel, p8) | 135.45 | 87 | 1.932 | 18 | 0.00695 | 15 | weak — HDiT-L p8 struggles at 256³ |
+| exp17_3 | HDiT-XL (pixel, p8) | 110.93 | 87 | 1.516 | 17 | 0.00564 | 15 | weak — HDiT-XL p8 improves over L but still poor |
 | exp18 | UViT-L (pixel) | 97.03 | 32 | 1.614 | 20 | 0.00803 | 10 | weaker than UNet at the same scale |
 
-**Failed Tier 1 (no checkpoint found at run time):** exp15 (UViT bug,
-checkpoint dir empty), exp20_2 (deep+wide), exp20_3 (deep+wide+attn_l3).
-Both exp20_{2,3} need their training to complete before re-running.
+**Failed Tier 1:**
+- **exp15** (UViT-S 256³): checkpoint loaded, but inference crashed with
+  `RuntimeError: The size of tensor a (20481) must match the size of
+  tensor b (5121) at non-singleton dimension 1` in `uvit.py:395`
+  (`x = torch.cat([t_token, patch_tokens], dim=1) + self.pos_embed`).
+  Position-embedding size mismatch — model trained at one resolution,
+  evaluated at another. Needs UViT bugfix before re-running.
+- **exp20_2** (deep+wide): `ERROR: No checkpoint found in
+  /cluster/work/.../exp20_2_pixel_bravo_deep_wide_20260303-031712`.
+- **exp20_3** (deep+wide+attn_l3): same — no checkpoint at run dir.
+  Both exp20_{2,3} need their training to complete before re-running.
 
-**Key finding:** Mamba L (exp34_1_1000) and the 17M UNet (exp20_6) both
-beat exp1_1's old 19.12 FID benchmark *only when* given the right step
-count. They had been shelved as mediocre based on TB extended-eval
-metrics that used a default step count far from their optima. Both are
-now candidate continuation targets — exp32_2-style LPIPS-lowt fine-tunes.
+**Key finding:** Mamba L (exp34_1_1000, FID 35.77) and the 17M tiny UNet
+(exp20_6, FID 30.79) are both *substantially better than their
+TB-extended-eval scores suggested* once you tune the step count — but
+**neither beats exp1_1's 19.12** (exp1_1 remains the strongest pixel
+bravo at 256³). They had been shelved as mediocre based on a default
+step count far from their optima; the optima search shows they're
+respectable mid-tier models, not failed ones. Both are now candidate
+continuation targets — exp32_2-style LPIPS-lowt fine-tunes.
 
 The matching SLURMs are in `IDUN/eval/tier1/find_optimal_steps_*.slurm`,
 results captured in `IDUN_LOG_SUMMARIES.md` per-job blocks.
@@ -134,7 +145,7 @@ results captured in `IDUN_LOG_SUMMARIES.md` per-job blocks.
 | exp23 | Pixel+ScoreAug | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp20_4 | Pixel Small+Attn | 256x256x160 | UNet 5L | 67M | rflow | bravo |
 | exp20_5 | Pixel Mid | 256x256x160 | UNet 5L | 152M | rflow | bravo |
-| exp20_6 | Pixel Tiny | 256x256x160 | UNet 4L | ~20M | rflow | bravo |
+| exp20_6 | Pixel Tiny | 256x256x160 | UNet 4L | ~17M | rflow | bravo |
 | exp20_7 | Pixel 67M NoAttn | 256x256x160 | UNet 5L | 67M | rflow | bravo |
 | exp24 | Pixel Combined 270M | 256x256x160 | UNet 5L | 270M | rflow | bravo |
 | exp25 | Pixel Combined 17M | 256x256x160 | UNet 6L | 17M | rflow | bravo |
@@ -1049,7 +1060,7 @@ Testing how model size affects generation quality at 256x256x160. All use RFlow,
 
 254 gradient spikes. A100 80GB. 2.98h.
 
-### exp20_7: 65M UNet (no attention)
+### exp20_7: 67M UNet (no attention)
 
 **Config**: UNet channels=[8,16,32,128,256,256], no attention layers. Same as exp20_4 but with all attention disabled.
 
@@ -1067,7 +1078,7 @@ Testing how model size affects generation quality at 256x256x160. All use RFlow,
 | exp1_1 (baseline) | [32,64,256,512,512] | 270M | L4+L5 | 0.00211 | 51.17 | 0.033 | 0.193 | — |
 | exp20_5 | [12,24,48,192,384,384] | 152M | L4+L5 | 0.00238 | 72.11 | 0.071 | 0.189 | 2 |
 | exp20_4 (w/attn) | [8,16,32,128,256,256] | 67M | L4+L5 | 0.00262 | 99.86 | 0.110 | 0.245 | 64 |
-| exp20_7 (no attn) | [8,16,32,128,256,256] | 65M | none | 0.00222 | 92.16 | 0.098 | 0.234 | 56 |
+| exp20_7 (no attn) | [8,16,32,128,256,256] | 67M | none | 0.00222 | 92.16 | 0.098 | 0.234 | 56 |
 | exp20_6 | [8,16,32,64,128,128] | 17M | L4+L5 | 0.00212 | 94.75 | 0.102 | 0.231 | 15 |
 
 **Key findings:**

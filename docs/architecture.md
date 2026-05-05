@@ -650,47 +650,73 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
 
 ### Mamba (LaMamba-Diff, pixel-space only)
 
-State-space model (SSM) backbone, pixel-space only. Linear scaling with
-sequence length, lower VRAM than DiT/UNet at similar param counts.
+State-space model U-Net combining SS2D (multi-directional Mamba) for
+global context, windowed self-attention for local detail, and FFN for
+channel mixing — all conditioned via AdaLN-Zero. 2D uses 4-directional
+SS2D scans; 3D uses 6-directional (±D, ±H, ±W).
+
+Verbatim from `configs/model/mamba_3d.yaml` (the 3D variant):
 
 ```yaml
-# configs/model/mamba.yaml (2D), configs/model/mamba_3d.yaml (3D)
-mamba:
-  variant: S      # S / B / L
-  d_state: 16     # SSM state size
-  d_conv: 4       # Local convolution width
-  expand: 2       # SSM expansion factor
+type: mamba
+spatial_dims: 3
+image_size: 256
+depth_size: 160
+patch_size: 2
+variant: B                 # S / B / L / XL
+
+# U-Net structure
+depths: [2, 2, 2, 2]       # Blocks per encoder stage
+bottleneck_depth: 2
+skip: 2                    # Last N stages don't downsample
+
+# Mamba SSM parameters
+ssm_d_state: 1             # SSM state dimension (1 is sufficient)
+ssm_ratio: 2.0             # SSM inner dim = ssm_ratio * embed_dim
+
+# Attention parameters
+window_size: 8             # Window size for local attention
+mlp_ratio: 4.0             # FFN expansion ratio
 ```
 
-**Variants:** S (~30M), B (~80M), L (~250M).
+**Variants** (per YAML comment block, `(embed_dim, num_heads)` →
+approximate param count):
+- S: 128, 4 → ~30M
+- B: 192, 8 → ~80M
+- L: 256, 16 → ~200M
+- XL: 320, 16 → ~450M
 
 **Usage:** `model=mamba` or `model=mamba_3d`. **No latent-space variant**
-— Mamba's sequence-flatten step does not compose with the latent codecs
-in this repo. See `src/medgen/models/mamba_diff.py` and `mamba_blocks.py`.
+in this repo (no `configs/latent/mamba*.yaml`). See
+`src/medgen/models/mamba_diff.py` and `mamba_blocks.py`.
 
-Reference: LaMamba-Diff (citation in `papers/PAPERS.md`).
+Reference: LaMamba-Diff (Fu et al. 2024, arXiv:2408.02615; cited in
+`src/medgen/models/mamba_diff.py:15`).
 
 ### WDM (Wavelet Diffusion Model, 3D-only)
 
-Diffusion in the wavelet domain. The forward model decomposes each
-volume into wavelet coefficients (Haar by default, lossless), runs DDPM
-on the coefficients, and decomposes back. **x₀-prediction is essential**
-— ε-prediction does not converge in this domain (per Friedrich et al.).
+Diffusion in the 3D Haar wavelet domain. `configs/model/wdm_3d.yaml` is
+a 5-level UNet (channels [64, 128, 128, 256, 256], **no attention**, 2
+res blocks per level, ~74M params for bravo) modeled after Friedrich et
+al.'s WDM. Used with `wavelet/default.yaml` (lossless Haar decomposition)
+and `strategy=ddpm` with **`strategy.prediction_type=sample`** (x₀-pred,
+verified in exp19 SLURMs) — ε-prediction does not work well in this
+domain per the paper.
 
-```yaml
-# configs/model/wdm_3d.yaml
-wdm:
-  wavelet: haar              # Haar (lossless) recommended
-  per_subband_norm: true     # Critical for stable training
-  prediction: x0             # NOT epsilon
+```bash
+python -m medgen.scripts.train mode=bravo strategy=ddpm \
+    strategy.prediction_type=sample \
+    model=wdm_3d wavelet=default model.spatial_dims=3
 ```
 
 **Status:** Implemented and trained through 1000 epochs (exp19 era).
-Overfitting observed beyond 500ep on bravo (FID 77 at 1000ep vs 67 at
-500ep). See `papers/WDM/WDM_PAPER_FINDINGS.md` for the literature
-review and `docs/experiment_results_3d.md` for run results.
+Overfitting observed beyond 500ep on bravo (exp26_1: FID 77 at 1000ep
+vs 67 at 500ep). See `papers/WDM/WDM_PAPER_FINDINGS.md` for the
+literature review and `docs/experiment_results_3d.md` §"Part 5b" for
+run results.
 
-Reference: Friedrich et al. 2024, MICCAI.
+Reference: Friedrich et al. 2024, "WDM: 3D Wavelet Diffusion Models for
+High-Resolution Medical Image Synthesis", arXiv:2402.19043.
 
 ### HandoffWrapper (two-stage inference)
 
@@ -700,18 +726,27 @@ t ≤ `handoff_t`. Used for low-t fine-tunes (exp48 family) where the
 fine-tune only sees t ∈ [0, handoff_t] during training.
 
 **No `configs/model/handoff.yaml`.** The wrapper is constructed at
-generation time:
+generation time. `generate.py` uses Hydra config keys, while
+`find_optimal_steps.py` uses argparse flags:
 
 ```bash
-python -m medgen.scripts.generate \
+# generate.py — Hydra keys (note: gen_mode, not mode, per configs/generate.yaml:25)
+python -m medgen.scripts.generate gen_mode=bravo \
+    image_model=<low-t-fine-tune.pt> \
+    image_model_high_t=<base.pt> \
+    handoff_t=0.25
+
+# find_optimal_steps.py — argparse flags
+python -m medgen.scripts.find_optimal_steps \
     --high-t-checkpoint <base.pt> \
-    --low-t-checkpoint <fine-tuned.pt> \
-    --handoff-t 0.25
+    --low-t-checkpoint <low-t-fine-tune.pt> \
+    --handoff-t 0.25 \
+    --data-root <root> --output-dir <out>
 ```
 
-The `find_optimal_steps` script also accepts these flags so step-search
-runs over the composed two-stage model. See
-`src/medgen/models/handoff.py`.
+See `configs/generate.yaml` for the Hydra schema (`image_model`,
+`image_model_high_t`, `handoff_t`) and `src/medgen/models/handoff.py` for
+the wrapper.
 
 ---
 
@@ -811,11 +846,11 @@ def train(
 
 | Strategy | Predicts | Target | Timestep Sampling | Use case |
 |----------|----------|--------|-------------------|----------|
-| DDPM | Noise (epsilon) | `noise` | Uniform random (discrete) | Pixel + latent generation |
+| DDPM | Noise (epsilon) — or `sample` (x₀) when `strategy.prediction_type=sample` | `noise` / `clean` | Uniform random (discrete) | Pixel + latent generation; **x₀-prediction is what WDM uses** |
 | RFlow | Velocity | `images - noise` | Logit-normal (continuous, biased to middle) | Pixel + latent generation (default) |
-| Bridge | x̂₀ | clean | Uniform t∈[0,1] | Paired restoration; γ_max=0.125 for 3D brain |
-| IR-SDE | score | mean-reverting | Uniform t∈[0,1] | Paired restoration (Luo et al., ICML 2023) |
-| Resfusion | residual noise | clean | Discrete T=12 | Paired restoration; ~5–12 reverse steps |
+| Bridge | x̂₀ (`prediction_type: x0`) | clean | Uniform t∈[0,1] | Paired restoration; γ_max=0.125 for 3D brain |
+| IR-SDE | Noise (ε) — score implicit via `score = -ε/σ` (`prediction_type: noise`) | `noise` | Uniform t∈[0,1] | Paired restoration (Luo et al., ICML 2023) |
+| Resfusion | Resnoise (`prediction_type: resnoise`) | `ε + coeff·R` | Discrete T=12 | Paired restoration; ~5–12 reverse steps |
 
 **Restoration strategies (Bridge / IR-SDE / Resfusion)** — see
 `src/medgen/diffusion/strategy_{bridge,irsde,resfusion}.py`. All three
@@ -866,7 +901,7 @@ of inference steps:
 | `seg_conditioned_input` | 1 + 7 bin maps | 1 | Size bins (channel concat) | `[B, 8, H, W]` seg + 7 binary bin maps |
 | `seg_conditioned_3d` | 1 + size_bins | 1 | Size bins (FiLM, 3D) | `[B, 1, D, H, W]` seg + 3D RANO-BM size bins |
 | `seg_conditioned_input_3d` | 1 + 7 bin maps | 1 | Size bins (channel concat, 3D) | `[B, 8, D, H, W]` seg + 7 binary bin maps |
-| `restoration` | 2 | 1 | Degraded image | `[B, 2, D, H, W]` = [degraded, clean]; paired training |
+| `restoration` | 2 | 1 | Degraded volume | `[B, 2, D, H, W]` = [x_t, degraded_volume] (verbatim from `configs/mode/restoration.yaml:14`); paired training, model architecture identical to bravo |
 
 **Note**: `bravo_seg_cond` is for latent diffusion only — generates BRAVO latents conditioned on VQ-VAE-encoded seg masks. Requires `latent.enabled=true`.
 
@@ -894,7 +929,7 @@ of inference steps:
 |-------|--------------|---------|---------|
 | `PixelSpace` | 1 | opt-in | Direct pixel diffusion (default) |
 | `SpaceToDepthSpace` | 2 | opt-in | 2D pixel rearrangement (no learned transform) |
-| `WaveletSpace` | 2 | default on | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
+| `WaveletSpace` | 2 | default off (`rescale: false` in `configs/wavelet/default.yaml:27`) | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
 | `LatentSpace` | 4-128 | N/A | Compressed diffusion via VAE/VQ-VAE/DC-AE (auto-detected from checkpoint) |
 
 **[-1,1] Rescaling**: All spaces except `LatentSpace` support an optional `rescale` parameter that maps [0,1] data to [-1,1] inside `encode()` and back in `decode()`. This keeps all downstream code (metrics, viz, saving) at [0,1]. Use `training.rescale_data=true` for pixel/S2D spaces, or `wavelet.rescale=true` (default) for wavelet space.
@@ -964,7 +999,7 @@ specific noise regimes. Implemented in `pipeline/trainer.py` via
 Examples used in production runs (set via SLURM hydra overrides):
 - `exp32_2_*`: `perceptual_max_timestep=250` — LPIPS only at low t
 - `exp37_*`:   `perceptual_t_schedule=[0.05, 0.20, 0.70]` — LPIPS at high t
-- Mid/high-t FFL experiments: `focal_frequency_t_schedule=[0.20, 0.50, 0.85]`
+- FFL experiments: `focal_frequency_t_schedule=[0.10, 0.30, 0.80]` with `focal_frequency_weight` ∈ {0.5, 0.7, 1.0} per run (verbatim from `IDUN/train/diffusion_3d/*.slurm`)
 
 ### VAE Training
 ```python
@@ -1046,13 +1081,17 @@ Shows the batch with highest loss for debugging:
 
 ### Diffusion Augmentation (Conservative)
 
-Only lossless spatial transforms. Distortions would teach model to generate distorted images.
+Only lossless spatial transforms. Verbatim from `src/medgen/augmentation/augmentation.py:121-136`:
 
 ```python
-- HorizontalFlip (p=0.5)
-- Rotate ±10° (p=0.5)
-- Translate ±5% (p=0.5)
+return A.Compose([
+    A.HorizontalFlip(p=0.5),
+    DiscreteTranslate(max_percent_x=0.2, max_percent_y=0.1, p=1.0),
+])
 ```
+Note: NO rotation (interpolation would blur). DiscreteTranslate is integer-pixel
+(lossless). Translate range is asymmetric (±20% X, ±10% Y) because brain
+shapes are oval/vertical.
 
 ### VAE Augmentation (Aggressive)
 
@@ -1295,16 +1334,16 @@ The `ModeTimeEmbed` wrapper injects mode-specific conditioning into the UNet's t
 
 ## DiffRS (Diffusion Rejection Sampling)
 
-Post-hoc quality improvement for diffusion sampling without retraining the model. A tiny discriminator head (~500 params) is trained on top of the frozen UNet encoder to evaluate intermediate samples during generation.
+Post-hoc quality improvement for diffusion sampling without retraining the model. A small discriminator head (**~0.3M params for 2D, ~0.9M for 3D** with default `mid_channels=128`) is trained on top of the frozen UNet encoder to evaluate intermediate samples during generation.
 
 **How it works**:
 1. At each denoising step, the discriminator checks if the intermediate sample looks realistic for that noise level
 2. Bad trajectories are rejected and retried with new noise
 3. The diffusion model is never modified
 
-**Architecture**:
+**Architecture** (verbatim from `src/medgen/diffusion/diffrs.py:138-164`):
 - Feature extractor: Frozen UNet encoder (already trained)
-- Classification head: GroupNorm → SiLU → Pool → Linear (~500 params)
+- Classification head: 3 stacked `Conv → GroupNorm → SiLU` blocks (1×1 channel-reduction conv, then two stride-2 3×3 convs), followed by `AdaptiveAvgPool → Linear`. With `mid_channels=128`: ~0.3M params (2D) / ~0.9M params (3D).
 
 **Training**:
 ```bash
@@ -1400,10 +1439,18 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 
 ### 3D Dataloaders
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `create_volume_3d_dataloader()` | `volume_3d.py` | 3D volumetric compression (VAE/VQ-VAE/DC-AE) |
-| `create_volume_3d_validation_dataloader()` | `volume_3d.py` | 3D compression validation with seg |
+Verbatim factory names from `src/medgen/data/loaders/volume_3d.py`:
+
+| Function | File:Line | Purpose |
+|----------|-----------|---------|
+| `create_vae_3d_dataloader()` | `volume_3d.py:714` | 3D volumetric compression (VAE/VQ-VAE/DC-AE) train |
+| `create_vae_3d_validation_dataloader()` | `volume_3d.py:759` | 3D compression validation |
+| `create_vae_3d_test_dataloader()` | `volume_3d.py:782` | 3D compression test |
+| `create_vae_3d_multi_modality_dataloader()` | `volume_3d.py:919` | Multi-modality 3D compression train |
+| `create_vae_3d_multi_modality_validation_dataloader()` | `volume_3d.py:969` | Multi-modality 3D val |
+| `create_vae_3d_multi_modality_test_dataloader()` | `volume_3d.py:990` | Multi-modality 3D test |
+| `create_segmentation_dataloader()` | `volume_3d.py:1223` | 3D segmentation training |
+| `create_single_modality_dataloader_with_seg()` | `volume_3d.py:1332` | Single-modality 3D with seg conditioning |
 
 ### Shared Infrastructure
 
@@ -1432,15 +1479,20 @@ Most 2D dataloaders are built through the `LoaderSpec` pattern in `builder_2d.py
 ```
 
 ### VAE Checkpoint
+Verbatim from `src/medgen/pipeline/checkpoint_manager.py:155-180`:
 ```python
 {
-    'model_state_dict': ...,           # AutoencoderKL
-    'discriminator_state_dict': ...,   # PatchDiscriminator
-    'optimizer_g_state_dict': ...,
-    'optimizer_d_state_dict': ...,
+    'model_state_dict': ...,           # AutoencoderKL (the generator)
+    'discriminator_state_dict': ...,   # PatchDiscriminator (only when present)
+    'optimizer_state_dict': ...,       # generator optimizer
+    'optimizer_d_state_dict': ...,     # discriminator optimizer (only when present)
+    'scheduler_state_dict': ...,       # only when scheduler present
+    'ema_state_dict': ...,             # only when EMA enabled
     'epoch': int,
-    'config': {...},
-    'disc_config': {...}
+    'best_metric': float,
+    'metric_name': str,
+    'checkpoint_manager_version': int,
+    'config': {...},                   # only when self.config is not None
 }
 ```
 
@@ -1611,66 +1663,57 @@ The unified metrics system (`src/medgen/metrics/unified.py`) provides consistent
 
 ### Adding a New Trainer
 
-1. **Create a `TrainerMetricsConfig`** in your trainer's `__init__`:
+The actual unified-metrics API lives in `src/medgen/metrics/unified.py`
+(verbatim from the source — there is no `pipeline.metrics.unified`
+module; classes called `TrainerMetricsConfig` / `LossAccumulator` /
+`MetricsLogger` / `LossKey` / `MetricKey` / `TrainerMode` do **not**
+exist in this codebase). The real classes are `UnifiedMetrics` and the
+helper `SimpleLossAccumulator`:
+
+1. **Instantiate `UnifiedMetrics`** in your trainer's `__init__` (see
+   `src/medgen/pipeline/vae_trainer.py` and `dcae_trainer.py` for real
+   usage):
    ```python
-   from medgen.pipeline.metrics.unified import (
-       TrainerMetricsConfig, LossAccumulator, MetricsLogger
+   from medgen.metrics.unified import UnifiedMetrics
+
+   self.metrics = UnifiedMetrics(
+       writer=self.writer,
+       trainer_type='vae',  # or 'vqvae', 'dcae', 'diffusion', 'seg'
+       device=self.device,
+       # ... see UnifiedMetrics.__init__ at metrics/unified.py:159 for the full signature
    )
-
-   # Option A: Use existing factory method
-   self._metrics_config = TrainerMetricsConfig.for_vae(has_gan=True)
-
-   # Option B: Create custom config for new trainer type
-   self._metrics_config = TrainerMetricsConfig(
-       mode=TrainerMode.CUSTOM,
-       loss_keys={LossKey.GEN, LossKey.RECON, LossKey.PERC},
-       validation_metrics={MetricKey.PSNR, MetricKey.MSSSIM},
-   )
    ```
 
-2. **Initialize accumulator and logger**:
+2. **Use in training loop** (`UnifiedMetrics.update_loss(key, value, phase)`
+   is at `metrics/unified.py:535`):
    ```python
-   self._loss_accumulator = LossAccumulator(self._metrics_config)
-   self._metrics_logger = MetricsLogger(self.writer, self._metrics_config)
+   self.metrics.update_loss('mse', loss.item(), phase='train')
+   self.metrics.update_psnr(pred, gt)  # logged via PSNR accumulator
    ```
 
-3. **Use in training loop**:
-   ```python
-   def train_epoch(self, loader, epoch):
-       self._loss_accumulator.reset()
-       for batch in loader:
-           result = self.train_step(batch)
-           self._loss_accumulator.update(result.to_dict())
-
-       avg_losses = self._loss_accumulator.compute()
-       self._metrics_logger.log_training(epoch, avg_losses)
-   ```
-
-4. **If adding new loss types**, extend `LossKey` and `_TRAIN_LOSS_TAGS` in `unified.py`.
+3. **For per-trainer specifics** (regional metrics, codebook tracking,
+   timestep buckets), refer to the existing trainers as templates —
+   each calls into `UnifiedMetrics` for accumulation and logging
+   without rolling its own TensorBoard writer logic.
 
 ### Components
 
-**TrainerMode Enum**: Defines trainer types
-- `VAE`: KL regularization
-- `VQVAE`: VQ loss
-- `DCAE`: No regularization (deterministic)
-- `SEG`: Segmentation mode (BCE + Dice + Boundary loss)
-- `DIFFUSION`: Diffusion model (MSE noise prediction)
+The unified-metrics module exposes the following at
+`src/medgen/metrics/unified.py`:
 
-**LossKey**: Canonical loss key names
-- Generator: `gen`, `recon`, `perc`
-- Regularization: `kl`, `vq`
-- GAN: `disc`, `adv`
-- Segmentation: `bce`, `dice`, `boundary`
-- Diffusion: `mse`, `total`
+- **`UnifiedMetrics`** (line 114): the public class. Takes a `writer`,
+  `trainer_type` (one of `'vae'`, `'vqvae'`, `'dcae'`, `'diffusion'`,
+  `'seg'`), a `device`, plus optional codebook/regional config. Exposes
+  `update_loss(key, value, phase)`, `update_psnr/lpips/msssim/msssim_3d/dice/iou`,
+  `log_seg_training`, `log_seg_validation`, `log_lr`, etc.
+- **`SimpleLossAccumulator`** (line 57): epoch-loss accumulator helper
+  used internally by `UnifiedMetrics`.
 
-**MetricKey**: Canonical validation metric names
-- Image quality: `psnr`, `lpips`, `msssim`, `msssim_3d`, `l1`
-- Segmentation: `dice_score`, `iou`
-
-**Classes**:
-- `LossAccumulator`: Unified epoch loss tracking across all trainer types
-- `MetricsLogger`: Unified TensorBoard + console logging with modality suffixes
+There are no separate `TrainerMode` / `LossKey` / `MetricKey` enums — loss
+and metric keys are passed as plain strings (e.g. `update_loss('mse', ...,
+phase='train')`). To add a new loss type for a new trainer, just call
+`update_loss('your_key', value, phase=...)` with whatever string you like;
+the metric will be logged under `Loss/your_key_train` (or `_val`).
 
 ---
 
@@ -2064,8 +2107,9 @@ python -m medgen.scripts.train training.logging.lpips=false
 # Enable regional losses for seg mode
 python -m medgen.scripts.train mode=seg training.logging.regional_losses=true
 
-# Visualize augmentations
-python -m medgen.scripts.visualize_augmentations augment_type=vae
+# Visualize augmentations (no augment_type key — script visualizes BOTH pipelines).
+# Real Hydra keys per configs/visualize_augmentations.yaml: synthetic, modality, n_samples, image_size, output_dir
+python -m medgen.scripts.visualize_augmentations modality=bravo n_samples=8
 
 # DC-AE (32× compression, default)
 python -m medgen.scripts.train_compression --config-name=dcae mode=multi_modality

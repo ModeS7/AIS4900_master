@@ -121,11 +121,16 @@ silently overwrites — no error.
   `score_aug_omega.py`. Compile-compatible: returns `[1, 36]` that
   broadcasts to `[B, 36]` so the buffer shape is constant under
   `torch.compile`.
-- **Trainer call site:** `DiffusionTrainer._compute_omega_and_input()` —
-  drawn during the augmentation step, fed into the denoiser.
+- **Call site:** `ScoreAugModelWrapper.forward()` in
+  `src/medgen/augmentation/score_aug_wrapper.py` calls `encode_omega()`,
+  then passes the resulting `[1, 36]` tensor through `OmegaTimeEmbed`,
+  whose output is **added** (not concatenated) to the time embedding via
+  `out + omega_emb` (`OmegaTimeEmbed.forward`).
 - **Denoiser embed pathway:**
-  - UNet: appended to the sinusoidal time embedding inside `time_embed`.
-  - DiT: appended to `t_embedder` output.
+  - UNet: omega-MLP output added to the sinusoidal time embedding inside
+    `time_embed` (per `score_aug_wrapper.py` lines ~103–118).
+  - DiT: omega-MLP output added to `t_embedder` output via the same
+    `OmegaTimeEmbed` adapter.
 - **Generation:** `omega=None` → all zeros (per I1). Models trained with
   ScoreAug must be sampled with this convention; mismatch causes leaks.
 
@@ -145,8 +150,8 @@ Three test files cover the encoding:
   generations with structural translation artifacts even when fed real
   (perfect) seg masks. Traced to identity-as-`[1,0,..]` and to 2D cutout
   size-encoding code being run on 3D params (KeyError silently producing
-  identity). See `memory/finding_exp1_1_1000_best.md` and the project
-  finding on ScoreAug generation issues.
+  identity). See the regression tests in `tests/unit/test_score_aug_omega_*.py`
+  for the exact behaviors locked in by the fix.
 - **April 2026 — fix.** D1 (3D cutout: encode `size_d` into dim 16) and
   D2 (identity = zeros) landed with regression tests. Verified against
   the paper.

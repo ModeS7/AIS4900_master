@@ -1,5 +1,39 @@
 # Test Fixtures
 
+## ⚠️ STALENESS WARNING (May 2026 audit)
+
+The fixture lists below were written for an earlier version of the conftest
+files and **most of the cited fixture names no longer exist with those
+spellings**. For example:
+- `make_3d_images`, `make_segmentation`, `mock_model`, `mock_config` —
+  not in current `tests/conftest.py`
+- `tmp_run_dir` is now `temp_run_dir`
+- `seed` / `set_seed` is now `deterministic_seed`
+- `minimal_trainer_config`, `mock_lpips`, `mock_ddpm_strategy`,
+  `mock_rflow_strategy` (cited as unit-conftest) — not in current
+  `tests/unit/conftest.py`
+- `tmp_run_dir`, `sample_nifti_files`, `load_config`,
+  `minimal_diffusion_config`, `minimal_vae_config`, `small_unet`,
+  `small_vae` (cited as integration-conftest) — not in current
+  `tests/integration/conftest.py`
+- `capture_tensorboard`, `golden_checkpoint_dir`, `bravo_checkpoint`,
+  `seg_checkpoint`, `synthetic_dataset` (cited as e2e-conftest) — not
+  in current `tests/e2e/conftest.py`
+- `benchmark_config`, `warmup_model` (cited as benchmarks-conftest) —
+  not in current `tests/benchmarks/conftest.py`
+
+**For an authoritative, up-to-date list of available fixtures, run:**
+
+```bash
+grep -nE "^@pytest\.fixture|^def [a-z_]+\(" tests/conftest.py tests/unit/conftest.py \
+    tests/integration/conftest.py tests/e2e/conftest.py tests/benchmarks/conftest.py
+```
+
+The sections below are kept for historical reference but should not be
+trusted for current fixture names.
+
+---
+
 ## Overview
 
 This document describes all test fixtures available in the MedGen test suite.

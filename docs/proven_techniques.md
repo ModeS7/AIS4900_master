@@ -23,7 +23,7 @@ Techniques that have shown measurable improvement over baseline (exp1/exp1_1: 27
 
 | Technique | Experiment | Evidence | Config |
 |-----------|-----------|----------|--------|
-| **Dual mode** (T1pre+T1gd) | exp1v2 / exp1v2_1 | FID 32.80 (independent norm) / 24.30 (joint norm) at 128x128. Joint normalization preserves cross-modality intensity relationships | `mode=dual` / `mode=dual data.joint_normalization=true` |
+| **Dual mode** (T1pre+T1gd) | exp1v2 / exp1v2_1 | FID 32.80 (independent norm) / 24.30 (joint norm) at 128x128. Joint normalization preserves cross-modality intensity relationships | `mode=dual` / `mode=dual mode.joint_normalization=true` |
 
 ## Conditioning
 
@@ -35,10 +35,10 @@ Techniques that have shown measurable improvement over baseline (exp1/exp1_1: 27
 
 | Technique | Evidence | Config |
 |-----------|----------|--------|
-| **Timestep shift** | Improved generation quality at inference; ratio 2.0 optimal (FID 49.25 vs 50.18@1.5, 54.78@1.0) | `strategy.shift=2.0` |
-| **Euler 27-32 steps** | Optimal for ImageNet FID (exp1_1: 19.12@27, v2: 20.84@32, exp23: 20.38@27). RadImageNet optimal at ~48-79 steps. Higher-order solvers are worse | `num_inference_steps=27` |
-| **Per-experiment optima search** (Tier 1) | Default step count is wrong for many models. Mamba L (exp34_1_1000) optimal at 14 steps (FID 35.77, half the steps of UNet); 17M tiny UNet (exp20_6) optimal at 76 steps (FID 30.79, **beats large UNets**). TB extended-eval misclassified both as mediocre. | `find_optimal_steps --metric fid,fid_radimagenet,pca` |
-| **HandoffWrapper** (two-stage low-t/high-t) | Inference-time composition for low-t fine-tunes (exp48 family). High-t base handles t > handoff_t, fine-tune handles t ≤ handoff_t. Enables specialized fine-tunes without sacrificing high-t performance | `--high-t-checkpoint <base> --low-t-checkpoint <ft> --handoff-t 0.25` (on `generate.py` and `find_optimal_steps.py`) |
+| **Timestep shift** | Improved generation quality at inference; ratio 2.0 optimal (FID 49.25 vs 50.18@1.5, 54.78@1.0) | `shift_ratio=2.0` (generate.py); also `shift_ratio_seg` / `shift_ratio_bravo` for per-model overrides |
+| **Euler 27-32 steps** | Optimal for ImageNet FID (exp1_1: 19.12@27, v2: 20.84@32, exp23: 20.38@27). RadImageNet optimal at ~48-79 steps. Higher-order solvers are worse | `num_steps=27` (generate.py); also `num_steps_seg` / `num_steps_bravo` |
+| **Per-experiment optima search** (Tier 1) | Default step count is wrong for many models. Mamba L (exp34_1_1000) optimal at 14 steps (FID 35.77, ~half the steps of UNet); 17M tiny UNet (exp20_6) optimal at 76 steps (FID 30.79, beats the larger 67M UNets in the same exp20 family — exp20_4=43.54, exp20_5=37.12, exp20_7=39.12 — though still well above exp1_1 270M @ FID 19.12). TB extended-eval misclassified both as mediocre. | `find_optimal_steps --metric fid,fid_radimagenet,pca` |
+| **HandoffWrapper** (two-stage low-t/high-t) | Inference-time composition for low-t fine-tunes (exp48 family). High-t base handles t > handoff_t, fine-tune handles t ≤ handoff_t. Enables specialized fine-tunes without sacrificing high-t performance | `generate.py`: Hydra keys `image_model_high_t=<base> image_model=<ft> handoff_t=0.25`. `find_optimal_steps.py`: CLI `--high-t-checkpoint <base> --low-t-checkpoint <ft> --handoff-t 0.25` |
 
 ## Regularization (Completed)
 
@@ -64,7 +64,7 @@ Techniques that have shown measurable improvement over baseline (exp1/exp1_1: 27
 | **ScoreAug in latent space** | exp27/28/28_2 | Hurts LDM — DiT-L FID 57→47 (worse), MAISI UNet FID 80→51 (worse). Augmentations too destructive for compact latent representations |
 | **Diffusion Mixup in latent** | exp28_1 | Negative — FID 98.56 vs exp28's 79.91. Cross-batch interpolation with batch_size=1 in latent space is not useful |
 | **ScoreAug v2 (stronger)** | exp28_2 | No improvement over v1 — FID 80.17 vs 79.91. Stronger augmentation doesn't help in latent space |
-| **WDM beyond 500 epochs** | exp26_1 | WDM overfits — FID 77.28 at 1000ep vs 67.32 at 500ep. KID was already flat at 500ep |
+| **WDM beyond 500 epochs** | exp26_1 (1000ep) vs exp19_2 (500ep, same WDM 270M architecture extended) | WDM overfits — FID 77.28 at 1000ep (exp26_1) vs 67.32 at 500ep (exp19_2). KID was already flat at 500ep |
 | **WDM + ScoreAug** | exp26 | Gen metrics unavailable (crash), training MSE ~0.35 suggests partial collapse |
 | **Triple mode** | exp1v3/1v3_1 | Much harder than dual — FID 65-67 vs 25-33. Joint norm doesn't help triple (unlike dual) |
 

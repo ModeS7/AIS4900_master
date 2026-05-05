@@ -167,7 +167,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 
 ## 33. 3D Loaders Don't Support Augmentation
 - 2D loaders have `augment: bool = True` parameter
-- 3D loaders (vae_3d.py) do NOT support data augmentation
+- 3D loaders (`src/medgen/data/loaders/volume_3d.py`) do NOT support data augmentation
 - Reason: Albumentations is 2D-only; 3D requires MONAI transforms
 - Workarounds: TTA during inference, multiple training seeds, or implement MONAI 3D transforms
 
@@ -183,7 +183,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
   - Running multiple training runs in same process
   - Switching GPU devices
   - Memory cleanup needed
-- Import: `from medgen.pipeline.metrics import clear_metric_caches`
+- Import: `from medgen.metrics import clear_metric_caches` (re-exported from `medgen.metrics.quality`, defined at `src/medgen/metrics/quality.py:120`)
 
 ## 36. Segmentation Threshold Constants
 - Ground truth masks: `BINARY_THRESHOLD_GT = 0.01` (very low, preserves all positive pixels)
@@ -206,8 +206,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 - **Previous bug**: Empty validation returned metrics with `loss=0.0`
 - `0.0 < float('inf')` triggered "best" checkpoint save
 - **Impact**: Empty validation folder caused spurious "best" model saves
-- **Fix**: Added guard `if val_loss > 0 and val_loss < self.best_loss`
-- Real losses are never exactly 0.0, so this safely filters empty validation
+- **Fix (current code, `src/medgen/pipeline/base_trainer.py:606`):** legacy fallback uses `val_loss = val_metrics.get('gen', val_metrics.get('total', float('inf')))`, then `if val_loss < self.best_loss:`. The default of `float('inf')` for missing keys means an empty validation no longer triggers a "best" save. The primary path now goes through `checkpoint_manager.save_if_best()` which has its own guards.
 
 ## 40. Mode Embedding Requires Same-Modality Batches (Fixed Jan 2026)
 - **Previous bug**: `encode_mode_id()` only used `mode_id[0]`, ignoring rest of batch
@@ -351,10 +350,10 @@ Note: Adjust the VHDX path to match your WSL installation location.
 
 ## 49. New Trainers MUST Use Unified Metrics System
 - **DO NOT** implement custom TensorBoard logging in new trainers
-- **USE** `TrainerMetricsConfig`, `LossAccumulator`, and `MetricsLogger` from `unified.py`
+- **USE** `UnifiedMetrics` (and the `SimpleLossAccumulator` it composes) from `src/medgen/metrics/unified.py`
 - This ensures consistent metric names across all trainers (no tag drift)
 - See `@docs/architecture.md` → "Unified Metrics System" for implementation guide
-- If adding new loss types, extend `LossKey` and `_TRAIN_LOSS_TAGS` in `unified.py`
+- If adding new loss types, extend the loss-key registration paths within `UnifiedMetrics` (see `update_loss(key, value, phase)` at `src/medgen/metrics/unified.py:535`)
 
 ## 50. Generation Metrics Dependencies and Caching
 When using `training.generation_metrics.enabled=true`:

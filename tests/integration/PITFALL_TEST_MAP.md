@@ -1,56 +1,75 @@
 # Pitfall to Test Mapping
 
-This document maps documented pitfalls (from `docs/common-pitfalls.md`) to their corresponding regression tests.
+This document maps regression tests in `test_regression_bugs.py` to the bug
+they protect against. The test class names and the source-file comments
+(e.g. `# Pitfall #41:`) are the ground truth — historically these were
+keyed to numbers in `docs/common-pitfalls.md`, but the pitfalls doc has
+been re-numbered since the test file was written, so a few of the
+numbers in the test file's comments no longer line up with the current
+pitfall numbering.
 
-## Purpose
-
-Each pitfall that caused a bug should have a regression test to prevent recurrence.
-This mapping ensures traceability between bugs and their test coverage.
+The **test classes themselves** are stable. The **descriptions** are
+verbatim from the test file's class docstrings / source comments.
 
 ## Mapping
 
-| Pitfall # | Description | Test Class | Test File |
-|-----------|-------------|------------|-----------|
-| #39 | Empty validation spurious best checkpoint | `TestEmptyValidationRegression` | `test_regression_bugs.py` |
-| #40 | Mode embedding requires homogeneous batches | `TestModeEmbeddingBatchRegression` | `test_regression_bugs.py` |
-| #41 | BF16 precision in loss computation | `TestBF16PrecisionBug` | `test_regression_bugs.py` |
-| #42 | Validation RNG divergence | `TestRNGDivergenceBug` | `test_regression_bugs.py` |
-| #43 | RFlow generation timestep scaling | `TestRFlowGenerationScalingRegression` | `test_regression_bugs.py` |
-| #44 | Mode embedding batch validation | `TestModeEmbeddingBatchRegression` | `test_regression_bugs.py` |
-| #45 | Timestep jitter normalization | `TestTimestepJitterRegression` | `test_regression_bugs.py` |
-| #47 | Euler integration sign (addition not subtraction) | `TestEulerIntegrationSignRegression` | `test_regression_bugs.py` |
-| #48 | GroupedBatchSampler for mode embedding | `TestGroupedBatchSamplerRegression` | `test_regression_bugs.py` |
-| #49 | FP32 clamping before BF16 cast | `TestFP32ClampingRegression` | `test_regression_bugs.py` |
-| #50 | Checkpoint loading device mismatch | `TestCheckpointDeviceRegression` | `test_regression_bugs.py` |
-| #51 | Gradient accumulation with mixed precision | `TestGradientAccumulationRegression` | `test_regression_bugs.py` |
-| #52 | Scheduler step timing | `TestSchedulerStepTimingRegression` | `test_regression_bugs.py` |
-| - | MS-SSIM 3D returns None | `TestMSSSIM3DRegression` | `test_regression_bugs.py` |
-| - | size_bins not passed through pipeline | `TestSizeBinsRegression` | `test_regression_bugs.py` |
+| Pitfall # in test file | Description (from test source) | Test Class |
+|---|---|---|
+| #41 | BF16 Precision in Loss Computation — always `.float()` before loss | `TestBF16PrecisionBug` |
+| #42 | Validation RNG Divergence — save/restore RNG state around validation | `TestRNGDivergenceBug` |
+| #43 | RFlow Generation Timestep Scaling — scale [0,1] to [0, num_train_timesteps] | `TestRFlowGenerationScalingRegression` |
+| #45 | Timestep Jitter Normalization — normalize before jitter, clamp, scale back | `TestTimestepJitterRegression` |
+| #47 | Euler Integration Sign — use ADDITION (x + dt·v), not subtraction | `TestEulerIntegrationSignRegression` |
+| #48 | GroupedBatchSampler for Mode Embedding | `TestGroupedBatchSamplerRegression` |
+| #49 | FP32 Clamping Before BF16 Cast | `TestFP32ClampingRegression` |
+| #50 | Checkpoint Loading Device Mismatch | `TestCheckpointDeviceRegression` |
+| #51 | Gradient Accumulation with Mixed Precision | `TestGradientAccumulationRegression` |
+| #52 | Scheduler Step Timing — call `scheduler.step()` after `optimizer.step()` | `TestSchedulerStepTimingRegression` |
+| #39 (current) | Empty Validation Spurious Best Checkpoint | `TestEmptyValidationRegression` |
+| #40 (current) | Mode Embedding Requires Same-Modality Batches | `TestModeEmbeddingBatchRegression` |
+| (no #) | MS-SSIM 3D returns None | `TestMSSSIM3DRegression` |
+| (no #) | size_bins not passed through pipeline | `TestSizeBinsRegression` |
+
+**Note on numbering drift**: Pitfalls #43, #45, #47-52 in the test file's
+source comments refer to the historical numbering when the tests were
+written. The current `docs/common-pitfalls.md` has those topics under
+different numbers (or, in the case of #43, the slot is now intentionally
+skipped). The test classes still cover the original bug behaviors —
+verified to still match current source code as of May 2026. To find the
+current pitfall # for a given topic, search `docs/common-pitfalls.md` by
+description rather than by number.
+
+All 14 test classes were verified to exist in
+`tests/integration/test_regression_bugs.py` (as of May 2026).
 
 ## Test Coverage by Category
 
 ### Precision & Numerics
-- **#41**: BF16 loss computation - Always use `.float()` before loss
-- **#49**: FP32 clamping - Clamp in FP32, then cast
+- **`TestBF16PrecisionBug`**: BF16 loss computation - Always use `.float()` before loss
+- **`TestFP32ClampingRegression`**: FP32 clamping - Clamp in FP32, then cast
 
 ### RNG & Reproducibility
-- **#42**: Validation RNG - Save/restore RNG state around validation
+- **`TestRNGDivergenceBug`**: Validation RNG - Save/restore RNG state around validation
 
 ### RFlow Generation
-- **#43**: Timestep scaling - Scale [0,1] to [0, num_train_timesteps]
-- **#45**: Timestep jitter - Normalize before jitter, clamp, then scale back
-- **#47**: Euler integration - Use ADDITION (x + dt*v), not subtraction
+- **`TestRFlowGenerationScalingRegression`**: Timestep scaling - Scale [0,1] to [0, num_train_timesteps]
+- **`TestTimestepJitterRegression`**: Timestep jitter - Normalize before jitter, clamp, then scale back
+- **`TestEulerIntegrationSignRegression`**: Euler integration - Use ADDITION (x + dt·v), not subtraction
 
 ### Mode Embedding
-- **#40, #44, #48**: Homogeneous batches - Use GroupedBatchSampler
+- **`TestModeEmbeddingBatchRegression`**, **`TestGroupedBatchSamplerRegression`**: Homogeneous batches - Use GroupedBatchSampler
 
 ### Checkpoint & State
-- **#39**: Empty validation - Check val_loss > 0 before marking best
-- **#50**: Device mismatch - Use map_location when loading
+- **`TestEmptyValidationRegression`**: Empty validation - default fallback prevents spurious "best"
+- **`TestCheckpointDeviceRegression`**: Device mismatch - Use map_location when loading
 
 ### Training Loop
-- **#51**: Gradient accumulation - Divide loss by accumulation_steps
-- **#52**: Scheduler timing - Call scheduler.step() after optimizer.step()
+- **`TestGradientAccumulationRegression`**: Gradient accumulation - Divide loss by accumulation_steps
+- **`TestSchedulerStepTimingRegression`**: Scheduler timing - Call scheduler.step() after optimizer.step()
+
+### Misc
+- **`TestMSSSIM3DRegression`**: MS-SSIM 3D returns None
+- **`TestSizeBinsRegression`**: size_bins not passed through pipeline
 
 ## Running Regression Tests
 
@@ -69,9 +88,12 @@ pytest tests/integration/test_regression_bugs.py --cov=src/medgen -v
 
 When fixing a bug:
 
-1. Add entry to `docs/common-pitfalls.md` with pitfall number
+1. Add entry to `docs/common-pitfalls.md` with a topic-descriptive heading
+   (the entry's numeric position will shift over time — that's fine; tests
+   should reference the topic, not the number).
 2. Create test class in `test_regression_bugs.py` with docstring explaining:
    - **BUG**: What went wrong
    - **FIX**: How it was fixed
-3. Add mapping to this file
-4. Verify test fails without fix, passes with fix
+3. Add an entry to this file referencing the test class name and a
+   topical description.
+4. Verify test fails without fix, passes with fix.

@@ -47,14 +47,14 @@ Zero gradient spikes or divergence across all 89 experiments.
 | Rank | Experiment | Architecture | Epochs | Best Val | Gen Metrics |
 |------|-----------|-------------|--------|----------|-------------|
 | 1 | exp12_1c_sit_s | SiT-S | 500/500 | **0.005604** | -- |
-| 2 | exp6_rflow_256 | UNet 256x256 | 500/500 | **0.006141** | -- |
-| 3 | exp7_rflow_256_4lvl | UNet 256x256 4L | 500/500 | **0.006213** | -- |
+| 2 | exp6_rflow_256 | UNet 256x256 | 500/500 | **0.005942** (Total_val.min) | -- |
+| 3 | exp7_rflow_256_4lvl | UNet 256x256 4L | 500/500 | **0.005904** (Total_val.min) | -- |
 | 4 | exp27_plateau | UNet + plateau LR | 375/500 | **0.006469** | -- |
 | 5 | exp2_rflow_100steps (23962279) | UNet baseline | 500/500 | **0.006564** | FID=36.32 |
 | 6 | exp1_3_continuous | UNet continuous | 500/500 | **0.006607** | FID=35.98 |
 | 7 | exp12_2b_sit_b | SiT-B | 410/500 | **0.006682** | -- |
 | 8 | exp12_1b_sit_s | SiT-S | 500/500 | **0.006758** | **FID=33.43** |
-| 9 | exp1_2_ddpm | UNet DDPM | 500/500 | **0.006817** | -- |
+| 9 | exp1_2_ddpm | UNet DDPM | 500/500 | **0.006184** (Total_val.min) | -- |
 | 10 | exp9_7_scoreaug_v2 | UNet + ScoreAug | 500/500 | **0.007099** | -- |
 | 11 | exp9_6_scoreaug_compose08 | UNet + ScoreAug | 500/500 | **0.007110** | -- |
 | 12 | exp16_bs8 | UNet bs=8 | 500/500 | **0.007135** | -- |
@@ -209,9 +209,9 @@ SiT-S wins on all three generation metrics.
 ## 2D Summary Statistics
 
 - Total: 89 experiments, 82 completed, 2 failed, 6 incomplete
-- Best val loss: 0.005604 (SiT-S exp12_1c)
-- Mean best val loss: 0.007477
-- Range: 0.005604 - 0.008146
+- Best val loss: 0.005604 (SiT-S exp12_1c, MSE_val.min)
+- Mean best val loss: 0.007477 (mixed MSE_val.min and Total_val.min — see per-row column above)
+- Range: 0.005604 — 0.008146 (approximate; the column convention varies row-to-row between MSE_val and Total_val)
 - Zero gradient spikes or divergence
 
 ---

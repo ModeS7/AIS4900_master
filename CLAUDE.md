@@ -51,7 +51,7 @@ Don't assume anything that wasn't explicitly stated. If something is unclear or 
 | **bridge strategy** | Diffusion Bridge Model for paired restoration (Zhang et al. 2025, arXiv:2504.15267); γ_max=0.125 for 3D brain MRI |
 | **irsde strategy** | IR-SDE mean-reverting SDE (Luo et al., ICML 2023); L1 loss, posterior sampling at inference |
 | **resfusion strategy** | Resfusion residual noise diffusion (Shi et al., NeurIPS 2024); short T=12 schedule, ~5–12 reverse steps |
-| **WDM** | Wavelet Diffusion Model (Friedrich et al. 2024, MICCAI); 3D-only, x₀-prediction in wavelet domain. Config: `model=wdm_3d` |
+| **WDM** | Wavelet Diffusion Model (Friedrich et al. 2024, arXiv:2402.19043); 3D-only, requires `strategy.prediction_type=sample` (x₀) and `wavelet=default`. Config: `model=wdm_3d` |
 | `train.py` | Diffusion (2D default, use `model.spatial_dims=3` for 3D) |
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
@@ -88,24 +88,35 @@ python -m medgen.scripts.train model=mamba model.variant=S mode=bravo strategy=r
 python -m medgen.scripts.train model=mamba_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # 3D
 
 # === DIFFUSION (WDM, wavelet-domain, 3D only) ===
-python -m medgen.scripts.train model=wdm_3d mode=bravo strategy=ddpm model.spatial_dims=3
+python -m medgen.scripts.train model=wdm_3d wavelet=default mode=bravo \
+    strategy=ddpm strategy.prediction_type=sample model.spatial_dims=3
 
-# === RESTORATION (IR-SDE / Bridge / Resfusion) ===
+# === RESTORATION (RFlow / IR-SDE / Bridge / Resfusion) ===
+# All four strategies work with mode=restoration per configs/mode/restoration.yaml
+python -m medgen.scripts.train mode=restoration strategy=rflow model.spatial_dims=3
 python -m medgen.scripts.train mode=restoration strategy=irsde model.spatial_dims=3
 python -m medgen.scripts.train mode=restoration strategy=bridge model.spatial_dims=3
 python -m medgen.scripts.train mode=restoration strategy=resfusion model.spatial_dims=3
 
 # === RESTORE GENERATED VOLUMES (post-hoc) ===
 python -m medgen.scripts.restore_volumes \
-    --restoration-checkpoint runs/diffusion_3d/.../checkpoint_best.pt \
+    --restoration-model runs/diffusion_3d/.../checkpoint_best.pt \
     --input-dir <path-to-generated-volumes> \
     --output-dir <restored-output-dir>
 
 # === GENERATE WITH HANDOFF (two-stage low-t/high-t) ===
-python -m medgen.scripts.generate \
+# generate.py: Hydra config keys (image_model = low-t, image_model_high_t = base)
+python -m medgen.scripts.generate mode=bravo \
+    image_model=<fine-tuned-low-t-model.pt> \
+    image_model_high_t=<base-model.pt> \
+    handoff_t=0.25
+
+# find_optimal_steps.py: CLI flags
+python -m medgen.scripts.find_optimal_steps \
     --high-t-checkpoint <base-model.pt> \
     --low-t-checkpoint <fine-tuned-low-t-model.pt> \
-    --handoff-t 0.25
+    --handoff-t 0.25 \
+    --data-root ~/MedicalDataSets/brainmetshare-3 --output-dir eval_handoff
 
 # === VAE ===
 python -m medgen.scripts.train_compression --config-name=vae mode=multi_modality
@@ -204,14 +215,14 @@ BaseTrainer
 - For numpy arrays from raw datasets, convert to tensors first
 
 **Loss schedules (in `training/default.yaml`, applied via `_compute_t_schedule_weight()`):**
-- `training.perceptual_weight: 0.1` + `training.perceptual_max_timestep: 250` — LPIPS at low t (legacy mode)
-- `training.perceptual_t_schedule: [t_on, t_full, t_off]` — piecewise-linear schedule in normalized [0,1] units (zero below t_on, ramps to 1 at t_full, drops to 0 at t_off)
-- `training.focal_frequency_weight: 0.0` + `training.focal_frequency_t_schedule: [...]` — focal frequency loss with same piecewise schedule (slice-wise FFT for 3D)
+- `training.perceptual_weight: 0.0` (default; >0 enables) + `training.perceptual_max_timestep: null` (default; legacy ramp — set integer N to apply LPIPS only when t < N) — LPIPS at low t (legacy mode); exp32_2 family uses `perceptual_weight=0.1 perceptual_max_timestep=250`
+- `training.perceptual_t_schedule: null` (default; set `[t_on, t_full, t_off]`) — piecewise-linear schedule in normalized [0,1] units (zero below t_on, ramps to 1 at t_full, drops to 0 at t_off)
+- `training.focal_frequency_weight: 0.0` (default) + `training.focal_frequency_t_schedule: null` (default) — focal frequency loss with same piecewise schedule (slice-wise FFT for 3D)
 - All schedules disabled by default; enable per-experiment in SLURM overrides
 
 **Two-stage inference (`src/medgen/models/handoff.py`):**
 - `HandoffWrapper` combines two checkpoints: high-t (seed/base) and low-t (fine-tuned)
-- Used at inference only; configured via `--high-t-checkpoint`, `--low-t-checkpoint`, `--handoff-t` flags on `generate.py`
+- Used at inference only. `generate.py` reads Hydra keys `image_model` (low-t), `image_model_high_t` (base), `handoff_t` (default 0.25 from `configs/generate.yaml`). `find_optimal_steps.py` uses argparse flags `--high-t-checkpoint`/`--low-t-checkpoint`/`--handoff-t`.
 - No `configs/model/handoff.yaml` — wrapper is constructed at runtime from the two model paths
 
 ---
