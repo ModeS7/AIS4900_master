@@ -43,6 +43,7 @@ DATASET_NAME = 'BrainMet'
 MODALITY_PRESETS = {
     'bravo': ['bravo'],
     'dual': ['t1_pre', 't1_gd'],
+    'triple': ['t1_pre', 't1_gd', 'flair'],
 }
 
 # Per-modality clip_max values (brain-only p99.5 of raw intensities).
@@ -53,6 +54,7 @@ CLIP_MAX = {
     'bravo': 5898,
     't1_pre': 1257,
     't1_gd': 1353,
+    'flair': 1800,
 }
 
 # Canonical affine for 256x256x150 brain volumes (240mm FOV).
