@@ -124,6 +124,24 @@ def reconstruct_3d(
     return recon.float().clamp(0, 1)
 
 
+def _unwrap_encoder_output(out):
+    """Extract latent tensor from possibly-wrapped diffusers EncoderOutput / tuple."""
+    if hasattr(out, "latent"):
+        return out.latent
+    if isinstance(out, tuple):
+        return out[0]
+    return out
+
+
+def _unwrap_decoder_output(out):
+    """Extract sample tensor from possibly-wrapped diffusers DecoderOutput / tuple."""
+    if hasattr(out, "sample"):
+        return out.sample
+    if isinstance(out, tuple):
+        return out[0]
+    return out
+
+
 @torch.no_grad()
 def reconstruct_2d_per_slice(
     model: torch.nn.Module,
@@ -139,7 +157,7 @@ def reconstruct_2d_per_slice(
     Returns:
         [1, 1, D, H, W] reconstructed tensor in [0, 1].
     """
-    _, _, d, h, w = vol.shape
+    _, _, d, _h, _w = vol.shape
     slices = vol.squeeze(0).squeeze(0)  # [D, H, W]
     out_slices = []
     for start in range(0, d, chunk):
@@ -153,8 +171,10 @@ def reconstruct_2d_per_slice(
                 z_mu, _ = model.encode(batch)
                 recon = model.decode(z_mu)
             elif ctype == "dcae":
-                z = model.encode(batch)
-                recon = model.decode(z)
+                # diffusers AutoencoderDC returns EncoderOutput / DecoderOutput,
+                # StructuredAutoencoderDC delegates to the same. Unwrap both.
+                z = _unwrap_encoder_output(model.encode(batch))
+                recon = _unwrap_decoder_output(model.decode(z))
             else:
                 raise ValueError(f"Unknown compression type: {ctype}")
         out_slices.append(recon.float().clamp(0, 1).squeeze(1))  # [chunk, H, W]
@@ -221,6 +241,132 @@ def plot_grid(
     plt.close(fig)
 
 
+def _strip_state_dict_prefix(state_dict: dict, prefix: str = "model.") -> dict:
+    """Strip a leading prefix from all keys in a state_dict, idempotently."""
+    if not any(k.startswith(prefix) for k in state_dict):
+        return state_dict
+    return {(k[len(prefix):] if k.startswith(prefix) else k): v
+            for k, v in state_dict.items()}
+
+
+def _build_model_for_label(
+    label: str, ckpt_path: Path, device: torch.device
+) -> tuple[torch.nn.Module, str, int, int, int]:
+    """Build & load a compression model based on label and checkpoint structure.
+
+    Bypasses the generic loader for DC-AE 2D where production checkpoints are
+    saved with structured-latent wrapping (encoder.conv_out.conv.* and
+    decoder.conv_in.conv.*); falls back to the generic loader for VAE/VQ-VAE.
+
+    Returns:
+        (model, compression_type, spatial_dims, scale_factor, latent_channels)
+    """
+    label_lower = label.lower()
+
+    # Determine type from label (avoid the broken auto-detect for AutoencoderDC).
+    # Check DC-AE and VQ-VAE substrings before VAE since "VQ-VAE" contains "VAE".
+    if "dc-ae" in label_lower or "dcae" in label_lower:
+        ctype = "dcae"
+    elif "vq-vae" in label_lower or "vqvae" in label_lower:
+        ctype = "vqvae"
+    elif "vae" in label_lower:
+        ctype = "vae"
+    else:
+        raise ValueError(f"Cannot infer compression type from label: {label!r}")
+
+    sdims = 3 if " 3d" in label_lower or "_3d" in label_lower else 2
+
+    if ctype == "dcae" and sdims == 2:
+        return _build_dcae_2d(label, ckpt_path, device)
+
+    # VAE/VQ-VAE 3D — generic loader works (no version-skew on these architectures).
+    from medgen.data.loaders.compression_detection import load_compression_model
+    return load_compression_model(
+        str(ckpt_path), ctype, device, spatial_dims=sdims,
+    )
+
+
+def _build_dcae_2d(
+    label: str, ckpt_path: Path, device: torch.device
+) -> tuple[torch.nn.Module, str, int, int, int]:
+    """Build & load a 2D DC-AE checkpoint, auto-detecting structured-latent wrapping.
+
+    Structured DC-AE (DC-AE 1.5) wraps `encoder.conv_out` and `decoder.conv_in`
+    with `AdaptiveOutputConv2d` / `AdaptiveInputConv2d`, which contain a `.conv`
+    sublayer. Detection: presence of `encoder.conv_out.conv.weight` in state_dict.
+    """
+    from diffusers import AutoencoderDC
+
+    ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+    raw_state_dict = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
+    state_dict = _strip_state_dict_prefix(raw_state_dict)
+
+    # Detect structured wrapping vs. vanilla and the latent channel count.
+    if "encoder.conv_out.conv.weight" in state_dict:
+        latent_ch = int(state_dict["encoder.conv_out.conv.weight"].shape[0])
+        is_structured = True
+    elif "encoder.conv_out.weight" in state_dict:
+        latent_ch = int(state_dict["encoder.conv_out.weight"].shape[0])
+        is_structured = False
+    else:
+        raise RuntimeError(
+            "Could not locate encoder.conv_out weight in DC-AE 2D checkpoint "
+            f"({ckpt_path}); state_dict has {len(state_dict)} keys."
+        )
+
+    # Compression ratio = 32x for c=32, 64x for c=64, 128x for c=128 in DC-AE
+    # (this codebase uses fXcX naming where the f-number IS the spatial ratio).
+    scale = latent_ch
+
+    base_model = AutoencoderDC(
+        in_channels=1,
+        latent_channels=latent_ch,
+        encoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
+        decoder_block_out_channels=(128, 256, 512, 512, 1024, 1024),
+        encoder_layers_per_block=(2, 2, 2, 3, 3, 3),
+        decoder_layers_per_block=(3, 3, 3, 3, 3, 3),
+        encoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+        decoder_qkv_multiscales=((), (), (), (5,), (5,), (5,)),
+        encoder_block_types="ResBlock",
+        decoder_block_types="ResBlock",
+        downsample_block_type="pixel_unshuffle",
+        upsample_block_type="pixel_shuffle",
+        encoder_out_shortcut=True,
+        decoder_in_shortcut=True,
+    ).to(device)
+
+    if is_structured:
+        from medgen.models.dcae_structured import StructuredAutoencoderDC
+        # Default channel_steps used during training: range(min, latent+1, step)
+        # with min=16, step=4 per configs/dcae/default.yaml structured_latent block.
+        channel_steps = list(range(16, latent_ch + 1, 4))
+        model = StructuredAutoencoderDC(base_model, channel_steps).to(device)
+        logger.info(
+            "  DC-AE 2D structured-latent wrapper applied (channel_steps=%s)",
+            channel_steps,
+        )
+    else:
+        model = base_model
+        logger.info("  DC-AE 2D vanilla (no structured-latent wrapping)")
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing or unexpected:
+        logger.warning(
+            "DC-AE 2D state_dict load: %d missing, %d unexpected keys",
+            len(missing), len(unexpected),
+        )
+        if missing:
+            logger.warning("  first 5 missing: %s", missing[:5])
+        if unexpected:
+            logger.warning("  first 5 unexpected: %s", unexpected[:5])
+
+    logger.info(
+        "  loaded DC-AE 2D: latent_ch=%d, scale=%dx, structured=%s",
+        latent_ch, scale, is_structured,
+    )
+    return model, "dcae", 2, scale, latent_ch
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-root", required=True, help="Path to brainmetshare-3 root.")
@@ -256,7 +402,6 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     args = parse_args(argv)
 
-    from medgen.data.loaders.compression_detection import load_compression_model
     from medgen.metrics.quality import compute_msssim, compute_psnr
 
     device = torch.device(args.device)
@@ -302,21 +447,8 @@ def main(argv: list[str] | None = None) -> int:
     for label, ckpt in args.model_specs:
         logger.info("=" * 70)
         logger.info("Loading model: %s  (%s)", label, ckpt)
-        # Infer compression type from label since auto-detection in
-        # compression_detection.py misidentifies diffusers' AutoencoderDC
-        # (no dc_ae config key, no residual_autoencoding in state_dict).
-        # Order matters: check DC-AE and VQ-VAE before VAE.
-        label_lower = label.lower()
-        if "dc-ae" in label_lower or "dcae" in label_lower:
-            ctype_hint = "dcae"
-        elif "vq-vae" in label_lower or "vqvae" in label_lower:
-            ctype_hint = "vqvae"
-        elif "vae" in label_lower:
-            ctype_hint = "vae"
-        else:
-            ctype_hint = "auto"
-        model, ctype, sdims, scale, latent_ch = load_compression_model(
-            str(ckpt), ctype_hint, device, spatial_dims="auto"
+        model, ctype, sdims, scale, latent_ch = _build_model_for_label(
+            label, ckpt, device
         )
         model.eval()
         logger.info("  detected: type=%s spatial_dims=%dD scale=%dx latent_ch=%d",
