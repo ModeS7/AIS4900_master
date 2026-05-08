@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("=" * 70)
         logger.info("Loading model: %s  (%s)", label, ckpt)
         model, ctype, sdims, scale, latent_ch = load_compression_model(
-            str(ckpt), None, device, spatial_dims="auto"
+            str(ckpt), "auto", device, spatial_dims="auto"
         )
         model.eval()
         logger.info("  detected: type=%s spatial_dims=%dD scale=%dx latent_ch=%d",

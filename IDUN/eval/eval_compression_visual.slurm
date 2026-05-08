@@ -18,11 +18,12 @@
 #
 #   2D models (slice-by-slice on 3D volumes):
 #     DC-AE 2D f32  v1.5 → exp9_dcae_f32_1_5
+#     DC-AE 2D f64  v1.5 → exp9_dcae_f64_1_5
 #     DC-AE 2D f128 v1.5 → exp9_dcae_f128_1_5
 #
 #   3D models (full-volume):
-#     VAE 3D    → exp14_3_vae3d_4x_lowkl  (low-KL gives best reconstruction)
-#     VQ-VAE 3D → exp8_3_vqvae3d_lat16    (highest-capacity 4x VQ-VAE)
+#     VAE 3D    → exp14_4_vae3d_4x_nokl   (used in exp13_1 LDM-VAE diffusion runs)
+#     VQ-VAE 3D → exp8_1_256x160          (training.name=exp8_1_, lat=4, 4x compression — used downstream)
 #
 # Hydra run-dir resolution (from configs/{dcae,vae_3d,vqvae_3d}.yaml):
 #   compression_2d/${mode.name}/${training.name}${now}                     (DC-AE 2D)
@@ -64,9 +65,10 @@ pick_ckpt() {
 }
 
 DCAE_2D_F32=$(pick_ckpt  "$RUNS_2D" 'exp9_dcae_f32_1_5')
+DCAE_2D_F64=$(pick_ckpt  "$RUNS_2D" 'exp9_dcae_f64_1_5')
 DCAE_2D_F128=$(pick_ckpt "$RUNS_2D" 'exp9_dcae_f128_1_5')
-VAE_3D=$(pick_ckpt       "$RUNS_3D" 'exp14_3_vae3d_4x_lowkl')
-VQVAE_3D=$(pick_ckpt     "$RUNS_3D" 'exp8_3_vqvae3d_lat16')
+VAE_3D=$(pick_ckpt       "$RUNS_3D" 'exp14_4_vae3d_4x_nokl')
+VQVAE_3D=$(pick_ckpt     "$RUNS_3D" 'exp8_1_256x160')
 
 # Diagnostic: list every compression checkpoint (best AND latest) so the user
 # can see what's actually on disk if a pick doesn't match expectations.
@@ -80,12 +82,14 @@ echo ""
 echo "=== Selected checkpoints (token → freshest match) ==="
 printf '  %-15s = %s\n' \
     'DCAE_2D_F32'  "${DCAE_2D_F32:-(none — exp9_dcae_f32_1_5 not found)}" \
+    'DCAE_2D_F64'  "${DCAE_2D_F64:-(none — exp9_dcae_f64_1_5 not found)}" \
     'DCAE_2D_F128' "${DCAE_2D_F128:-(none — exp9_dcae_f128_1_5 not found)}" \
-    'VAE_3D'       "${VAE_3D:-(none — exp14_3_vae3d_4x_lowkl not found)}" \
-    'VQVAE_3D'     "${VQVAE_3D:-(none — exp8_3_vqvae3d_lat16 not found)}"
+    'VAE_3D'       "${VAE_3D:-(none — exp14_4_vae3d_4x_nokl not found)}" \
+    'VQVAE_3D'     "${VQVAE_3D:-(none — exp8_1_256x160 not found)}"
 
 MODEL_ARGS=""
 [ -n "${DCAE_2D_F32}"  ] && MODEL_ARGS="${MODEL_ARGS} --model 'DC-AE 2D f32:${DCAE_2D_F32}'"
+[ -n "${DCAE_2D_F64}"  ] && MODEL_ARGS="${MODEL_ARGS} --model 'DC-AE 2D f64:${DCAE_2D_F64}'"
 [ -n "${DCAE_2D_F128}" ] && MODEL_ARGS="${MODEL_ARGS} --model 'DC-AE 2D f128:${DCAE_2D_F128}'"
 [ -n "${VAE_3D}"       ] && MODEL_ARGS="${MODEL_ARGS} --model 'VAE 3D:${VAE_3D}'"
 [ -n "${VQVAE_3D}"     ] && MODEL_ARGS="${MODEL_ARGS} --model 'VQ-VAE 3D:${VQVAE_3D}'"
