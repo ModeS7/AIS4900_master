@@ -302,8 +302,21 @@ def main(argv: list[str] | None = None) -> int:
     for label, ckpt in args.model_specs:
         logger.info("=" * 70)
         logger.info("Loading model: %s  (%s)", label, ckpt)
+        # Infer compression type from label since auto-detection in
+        # compression_detection.py misidentifies diffusers' AutoencoderDC
+        # (no dc_ae config key, no residual_autoencoding in state_dict).
+        # Order matters: check DC-AE and VQ-VAE before VAE.
+        label_lower = label.lower()
+        if "dc-ae" in label_lower or "dcae" in label_lower:
+            ctype_hint = "dcae"
+        elif "vq-vae" in label_lower or "vqvae" in label_lower:
+            ctype_hint = "vqvae"
+        elif "vae" in label_lower:
+            ctype_hint = "vae"
+        else:
+            ctype_hint = "auto"
         model, ctype, sdims, scale, latent_ch = load_compression_model(
-            str(ckpt), "auto", device, spatial_dims="auto"
+            str(ckpt), ctype_hint, device, spatial_dims="auto"
         )
         model.eval()
         logger.info("  detected: type=%s spatial_dims=%dD scale=%dx latent_ch=%d",
