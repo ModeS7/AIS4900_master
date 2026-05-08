@@ -17,7 +17,7 @@
 export CLUSTER_BASE
 
 # === Auto-chain configuration ===
-CHAIN_MAX=50
+CHAIN_MAX=30
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 
 # === Signal handler for auto-chaining ===
