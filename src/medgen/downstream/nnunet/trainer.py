@@ -193,3 +193,24 @@ class nnUNetTrainerBrainMets(_TensorBoardMixin, nnUNetTrainer):
     def on_train_end(self):
         super().on_train_end()
         self._close_tb()
+
+
+# =============================================================================
+# Reduced-epoch variants for cheaper experiments
+# =============================================================================
+# nnU-Net's default num_epochs is 1000 (250k iterations). Reducing it scales
+# total compute proportionally without changing per-epoch dataset coverage —
+# useful when training on full 525-vol synth where per-case exposure can stay
+# meaningful even with fewer epochs.
+
+class nnUNetTrainerBrainMets_200epochs(nnUNetTrainerBrainMets):
+    """nnUNetTrainerBrainMets capped at 200 epochs (50k iterations).
+
+    Usage:
+        python -m medgen.scripts.train_nnunet --trainer nnUNetTrainerBrainMets_200epochs
+    """
+
+    def __init__(self, plans, configuration, fold, dataset_json,
+                 device=torch.device('cuda')):
+        super().__init__(plans, configuration, fold, dataset_json, device)
+        self.num_epochs = 200
