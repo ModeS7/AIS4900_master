@@ -1,7 +1,7 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-12:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
@@ -9,27 +9,28 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --exclude=idun-06-02
-#SBATCH --job-name="nn_s525_48ch200"
-#SBATCH --output=IDUN/output/train/downstream/nnunet/exp6_2_exp48c_handoff_exp32_525_200ep/%j.out
-#SBATCH --error=IDUN/output/train/downstream/nnunet/exp6_2_exp48c_handoff_exp32_525_200ep/%j.err
+#SBATCH --job-name="nn_s525_48ch"
+#SBATCH --output=IDUN/output/train/downstream/nnunet/exp6_2_exp48c_handoff_exp32_525/%j.out
+#SBATCH --error=IDUN/output/train/downstream/nnunet/exp6_2_exp48c_handoff_exp32_525/%j.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
 #SBATCH --signal=B:SIGUSR1@120
 
 # nnU-Net exp6_2: synth-only with FULL 525 vols of exp48c_handoff_exp32 synth,
-# trained for 200 epochs (50k iterations) instead of the standard 1000 (250k).
-# Roughly 1/5 the compute of the existing 1000-epoch synth-105 run.
+# trained for nnU-Net default 1000 epochs (250k iterations).
+# Same compute as 105×1000ep but with 5× more cases sampled per training step.
 #
 # Dataset 614 (real + 525 brain-masked synth from exp48c_handoff_exp32).
-# Trainer: nnUNetTrainerBrainMets_200epochs (BrainMets settings + num_epochs=200).
+# Trainer: nnUNetTrainerBrainMets (BrainMets settings, default 1000 epochs).
 # Same Group A architecture as the existing exp6_2_synthetic_105_* runs.
+# Per-case sampling density: ~1429 patches/case across full training.
 #
-# FOLD=0 sbatch exp6_2_synthetic_525_exp48c_handoff_exp32_200ep.slurm
+# FOLD=0 sbatch exp6_2_synthetic_525_exp48c_handoff_exp32.slurm
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
 
-CHAIN_MAX=10
+CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 FOLD=${FOLD:-0}
 
@@ -50,7 +51,7 @@ trap handle_timeout SIGUSR1
 
 cd ${SLURM_SUBMIT_DIR}
 
-echo "=== nnU-Net: exp6_2 synthetic-525 exp48c_handoff_exp32 200ep | fold ${FOLD} ==="
+echo "=== nnU-Net: exp6_2 synthetic-525 exp48c_handoff_exp32 1000ep | fold ${FOLD} ==="
 echo "Job: ${SLURM_JOB_ID} | Node: ${SLURM_JOB_NODELIST} | Chain: ${CHAIN_COUNT}/${CHAIN_MAX}"
 nvidia-smi
 
@@ -66,14 +67,15 @@ if [ "$CHAIN_COUNT" -gt 0 ]; then
 fi
 
 # --experiment synthetic with NO --n-synthetic flag uses the full 525 synth pool.
+# Default trainer = nnUNetTrainerBrainMets (1000 epochs).
 time python -m medgen.scripts.train_nnunet \
     --experiment synthetic \
     --dataset-id 614 \
-    --experiment-name exp6_2_synthetic_525_exp48c_handoff_exp32_200ep \
+    --experiment-name exp6_2_synthetic_525_exp48c_handoff_exp32 \
     --fold ${FOLD} \
     --nnunet-base "${NNUNET_BASE}" \
     --nnunet-results "${NNUNET_RESULTS}" \
-    --trainer nnUNetTrainerBrainMets_200epochs \
+    --trainer nnUNetTrainerBrainMets \
     --plans nnUNetResEncUNetLPlans \
     ${CONTINUE_FLAG} &
 
@@ -83,15 +85,15 @@ TRAIN_EXIT=$?
 
 if [ $TRAIN_EXIT -eq 0 ]; then
     echo ""
-    echo "=== Evaluating exp6_2_synthetic_525_exp48c_handoff_exp32_200ep (fold ${FOLD}) ==="
+    echo "=== Evaluating exp6_2_synthetic_525_exp48c_handoff_exp32 (fold ${FOLD}) ==="
     python -m medgen.scripts.eval_nnunet \
         --experiment synthetic \
         --dataset-id 614 \
-        --experiment-name exp6_2_synthetic_525_exp48c_handoff_exp32_200ep \
+        --experiment-name exp6_2_synthetic_525_exp48c_handoff_exp32 \
         --folds ${FOLD} \
         --nnunet-base "${NNUNET_BASE}" \
         --nnunet-results "${NNUNET_RESULTS}" \
-        --trainer nnUNetTrainerBrainMets_200epochs \
+        --trainer nnUNetTrainerBrainMets \
         --plans nnUNetResEncUNetLPlans \
         || echo "WARNING: Evaluation failed"
 fi
