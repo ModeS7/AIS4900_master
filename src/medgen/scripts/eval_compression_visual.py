@@ -143,8 +143,8 @@ def _reconstruct_maisi(model: torch.nn.Module, vol: torch.Tensor) -> torch.Tenso
     so MAISI's metrics reflect its true reconstruction quality on its training
     convention.
     """
-    from monai.inferers import SlidingWindowInferer
     import torch.nn.functional as F
+    from monai.inferers import SlidingWindowInferer
 
     # Apply MAISI's training-time normalization (0-99.5 percentile clip to [0,1]).
     # vol is currently min-max normalized to [0,1]. We re-derive the 99.5
