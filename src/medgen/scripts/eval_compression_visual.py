@@ -130,24 +130,39 @@ def reconstruct_3d(
 def _reconstruct_maisi(model: torch.nn.Module, vol: torch.Tensor) -> torch.Tensor:
     """Encode-decode for MAISI VAE.
 
-    MAISI uses [B, C, H, W, D] convention (depth-last) and requires
-    spatial dims be multiples of 4 (4× compression). For full-resolution
-    volumes the decoder is memory-heavy, so we use sliding-window
-    inference over the latent. Forces float32 because MAISI's GroupNorm
-    has a bf16 dtype-mismatch bug.
+    MAISI uses [B, C, H, W, D] convention (depth-last) and requires spatial
+    dims be multiples of 4 (4× compression per axis). For full-resolution
+    volumes the decoder is memory-heavy, so we use sliding-window inference
+    over the latent. Forces float32 because MAISI's GroupNorm has a bf16
+    dtype-mismatch bug.
+
+    Critically, MAISI was trained with **0th-99.5th percentile clip-and-scale
+    to [0,1]**, not the min-max normalization our load_volume_nifti uses.
+    Without applying MAISI's native normalization, MAISI sees out-of-distribution
+    inputs and produces ~0.5 MS-SSIM reconstructions. We renormalize internally
+    so MAISI's metrics reflect its true reconstruction quality on its training
+    convention.
     """
     from monai.inferers import SlidingWindowInferer
+    import torch.nn.functional as F
+
+    # Apply MAISI's training-time normalization (0-99.5 percentile clip to [0,1]).
+    # vol is currently min-max normalized to [0,1]. We re-derive the 99.5
+    # percentile in the current space and re-stretch.
+    p995 = torch.quantile(vol.flatten(), 0.995)
+    if p995 > 0:
+        vol_norm = (vol / p995).clamp(0, 1)
+    else:
+        vol_norm = vol
 
     # Our convention: [B, C, D, H, W]. MAISI: [B, C, H, W, D]. Permute.
-    vol_maisi = vol.permute(0, 1, 3, 4, 2).contiguous().float()
+    vol_maisi = vol_norm.permute(0, 1, 3, 4, 2).contiguous().float()
 
     h, w, d = vol_maisi.shape[2], vol_maisi.shape[3], vol_maisi.shape[4]
     pad_h = (4 - h % 4) % 4
     pad_w = (4 - w % 4) % 4
     pad_d = (4 - d % 4) % 4
     if pad_h or pad_w or pad_d:
-        # F.pad order: (front, back, top, bottom, left, right) per dim from last
-        import torch.nn.functional as F
         vol_maisi = F.pad(vol_maisi, (0, pad_d, 0, pad_w, 0, pad_h))
 
     z = model.encode(vol_maisi)
@@ -167,8 +182,15 @@ def _reconstruct_maisi(model: torch.nn.Module, vol: torch.Tensor) -> torch.Tenso
         recon = recon[:, :, :h, :w, :d]
 
     # Permute back to [B, C, D, H, W]
-    recon = recon.permute(0, 1, 4, 2, 3).contiguous()
-    return recon.float().clamp(0, 1)
+    recon = recon.permute(0, 1, 4, 2, 3).contiguous().clamp(0, 1)
+
+    # Un-normalize: reverse the p99.5 stretch so output is in same range as
+    # the original min-max input. This makes metrics directly comparable to
+    # the other models (which all use min-max-normalized ground truth).
+    if p995 > 0:
+        recon = (recon * p995).clamp(0, 1)
+
+    return recon.float()
 
 
 def _unwrap_encoder_output(out):
