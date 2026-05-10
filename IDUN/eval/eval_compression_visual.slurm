@@ -70,6 +70,14 @@ DCAE_2D_F128=$(pick_ckpt "$RUNS_2D" 'exp9_dcae_f128_1_5')
 VAE_3D=$(pick_ckpt       "$RUNS_3D" 'exp14_4_vae3d_4x_nokl')
 VQVAE_3D=$(pick_ckpt     "$RUNS_3D" 'exp8_1_256x160')
 
+# MAISI VAE — pretrained NVIDIA model, lives in the project's bundles/ dir.
+# Loader expects either the bundle dir or the autoencoder.pt directly.
+MAISI_BUNDLE="${SLURM_SUBMIT_DIR}/bundles/maisi_ct_generative"
+MAISI_CKPT=""
+if [ -f "${MAISI_BUNDLE}/models/autoencoder.pt" ]; then
+    MAISI_CKPT="${MAISI_BUNDLE}/models/autoencoder.pt"
+fi
+
 # Diagnostic: list every compression checkpoint (best AND latest) so the user
 # can see what's actually on disk if a pick doesn't match expectations.
 echo ""
@@ -85,7 +93,8 @@ printf '  %-15s = %s\n' \
     'DCAE_2D_F64'  "${DCAE_2D_F64:-(none — exp9_dcae_f64_1_5 not found)}" \
     'DCAE_2D_F128' "${DCAE_2D_F128:-(none — exp9_dcae_f128_1_5 not found)}" \
     'VAE_3D'       "${VAE_3D:-(none — exp14_4_vae3d_4x_nokl not found)}" \
-    'VQVAE_3D'     "${VQVAE_3D:-(none — exp8_1_256x160 not found)}"
+    'VQVAE_3D'     "${VQVAE_3D:-(none — exp8_1_256x160 not found)}" \
+    'MAISI_CKPT'   "${MAISI_CKPT:-(none — bundles/maisi_ct_generative/models/autoencoder.pt not found)}"
 
 MODEL_ARGS=""
 [ -n "${DCAE_2D_F32}"  ] && MODEL_ARGS="${MODEL_ARGS} --model 'DC-AE 2D f32:${DCAE_2D_F32}'"
@@ -93,6 +102,7 @@ MODEL_ARGS=""
 [ -n "${DCAE_2D_F128}" ] && MODEL_ARGS="${MODEL_ARGS} --model 'DC-AE 2D f128:${DCAE_2D_F128}'"
 [ -n "${VAE_3D}"       ] && MODEL_ARGS="${MODEL_ARGS} --model 'VAE 3D:${VAE_3D}'"
 [ -n "${VQVAE_3D}"     ] && MODEL_ARGS="${MODEL_ARGS} --model 'VQ-VAE 3D:${VQVAE_3D}'"
+[ -n "${MAISI_CKPT}"   ] && MODEL_ARGS="${MODEL_ARGS} --model 'MAISI VAE 3D:${MAISI_CKPT}'"
 
 if [ -z "${MODEL_ARGS}" ]; then
     echo ""

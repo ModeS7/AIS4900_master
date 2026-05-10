@@ -109,6 +109,8 @@ def reconstruct_3d(
     model: torch.nn.Module, vol: torch.Tensor, ctype: str
 ) -> torch.Tensor:
     """Encode-decode a [1, 1, D, H, W] tensor with a 3D compression model."""
+    if ctype == "maisi":
+        return _reconstruct_maisi(model, vol)
     with autocast("cuda", dtype=torch.bfloat16):
         if ctype == "vqvae":
             z = model.encode(vol)
@@ -121,6 +123,51 @@ def reconstruct_3d(
             recon = model.decode(z)
         else:
             raise ValueError(f"Unknown compression type: {ctype}")
+    return recon.float().clamp(0, 1)
+
+
+@torch.no_grad()
+def _reconstruct_maisi(model: torch.nn.Module, vol: torch.Tensor) -> torch.Tensor:
+    """Encode-decode for MAISI VAE.
+
+    MAISI uses [B, C, H, W, D] convention (depth-last) and requires
+    spatial dims be multiples of 4 (4× compression). For full-resolution
+    volumes the decoder is memory-heavy, so we use sliding-window
+    inference over the latent. Forces float32 because MAISI's GroupNorm
+    has a bf16 dtype-mismatch bug.
+    """
+    from monai.inferers import SlidingWindowInferer
+
+    # Our convention: [B, C, D, H, W]. MAISI: [B, C, H, W, D]. Permute.
+    vol_maisi = vol.permute(0, 1, 3, 4, 2).contiguous().float()
+
+    h, w, d = vol_maisi.shape[2], vol_maisi.shape[3], vol_maisi.shape[4]
+    pad_h = (4 - h % 4) % 4
+    pad_w = (4 - w % 4) % 4
+    pad_d = (4 - d % 4) % 4
+    if pad_h or pad_w or pad_d:
+        # F.pad order: (front, back, top, bottom, left, right) per dim from last
+        import torch.nn.functional as F
+        vol_maisi = F.pad(vol_maisi, (0, pad_d, 0, pad_w, 0, pad_h))
+
+    z = model.encode(vol_maisi)
+    if isinstance(z, (list, tuple)):
+        z = z[0]  # z_mu
+
+    latent_size = z.shape[2] * z.shape[3] * z.shape[4]
+    if latent_size > 64 ** 3:
+        decode_inferer = SlidingWindowInferer(
+            roi_size=(64, 64, 64), sw_batch_size=1, overlap=0.25, mode="gaussian",
+        )
+        recon = decode_inferer(z, lambda lat: model.decode(lat))
+    else:
+        recon = model.decode(z)
+
+    if pad_h or pad_w or pad_d:
+        recon = recon[:, :, :h, :w, :d]
+
+    # Permute back to [B, C, D, H, W]
+    recon = recon.permute(0, 1, 4, 2, 3).contiguous()
     return recon.float().clamp(0, 1)
 
 
@@ -263,6 +310,10 @@ def _build_model_for_label(
     """
     label_lower = label.lower()
 
+    # MAISI checked first — separate architecture, separate loader.
+    if "maisi" in label_lower:
+        return _build_maisi_vae(label, ckpt_path, device)
+
     # Determine type from label (avoid the broken auto-detect for AutoencoderDC).
     # Check DC-AE and VQ-VAE substrings before VAE since "VQ-VAE" contains "VAE".
     if "dc-ae" in label_lower or "dcae" in label_lower:
@@ -284,6 +335,59 @@ def _build_model_for_label(
     return load_compression_model(
         str(ckpt_path), ctype, device, spatial_dims=sdims,
     )
+
+
+def _build_maisi_vae(
+    label: str, ckpt_path: Path, device: torch.device
+) -> tuple[torch.nn.Module, str, int, int, int]:
+    """Load NVIDIA's MAISI VAE from a MONAI bundle.
+
+    The path can point to either:
+      - The bundle directory (`bundles/maisi_ct_generative/`), in which case
+        `models/autoencoder.pt` is loaded.
+      - The autoencoder.pt checkpoint file directly.
+
+    MAISI VAE: 3D, 4× spatial compression per axis, 4 latent channels (16× total).
+    `norm_float16=False` to avoid a known dtype-mismatch bug in MaisiGroupNorm3D.
+    """
+    from monai.apps.generation.maisi.networks.autoencoderkl_maisi import AutoencoderKlMaisi
+
+    p = Path(ckpt_path)
+    if p.is_dir():
+        ckpt_file = p / "models" / "autoencoder.pt"
+    else:
+        ckpt_file = p
+    if not ckpt_file.is_file():
+        raise FileNotFoundError(f"MAISI checkpoint not found: {ckpt_file}")
+
+    model = AutoencoderKlMaisi(
+        spatial_dims=3,
+        in_channels=1,
+        out_channels=1,
+        latent_channels=4,
+        num_channels=[64, 128, 256],
+        num_res_blocks=[2, 2, 2],
+        norm_num_groups=32,
+        norm_eps=1e-6,
+        attention_levels=[False, False, False],
+        with_encoder_nonlocal_attn=False,
+        with_decoder_nonlocal_attn=False,
+        use_checkpointing=False,
+        use_convtranspose=False,
+        norm_float16=False,
+        num_splits=1,
+        dim_split=1,
+    )
+    state = torch.load(str(ckpt_file), map_location=device, weights_only=True)
+    model.load_state_dict(state)
+    model = model.to(device).float()
+    model.eval()
+
+    logger.info(
+        "  loaded MAISI VAE: latent_ch=4, scale=4× per axis (16× total), checkpoint=%s",
+        ckpt_file,
+    )
+    return model, "maisi", 3, 4, 4
 
 
 def _build_dcae_2d(
