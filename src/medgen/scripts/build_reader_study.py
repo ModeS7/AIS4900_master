@@ -101,6 +101,136 @@ def _save_nifti_like(
     nib.save(out, str(dst))
 
 
+def _write_xlsx_form(path: Path, case_ids: list[str], n_real: int, n_synth: int) -> bool:
+    """Write an Excel form with dropdowns, frozen header, alternating row colors.
+
+    Returns True on success, False if openpyxl is unavailable (CSV fallback).
+    """
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.worksheet.datavalidation import DataValidation
+    except ImportError:
+        logger.warning(
+            "openpyxl not installed — skipping XLSX form. "
+            "Install with: pip install openpyxl"
+        )
+        return False
+
+    wb = Workbook()
+
+    # ── Sheet 1: Reader Form (active on open) ────────────────────────────────
+    ws = wb.active
+    ws.title = "Reader Form"
+
+    # Header row
+    headers = ["case_id", "prediction", "confidence", "comments"]
+    header_fill = PatternFill("solid", fgColor="305496")
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    for col_idx, h in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col_idx, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    # Column widths
+    ws.column_dimensions["A"].width = 10  # case_id
+    ws.column_dimensions["B"].width = 14  # prediction
+    ws.column_dimensions["C"].width = 14  # confidence
+    ws.column_dimensions["D"].width = 70  # comments
+
+    # Freeze the header so it stays visible while scrolling
+    ws.freeze_panes = "A2"
+
+    # Case rows with alternating fill for readability
+    alt_fill = PatternFill("solid", fgColor="F2F2F2")
+    centered = Alignment(horizontal="center", vertical="center")
+    left_wrap = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    for row_idx, case_id in enumerate(case_ids, start=2):
+        c = ws.cell(row=row_idx, column=1, value=case_id)
+        c.alignment = centered
+        ws.cell(row=row_idx, column=2).alignment = centered
+        ws.cell(row=row_idx, column=3).alignment = centered
+        ws.cell(row=row_idx, column=4).alignment = left_wrap
+        if row_idx % 2 == 0:
+            for col_idx in range(1, 5):
+                ws.cell(row=row_idx, column=col_idx).fill = alt_fill
+        ws.row_dimensions[row_idx].height = 24
+
+    # ── Dropdowns ────────────────────────────────────────────────────────────
+    last_row = len(case_ids) + 1
+
+    dv_pred = DataValidation(
+        type="list",
+        formula1='"real,synthetic,unsure"',
+        allow_blank=True,
+        showDropDown=False,  # show the dropdown arrow
+        errorTitle="Invalid prediction",
+        error="Pick 'real', 'synthetic', or 'unsure'.",
+        promptTitle="Real or synthetic?",
+        prompt="Use the dropdown: real / synthetic / unsure.",
+        showInputMessage=True,
+        showErrorMessage=True,
+    )
+    dv_pred.add(f"B2:B{last_row}")
+    ws.add_data_validation(dv_pred)
+
+    dv_conf = DataValidation(
+        type="list",
+        formula1='"low,medium,high"',
+        allow_blank=True,
+        showDropDown=False,
+        errorTitle="Invalid confidence",
+        error="Pick 'low', 'medium', or 'high'.",
+        promptTitle="How confident?",
+        prompt="low / medium / high (optional).",
+        showInputMessage=True,
+        showErrorMessage=True,
+    )
+    dv_conf.add(f"C2:C{last_row}")
+    ws.add_data_validation(dv_conf)
+
+    # ── Sheet 2: Instructions (auxiliary) ────────────────────────────────────
+    ws_info = wb.create_sheet("Instructions")
+    info_lines = [
+        ("Reader study — real vs synthetic brain MRI", True, 14),
+        ("", False, 11),
+        (f"Total cases:  {n_real + n_synth} "
+         f"({n_real} real + {n_synth} synthetic, randomly shuffled)", False, 11),
+        ("", False, 11),
+        ("Each case is in volumes/<case_id>/ and contains:", False, 11),
+        ("    bravo.nii.gz — T1-weighted post-contrast MRI, normalized [0,1]", False, 11),
+        ("    seg.nii.gz   — binary brain-metastasis segmentation", False, 11),
+        ("", False, 11),
+        ("How to fill the Reader Form:", True, 12),
+        ("    1. Open each case in your viewer of choice.", False, 11),
+        ("    2. Click the case_id row, then the prediction cell — use the dropdown.", False, 11),
+        ("    3. (Optional) Set confidence: low / medium / high.", False, 11),
+        ("    4. (Optional) Add comments explaining your reasoning.", False, 11),
+        ("    5. Save the file as XLSX when finished.", False, 11),
+        ("", False, 11),
+        ("Allowed values:", True, 12),
+        ("    prediction  →  real | synthetic | unsure", False, 11),
+        ("    confidence  →  low | medium | high", False, 11),
+        ("", False, 11),
+        ("The answer key is in a separate file (answer_key.csv) and should not be", False, 11),
+        ("consulted until after scoring.", False, 11),
+    ]
+    for i, (txt, bold, sz) in enumerate(info_lines, start=1):
+        c = ws_info.cell(row=i, column=1, value=txt)
+        c.font = Font(bold=bold, size=sz)
+        c.alignment = Alignment(vertical="center")
+    ws_info.column_dimensions["A"].width = 95
+
+    # Force the Reader Form to be the first/active sheet on open
+    wb.active = wb.sheetnames.index("Reader Form")
+
+    wb.save(str(path))
+    logger.info("Wrote %s (Excel form with dropdowns + frozen header)", path)
+    return True
+
+
 def _process_case(
     src_dir: Path,
     dst_dir: Path,
@@ -183,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     id_width = len(str(len(pool)))  # zero-pad case IDs
 
     answer_rows: list[tuple[str, str, str]] = []
-    form_rows: list[tuple[str, str, str, str]] = []
+    case_ids: list[str] = []
 
     for new_idx, src_idx in enumerate(order, start=1):
         src_path, label = pool[src_idx]
@@ -200,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         answer_rows.append((case_id, label, str(src_path)))
-        form_rows.append((case_id, "", "", ""))
+        case_ids.append(case_id)
 
     # ── Write answer key (KEEP HIDDEN) ──────────────────────────────────────
     answer_key_path = out_dir / "answer_key.csv"
@@ -210,14 +340,20 @@ def main(argv: list[str] | None = None) -> int:
         w.writerows(answer_rows)
     logger.info("Wrote answer key: %s (DO NOT SHARE)", answer_key_path)
 
-    # ── Write blank radiologist form (SHARE THIS) ───────────────────────────
-    form_path = out_dir / "radiologist_form.csv"
-    with open(form_path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["case_id", "prediction", "confidence", "comments"])
-        # Header notes go in a separate README so they don't break the CSV
-        w.writerows(form_rows)
-    logger.info("Wrote radiologist form: %s", form_path)
+    # ── XLSX form with dropdowns (the reader's form) ────────────────────────
+    xlsx_path = out_dir / "radiologist_form.xlsx"
+    xlsx_ok = _write_xlsx_form(
+        xlsx_path,
+        case_ids=case_ids,
+        n_real=args.n_real,
+        n_synth=args.n_synth,
+    )
+    if not xlsx_ok:
+        logger.error(
+            "openpyxl is required to write the radiologist form. "
+            "Install with: pip install openpyxl"
+        )
+        return 3
 
     # ── README explaining the form ──────────────────────────────────────────
     readme = out_dir / "README.txt"
@@ -229,8 +365,8 @@ def main(argv: list[str] | None = None) -> int:
         "  and seg.nii.gz (binary brain-metastasis segmentation).\n\n"
         "Files in this directory:\n"
         f"  volumes/{1:0{id_width}d}..{len(pool):0{id_width}d}/  — case folders\n"
-        "  radiologist_form.csv — please fill this in (one row per case_id)\n"
-        "  answer_key.csv       — TRUTH (do not open before reader scoring)\n\n"
+        "  radiologist_form.xlsx — Excel form with dropdowns (fill this in)\n"
+        "  answer_key.csv        — TRUTH (do not open before reader scoring)\n\n"
         "Form columns:\n"
         "  case_id     — pre-filled, do not change\n"
         "  prediction  — 'real' or 'synthetic'\n"
@@ -245,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nDone. {len(pool)} cases written to {volumes_dir}")
     print(f"  real: {n_real_assigned}   synthetic: {n_synth_assigned}")
     print(f"  answer key:        {answer_key_path}  (keep hidden)")
-    print(f"  radiologist form:  {form_path}        (share)")
+    print(f"  radiologist form:  {xlsx_path}  (share)")
     return 0
 
 
