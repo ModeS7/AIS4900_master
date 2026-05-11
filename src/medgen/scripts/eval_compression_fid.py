@@ -297,13 +297,21 @@ def main():
 
     trim = TRIM_SLICES
 
-    # ResNet50 features
-    logger.info("  Extracting ResNet50 features...")
-    resnet = ResNet50Features(device, compile_model=False)
+    # ResNet50 features (ImageNet) — secondary FID variant
+    logger.info("  Extracting ResNet50 features (ImageNet)...")
+    resnet = ResNet50Features(device, network_type='imagenet', compile_model=False)
     orig_resnet = extract_features_from_volumes(all_originals, resnet, trim)
     recon_resnet = extract_features_from_volumes(all_reconstructions, resnet, trim)
     logger.info(f"    Originals: {orig_resnet.shape}, Reconstructions: {recon_resnet.shape}")
     resnet.unload()
+
+    # ResNet50 features (RadImageNet) — primary FID variant (thesis convention)
+    logger.info("  Extracting ResNet50 features (RadImageNet)...")
+    resnet_rad = ResNet50Features(device, network_type='radimagenet', compile_model=False)
+    orig_resnet_rad = extract_features_from_volumes(all_originals, resnet_rad, trim)
+    recon_resnet_rad = extract_features_from_volumes(all_reconstructions, resnet_rad, trim)
+    logger.info(f"    Originals: {orig_resnet_rad.shape}, Reconstructions: {recon_resnet_rad.shape}")
+    resnet_rad.unload()
 
     # BiomedCLIP features
     logger.info("  Extracting BiomedCLIP features...")
@@ -315,6 +323,7 @@ def main():
 
     # Compute metrics
     fid = compute_fid(orig_resnet, recon_resnet)
+    fid_rad = compute_fid(orig_resnet_rad, recon_resnet_rad)
     min_n = min(orig_resnet.shape[0], recon_resnet.shape[0])
     kid_mean, kid_std = compute_kid(orig_resnet, recon_resnet, subset_size=min(100, min_n))
     cmmd = compute_cmmd(orig_clip, recon_clip)
@@ -326,7 +335,8 @@ def main():
     logger.info(f"  Checkpoint: {comp_ckpt}")
     logger.info(f"  Volumes: {len(all_originals)}")
     logger.info(f"  Avg PSNR: {np.mean([r['avg_psnr'] for r in per_split_results.values()]):.2f} dB")
-    logger.info(f"  FID:  {fid:.4f}")
+    logger.info(f"  FID (RadImageNet, primary): {fid_rad:.4f}")
+    logger.info(f"  FID (ImageNet, secondary):  {fid:.4f}")
     logger.info(f"  KID:  {kid_mean:.6f} ± {kid_std:.6f}")
     logger.info(f"  CMMD: {cmmd:.6f}")
     logger.info(f"  Time: {total_time:.1f}s ({total_time/len(all_originals):.2f}s/vol)")
@@ -347,7 +357,9 @@ def main():
         'image_size': args.image_size,
         'total_volumes': len(all_originals),
         'metrics': {
-            'fid': float(fid),
+            'fid_radimagenet': float(fid_rad),
+            'fid_imagenet': float(fid),
+            'fid': float(fid),  # legacy alias, == fid_imagenet for backward compatibility
             'kid_mean': float(kid_mean),
             'kid_std': float(kid_std),
             'cmmd': float(cmmd),
