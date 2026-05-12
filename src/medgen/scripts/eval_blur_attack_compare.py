@@ -46,6 +46,18 @@ from medgen.scripts.analyze_generation_spectrum import (
     load_volume,
 )
 
+# Intensity bands used to partition inside-brain voxels into proxy regions when
+# a multi-region atlas is unavailable. Brain MR signal is roughly:
+#   ventricles/CSF — dark (T1 hypointense, low band)
+#   parenchyma     — mid band
+#   cortex/bright  — high band (T1 cortex, enhancing structures)
+# Thresholds are on min-max-normalised volumes (range [0, 1]).
+INTENSITY_REGIONS = {
+    'ventricle': (0.00, 0.15),
+    'parenchyma': (0.15, 0.55),
+    'cortex': (0.55, 1.01),
+}
+
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger(__name__)
 
@@ -150,6 +162,113 @@ def diversity_lpips(method_t: torch.Tensor, device: torch.device,
     return float(np.mean(vals)) if vals else float('nan')
 
 
+def _subject_key(path: Path) -> str:
+    """Extract a subject id usable for matched-pair metrics.
+
+    Accepts both `<subject>/bravo.nii.gz` and `<subject>.nii.gz` layouts.
+    Returns the parent directory name if the file is named bravo.nii.gz,
+    otherwise the file stem (with .nii.gz stripped).
+    """
+    if path.name == 'bravo.nii.gz':
+        return path.parent.name
+    name = path.name
+    for suffix in ('.nii.gz', '.nii'):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
+def match_pairs(real_files: list[Path], method_files: list[Path]) -> list[tuple[Path, Path]]:
+    """Match real ↔ method files by subject id. Drops unmatched on either side."""
+    real_map = {_subject_key(f): f for f in real_files}
+    method_map = {_subject_key(f): f for f in method_files}
+    common = sorted(set(real_map) & set(method_map))
+    return [(real_map[k], method_map[k]) for k in common]
+
+
+def brain_mask_dice(real: np.ndarray, method: np.ndarray, threshold: float = 0.02) -> float:
+    """Dice between (x > threshold) brain masks of a real/method matched pair."""
+    a = real > threshold
+    b = method > threshold
+    inter = float(np.logical_and(a, b).sum())
+    denom = float(a.sum() + b.sum())
+    if denom <= 0:
+        return float('nan')
+    return 2.0 * inter / denom
+
+
+def cortex_slab_l1(real: np.ndarray, method: np.ndarray, n_slices: int = 50) -> float:
+    """Mean L1 over the top n_slices axial slices (proxy for superior/cortex band).
+
+    Volumes are [D, H, W]; "top" = highest depth index (superior in NIfTI
+    convention after MONAI load). Mirrors the MIP analysis in
+    notes/findings_lowt_midt_dichotomy.md.
+    """
+    n = min(n_slices, real.shape[0], method.shape[0])
+    if n <= 0:
+        return float('nan')
+    return float(np.mean(np.abs(real[-n:] - method[-n:])))
+
+
+def intensity_region_l1(
+    real: np.ndarray,
+    method: np.ndarray,
+    brain_mask: np.ndarray,
+    bands: dict[str, tuple[float, float]] = INTENSITY_REGIONS,
+) -> dict[str, float]:
+    """Per-region L1 partitioned by real-volume intensity bands inside brain mask.
+
+    Uses the REAL volume's intensity to label voxels (so the partition is
+    fixed by the ground truth, not the method's output). Returns one L1 per
+    region; regions with no voxels return NaN.
+    """
+    out = {}
+    for name, (lo, hi) in bands.items():
+        region = brain_mask & (real >= lo) & (real < hi)
+        if not region.any():
+            out[name] = float('nan')
+            continue
+        out[name] = float(np.mean(np.abs(real[region] - method[region])))
+    return out
+
+
+def compute_anatomy_metrics(
+    pairs: list[tuple[Path, Path]],
+    depth: int,
+    brain_threshold: float,
+    cortex_slices: int,
+    atlas_mask: np.ndarray | None = None,
+) -> dict[str, float | dict[str, float]]:
+    """Mean anatomy metrics over matched (real, method) volume pairs.
+
+    If atlas_mask is given (a binary brain mask aligned to volume shape),
+    it overrides the per-volume threshold for region partitioning.
+    Otherwise the partition uses (real > brain_threshold) as the brain mask.
+    """
+    dices = []
+    cortex_l1s = []
+    region_l1s: dict[str, list[float]] = {k: [] for k in INTENSITY_REGIONS}
+    for real_path, method_path in pairs:
+        real = load_volume(real_path, depth)
+        method = load_volume(method_path, depth)
+        dices.append(brain_mask_dice(real, method, threshold=brain_threshold))
+        cortex_l1s.append(cortex_slab_l1(real, method, n_slices=cortex_slices))
+        mask = (real > brain_threshold) if atlas_mask is None else atlas_mask.astype(bool)
+        region = intensity_region_l1(real, method, mask)
+        for k, v in region.items():
+            if not np.isnan(v):
+                region_l1s[k].append(v)
+    summary = {
+        'n_pairs': len(pairs),
+        'brain_dice': float(np.mean(dices)) if dices else float('nan'),
+        'cortex_l1': float(np.mean(cortex_l1s)) if cortex_l1s else float('nan'),
+        'region_l1': {
+            k: float(np.mean(v)) if v else float('nan') for k, v in region_l1s.items()
+        },
+    }
+    return summary
+
+
 def diversity_l1(method_arrs: list[np.ndarray], n_pairs: int = 50,
                   seed: int = 0) -> float:
     """Within-method cross-pair L1 — diversity diagnostic."""
@@ -192,6 +311,24 @@ def main() -> None:
     parser.add_argument('--fid-chunk', type=int, default=64)
     parser.add_argument('--diversity-pairs', type=int, default=50,
                         help='Random within-method (and within-real) pairs for diversity check.')
+    parser.add_argument('--per-region-l1', action='store_true',
+                        help='Compute matched-pair anatomy metrics: brain-mask Dice '
+                             '(x > --brain-threshold), cortex-slab L1 (top --cortex-slices '
+                             'axial slices), and intensity-band per-region L1 '
+                             '(ventricle/parenchyma/cortex). Matches real ↔ method by '
+                             'subject id; drops unmatched on either side. Adds columns '
+                             'to results.csv and a region_l1 panel to bar_chart.png.')
+    parser.add_argument('--brain-threshold', type=float, default=0.02,
+                        help='Intensity threshold for brain-mask Dice and the brain mask '
+                             'used to gate the per-region intensity partition.')
+    parser.add_argument('--cortex-slices', type=int, default=50,
+                        help='Top-N axial slices treated as the cortex/superior slab '
+                             'for cortex-region L1.')
+    parser.add_argument('--atlas', default=None,
+                        help='Optional binary brain atlas NIfTI; when given, replaces the '
+                             'per-volume threshold mask for the intensity-band partition. '
+                             'Shape must match volumes after MONAI load (e.g., '
+                             'data/brain_atlas_256x256x160.nii.gz).')
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -201,6 +338,14 @@ def main() -> None:
 
     methods = parse_methods(args.methods)
     log.info(f"Methods: {[n for n, _ in methods]}")
+
+    atlas_mask: np.ndarray | None = None
+    if args.per_region_l1 and args.atlas:
+        import nibabel as nib  # local import — only needed for --atlas
+        atlas_raw = nib.load(args.atlas).get_fdata()
+        atlas_mask = atlas_raw > 0
+        log.info(f"Loaded atlas mask from {args.atlas}: shape={atlas_mask.shape} "
+                 f"voxels_in_brain={int(atlas_mask.sum())}")
 
     # ── Real reference ─────────────────────────────────────────────
     real_files = find_volumes(Path(args.real_dir), args.num_real)
@@ -272,6 +417,28 @@ def main() -> None:
         arrs = [load_volume(f, args.depth) for f in files]
         method_arrays[name] = arrs
 
+        anatomy: dict[str, float | dict[str, float]] | None = None
+        if args.per_region_l1:
+            pairs = match_pairs(real_files, files)
+            log.info(f"  matched-pair anatomy: {len(pairs)} pairs "
+                     f"(real={len(real_files)}, method={len(files)})")
+            if pairs:
+                anatomy = compute_anatomy_metrics(
+                    pairs,
+                    depth=args.depth,
+                    brain_threshold=args.brain_threshold,
+                    cortex_slices=args.cortex_slices,
+                    atlas_mask=atlas_mask,
+                )
+                log.info(
+                    f"  brain_dice={anatomy['brain_dice']:.4f}  "
+                    f"cortex_l1={anatomy['cortex_l1']:.4f}  "
+                    + "  ".join(f"{k}_l1={v:.4f}" for k, v in anatomy['region_l1'].items())
+                )
+            else:
+                log.warning(f"  no subject-id overlap between {args.real_dir} and {mdir}; "
+                            "skipping anatomy metrics")
+
         _, spec = average_spectrum(arrs)
         method_specs[name] = spec
         bands = band_energy(bins, spec)
@@ -300,6 +467,7 @@ def main() -> None:
             'hf_psd_slope_real': real_slope,
             'slope_diff_to_real': slope - real_slope,
             'band_ratio_to_real': {b: bands[b] / real_bands[b] if real_bands[b] else None for b in BANDS},
+            'anatomy': anatomy,
         }
         log.info(
             f"  LPIPS={lpips:.4f}  L1={l1:.4f}  FID={fid:.4f}  "
@@ -308,20 +476,25 @@ def main() -> None:
         )
 
     # ── CSV + JSON ─────────────────────────────────────────────────
+    anatomy_cols = (['brain_dice', 'cortex_l1']
+                    + [f'l1_{k}' for k in INTENSITY_REGIONS]) if args.per_region_l1 else []
     csv_path = out_dir / 'results.csv'
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f)
         w.writerow(['method', 'lpips', 'l1', 'fid',
                     'diversity_lpips', 'diversity_l1',
                     'hf_psd_slope', 'slope_diff_to_real']
-                   + [f'band_{b}' for b in BANDS])
+                   + [f'band_{b}' for b in BANDS]
+                   + anatomy_cols)
         # Baseline rows first
         w.writerow(['real_cross_half', baseline_lpips, baseline_l1, baseline_fid,
                     '', '', '', '']
-                   + ['' for _ in BANDS])
+                   + ['' for _ in BANDS]
+                   + ['' for _ in anatomy_cols])
         w.writerow(['real_within_diversity', '', '', '',
                     real_div_lpips, real_div_l1, '', '']
-                   + ['' for _ in BANDS])
+                   + ['' for _ in BANDS]
+                   + ['' for _ in anatomy_cols])
         for name in method_results:
             r = method_results[name]
             row = [name, r['lpips_vs_real'], r['l1_vs_real'], r['fid_vs_real'],
@@ -329,6 +502,13 @@ def main() -> None:
                    r['hf_psd_slope'], r['slope_diff_to_real']]
             row += [r['band_ratio_to_real'][b] if r['band_ratio_to_real'][b] is not None else ''
                     for b in BANDS]
+            if args.per_region_l1:
+                a = r['anatomy'] or {}
+                row.append(a.get('brain_dice', ''))
+                row.append(a.get('cortex_l1', ''))
+                region = a.get('region_l1', {}) if a else {}
+                for k in INTENSITY_REGIONS:
+                    row.append(region.get(k, ''))
             w.writerow(row)
     log.info(f"\nSaved CSV: {csv_path}")
 
