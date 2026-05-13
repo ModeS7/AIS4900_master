@@ -248,11 +248,20 @@ def compute_anatomy_metrics(
     dices = []
     cortex_l1s = []
     region_l1s: dict[str, list[float]] = {k: [] for k in INTENSITY_REGIONS}
+    atlas_checked = False  # one-time shape check vs the first loaded volume
     for real_path, method_path in pairs:
         real = load_volume(real_path, depth)
         method = load_volume(method_path, depth)
         dices.append(brain_mask_dice(real, method, threshold=brain_threshold))
         cortex_l1s.append(cortex_slab_l1(real, method, n_slices=cortex_slices))
+        if atlas_mask is not None and not atlas_checked:
+            if atlas_mask.shape != real.shape:
+                raise SystemExit(
+                    f"atlas shape {atlas_mask.shape} does not match volume shape "
+                    f"{real.shape}. Atlas must be aligned to the [D, H, W] layout "
+                    f"returned by load_volume()."
+                )
+            atlas_checked = True
         mask = (real > brain_threshold) if atlas_mask is None else atlas_mask.astype(bool)
         region = intensity_region_l1(real, method, mask)
         for k, v in region.items():
@@ -351,8 +360,14 @@ def main() -> None:
     if args.per_region_l1 and args.atlas:
         import nibabel as nib  # local import — only needed for --atlas
         atlas_raw = nib.load(args.atlas).get_fdata()
-        atlas_mask = atlas_raw > 0
-        log.info(f"Loaded atlas mask from {args.atlas}: shape={atlas_mask.shape} "
+        # nibabel returns NIfTI native axis order [H, W, D]; load_volume()
+        # (via MONAI + permute in data/loaders/volume_3d.py) returns [D, H, W].
+        # Reorder the atlas to match so element-wise masking broadcasts.
+        if atlas_raw.ndim != 3:
+            raise SystemExit(f"--atlas must be a 3D volume, got shape={atlas_raw.shape}")
+        atlas_mask = (atlas_raw > 0).transpose(2, 0, 1)
+        log.info(f"Loaded atlas mask from {args.atlas}: native shape={atlas_raw.shape} "
+                 f"→ reordered to [D,H,W]={atlas_mask.shape}  "
                  f"voxels_in_brain={int(atlas_mask.sum())}")
 
     # ── Real reference ─────────────────────────────────────────────
