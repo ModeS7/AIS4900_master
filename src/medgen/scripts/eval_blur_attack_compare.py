@@ -329,6 +329,14 @@ def main() -> None:
                              'per-volume threshold mask for the intensity-band partition. '
                              'Shape must match volumes after MONAI load (e.g., '
                              'data/brain_atlas_256x256x160.nii.gz).')
+    parser.add_argument('--anatomy-pair-with', default='real',
+                        help='Source of the matched-pair partner for --per-region-l1. '
+                             '"real" (default) matches each method against --real-dir by '
+                             'subject id. A method name from --methods matches every OTHER '
+                             'method against THAT method by filename — useful for '
+                             'input-vs-refined comparisons (e.g., "raw_synth" to ask '
+                             'how much a refinement step moved the brain envelope away '
+                             'from its own input).')
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -410,34 +418,59 @@ def main() -> None:
     method_arrays: dict[str, list[np.ndarray]] = {}
     method_specs: dict[str, np.ndarray] = {}
 
+    # Pre-scan each method's file list so anatomy matching can use any
+    # method as the matched-pair partner (option 4: refined vs its own input).
+    method_files: dict[str, list[Path]] = {
+        name: find_volumes(mdir, args.num_volumes) for name, mdir in methods
+    }
+    anatomy_pair_with = args.anatomy_pair_with
+    if args.per_region_l1 and anatomy_pair_with != 'real' and anatomy_pair_with not in method_files:
+        raise SystemExit(
+            f"--anatomy-pair-with={anatomy_pair_with!r} is neither 'real' nor a method "
+            f"name in --methods (found: {list(method_files)})"
+        )
+
     for name, mdir in methods:
         log.info(f"\n========== {name} ({mdir}) ==========")
-        files = find_volumes(mdir, args.num_volumes)
+        files = method_files[name]
         log.info(f"  {len(files)} volumes")
         arrs = [load_volume(f, args.depth) for f in files]
         method_arrays[name] = arrs
 
         anatomy: dict[str, float | dict[str, float]] | None = None
         if args.per_region_l1:
-            pairs = match_pairs(real_files, files)
-            log.info(f"  matched-pair anatomy: {len(pairs)} pairs "
-                     f"(real={len(real_files)}, method={len(files)})")
-            if pairs:
-                anatomy = compute_anatomy_metrics(
-                    pairs,
-                    depth=args.depth,
-                    brain_threshold=args.brain_threshold,
-                    cortex_slices=args.cortex_slices,
-                    atlas_mask=atlas_mask,
-                )
-                log.info(
-                    f"  brain_dice={anatomy['brain_dice']:.4f}  "
-                    f"cortex_l1={anatomy['cortex_l1']:.4f}  "
-                    + "  ".join(f"{k}_l1={v:.4f}" for k, v in anatomy['region_l1'].items())
-                )
+            if anatomy_pair_with == 'real':
+                ref_files = real_files
+                ref_label = f"real ({args.real_dir})"
+            elif anatomy_pair_with == name:
+                # Self-pair would be Dice=1, L1=0 — skip with an explicit note.
+                log.info("  matched-pair anatomy: skipped — method is the pair source itself")
+                ref_files = None
+                ref_label = None
             else:
-                log.warning(f"  no subject-id overlap between {args.real_dir} and {mdir}; "
-                            "skipping anatomy metrics")
+                ref_files = method_files[anatomy_pair_with]
+                ref_label = f"{anatomy_pair_with} ({len(ref_files)} vols)"
+
+            if ref_files is not None:
+                pairs = match_pairs(ref_files, files)
+                log.info(f"  matched-pair anatomy: {len(pairs)} pairs "
+                         f"(ref={ref_label}, method={len(files)})")
+                if pairs:
+                    anatomy = compute_anatomy_metrics(
+                        pairs,
+                        depth=args.depth,
+                        brain_threshold=args.brain_threshold,
+                        cortex_slices=args.cortex_slices,
+                        atlas_mask=atlas_mask,
+                    )
+                    log.info(
+                        f"  brain_dice={anatomy['brain_dice']:.4f}  "
+                        f"cortex_l1={anatomy['cortex_l1']:.4f}  "
+                        + "  ".join(f"{k}_l1={v:.4f}" for k, v in anatomy['region_l1'].items())
+                    )
+                else:
+                    log.warning(f"  no subject-id overlap between ref={ref_label} and {mdir}; "
+                                "skipping anatomy metrics")
 
         _, spec = average_spectrum(arrs)
         method_specs[name] = spec
@@ -529,6 +562,7 @@ def main() -> None:
             'n_per_half': len(real_np) // 2,
             'diversity_pairs': args.diversity_pairs,
         },
+        'anatomy_pair_with': anatomy_pair_with if args.per_region_l1 else None,
         'methods': method_results,
     }
     with open(out_dir / 'results.json', 'w') as f:
