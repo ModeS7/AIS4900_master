@@ -196,6 +196,65 @@ class nnUNetTrainerBrainMets(_TensorBoardMixin, nnUNetTrainer):
 
 
 # =============================================================================
+# Vanilla trainer: upstream nnU-Net behaviour + TensorBoard hooks only
+# =============================================================================
+# Behaviourally identical to upstream nnUNetTrainer (DC+CE loss, 33% foreground
+# oversampling, default smooth=1e-5, default batch_dice). The only addition is
+# passive TB scalar logging so the 12-13-day marathon training run can be
+# monitored without re-running.
+#
+# Use this trainer to match Ottesen et al. 2023 (PMC9889663), which reports
+# nnU-Net Dice = 0.85 ± 0.13 on the Stanford BrainMetShare 51-test split using
+# vanilla nnU-Net + default nnUNetPlans (vanilla U-Net, NOT ResEncL).
+
+class nnUNetTrainerVanilla(_TensorBoardMixin, nnUNetTrainer):
+    """Upstream nnUNetTrainer with TensorBoard logging and zero customisations.
+
+    No loss override, no oversampling override, no smooth=0 override, no
+    batch_dice override. Behaviourally equivalent to running upstream
+    `nnUNetTrainer` directly. The TB hooks only write scalars to disk and
+    do not affect model behaviour.
+
+    Pair with --plans nnUNetPlans (default vanilla U-Net plans, NOT
+    nnUNetResEncUNetLPlans) to match the Ottesen 2023 setup.
+
+    Usage:
+        python -m medgen.scripts.train_nnunet \\
+            --trainer nnUNetTrainerVanilla \\
+            --plans nnUNetPlans
+    """
+
+    def __init__(self, plans, configuration, fold, dataset_json,
+                 device=torch.device('cuda')):
+        super().__init__(plans, configuration, fold, dataset_json, device)
+        self._init_tb()
+
+    def on_train_start(self):
+        super().on_train_start()
+        self._start_tb()
+        self.print_to_log_file(
+            "Vanilla trainer: upstream nnUNetTrainer (DC+CE, oversample=0.33, "
+            "smooth=1e-5, batch_dice from plans) + TensorBoard hooks only."
+        )
+
+    def on_train_epoch_end(self, train_outputs):
+        super().on_train_epoch_end(train_outputs)
+        self._log_train()
+
+    def on_validation_epoch_end(self, val_outputs):
+        super().on_validation_epoch_end(val_outputs)
+        self._log_val()
+
+    def on_epoch_end(self):
+        super().on_epoch_end()
+        self._flush_tb()
+
+    def on_train_end(self):
+        super().on_train_end()
+        self._close_tb()
+
+
+# =============================================================================
 # Reduced-epoch variants for cheaper experiments
 # =============================================================================
 # nnU-Net's default num_epochs is 1000 (250k iterations). Reducing it scales
