@@ -3,8 +3,8 @@
 #SBATCH --account=share-ie-idi
 #SBATCH --time=1-00:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
 #SBATCH --job-name="tensorboard"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
@@ -17,7 +17,7 @@
 export CLUSTER_BASE
 
 # === Auto-chain configuration ===
-CHAIN_MAX=30
+CHAIN_MAX=20
 CHAIN_COUNT=${CHAIN_COUNT:-0}
 
 # === Signal handler for auto-chaining ===
