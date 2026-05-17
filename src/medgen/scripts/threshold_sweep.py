@@ -67,7 +67,7 @@ import argparse
 import json
 import logging
 import os
-from typing import Iterable
+from collections.abc import Iterable
 
 import nibabel as nib
 import numpy as np
