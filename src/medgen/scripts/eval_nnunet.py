@@ -199,6 +199,12 @@ def main() -> None:
     # Common
     parser.add_argument('--output', default=None,
                         help='Output JSON path for results')
+    parser.add_argument('--output-dir', default=None,
+                        help='Override the inference output directory (parent of '
+                             '`predictions/`). Default: '
+                             '<nnUNet_results>/eval_<experiment_name>. Useful for '
+                             'per-fold inference runs that must not overwrite '
+                             'each other.')
     parser.add_argument('--image-size', type=int, default=256)
     parser.add_argument('--fov-mm', type=float, default=240.0)
 
@@ -222,14 +228,15 @@ def main() -> None:
             raise FileNotFoundError(f"No test images found: {input_dir}")
 
         print(f"=== nnU-Net Inference: {experiment_name} ===")
+        inference_output_dir = args.output_dir or os.path.join(
+            os.environ['nnUNet_results'], f'eval_{experiment_name}',  # noqa: SIM112
+        )
         pred_dir = _run_inference(
             dataset_id=args.dataset_id,
             configuration=args.configuration,
             trainer=args.trainer,
             plans=args.plans,
-            output_dir=os.path.join(
-                os.environ['nnUNet_results'], f'eval_{experiment_name}',  # noqa: SIM112
-            ),
+            output_dir=inference_output_dir,
             input_dir=input_dir,
             folds=tuple(args.folds),
             save_probabilities=args.save_probabilities,
@@ -250,10 +257,15 @@ def main() -> None:
     output_path = args.output
     if output_path is None and args.experiment:
         experiment_name = args.experiment_name or _get_experiment_name(args.experiment, args.n_synthetic)
-        output_path = os.path.join(
-            os.environ.get('nnUNet_results', '.'),  # noqa: SIM112
-            f'eval_{experiment_name}.json',
-        )
+        if args.output_dir:
+            # Per-fold runs: keep the JSON next to its predictions to avoid
+            # collisions across folds.
+            output_path = os.path.join(args.output_dir, 'eval.json')
+        else:
+            output_path = os.path.join(
+                os.environ.get('nnUNet_results', '.'),  # noqa: SIM112
+                f'eval_{experiment_name}.json',
+            )
 
     # Find TensorBoard dir to log test metrics alongside training curves
     tensorboard_dir = None
