@@ -33,36 +33,18 @@ def _load_nifti_binary(path: str) -> np.ndarray:
     return (data > 0.5).astype(bool)
 
 
-def _load_brain_mask(image_path: str) -> np.ndarray:
-    """Derive a binary brain mask from a skull-stripped channel-0 NIfTI.
-
-    BrainMetShare ships skull-stripped (BET applied upstream by the Grøvik
-    et al. release pipeline), so `image > 0` recovers the exact mask Grøvik
-    2020 used for their voxel-Dice gating. See
-    memory/project_brainmetshare_skull_stripped.md.
-    """
-    data = nib.load(image_path).get_fdata()
-    return (data > 0).astype(bool)
-
-
 def _find_prediction_pairs(
     pred_dir: str,
     gt_dir: str,
-    images_dir: str | None = None,
-) -> list[tuple[str, str, str, str | None]]:
-    """Find matching prediction / ground-truth / channel-0-image triples.
+) -> list[tuple[str, str, str]]:
+    """Find matching prediction / ground-truth pairs.
 
     Args:
         pred_dir: Directory containing prediction NIfTIs.
         gt_dir: Directory containing ground truth NIfTIs (labelsTs/).
-        images_dir: Optional nnU-Net imagesTs directory. When given, the
-            channel-0 image (`<case>_0000.nii.gz`) is paired alongside so the
-            Grøvik-style brain-mask gating can be applied. If missing or the
-            file isn't found for a case, the image path is returned as None
-            and Grøvik-Dice falls back to a `pred ∪ gt`-derived mask.
 
     Returns:
-        List of (case_id, pred_path, gt_path, image_path_or_None) tuples.
+        List of (case_id, pred_path, gt_path) tuples.
     """
     pairs = []
     for fname in sorted(os.listdir(pred_dir)):
@@ -73,17 +55,7 @@ def _find_prediction_pairs(
         if not os.path.exists(gt_path):
             logger.warning(f"No ground truth for {case_id}, skipping")
             continue
-        image_path: str | None = None
-        if images_dir is not None:
-            candidate = os.path.join(images_dir, f"{case_id}_0000.nii.gz")
-            if os.path.exists(candidate):
-                image_path = candidate
-            else:
-                logger.warning(
-                    f"No channel-0 image for {case_id} at {candidate}; "
-                    "Grøvik-Dice will fall back to pred∪gt mask for this case."
-                )
-        pairs.append((case_id, os.path.join(pred_dir, fname), gt_path, image_path))
+        pairs.append((case_id, os.path.join(pred_dir, fname), gt_path))
     return pairs
 
 
@@ -99,26 +71,70 @@ def _dice_from_counts(intersection: float, union: float) -> float:
     return 2.0 * float(intersection) / float(union)
 
 
-def _grovik_dice(pred: np.ndarray, gt: np.ndarray,
-                 brain_mask: np.ndarray | None) -> float:
-    """Grøvik 2020 per-patient voxel-Dice, restricted to inside the brain mask.
+def _lesionwise_dice_bratsmets(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    min_overlap_voxels: int = 1,
+) -> float:
+    """BraTS-Mets 2023/2024 lesion-wise Dice.
 
-    Matches §Statistical Analysis of Grøvik et al. 2020 (arXiv:1903.07988):
-    "Only voxels within the brain mask were considered when calculating AUC"
-    and the Dice/F1 score is computed on the same brain-gated voxel set at
-    the optimal probability threshold. Returns one float per patient; mean ±
-    std across patients gives the comparable summary (paper: 0.79 ± 0.12).
+    Algorithm (matches the BraTS-Mets challenge evaluation):
+      1. 3D connected components in GT (26-connectivity) → GT lesions.
+      2. 3D connected components in pred (26-connectivity) → predicted lesions.
+      3. Per GT lesion: compute voxel Dice between that lesion and the union of
+         predicted voxels overlapping its bounding box.
+         - If at least `min_overlap_voxels` predicted voxels lie inside the
+           GT lesion: it's a detected lesion, contributes its voxel Dice.
+         - Otherwise: missed (false negative), contributes Dice = 0.
+      4. Per predicted lesion with NO overlap with any GT lesion (spurious
+         lesion = FP): contributes Dice = 0.
+      5. Patient lesion-wise Dice = mean of all (TP Dices + 0's for FN's + 0's
+         for FP-only predicted lesions). Denominator = n_GT + n_FP_only_pred.
+
+    This penalises spurious predictions exactly the way volumetric Dice does
+    NOT — a single tiny FP blob counts the same as a missed lesion. For sparse
+    multi-lesion brain mets this is the most informative segmentation metric,
+    and it's the official BraTS-Mets ranking metric (arXiv:2306.00838 §3.2).
+
+    Reference: Moawad et al. 2023, BraTS-Mets challenge report.
     """
-    if brain_mask is None:
-        # No channel-0 image available → use the pred∪gt envelope as a
-        # conservative proxy. Doesn't bias the metric (any voxel that could
-        # contribute to Dice is included) and stays bounded.
-        brain_mask = pred | gt
-    p = pred & brain_mask
-    g = gt & brain_mask
-    intersection = float(np.logical_and(p, g).sum())
-    union = float(p.sum()) + float(g.sum())
-    return _dice_from_counts(intersection, union)
+    from scipy.ndimage import label as _ccl
+    structure = np.ones((3, 3, 3), dtype=np.uint8)  # 26-connectivity in 3D
+    gt_lab, n_gt = _ccl(gt, structure=structure)
+    pred_lab, n_pred = _ccl(pred, structure=structure)
+    if n_gt == 0 and n_pred == 0:
+        return 1.0  # empty/empty -> perfect (matches the TN convention)
+    contributions: list[float] = []
+    # Track which predicted lesions intersect at least one GT lesion.
+    pred_lesion_hit = np.zeros(n_pred + 1, dtype=bool)
+    for gid in range(1, n_gt + 1):
+        gt_mask = (gt_lab == gid)
+        overlap = pred & gt_mask
+        n_overlap = int(overlap.sum())
+        if n_overlap >= min_overlap_voxels:
+            # Per-lesion voxel Dice: include all predicted voxels that touch
+            # this lesion (within its bounding box), so neighbouring FPs don't
+            # contaminate a different lesion's score.
+            coords = np.where(gt_mask)
+            slc = tuple(slice(c.min(), c.max() + 1) for c in coords)
+            p_local = pred[slc] & (pred_lab[slc] != 0)
+            g_local = gt_mask[slc]
+            inter = int((p_local & g_local).sum())
+            denom = int(p_local.sum()) + int(g_local.sum())
+            contributions.append(2.0 * inter / max(denom, 1))
+            # Mark all predicted lesions that touched this GT as "hit"
+            for pid in np.unique(pred_lab[gt_mask]):
+                if pid != 0:
+                    pred_lesion_hit[pid] = True
+        else:
+            contributions.append(0.0)  # missed lesion (FN)
+    # Add one Dice=0 per predicted lesion that didn't touch any GT (FP-only)
+    for pid in range(1, n_pred + 1):
+        if not pred_lesion_hit[pid]:
+            contributions.append(0.0)
+    if not contributions:
+        return float('nan')
+    return float(np.mean(contributions))
 
 
 def _slicewise_dice_yi2023(pred: np.ndarray, gt: np.ndarray,
@@ -161,7 +177,6 @@ def evaluate_predictions(
     image_size: int = 256,
     fov_mm: float = 240.0,
     spatial_dims: int = 3,
-    images_dir: str | None = None,
 ) -> dict:
     """Evaluate nnU-Net predictions against ground truth.
 
@@ -175,18 +190,15 @@ def evaluate_predictions(
         image_size: Image size in pixels (H=W).
         fov_mm: Field of view in mm.
         spatial_dims: 2 or 3.
-        images_dir: Optional nnU-Net imagesTs directory. When given, the
-            channel-0 image is used to derive a per-patient brain mask
-            (`image > 0`, matching the BrainMetShare skull-stripped release)
-            for Grøvik-Dice gating. See
-            memory/project_brainmetshare_skull_stripped.md.
 
     Returns:
-        Dict with 'global_metrics', 'regional_metrics', 'per_case', plus
-        aggregate fields 'dice_per_patient_mean/std',
-        'dice_grovik_mean/std', and 'dice_yi2023_slicewise_mean/std'.
+        Dict with 'global_metrics', 'regional_metrics', 'detection_metrics',
+        'dice_variants', 'per_case', and 'num_cases'. Per-patient Dice
+        aggregates are 'dice_mean/std' (volumetric foreground — PRIMARY),
+        'dice_yi2023_slicewise_mean/std' (Ottesen 2023 sagittal slice-wise),
+        and 'dice_lesionwise_bratsmets_mean/std' (BraTS-Mets lesion-wise).
     """
-    pairs = _find_prediction_pairs(pred_dir, gt_dir, images_dir=images_dir)
+    pairs = _find_prediction_pairs(pred_dir, gt_dir)
     if not pairs:
         raise FileNotFoundError(
             f"No prediction-GT pairs found. pred_dir={pred_dir}, gt_dir={gt_dir}"
@@ -207,7 +219,7 @@ def evaluate_predictions(
 
     per_case = {}
 
-    for case_id, pred_path, gt_path, image_path in pairs:
+    for case_id, pred_path, gt_path in pairs:
         pred_np = _load_nifti_binary(pred_path)
         gt_np = _load_nifti_binary(gt_path)
 
@@ -234,33 +246,26 @@ def evaluate_predictions(
         regional_tracker.update(pred_t, gt_t, apply_sigmoid=False)
 
         # ── Per-case Dice variants ─────────────────────────────────
-        # (1) Per-patient volumetric Dice (TN-fixed; was the buggy 0/1 above).
+        # (1) Per-patient volumetric foreground Dice — PRIMARY.
         intersection = float((pred_np & gt_np).sum())
         union = float(pred_np.sum()) + float(gt_np.sum())
         dice = _dice_from_counts(intersection, union)
 
-        # (2) Grøvik 2020 voxel-Dice over brain-masked region.
-        brain_mask = _load_brain_mask(image_path) if image_path is not None else None
-        if brain_mask is not None and brain_mask.shape != pred_np.shape:
-            logger.warning(
-                f"Brain-mask shape {brain_mask.shape} ≠ pred shape "
-                f"{pred_np.shape} for {case_id}; falling back to pred∪gt mask."
-            )
-            brain_mask = None
-        dice_grovik = _grovik_dice(pred_np, gt_np, brain_mask)
+        # (2) BraTS-Mets lesion-wise Dice (FPs count as Dice=0).
+        dice_lesion = _lesionwise_dice_bratsmets(pred_np, gt_np)
 
-        # (3) Ottesen 2023 slice-wise Dice with empty-slice = 1.0.
+        # (3) Ottesen 2023 sagittal slice-wise Dice with empty-slice = 1.0.
         dice_yi = _slicewise_dice_yi2023(pred_np, gt_np)
 
         per_case[case_id] = {
             'dice': float(dice),
-            'dice_grovik': float(dice_grovik),
+            'dice_lesionwise_bratsmets': float(dice_lesion),
             'dice_yi2023_slicewise': float(dice_yi),
         }
 
         logger.info(
             f"  {case_id}: Dice={dice:.4f}  "
-            f"Grøvik={dice_grovik:.4f}  Yi2023={dice_yi:.4f}"
+            f"Lesion={dice_lesion:.4f}  Yi2023={dice_yi:.4f}"
         )
 
     # Compute final metrics
@@ -268,12 +273,37 @@ def evaluate_predictions(
     regional_results = regional_tracker.compute()
     detection_results = regional_tracker.get_detection_summary()
 
+    # Compute per-tumor Dice std (across-tumor variability) from raw records.
+    # The tracker only stores sums internally, so std isn't in compute()'s
+    # output. We add it here so the report can show `dice ± std` per bin.
+    per_tumor_records = regional_tracker.get_per_tumor_records()
+    if per_tumor_records:
+        all_dices = np.array([r['dice'] for r in per_tumor_records], dtype=np.float64)
+        regional_results['dice_std'] = (
+            float(all_dices.std(ddof=1)) if all_dices.size > 1 else 0.0
+        )
+        for size_name in ('tiny', 'small', 'medium', 'large'):
+            size_dices = np.array(
+                [r['dice'] for r in per_tumor_records if r['size_cat'] == size_name],
+                dtype=np.float64,
+            )
+            if size_dices.size > 1:
+                regional_results[f'dice_{size_name}_std'] = float(size_dices.std(ddof=1))
+            elif size_dices.size == 1:
+                regional_results[f'dice_{size_name}_std'] = 0.0
+            else:
+                regional_results[f'dice_{size_name}_std'] = float('nan')
+
     # Aggregate per-patient Dice variants across cases (mean ± std).
     # 'dice' is the TN-fixed volumetric per-patient Dice (was the buggy
     # field at evaluate.py:138; same name kept so existing tables stay valid
     # but become correct on empty-empty cases).
     dice_summary = {}
-    for key in ('dice', 'dice_grovik', 'dice_yi2023_slicewise'):
+    for key in (
+        'dice',
+        'dice_lesionwise_bratsmets',
+        'dice_yi2023_slicewise',
+    ):
         values = np.asarray(
             [c[key] for c in per_case.values() if not np.isnan(c[key])],
             dtype=np.float64,
@@ -332,7 +362,11 @@ def evaluate_predictions(
             if rate is not None:
                 writer.add_scalar(f'test/detection_rate_{size}', rate, 0)
         # Per-patient Dice variants (mean across cases).
-        for key in ('dice', 'dice_grovik', 'dice_yi2023_slicewise'):
+        for key in (
+            'dice',
+            'dice_lesionwise_bratsmets',
+            'dice_yi2023_slicewise',
+        ):
             v = dice_summary[f'{key}_mean']
             if not np.isnan(v):
                 writer.add_scalar(f'test/{key}_per_patient_mean', v, 0)
@@ -348,14 +382,19 @@ def evaluate_predictions(
         f"Global: precision={global_results['precision']:.4f}, "
         f"recall={global_results['recall']:.4f}{hd95_suffix}"
     )
+    overall_d = regional_results.get('dice', 0.0)
+    overall_d_std = regional_results.get('dice_std', float('nan'))
     logger.info(
-        f"Regional: overall_dice={regional_results.get('dice', 0):.4f}, "
+        f"Regional: overall_dice={overall_d:.4f} ± {overall_d_std:.4f}, "
         f"overall_iou={regional_results.get('iou', 0):.4f}"
     )
     for size in ('tiny', 'small', 'medium', 'large'):
         d = regional_results.get(f'dice_{size}', float('nan'))
+        d_std = regional_results.get(f'dice_{size}_std', float('nan'))
         n = regional_results.get(f'n_tumors_{size}', 0)
-        logger.info(f"  {size}: dice={d:.4f}  (n={n})")
+        logger.info(
+            f"  {size}: dice={d:.4f} ± {d_std:.4f}  (n={n})"
+        )
 
     logger.info(
         f"Per-lesion detection rate (Dice > "
@@ -378,19 +417,18 @@ def evaluate_predictions(
 
     logger.info("Dice variants (per-patient mean ± std across cases):")
     logger.info(
-        f"  volumetric (TN-fixed):       "
+        f"  PRIMARY  volumetric (per-volume foreground):  "
         f"{dice_summary['dice_mean']:.4f} ± {dice_summary['dice_std']:.4f}  "
-        f"(within-thesis primary)"
+        f"(nnU-Net / BrainMetShare / most brain-mets literature)"
     )
     logger.info(
-        f"  volumetric, brain-masked:    "
-        f"{dice_summary['dice_grovik_mean']:.4f} ± "
-        f"{dice_summary['dice_grovik_std']:.4f}  "
-        f"(note: not directly comparable to Grøvik 2020's 0.79 — "
-        f"their P+R+Dice are arithmetically inconsistent on a shared voxel set)"
+        f"  lesion-wise (BraTS-Mets, FPs penalised):      "
+        f"{dice_summary['dice_lesionwise_bratsmets_mean']:.4f} ± "
+        f"{dice_summary['dice_lesionwise_bratsmets_std']:.4f}  "
+        f"(BraTS-Mets 2023/2024 ranking metric)"
     )
     logger.info(
-        f"  Ottesen 2023 slice-wise:     "
+        f"  Ottesen 2023 slice-wise (sagittal axis):      "
         f"{dice_summary['dice_yi2023_slicewise_mean']:.4f} ± "
         f"{dice_summary['dice_yi2023_slicewise_std']:.4f}  "
         f"(literature: 0.85 ± 0.13 for nnU-Net, PMC9889663)"

@@ -44,6 +44,10 @@ MODALITY_PRESETS = {
     'bravo': ['bravo'],
     'dual': ['t1_pre', 't1_gd'],
     'triple': ['t1_pre', 't1_gd', 'flair'],
+    # 'quad' mirrors Grøvik 2020 / Ottesen 2022 4-channel input: T1 pre/post
+    # plus BRAVO plus FLAIR. exp345 uses this to test whether the per-volume
+    # Dice gap to multi-modal literature (0.32 vs 0.79) is information-bound.
+    'quad': ['t1_pre', 't1_gd', 'flair', 'bravo'],
 }
 
 # Per-modality clip_max values (brain-only p99.5 of raw intensities).
@@ -381,8 +385,8 @@ def main() -> None:
     parser.add_argument('--dataset-id', type=int, default=DATASET_ID,
                         help=f'Dataset ID (default: {DATASET_ID})')
     parser.add_argument('--modality', default='bravo',
-                        help='Modality preset (bravo, dual) or comma-separated '
-                             'list (t1_pre,t1_gd). Default: bravo')
+                        help='Modality preset (bravo, dual, triple, quad) or '
+                             'comma-separated list (t1_pre,t1_gd). Default: bravo')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')

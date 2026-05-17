@@ -191,10 +191,6 @@ def main() -> None:
                         help='Directory with existing predictions (skip inference)')
     parser.add_argument('--gt-dir',
                         help='Directory with ground truth labels')
-    parser.add_argument('--images-dir',
-                        help='Optional channel-0 imagesTs directory. Needed only for '
-                             'Mode 2 if you want Grøvik-Dice brain-mask gating. '
-                             'Mode 1 resolves this automatically from --dataset-id.')
 
     # Common
     parser.add_argument('--output', default=None,
@@ -204,12 +200,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    images_dir: str | None = None
     if args.pred_dir and args.gt_dir:
         # Mode 2: evaluate existing predictions
         pred_dir = args.pred_dir
         gt_dir = args.gt_dir
-        images_dir = args.images_dir
     elif args.experiment and args.nnunet_base and args.nnunet_results:
         # Mode 1: run inference then evaluate
         experiment_name = args.experiment_name or _get_experiment_name(args.experiment, args.n_synthetic)
@@ -222,8 +216,6 @@ def main() -> None:
 
         if not os.path.isdir(input_dir):
             raise FileNotFoundError(f"No test images found: {input_dir}")
-        # imagesTs is the channel-0 source for Grøvik-Dice brain-mask gating.
-        images_dir = input_dir
 
         print(f"=== nnU-Net Inference: {experiment_name} ===")
         pred_dir = _run_inference(
@@ -292,7 +284,6 @@ def main() -> None:
         image_size=args.image_size,
         fov_mm=args.fov_mm,
         spatial_dims=3,
-        images_dir=images_dir,
     )
 
 
