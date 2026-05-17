@@ -29,6 +29,7 @@ Usage:
         --experiment mixed --n-synthetic 210
 """
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -244,17 +245,16 @@ def create_isolated_preprocessed_dir(
         if os.path.exists(dst) or os.path.islink(dst):
             continue  # Already set up (e.g. from a previous chain segment)
 
-        try:
+        # Race-safe symlink creation: another fold of the same experiment
+        # (different SLURM job) may create this symlink between our
+        # os.path.exists check above and this call. Suppressing
+        # FileExistsError is safe — every fold of one experiment maps the
+        # same src→dst (the target is determined by the entry name, not by
+        # the calling job), so the resulting symlink is correct whoever
+        # wins the race. Hit historically by exp6_2_synthetic_525,
+        # exp7_2_mixed_210, exp7_3_mixed_315, and exp345 fold 1.
+        with contextlib.suppress(FileExistsError):
             os.symlink(src, dst)
-        except FileExistsError:
-            # Race: another fold of the same experiment (different SLURM job)
-            # created this symlink between our os.path.exists check above and
-            # this call. Safe to ignore — every fold of one experiment maps
-            # the same src→dst (the target is determined by the entry name,
-            # not by the calling job), so the resulting symlink is correct
-            # whoever wins the race. Hit historically by exp6_2_synthetic_525,
-            # exp7_2_mixed_210, exp7_3_mixed_315, exp345 fold 1.
-            pass
 
     # Write experiment-specific splits_final.json (real file, not symlink)
     splits_path = os.path.join(isolated_dataset_dir, 'splits_final.json')
