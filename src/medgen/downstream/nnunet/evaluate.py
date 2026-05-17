@@ -121,7 +121,8 @@ def _grovik_dice(pred: np.ndarray, gt: np.ndarray,
     return _dice_from_counts(intersection, union)
 
 
-def _slicewise_dice_yi2023(pred: np.ndarray, gt: np.ndarray) -> float:
+def _slicewise_dice_yi2023(pred: np.ndarray, gt: np.ndarray,
+                           axis: int = 0) -> float:
     """Ottesen 2023 slice-wise Dice with empty-empty slices scored as 1.0.
 
     Matches §2.5 of Ottesen et al. 2023 (PMC9889663):
@@ -129,21 +130,25 @@ def _slicewise_dice_yi2023(pred: np.ndarray, gt: np.ndarray) -> float:
     evaluated using a slice-wise dice similarity coefficient. All correctly
     predicted zero-slices were given a perfect dice score of 1."
 
-    Iterates the last array axis (axis 2 for nibabel's `[H, W, D]` layout =
-    axial slice direction for BrainMetShare BRAVO). Returns the mean over
-    slices for ONE patient; mean ± std across patients gives the comparable
-    summary (paper nnU-Net column: 0.85 ± 0.13).
+    The slice axis must be the acquisition plane. BrainMetShare BRAVO is
+    acquired SAGITTAL (Table 1 of the paper). In nibabel's RAS+ layout for
+    this dataset the array shape is [X=LR, Y=AP, Z=SI]; sagittal slices are
+    therefore stacked along axis 0 (LR). Using the last axis (Z=SI = axial)
+    gives ~0.73 instead of ~0.85 because there are fewer, thicker slabs and
+    therefore fewer empty-empty 1.0 contributions to the mean. The model is
+    the same; only the metric axis differs.
     """
-    n_slices = pred.shape[-1]
+    n_slices = pred.shape[axis]
     if n_slices == 0:
         return float('nan')
-    dices = np.empty(n_slices, dtype=np.float64)
-    for d in range(n_slices):
-        p_slice = pred[..., d]
-        g_slice = gt[..., d]
-        intersection = float(np.logical_and(p_slice, g_slice).sum())
-        union = float(p_slice.sum()) + float(g_slice.sum())
-        dices[d] = _dice_from_counts(intersection, union)
+    # Vectorized: reduce all axes except `axis` to get per-slice voxel sums.
+    reduce_axes = tuple(i for i in range(pred.ndim) if i != axis)
+    inter = np.logical_and(pred, gt).sum(axis=reduce_axes).astype(np.float64)
+    pred_sum = pred.sum(axis=reduce_axes).astype(np.float64)
+    gt_sum = gt.sum(axis=reduce_axes).astype(np.float64)
+    union = pred_sum + gt_sum
+    # Empty/empty -> 1.0; else 2*TP / (|P| + |G|).
+    dices = np.where(union > 0, 2.0 * inter / np.maximum(union, 1e-12), 1.0)
     return float(dices.mean())
 
 
@@ -261,6 +266,7 @@ def evaluate_predictions(
     # Compute final metrics
     global_results = global_metrics.compute()
     regional_results = regional_tracker.compute()
+    detection_results = regional_tracker.get_detection_summary()
 
     # Aggregate per-patient Dice variants across cases (mean ± std).
     # 'dice' is the TN-fixed volumetric per-patient Dice (was the buggy
@@ -284,6 +290,7 @@ def evaluate_predictions(
     results = {
         'global_metrics': global_results,
         'regional_metrics': regional_results,
+        'detection_metrics': detection_results,
         'dice_variants': dice_summary,
         'per_case': per_case,
         'num_cases': len(per_case),
@@ -309,6 +316,21 @@ def evaluate_predictions(
             d = regional_results.get(f'dice_{size}', float('nan'))
             if not np.isnan(d):
                 writer.add_scalar(f'test/dice_{size}', d, 0)
+        # Per-lesion detection rates (overall and by size).
+        writer.add_scalar(
+            'test/detection_rate',
+            detection_results.get('detection_rate', 0.0),
+            0,
+        )
+        writer.add_scalar(
+            'test/false_positives',
+            detection_results.get('false_positives', 0.0),
+            0,
+        )
+        for size in ('tiny', 'small', 'medium', 'large'):
+            rate = detection_results.get(f'detection_rate_{size}')
+            if rate is not None:
+                writer.add_scalar(f'test/detection_rate_{size}', rate, 0)
         # Per-patient Dice variants (mean across cases).
         for key in ('dice', 'dice_grovik', 'dice_yi2023_slicewise'):
             v = dice_summary[f'{key}_mean']
@@ -332,7 +354,27 @@ def evaluate_predictions(
     )
     for size in ('tiny', 'small', 'medium', 'large'):
         d = regional_results.get(f'dice_{size}', float('nan'))
-        logger.info(f"  {size}: dice={d:.4f}")
+        n = regional_results.get(f'n_tumors_{size}', 0)
+        logger.info(f"  {size}: dice={d:.4f}  (n={n})")
+
+    logger.info(
+        f"Per-lesion detection rate (Dice > "
+        f"{regional_tracker.detection_threshold:.2f} criterion):"
+    )
+    overall_det = detection_results.get('detection_rate', 0.0)
+    fp_total = detection_results.get('false_positives', 0)
+    logger.info(
+        f"  overall: {overall_det*100:.1f}%   FP total: {int(fp_total)}"
+    )
+    for size in ('tiny', 'small', 'medium', 'large'):
+        rate = detection_results.get(f'detection_rate_{size}')
+        n = regional_results.get(f'n_tumors_{size}', 0)
+        fp = detection_results.get(f'fp_{size}', 0)
+        if rate is not None and n > 0:
+            logger.info(
+                f"  {size}: detection={rate*100:>5.1f}%  "
+                f"(n={n}, FPs={int(fp)})"
+            )
 
     logger.info("Dice variants (per-patient mean ± std across cases):")
     logger.info(
@@ -341,10 +383,11 @@ def evaluate_predictions(
         f"(within-thesis primary)"
     )
     logger.info(
-        f"  Grøvik 2020 brain-gated:     "
+        f"  volumetric, brain-masked:    "
         f"{dice_summary['dice_grovik_mean']:.4f} ± "
         f"{dice_summary['dice_grovik_std']:.4f}  "
-        f"(literature: 0.79 ± 0.12, arXiv:1903.07988)"
+        f"(note: not directly comparable to Grøvik 2020's 0.79 — "
+        f"their P+R+Dice are arithmetically inconsistent on a shared voxel set)"
     )
     logger.info(
         f"  Ottesen 2023 slice-wise:     "
