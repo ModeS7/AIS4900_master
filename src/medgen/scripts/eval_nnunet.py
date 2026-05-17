@@ -95,6 +95,7 @@ def _run_inference(
     output_dir: str,
     input_dir: str,
     folds: tuple[int, ...] = (0, 1, 2, 3, 4),
+    save_probabilities: bool = False,
 ) -> str:
     """Run nnU-Net 5-fold ensemble inference on test images.
 
@@ -150,7 +151,7 @@ def _run_inference(
         predictor.predict_from_files(
             list_of_lists_or_source_folder=input_dir,
             output_folder_or_list_of_truncated_output_files=pred_dir,
-            save_probabilities=False,
+            save_probabilities=save_probabilities,
             overwrite=True,
             num_processes_preprocessing=4,
             num_processes_segmentation_export=4,
@@ -185,6 +186,9 @@ def main() -> None:
     parser.add_argument('--plans', default='nnUNetPlans')
     parser.add_argument('--folds', type=int, nargs='+', default=[0, 1, 2, 3, 4],
                         help='Folds to ensemble (default: all 5)')
+    parser.add_argument('--save-probabilities', action='store_true',
+                        help='Save ensembled softmax probabilities (.npz) alongside '
+                             'binary predictions. Required for threshold_sweep.py.')
 
     # Mode 2: Evaluate existing predictions
     parser.add_argument('--pred-dir',
@@ -228,6 +232,7 @@ def main() -> None:
             ),
             input_dir=input_dir,
             folds=tuple(args.folds),
+            save_probabilities=args.save_probabilities,
         )
     else:
         parser.error(

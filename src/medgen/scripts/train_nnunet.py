@@ -131,6 +131,16 @@ def main() -> None:
                         help='Plans identifier')
     parser.add_argument('--continue-training', action='store_true',
                         help='Continue from last checkpoint')
+    parser.add_argument('--validation-only', action='store_true',
+                        help='Skip training; only re-run validation on the already-trained '
+                             'checkpoint(s) for the requested fold(s). Useful to recompute '
+                             'val metrics or to export val softmax probabilities for '
+                             'post-hoc threshold tuning.')
+    parser.add_argument('--export-validation-probabilities', action='store_true',
+                        help='When validating (during training or with --validation-only), '
+                             'export per-case softmax probabilities (.npz) to each fold\'s '
+                             'validation/ subdirectory. Required for the rigorous '
+                             'val-tuned threshold sweep.')
     parser.add_argument('--device', default='cuda',
                         choices=['cuda', 'cpu', 'mps'])
 
@@ -198,9 +208,9 @@ def main() -> None:
             plans_identifier=args.plans,
             num_gpus=1,
             pretrained_weights=None,
-            export_validation_probabilities=False,
+            export_validation_probabilities=args.export_validation_probabilities,
             continue_training=args.continue_training,
-            only_run_validation=False,
+            only_run_validation=args.validation_only,
             disable_checkpointing=False,
             device=torch.device(args.device),
         )
