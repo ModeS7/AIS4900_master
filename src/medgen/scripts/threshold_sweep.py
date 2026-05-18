@@ -84,7 +84,14 @@ FG_CHANNEL = 1  # nnU-Net binary seg: channel 0 = bg, channel 1 = fg
 def _load_probs(npz_path: str) -> np.ndarray:
     """Load the foreground-channel probability map from an nnU-Net .npz.
 
-    Returns shape [D, H, W] float32 array of foreground probabilities.
+    nnUNetv2 stores probabilities in SimpleITK (Z, Y, X) order; we permute
+    (2, 1, 0) so the returned array matches nibabel's (X, Y, Z) GT layout.
+    Verified by brute-force axis match against the binary .nii.gz nnU-Net
+    writes alongside (which IS in nibabel-native space).
+
+    Returns
+    -------
+    np.ndarray of shape [X, Y, Z] float32 — foreground probability.
     """
     data = np.load(npz_path)
     if 'probabilities' not in data.files:
@@ -94,21 +101,17 @@ def _load_probs(npz_path: str) -> np.ndarray:
     probs = data['probabilities']
     if probs.ndim != 4 or probs.shape[0] < 2:
         raise ValueError(
-            f"{npz_path}: expected probabilities of shape [n_classes>=2, D, H, W], "
+            f"{npz_path}: expected probabilities of shape [n_classes>=2, Z, Y, X], "
             f"got {probs.shape}"
         )
-    return probs[FG_CHANNEL].astype(np.float32)
+    return np.transpose(probs[FG_CHANNEL].astype(np.float32), (2, 1, 0))
 
 
 def _load_gt(gt_path: str) -> np.ndarray:
-    """Load a GT NIfTI as a boolean foreground mask, axes ordered to [D, H, W]."""
+    """Load a GT NIfTI as a boolean foreground mask in nibabel's native order."""
     arr = nib.load(gt_path).get_fdata()
-    # nibabel returns [H, W, D] for our brain-mets NIfTIs (RAS+). Match the
-    # convention used by `evaluate.py` which permutes to [D, H, W] for
-    # downstream metrics; here we do the same so probs and GT align.
     if arr.ndim != 3:
         raise ValueError(f"{gt_path}: expected 3D NIfTI, got shape {arr.shape}")
-    arr = np.transpose(arr, (2, 0, 1))  # [H, W, D] -> [D, H, W]
     return arr > 0.5
 
 

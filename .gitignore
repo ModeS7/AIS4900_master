@@ -12,8 +12,12 @@ build/
 
 # Virtual environment
 .venv/
+.venv_nnunet/
 env/
 ENV/
+
+# Local nnU-Net inference harness (symlinks to data outside repo)
+data/nnunet_local/
 
 # Model files and cache
 model_cache/
