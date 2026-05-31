@@ -1,11 +1,48 @@
-# MedGen - Synthetic Medical Image Generation
+# MedGen — Synthetic Brain MRI Generation + Downstream Segmentation
 
 [![Tests](https://github.com/ModeS7/AIS4900_master/actions/workflows/test.yml/badge.svg)](https://github.com/ModeS7/AIS4900_master/actions/workflows/test.yml)
 [![Nightly](https://github.com/ModeS7/AIS4900_master/actions/workflows/tests-nightly.yml/badge.svg)](https://github.com/ModeS7/AIS4900_master/actions/workflows/tests-nightly.yml)
 [![codecov](https://codecov.io/gh/ModeS7/AIS4900_master/branch/main/graph/badge.svg)](https://codecov.io/gh/ModeS7/AIS4900_master)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-A modular framework for generating synthetic brain MRI images using diffusion models and compression autoencoders. Supports 2D/3D pixel-space and latent-space diffusion with multiple compression backends (VAE, VQ-VAE, DC-AE).
+A modular framework for generating synthetic brain MRI images using diffusion
+models and compression autoencoders, plus a downstream nnU-Net brain-metastasis
+segmentation pipeline used to evaluate the clinical utility of the generated
+data. Supports 2D/3D pixel-space and latent-space diffusion with multiple
+compression backends (VAE, VQ-VAE, DC-AE), and the BrainMetShare-3 segmentation
+benchmark via nnUNetv2.
+
+## Thesis Context
+
+This is the code repository for the NTNU master thesis "Synthetic Medical
+Image Generation Using Diffusion Models: From Generation Quality to Clinical
+Utility Validation" (Modestas Sukarevicius, AIS4900, 2025–2026, NTNU IDI;
+part of the SynthiCare project at Helse Møre og Romsdal HF).
+
+- **Thesis repo (LaTeX)**: `/home/mode/NTNU/AIS4900_doc/AIS4900-master-thesis/`
+  (Overleaf compilation, see its `README.md` for chapter structure)
+- **Previous work (industrial project)**: `/home/mode/NTNU/AIS4005_IP/`
+  established the 2D diffusion generation baseline; this repo extends to 3D
+  generation, compression-based latent diffusion, restoration, and the
+  downstream segmentation utility validation.
+
+For thesis-relevant headline numbers and where to find supporting code:
+
+| Thesis claim | Supporting code / docs |
+|---|---|
+| 3D diffusion generation quality (FID, PCA, spectrum) | [`docs/experiment_results_3d.md`](docs/experiment_results_3d.md), [`docs/proven_techniques.md`](docs/proven_techniques.md) |
+| Downstream nnU-Net segmentation (the clinical-utility chapter) | [`docs/downstream_nnunet.md`](docs/downstream_nnunet.md) |
+| Generation-pipeline filtering (atlas, PCA, single-component) | [`docs/architecture.md`](docs/architecture.md) + `src/medgen/scripts/generate.py` |
+| Restoration network (post-hoc deblur) | `docs/experiment_results_3d.md` Part 25 |
+| ODE-solver / step-count study | [`docs/eval-ode-solvers.md`](docs/eval-ode-solvers.md) |
+| 87 known issues / gotchas (development log, "lessons learnt") | [`docs/common-pitfalls.md`](docs/common-pitfalls.md) |
+
+The **single most important downstream finding for the thesis** is documented
+in `docs/downstream_nnunet.md`: on the official Grøvik 2020 BrainMetShare-3
+hold-out our nnU-Net achieves Dice 0.321 ± 0.28 (BRAVO-only) — but the same
+model on a random 105/51 split of the same 156-patient pool (Ottesen 2025's
+protocol) reaches **0.574**, demonstrating that the apparent 0.34 gap to
+literature is mostly a test-cohort artifact, not a model gap.
 
 ## Quick Start
 
