@@ -232,6 +232,7 @@ AIS4900_master/
 │   ├── eval-ode-solvers.md          # ODE solver evaluation results
 │   ├── experiment_results.md        # 2D experiment results
 │   ├── experiment_results_3d.md     # 3D experiment results (pixel/latent/compression/downstream)
+│   ├── downstream_nnunet.md         # nnU-Net pipeline + all results + threshold sweep + random-split test + Ottesen 2023/2025 comparison
 │   ├── profiling_results.md         # VRAM profiling (DiT, UNet, HDiT, UViT)
 │   ├── proven_techniques.md         # Confirmed positive/negative techniques for 3D brain MRI
 │   ├── future_work_v2.md            # Diffusion-tricks inventory (67 implemented)
@@ -402,6 +403,7 @@ logging:
 | `docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal) |
 | `docs/experiment_results.md` | 2D experiment results (3D moved to `experiment_results_3d.md`) |
 | `docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |
+| `docs/downstream_nnunet.md` | Complete nnU-Net segmentation reference: pipeline, all results, threshold sweep, random-split methodology test, Ottesen 2023/2025 literature comparison |
 | `docs/profiling_results.md` | VRAM profiling (DiT, UNet, HDiT, UViT) |
 | `papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) |
 | `CLAUDE.md` | Claude Code context file |

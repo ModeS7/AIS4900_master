@@ -38,9 +38,9 @@ os.environ.setdefault('nnUNet_preprocessed',
                       os.path.join(NNUNET_BASE, 'nnUNet_preprocessed'))
 os.environ.setdefault('nnUNet_results',
                       os.path.join(NNUNET_RESULTS, EXPERIMENT_NAME))
-os.makedirs(os.environ['nnUNet_preprocessed'], exist_ok=True)
+os.makedirs(os.environ['nnUNet_preprocessed'], exist_ok=True)  # noqa: SIM112
 
-from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor  # noqa: E402
+from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
 
 def run_fold(fold: int) -> None:

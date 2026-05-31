@@ -91,7 +91,7 @@ def _sweep_one_fold(fold: int) -> dict:
     stds = dice_mat.std(axis=0, ddof=1) if dice_mat.shape[0] > 1 else np.zeros_like(means)
     best_idx = int(np.argmax(means))
     return {
-        'n_cases': int(len(case_ids)),
+        'n_cases': len(case_ids),
         'thresholds': THRESHOLDS.tolist(),
         'dice_mean': means.tolist(),
         'dice_std': stds.tolist(),
@@ -124,7 +124,7 @@ def _ensemble_sweep() -> dict:
     stds = dice_mat.std(axis=0, ddof=1) if dice_mat.shape[0] > 1 else np.zeros_like(means)
     best_idx = int(np.argmax(means))
     return {
-        'n_cases': int(len(case_ids)),
+        'n_cases': len(case_ids),
         'thresholds': THRESHOLDS.tolist(),
         'dice_mean': means.tolist(),
         'dice_std': stds.tolist(),
@@ -185,7 +185,7 @@ def main() -> None:
         lines.append(f'| {f} | {r["best_threshold"]:.2f} | {r["best_dice"]:.4f} '
                      f'| {r["dice_at_0.5"]:.4f} | {d:+.4f} |')
     lines.append('')
-    lines.append(f'## Cross-fold optimum stability\n')
+    lines.append('## Cross-fold optimum stability\n')
     lines.append(f'- thresholds: {per_fold_best_t}')
     lines.append(f'- mean: {arr.mean():.4f}')
     lines.append(f'- median: {np.median(arr):.4f}')

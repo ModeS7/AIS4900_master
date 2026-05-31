@@ -1572,34 +1572,119 @@ Attempts to improve high-frequency texture in generated volumes by fine-tuning e
 | exp1v2_2_156 | Dual on all 156 volumes | 500 | Training | Tests full dataset for dual |
 | exp14_2 | 67M seg model with PostHocEMA | 1000 | Training | Smaller seg architecture |
 
-## Part 24: Downstream nnU-Net Segmentation (April 2026)
+## Part 24: Downstream nnU-Net Segmentation (April–May 2026)
 
-Evaluates how well synthetic BRAVO data supports downstream brain metastasis segmentation.
+Evaluates how well augmenting real BrainMetShare-3 with synthetic BRAVO data,
+adding modalities, or biasing the synthetic distribution affects downstream
+brain-metastasis segmentation.
 
-### nnU-Net Results (51-patient test set, 5-fold ensemble)
+> **For the complete pipeline + literature comparison + reproduction commands,
+> see [`docs/downstream_nnunet.md`](downstream_nnunet.md).** This section
+> summarises only the headline numbers.
 
-| Experiment | Data | N_volumes | Dice | Precision | Recall | HD95 |
-|-----------|------|-----------|------|-----------|--------|------|
-| **exp3_baseline** | Real only | 105 | **0.188** | 0.555 | **0.428** | **18.87mm** |
-| exp6_1_imagenet | Synthetic (IN-opt) | 105 | 0.153 | 0.575 | 0.305 | 29.79mm |
-| exp6_1_radimagenet | Synthetic (RIN-opt) | 105 | 0.152 | **0.584** | 0.322 | 27.09mm |
+### Real baselines (official Grøvik 2020 51-patient hold-out, 5-fold ensemble)
 
-**Per-tumor-size Dice:**
+| Experiment | Channels | Vol Dice | Lesion Dice | Slice Dice | Det% (overall / tiny) | FPs |
+|---|---|---|---|---|---|---|
+| **exp3_baseline_v2_d600** | 1 (BRAVO) | **0.3209 ± 0.28** | 0.1991 | 0.8353 | 39.5% / 35.5% | 302 |
+| exp4_baseline_dual_v2_d601 | 2 (T1pre+T1gd) | 0.3231 | 0.1826 | 0.8314 | 35.1% / — | 179 |
+| exp5_baseline_triple_d602 | 3 (T1pre+T1gd+FLAIR) | 0.3232 | 0.1893 | 0.8319 | 34.4% / — | 193 |
+| exp345_baseline_quad_d603 | 4 (BRAVO+T1pre+T1gd+FLAIR) | 0.3261 | 0.1950 | 0.8346 | 38.6% / 34.6% | 275 |
 
-| Size | Real (exp3) | Synthetic IN (exp6_1) | Synthetic RIN (exp6_1) |
-|------|-------------|----------------------|----------------------|
-| Tiny | **0.157** | 0.130 | 0.128 |
-| Small | **0.339** | 0.261 | 0.267 |
-| Medium | **0.702** | 0.574 | 0.575 |
-| Large | **0.809** | 0.625 | **0.664** |
+**Modality count makes no meaningful difference** (1 → 4 channels, Δ = +0.005
+volumetric Dice). All within per-case std (0.28).
 
-**Key findings:**
-- Synthetic-only training produces ~19% lower Dice than real data (matched 105 volume count)
-- The gap is primarily in recall (-29%) — synthetic model misses more tumors
-- ImageNet vs RadImageNet optimization makes minimal difference downstream
-- Gap attributed to MSE-smoothing in generated textures — motivates restoration network
+### Synthetic-only (no real, 105 synth)
 
-### Pending: exp6 (525 synthetic), exp4 (dual baseline on Dataset 503)
+| Experiment | Synth source | Vol Dice | Det% |
+|---|---|---|---|
+| exp6_2_synthetic_105_exp1_1_1000_IN | exp1_1 ImageNet-tuned | 0.2677 | 34.1% |
+| exp6_2_synthetic_105_exp1_1_1000_RIN | exp1_1 RadImageNet-tuned | 0.2654 | 32.9% |
+| exp6_2_synthetic_105_exp1_1_1000plus | exp1_1 best | 0.2298 | 31.8% |
+| exp6_2_synthetic_105_exp32_2_1000 | exp32_2 | 0.2562 | 34.5% |
+| exp6_2_synthetic_105_exp48c_handoff_exp32 | exp48c handoff | 0.2826 | 37.7% |
+| exp6_2_synthetic_105_exp48c_standalone | exp48c standalone | 0.2760 | 36.5% |
+| exp6_2_synthetic_105_exp48d_handoff_exp1 | exp48d handoff | 0.2799 | 37.2% |
+| exp6_2_synthetic_525_exp48c_handoff_exp32 | exp48c × 525 | 0.2845 | 36.6% |
+
+**Synthetic-only is ~0.05 Dice worse than real-only** across every synthetic
+generator family. exp48c is the strongest synth source. 5× scaling (105 → 525)
+provides a marginal +0.002 gain.
+
+### Real + synthetic mixed (exp7 family, Dataset 614)
+
+| N synth | Vol Dice | Det% |
+|---|---|---|
+| 25 (exp7_4) | 0.3165 | 39.1% |
+| 50 (exp7_5) | 0.3214 | 39.9% |
+| 75 (exp7_6) | 0.3207 | 39.3% |
+| 105 (exp7_1) | 0.3186 | 38.7% |
+| 210 (exp7_2) | 0.3167 | 38.7% |
+| 315 (exp7_3) | 0.3184 | 39.5% |
+| 525 (exp7_7) | 0.3256 | 39.3% |
+
+**Adding synth on top of real produces zero improvement at any ratio.** All
+within ±0.005 of exp3 baseline.
+
+### Real + size-targeted synthetic (exp8 family, Datasets 630–633)
+
+Synthetic pool ranked by max-lesion bucket (tiny → small → medium → large
+priority). Hypothesis: bias synth toward exp3's weak lesion-size class.
+
+| N synth | Vol Dice | Det% (tiny) | FPs |
+|---|---|---|---|
+| 25 (exp8_1, d630) | 0.3212 | 35.1% | 314 |
+| 50 (exp8_2, d631) | 0.3109 | 35.3% | 273 |
+| 75 (exp8_3, d632) | 0.3176 | 35.1% | 315 |
+| 105 (exp8_4, d633) | 0.3212 | 35.4% | 300 |
+
+**Size-targeted mixing also produces zero improvement** — tiny-lesion detection
+unchanged (35.1–35.4% vs exp3's 35.5%). Hypothesis rejected.
+
+### **Random-split control (exp3_random_split_d640) — most important finding**
+
+Same exp3 model, same training pipeline. Only difference: pool all 156
+Stanford patients and randomly split 105 train + 51 test with seed=42
+(Ottesen 2025's protocol), instead of using the official Grøvik 2020
+hold-out.
+
+| Experiment | Split | Vol Dice | Det% (overall / tiny) | FPs |
+|---|---|---|---|---|
+| exp3_baseline_v2_d600 | Official Grøvik 2020 hold-out | 0.3209 | 39.5% / 35.5% | 302 |
+| **exp3_random_split_d640** | **Random (seed=42)** | **0.5744** | **66.5% / 65.2%** | **51** |
+
+**Δ = +0.254 absolute Dice, +30 pp tiny-lesion detection, −83% false
+positives.** The official BrainMetShare-3 hold-out is materially harder than
+a random subset of the same 156-patient pool. The augmentation experiments'
+"failure" to beat baseline is partly an artifact of evaluating on this hard
+hold-out; on a fair random split our 1-channel BRAVO model lands within 0.09
+of Ottesen 2025's 4-channel reported number (0.66 ± 0.01).
+
+### Threshold sweep findings
+
+Per-fold sweep on the official hold-out shows optimum at **t ≈ 0.005** (vs
+nnU-Net's default t=0.5), giving **+0.012 absolute Dice** (0.333 → 0.346 on
+ensembled softmax). All 5 folds peak in t ∈ [0.001, 0.02]; median 0.001,
+std 0.008. Size-stratified analysis shows the benefit is **specifically a
+tiny-lesion detection trick**:
+
+| Bucket | Det @ t=0.50 | Det @ t=0.005 | Δ pp |
+|---|---|---|---|
+| tiny | 27.9% | 37.3% | **+9.4** |
+| small | 75.2% | 82.9% | +7.7 |
+| medium | 83.3% | 91.7% | +8.4 |
+| large | 100.0% | 100.0% | 0.0 |
+
+Cost: 198 extra false-positive blobs across 51 patients (~4 extra per scan,
+almost all tiny).
+
+### Slice-wise Dice matches literature regardless of channel count
+
+Our slice-wise Dice is **0.83 ± 0.12 across every experiment** (exp3, exp4,
+exp5, exp345, exp7_*, exp8_*) — matching Ottesen 2023's reported 0.85 ± 0.13
+on Stanford nnU-Net. The 0.33 vs 0.66 volumetric gap to Ottesen 2025 is
+hidden by the slice-wise metric (which scores empty/empty slices as 1.0 and
+heavily favours sparse-lesion cases).
 
 ## Part 25: Restoration Network Experiments (April 2026)
 
@@ -1660,7 +1745,7 @@ PostHocEMA synthesis with training sigma_rels [0.05, 0.28] produces unstable int
 
 **PostHocEMA rerun planned** (exp1o_1) with paper-correct `sigma_rels=[0.05, 0.10]`.
 
-## Key Takeaways (Updated April 13, 2026)
+## Key Takeaways (Updated May 28, 2026)
 
 1. **Pixel-space with post-hoc eval produces the best absolute FID**: exp1_1 at 1000ep achieves FID 19.12 (27 Euler steps). exp23 (ScoreAug) is close at 20.38, with better RadImageNet FID (0.659 vs 0.714). In-training FID is misleadingly high — post-hoc evaluation with more volumes and optimal steps reveals the true quality.
 
@@ -1705,3 +1790,13 @@ PostHocEMA synthesis with training sigma_rels [0.05, 0.28] produces unstable int
 21. **PostHocEMA requires careful sigma_rel selection**: Training with `[0.05, 0.28]` produces far-apart gammas (16.97, 0.17) that make synthesis interpolation numerically unstable. The Karras EDM2 paper uses `[0.05, 0.10]` (gammas 16.97, 6.94). With wrong sigma_rels, raw model beats all EMA variants.
 
 22. **PostHocEMA had a critical `.model` vs `.ema_model` bug**: The `ema_pytorch` library's `KarrasEMA.model` returns the online (original) model, not the EMA copy. Training-time validation for all PostHocEMA experiments was evaluating the raw model, not EMA. Fixed April 2026.
+
+23. **Modality count makes no difference on the official Grøvik hold-out**: exp3 (1-channel BRAVO), exp4 (2-channel dual), exp5 (3-channel triple), and exp345 (4-channel quad) all land at volumetric Dice 0.32-0.33 — within ±0.005 of each other. The 4-channel hypothesis (motivated by Ottesen 2025's 4-channel setup) is rejected on the official 51-patient test set.
+
+24. **Synthetic data augmentation provides zero improvement**: 11 mixed experiments (exp7 family at N ∈ {25,50,75,105,210,315,525} synth + exp8 family at N ∈ {25,50,75,105} size-targeted synth) all land at volumetric Dice 0.31-0.33 — within noise of exp3 baseline. Size-targeted prioritisation (tiny → small → medium → large) does not improve tiny-lesion detection (35.1-35.4% vs exp3's 35.5%). Synthetic-only (no real) is strictly worse (~0.27 Dice).
+
+25. **Critical methodological finding — the official BrainMetShare-3 hold-out is dramatically harder than a random split**: Same exp3 model on a random 105/51 split of the 156 Stanford patients (seed=42, Ottesen 2025's protocol) achieves Dice 0.574 vs 0.321 on the official Grøvik 2020 hold-out — a +0.254 absolute gap, +30 pp tiny-lesion detection, −83% false positives. Literature comparisons that use random splits (Ottesen 2025) are NOT apples-to-apples with results on the official hold-out. Our 0.574 lands within 0.09 of Ottesen 2025's reported 0.66 ± 0.01 using only 1 channel vs their 4 — the "0.33 vs 0.66 gap" is mostly a test-cohort artifact, not a model gap. See [`docs/downstream_nnunet.md`](downstream_nnunet.md).
+
+26. **Threshold tuning is a tiny-lesion-detection trick, not a general Dice fix**: Per-fold threshold sweep on exp3 finds optimum at t ≈ 0.005 (vs nnU-Net default 0.5). All 5 folds peak in t ∈ [0.001, 0.02], median 0.001, std 0.008. Ensemble Dice lifts +0.012 absolute (0.333 → 0.346). The benefit is concentrated in tiny lesions: detection +9.4 pp, regional Dice +56% relative. Cost: +198 false-positive blobs across 51 patients. Cannot close the gap to literature on its own.
+
+27. **Slice-wise Dice matches Ottesen 2023 literature regardless of channel count**: 0.83 ± 0.12 across every downstream experiment (exp3, exp4, exp5, exp345, exp7_*, exp8_*) vs Ottesen 2023's reported 0.85 ± 0.13 for Stanford nnU-Net. The slice-wise metric (empty-empty slice = 1.0, sagittal axis) inflates with sparse-lesion cases and hides the 0.33 vs 0.66 volumetric gap to Ottesen 2025 entirely.

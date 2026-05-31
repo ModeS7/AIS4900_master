@@ -1,0 +1,631 @@
+# Notes for Report
+
+## Staged Progressive VAE Training (December 2025)
+
+### Approach: Disable GAN During Progressive Training
+
+During progressive VAE training (64 -> 128 -> 256 resolution), the adversarial component (GAN) and learning rate scheduler are optionally disabled. This is controlled by two config options:
+
+- `disable_gan: true` - Skip discriminator training entirely
+- `use_constant_lr: true` - Use constant learning rate instead of warmup+cosine scheduler
+
+### Rationale
+
+1. **Stability**: Adversarial training can be unstable, especially at lower resolutions where the discriminator might overpower the generator early in training. Disabling GAN during progressive phases allows the VAE to focus purely on reconstruction quality.
+
+2. **Faster Training**: Without discriminator forward/backward passes, each epoch trains approximately 2x faster, which is significant across multiple progressive phases.
+
+3. **Transfer Learning**: VAE encoder-decoder weights transfer perfectly between phases since they learn reconstruction independently of the discriminator. The discriminator can be initialized fresh during fine-tuning.
+
+4. **Simpler LR Management**: Constant learning rate avoids scheduler state transfer complexity between progressive phases, where each phase has a different number of epochs determined by plateau detection.
+
+### Fine-Tuning Phase
+
+After progressive training completes, the VAE can be fine-tuned at full resolution (256x256) with:
+- GAN enabled (`disable_gan: false`)
+- Cosine LR scheduler (`use_constant_lr: false`)
+- Lower learning rate for stability
+
+This staged approach separates "learning to reconstruct" (progressive phases) from "learning to generate realistic details" (fine-tuning with GAN).
+
+### Implementation
+
+- Config options in `configs/vae.yaml` / `configs/vae_3d.yaml` (the historical `configs/train_vae_progressive.yaml` was consolidated into these as part of the VAE/VQ-VAE/DC-AE unification)
+- VAETrainer conditionally creates discriminator, optimizer_d, and schedulers
+- Progressive script checks for scheduler existence before stepping
+
+---
+
+## VAETrainer Feature Parity (December 2025)
+
+The VAETrainer was updated to match DiffusionTrainer's monitoring capabilities:
+
+### Features Added
+
+1. **Gradient Norm Tracking**
+   - Tracks generator and discriminator gradient norms per epoch
+   - Logs average and max gradient norms to TensorBoard
+   - Useful for detecting training instability (exploding/vanishing gradients)
+
+2. **FLOPs Measurement**
+   - Measures VAE forward pass FLOPs using torch.profiler at training start
+   - Logs GFLOPs/sample to TensorBoard
+   - Estimates training step cost (forward + backward ≈ 3x forward)
+
+3. **Checkpoint Loading/Resume**
+   - `load_checkpoint()` method loads model, discriminator, optimizers, schedulers, and EMA
+   - Handles mismatched configs (e.g., checkpoint has GAN but current training disables it)
+   - Supports `load_optimizer=False` for fine-tuning with fresh optimizer
+
+4. **EMA State Persistence**
+   - EMA state is now saved to and loaded from checkpoints
+   - Previously, EMA was saved but never loaded, losing accumulated weights on resume
+
+### Bug Fixes
+
+1. `train_epoch()` crashed when GAN disabled (called `discriminator.train()` on None)
+2. `_save_vae_checkpoint()` accessed non-existent attributes when GAN/scheduler disabled
+3. `train()` unconditionally stepped schedulers that might not exist
+4. LR logging crashed when scheduler was None
+
+### Config Options
+
+```yaml
+training:
+  logging:
+    grad_norm: true   # Enable gradient norm tracking
+    flops: true       # Enable FLOPs measurement
+    lpips: true       # Enable LPIPS metric
+    worst_batch: false # Enable worst batch tracking
+```
+
+---
+
+## Additional Features (December 2025)
+
+### 1. Resume Training Support
+
+Fixed critical bug where `train()` always started from epoch 0 even after loading checkpoint.
+
+```python
+# Now supports resume:
+epoch = trainer.load_checkpoint("checkpoint.pt")
+trainer.train(train_loader, train_dataset, start_epoch=epoch + 1)
+```
+
+### 2. LPIPS Metric (Both VAE and Diffusion)
+
+Added LPIPS (Learned Perceptual Image Patch Similarity) metric to both trainers:
+- Uses AlexNet backbone from `lpips` package
+- Handles grayscale images by replicating to 3 channels
+- Logged to TensorBoard at validation intervals
+
+LPIPS provides a perceptual quality metric that correlates better with human perception than PSNR/SSIM.
+
+### 3. Worst Batch Tracking (VAE)
+
+Tracks and visualizes the batch with highest generator loss each epoch:
+- Helps identify problematic samples (e.g., unusual anatomy, artifacts)
+- Shows input, reconstruction, and loss breakdown (L1, perceptual)
+- Reset after each validation interval
+
+### 4. Validation Loader Support (VAE)
+
+Added optional `val_loader` parameter to use a separate validation set:
+
+```python
+trainer.train(
+    train_loader=train_loader,
+    train_dataset=train_dataset,
+    val_loader=val_loader,  # Optional: use for validation instead of train samples
+    start_epoch=0
+)
+```
+
+If `val_loader` is not provided, validation samples are randomly drawn from the training dataset (previous behavior).
+
+---
+
+## Score Augmentation (ScoreAug) Implementation (December 2025)
+
+Reference: [Score Augmentation for Diffusion Models](https://arxiv.org/abs/2508.07926)
+
+### Motivation
+
+Traditional data augmentation transforms clean images before noise addition, which changes the output distribution - the model learns to generate augmented (rotated, translated) images. For small medical datasets (~100 patients), we need regularization that doesn't alter what the model generates.
+
+### Key Insight
+
+ScoreAug applies transforms to **noisy data** (after noise addition), teaching the model equivariant denoising:
+
+```
+Traditional:  x → T(x) → add noise → denoise → T(x)   [learns augmented distribution]
+ScoreAug:     x → add noise → T(x + noise) → denoise → T(x)  [learns equivariance]
+```
+
+The model learns: "if input is rotated, output should be rotated too" - without changing the unconditional output distribution.
+
+### Transforms Implemented
+
+| Transform | Description | Omega Required |
+|-----------|-------------|----------------|
+| Rotation | 90°, 180°, 270° rotations | **Yes** |
+| Translation | ±10% shift, zero-padding | No |
+| Cutout | Random 10-30% square zeroed | No |
+| Brightness | Scale by [1/B, B] factor | No (experimental) |
+
+### Omega Conditioning
+
+Gaussian noise is rotation-invariant - a rotated noise field looks identical to unrotated noise. Without conditioning, the model can "cheat" by detecting rotation from the noise pattern and inverting it before denoising.
+
+**Solution**: Inject transform parameters ("omega") into the model via time embedding:
+
+```python
+class OmegaTimeEmbed(nn.Module):
+    def __init__(self, original_time_embed, embed_dim):
+        self.original = original_time_embed
+        self.omega_mlp = nn.Sequential(
+            nn.Linear(12, embed_dim),  # 12-dim omega encoding
+            nn.SiLU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+        # Zero-init so identity starts as no-op
+        nn.init.zeros_(self.omega_mlp[-1].weight)
+        nn.init.zeros_(self.omega_mlp[-1].bias)
+
+    def forward(self, t_emb):
+        return self.original(t_emb) + self.omega_mlp(self._omega_encoding)
+```
+
+### Probability Sampling
+
+Per paper: transforms are sampled uniformly, with identity (no transform) always included:
+
+- 3 transforms enabled → each has 25% probability (incl. identity)
+- 4 transforms enabled → each has 20% probability (incl. identity)
+
+### torch.compile Compatibility
+
+**Problem**: Data-dependent control flow in omega encoding (if/elif branches) caused torch.compile to recompile every batch.
+
+**Solution**: Compile only the inner UNet, keep the wrapper uncompiled:
+
+```python
+# Wrap first (modifies time_embed)
+wrapper = ScoreAugModelWrapper(raw_model, embed_dim=time_embed_dim)
+
+# Compile only inner model
+wrapper.model = torch.compile(wrapper.model)
+
+# Wrapper's forward (encode_omega logic) stays uncompiled
+self.model = wrapper
+```
+
+This preserves the ~1.8x speedup from torch.compile while allowing data-dependent omega encoding.
+
+### Perceptual Loss Handling
+
+For non-invertible transforms (translation, cutout), the original image space cannot be recovered. The implementation skips perceptual loss for these transforms:
+
+```python
+inv_clean = self.score_aug.inverse_apply(aug_clean, omega)
+if inv_clean is None:
+    # Non-invertible transform, skip perceptual loss
+    p_loss = torch.tensor(0.0, device=self.device)
+else:
+    p_loss = self.perceptual_loss_fn(inv_clean, images)
+```
+
+### Config Options
+
+```yaml
+training:
+  score_aug:
+    enabled: false
+    rotation: true             # Requires omega conditioning
+    translation: false
+    cutout: false
+    brightness: false
+    brightness_range: 1.2
+    use_omega_conditioning: false
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/medgen/augmentation/score_aug.py` (moved from `data/score_aug.py`) | New file: ScoreAugTransform, OmegaTimeEmbed, ScoreAugModelWrapper. Omega encoding lives in `src/medgen/augmentation/score_aug_omega.py` — see `docs/scoreaug_omega.md` |
+| `src/medgen/pipeline/trainer.py` | Integration in train_step, compile handling |
+| `configs/training/default.yaml` | score_aug config section |
+
+### Experiments
+
+| Experiment | Transforms | Based On |
+|------------|------------|----------|
+| exp9_1 | rotation + translation + cutout | exp2 (no traditional aug) |
+| exp9_2 | all transforms incl. brightness | exp2 (no traditional aug) |
+
+### Expected Benefits
+
+1. **Stronger regularization** for small datasets without changing output distribution
+2. **Data efficiency** - effectively 4x-5x more training examples per epoch
+3. **Equivariance** - model learns geometric invariances explicitly
+
+---
+
+## SAM Optimizer (Sharpness-Aware Minimization) (December 2025)
+
+Reference: [Sharpness-Aware Minimization](https://arxiv.org/abs/2010.01412)
+
+### Motivation
+
+Neural networks can overfit by finding sharp minima in the loss landscape - regions where small weight perturbations cause large loss increases. SAM explicitly seeks flat minima where the loss is uniformly low in a neighborhood, leading to better generalization.
+
+### Key Insight
+
+SAM performs two forward-backward passes per optimization step:
+
+```
+Standard SGD:
+  w = w - lr * ∇L(w)
+
+SAM:
+  1. Compute gradient: g = ∇L(w)
+  2. Perturb weights toward sharp region: w' = w + ρ * g / ||g||
+  3. Compute gradient at perturbed point: g' = ∇L(w')
+  4. Update original weights: w = w - lr * g'
+```
+
+The model is trained to minimize loss not just at the current weights, but in a neighborhood around them (radius ρ).
+
+### ASAM (Adaptive SAM)
+
+Standard SAM applies uniform perturbation radius, but weights have varying magnitudes. ASAM normalizes by weight magnitude for scale-invariant perturbation:
+
+```python
+# SAM perturbation
+e_w = rho * grad / ||grad||
+
+# ASAM perturbation (weight-normalized)
+e_w = rho * (w² * grad) / ||w * grad||
+```
+
+Reference: [Adaptive Sharpness-Aware Minimization](https://arxiv.org/abs/2102.11600)
+
+### Implementation Details
+
+**SAM Optimizer Wrapper** (`src/medgen/pipeline/optimizers/sam.py`, moved from the historical `src/medgen/core/sam.py`):
+
+```python
+class SAM(Optimizer):
+    def __init__(self, params, base_optimizer, rho=0.05, adaptive=False):
+        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
+        self.rho = rho
+        self.adaptive = adaptive
+
+    def first_step(self, zero_grad=False):
+        # Store original weights, perturb toward sharp region
+        for p in params:
+            self.state[p]["old_p"] = p.data.clone()
+            e_w = self._compute_perturbation(p)
+            p.add_(e_w)
+
+    def second_step(self, zero_grad=False):
+        # Restore weights, apply update from perturbed gradients
+        for p in params:
+            p.data = self.state[p]["old_p"]
+        self.base_optimizer.step()
+```
+
+**torch.compile Compatibility**:
+
+SAM's two-pass approach is incompatible with CUDA graphs (which capture a fixed execution trace). The trainer disables `compile_fused_forward` when SAM is enabled:
+
+```python
+if self.use_sam:
+    compile_fused = False
+    logger.info("Disabled compiled fused forward for SAM (incompatible with CUDA graphs)")
+```
+
+**Trainer Integration**:
+
+```python
+if self.use_sam:
+    # First forward-backward
+    loss.backward()
+    self.optimizer.first_step(zero_grad=True)
+
+    # Second forward-backward (recompute everything)
+    loss_2 = self._forward_pass(...)
+    loss_2.backward()
+    self.optimizer.second_step(zero_grad=True)
+```
+
+### Config Options
+
+```yaml
+training:
+  sam:
+    enabled: false     # Enable SAM optimizer
+    rho: 0.05          # Perturbation radius (0.01-0.1 typical)
+    adaptive: false    # Use ASAM (weight-scale invariant)
+```
+
+### Experiments
+
+| Experiment | Setting | Description |
+|------------|---------|-------------|
+| exp11_1 | SAM, rho=0.05 | Standard SAM baseline |
+| exp11_2 | ASAM, rho=0.05 | Adaptive SAM comparison |
+
+### Expected Benefits
+
+1. **Better generalization** on small medical datasets (~100 patients)
+2. **Reduced overfitting** by avoiding sharp minima
+3. **Trade-off**: 2x compute per step (two forward-backward passes)
+
+---
+
+## DiT Architecture (Scalable Interpolant Transformers) (December 2025)
+
+Reference: [Scalable Interpolant Transformers](https://arxiv.org/abs/2401.08740)
+
+### Motivation
+
+UNet-based diffusion models (like MONAI's DiffusionModelUNet) are the standard backbone, but vision transformers have shown better scaling properties at larger model sizes. DiT adapts the DiT (Diffusion Transformer) architecture specifically for flow matching / interpolant-based diffusion.
+
+### Architecture Overview
+
+DiT uses a vision transformer with adaLN-Zero conditioning:
+
+```
+Input: [B, C, H, W] (e.g., [B, 2, 128, 128] for bravo mode)
+  │
+  ├─► Patchify: Conv2d(patch_size, stride=patch_size)
+  │   → [B, N, D] where N = (H/p)² patches
+  │
+  ├─► Add positional embedding (sinusoidal, then learned)
+  │
+  ├─► Timestep embedding: sinusoidal → MLP → [B, D]
+  │
+  ├─► N × Transformer Blocks with adaLN-Zero:
+  │     │
+  │     ├─► LayerNorm (no affine) → Self-Attention → Gate
+  │     ├─► [Optional] Cross-Attention (for conditioning)
+  │     └─► LayerNorm (no affine) → MLP → Gate
+  │
+  ├─► Final Layer: LayerNorm → Linear → [B, N, p² × C_out]
+  │
+  └─► Unpatchify: reshape to [B, C_out, H, W]
+```
+
+### adaLN-Zero Conditioning
+
+Instead of injecting timestep via cross-attention (expensive), DiT modulates LayerNorm parameters:
+
+```python
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+# In each block:
+shift, scale, gate = self.adaLN(timestep_embed).chunk(3)
+x = x + gate * self.attn(modulate(self.norm(x), shift, scale))
+```
+
+The gate is zero-initialized, so early in training each block acts like identity - crucial for stable training of deep transformers.
+
+### Model Variants
+
+| Variant | hidden_size | depth | num_heads | Params |
+|---------|-------------|-------|-----------|--------|
+| DiT-S | 384 | 12 | 6 | ~33M |
+| DiT-B | 768 | 12 | 12 | ~130M |
+| DiT-L | 1024 | 24 | 16 | ~458M |
+
+### Conditioning Modes
+
+**Concat (default)**: Condition (segmentation mask) is concatenated to input channels before patchifying. Simple and effective.
+
+```python
+x = torch.cat([noisy_image, seg_mask], dim=1)  # [B, 2, H, W]
+x = self.patch_embed(x)  # [B, N, D]
+```
+
+**Cross-Attention**: Condition is separately embedded and used as key/value in cross-attention layers. More expressive but more compute.
+
+```python
+x = self.patch_embed(noisy_image)  # [B, N, D]
+cond = self.cond_embed(seg_mask)   # [B, M, D]
+# In each block:
+x = x + self.cross_attn(x, cond)
+```
+
+### Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `src/medgen/models/dit.py` | Main DiT class, create_dit factory |
+| `src/medgen/models/dit_blocks.py` | SiTBlock, Attention, MLP, FinalLayer |
+| `src/medgen/models/embeddings.py` | PatchEmbed2D/3D, TimestepEmbedder, positional embeddings |
+| `src/medgen/models/factory.py` | Unified factory: create_diffusion_model() |
+| `configs/model/dit.yaml` | 2D DiT config |
+| `configs/model/dit_3d.yaml` | 3D DiT config |
+
+### Trainer Integration
+
+The DiffusionTrainer uses a model factory to select UNet or DiT based on config:
+
+```python
+self.model_type = get_model_type(self.cfg)  # 'unet' or 'dit'
+self.is_transformer = is_transformer_model(self.cfg)
+
+if self.is_transformer:
+    raw_model = create_diffusion_model(cfg, device, in_channels, out_channels)
+else:
+    raw_model = DiffusionModelUNet(...)
+```
+
+Key differences in trainer:
+- Embedding wrappers (OmegaTimeEmbed, ModeEmbed) not yet supported for DiT
+- DiT uses its own `t_embedder` instead of UNet's `time_embed`
+- Forward call signature compatible: `model(x=input, timesteps=t)`
+
+### Config Options
+
+```yaml
+model:
+  type: sit              # 'unet' or 'dit'
+  variant: B             # S, B, L
+  patch_size: 2          # 2, 4, or 8
+  conditioning: concat   # concat or cross_attn
+  mlp_ratio: 4.0         # MLP expansion ratio
+  drop_rate: 0.0         # Dropout rate
+```
+
+### Experiments
+
+| Experiment | Variant | Params | Description |
+|------------|---------|--------|-------------|
+| exp12_1 | DiT-S | 33M | Small variant, fast iteration |
+| exp12_2 | DiT-B | 130M | Base variant, standard training |
+| exp12_3 | DiT-L | 458M | Large variant, high capacity |
+
+### Experimental Results (Negative Finding)
+
+**Key finding**: In our experiments on medical imaging (~14K training samples), DiT showed **no improvement over UNet** for all variants tested (S, B, L).
+
+| Model | Params | Result vs UNet |
+|-------|--------|----------------|
+| DiT-S | 33M | ≈ same or worse |
+| DiT-B | 130M | ≈ same or worse |
+| DiT-L | 458M | OOM in pixel space |
+
+**Analysis**: UNet's convolutional inductive bias is better suited for small medical datasets where transformers cannot learn spatial priors from data alone. DiT was designed for ImageNet (1.2M images) in latent space, not for small medical datasets in pixel space.
+
+**Recommendation**: For medical imaging with limited data, stick with UNet. DiT may be beneficial for latent space diffusion with larger datasets.
+
+### Comparison: UNet vs DiT
+
+| Aspect | UNet | DiT |
+|--------|------|-----|
+| Inductive bias | Strong spatial (convolutions) | Weak (learns from data) |
+| Parameter efficiency | Higher at small scale | Higher at large scale |
+| Training stability | Generally stable | Requires careful init (adaLN-Zero) |
+| Memory | O(resolution²) | O(num_patches²) |
+| Flash Attention | Not applicable | Yes, automatic |
+| Small dataset performance | **Better** | Worse (needs more data) |
+
+---
+
+## VQ-VAE Implementation (December 2025)
+
+### Motivation
+
+Vector Quantized VAE uses discrete latent codes instead of continuous KL-regularized latents. Benefits:
+- Discrete codes may be better for certain generative tasks
+- Avoids posterior collapse issues of KL-regularized VAE
+- Compatible with autoregressive models (like GPT for images)
+
+### Architecture
+
+Based on MONAI Generative VQ-VAE with proven config for medical imaging:
+
+```
+Input: [B, 1, 256, 256]
+  ↓
+Encoder: 3 levels, stride-2 downsample
+  → [B, 128, 32, 32]
+  ↓
+Vector Quantization: codebook of 512 entries, dim 3
+  → [B, 3, 32, 32] (discrete codes)
+  ↓
+Decoder: 3 levels, stride-2 upsample
+  → [B, 1, 256, 256]
+```
+
+### Loss Function
+
+```python
+total_loss = L1 + perceptual_weight * perceptual + vq_loss + adv_weight * adversarial
+# vq_loss = commitment_loss + codebook_loss (from MONAI VQVAE)
+```
+
+### Config Options
+
+```yaml
+vqvae:
+  num_embeddings: 512      # Codebook size
+  embedding_dim: 3         # Latent channels
+  commitment_cost: 0.25    # VQ commitment weight
+  decay: 0.99              # EMA decay for codebook updates
+  perceptual_weight: 0.002
+  adv_weight: 0.005
+  disable_gan: false       # Pure VQ-VAE (no adversarial)
+```
+
+### Experiments
+
+| Experiment | Description |
+|------------|-------------|
+| exp6 | VQ-VAE multi-modality 256×256, 512 codebook, 8x compression |
+
+---
+
+## 3D VAE Training (December 2025)
+
+### Motivation
+
+2D slices lose 3D context. 3D VAE compresses full volumes (256×256×160) to latent (32×32×20), preserving volumetric relationships.
+
+### Memory Challenges
+
+3D VAE is memory-intensive:
+- 256×256×160 volume = 10.5M voxels (vs 65K pixels for 2D)
+- Encoder activations: ~8GB per sample
+- Discriminator: ~15GB additional
+
+### Memory Optimizations Implemented
+
+1. **Gradient Checkpointing** (`CheckpointedAutoencoder` wrapper)
+   - Recomputes encoder/decoder activations during backward pass
+   - ~50% memory reduction, ~20% speed penalty
+
+   ```python
+   class CheckpointedAutoencoder(nn.Module):
+       def forward(self, x):
+           z_mu, z_log_var = grad_checkpoint(encode_fn, x, use_reentrant=False)
+           reconstruction = grad_checkpoint(decode_fn, z, use_reentrant=False)
+           return reconstruction, z_mu, z_log_var
+   ```
+
+2. **Disable Discriminator** (`vae_3d.adv_weight=0`)
+   - Saves ~15GB memory
+   - Pure VAE reconstruction loss
+
+3. **MONAI MetaTensor Disabled**
+   - `set_track_meta(False)` before importing MONAI
+   - Fixes torch.compile recompilation issues (32+ → 1)
+
+4. **2.5D Perceptual Loss**
+   - Sample 25% of slices for perceptual loss
+   - Avoids 3D perceptual network (doesn't exist)
+
+### Config Options
+
+```yaml
+vae_3d:
+  latent_channels: 3
+  channels: [32, 64, 128, 128]
+  attention_levels: [false, false, false, false]  # No attention (memory)
+  use_2_5d_perceptual: true
+  perceptual_slice_fraction: 0.25
+
+training:
+  gradient_checkpointing: true
+```
+
+### Experiments
+
+| Experiment | Description |
+|------------|-------------|
+| exp7 | 3D VAE multi-modality 256×256×160, gradient checkpointing, no GAN |

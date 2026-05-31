@@ -511,6 +511,100 @@ python -m medgen.scripts.eval_nnunet \
     --pred-dir /path/to/predictions \
     --gt-dir /path/to/labelsTs \
     --output results.json
+
+# Save softmax .npz alongside binary predictions (for post-hoc threshold sweep)
+python -m medgen.scripts.eval_nnunet \
+    --experiment baseline \
+    --dataset-id 600 --experiment-name exp3_baseline_v2_d600 \
+    --folds 0 1 2 3 4 \
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet \
+    --trainer nnUNetTrainerBrainMets --plans nnUNetResEncUNetLPlans \
+    --save-probabilities
+
+# Per-fold inference with isolated output dirs (one --folds N each, --output-dir per fold)
+# Useful for downloading per-fold raw outputs to analyse locally
+for FOLD in 0 1 2 3 4; do
+    python -m medgen.scripts.eval_nnunet \
+        --experiment baseline --dataset-id 600 \
+        --experiment-name exp3_baseline_v2_d600 \
+        --folds $FOLD \
+        --nnunet-base /cluster/work/modestas/nnunet \
+        --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet \
+        --trainer nnUNetTrainerBrainMets --plans nnUNetResEncUNetLPlans \
+        --save-probabilities \
+        --output-dir runs/.../per_fold_test/fold_$FOLD
+done
+
+# Re-validate existing checkpoints (skips training, writes val softmax probs)
+python -m medgen.scripts.train_nnunet \
+    --experiment baseline --dataset-id 600 \
+    --experiment-name exp3_baseline_v2_d600 --fold 0 \
+    --nnunet-base /cluster/work/modestas/nnunet \
+    --nnunet-results /cluster/work/modestas/AIS4900_master/runs/downstream/nnunet \
+    --trainer nnUNetTrainerBrainMets --plans nnUNetResEncUNetLPlans \
+    --validation-only --export-validation-probabilities
+```
+
+### Random-split dataset (Ottesen 2025 protocol replication)
+
+Builds Dataset 640 by pooling all 156 Stanford patients (train+val+test_new)
+and randomly splitting 105 train + 51 test with a fixed seed. Used to test
+whether literature results that don't use the official Grøvik 2020 hold-out
+are evaluating on a systematically easier cohort.
+
+```bash
+# Build Dataset 640 with random 105/51 split (seed=42)
+python -m medgen.scripts.convert_random_split \
+    --real-dir /cluster/work/modestas/MedicalDataSets/brainmetshare-3 \
+    --nnunet-raw /cluster/work/modestas/MedicalDataSets/nnunet/nnUNet_raw \
+    --dataset-id 640 \
+    --seed 42 \
+    --modality bravo
+# The picked patient IDs are written into case_info.json for audit/reproducibility.
+```
+
+### Threshold sweep on saved softmax probabilities
+
+Post-hoc tunes the binarisation threshold on nnU-Net's softmax outputs
+(no retraining). For our exp3 data, optimum lands at t ≈ 0.005 vs default
+t = 0.5; ~+0.012 absolute Dice, concentrated in tiny lesions.
+
+```bash
+# Mode 1: sweep on a single set (upper-bound, biased if used on test directly)
+python -m medgen.scripts.threshold_sweep \
+    --mode sweep \
+    --probs-dir runs/.../predictions \
+    --gt-dir /path/to/labelsTs \
+    --output runs/.../threshold_sweep.json
+
+# Mode 2: tune-eval — pick threshold on validation, apply to test (publishable)
+python -m medgen.scripts.threshold_sweep \
+    --mode tune-eval \
+    --tune-probs-dir runs/.../fold_X/validation \
+    --tune-gt-dir /path/to/labelsTr \
+    --eval-probs-dir runs/.../predictions \
+    --eval-gt-dir /path/to/labelsTs \
+    --output runs/.../threshold_sweep_val_tuned.json
+```
+
+### Local nnU-Net inference harness (no cluster needed)
+
+After training on cluster, all inference + analysis can run locally on a
+single RTX 3090. See [`docs/downstream_nnunet.md`](downstream_nnunet.md)
+for the one-time setup of `.venv_nnunet/` and `data/nnunet_local/`.
+
+```bash
+# Run 5 fold models on the 51 test cases (saves softmax .npz)
+.venv_nnunet/bin/python misc/run_per_fold_local.py
+
+# Per-fold + ensemble threshold sweep
+.venv_nnunet/bin/python misc/analyze_per_fold_threshold.py
+# → runs/.../threshold_analysis_per_fold.{json,md}
+
+# Size-stratified Dice + detection at t=0.50 vs t=0.005
+.venv_nnunet/bin/python misc/compare_thresholds_by_size.py
+# → runs/.../threshold_size_comparison.json
 ```
 
 ---

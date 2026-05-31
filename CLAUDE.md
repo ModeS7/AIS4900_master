@@ -172,6 +172,7 @@ This catches:
 | `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |
 | `@docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |
+| `@docs/downstream_nnunet.md` | nnU-Net segmentation pipeline + all results + threshold sweep + random-split methodology test + Ottesen 2023/2025 comparison |
 | `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
 | `@docs/proven_techniques.md` | Confirmed positive/negative techniques for 3D brain MRI generation |
 | `@docs/future_work_v2.md` | 125 diffusion tricks inventory (67 implemented, 58+ not) |
