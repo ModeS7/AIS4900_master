@@ -15,6 +15,15 @@ gradient_clip_norm: 1.0
 warmup_epochs: 1
 num_figures: 6  # Log figures every epoch for 6 epoch runs
 augment: false  # Disable augmentation for faster debug
+# Present so t-gated augmentation experiments resolve under `training=fast_debug`
+# (validate_before_submit.sh dry run) instead of erroring on a missing key.
+augmentation_level: basic
+augmentation_t_schedule: null
+
+# Single-process data loading: fast and side-effect-free for validation dry runs
+# (no DataLoader worker subprocesses to leak).
+dataloader:
+  num_workers: 0
 
 # EMA settings
 use_ema: false

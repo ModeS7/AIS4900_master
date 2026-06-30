@@ -23,6 +23,19 @@ if [ -z "$PYTHON_CMD" ]; then
     exit 1
 fi
 
+# --- Sanitize the extracted command for SAFE local validation -----------------
+# Chained SLURM scripts end the train command with a trailing ' &' so the
+# SIGUSR1 timeout trap can resubmit. If left in, the `eval`s below would launch
+# a REAL, detached training run on the local GPU (an orphaned process that keeps
+# consuming GPU/RAM). Strip it. Also drop cluster-only shell placeholders
+# (${CHAIN_ARGS}, ${EXP_NAME}, ${CHAIN_RUN_DIR}, ...) that are only set by the
+# SLURM harness at submit time and would otherwise mangle the command here.
+PYTHON_CMD=$(echo "$PYTHON_CMD" | sed -E 's/[[:space:]]*&[[:space:]]*$//')
+PYTHON_CMD=$(echo "$PYTHON_CMD" | sed -E 's/\$\{CHAIN_ARGS\}//g')
+PYTHON_CMD=$(echo "$PYTHON_CMD" | sed -E 's/training\.name=\$\{EXP_NAME\}_?/training.name=validate_tmp_/g')
+PYTHON_CMD=$(echo "$PYTHON_CMD" | sed -E 's/\$\{[A-Za-z_][A-Za-z0-9_]*\}//g')
+PYTHON_CMD=$(echo "$PYTHON_CMD" | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//')
+
 echo "Command: $PYTHON_CMD"
 echo ""
 
@@ -48,7 +61,10 @@ echo "       PASSED"
 
 # Step 4: 1-batch dry run
 echo "[4/4] Dry run (1 epoch, 2 batches)..."
-DRY_CMD="$LOCAL_CMD training=fast_debug training.epochs=1 training.limit_train_batches=2 training.warmup_epochs=0 training.batch_size=2"
+# Write the dry run into a throwaway scratch dir so it never pollutes runs/.
+# bs=1 + no compile keep it fast and within memory for 3D experiments.
+DRY_RUNDIR="${TMPDIR:-/tmp}/medgen_validate_dry_$$"
+DRY_CMD="$LOCAL_CMD training=fast_debug training.epochs=1 training.limit_train_batches=2 training.warmup_epochs=0 training.batch_size=1 training.use_compile=false hydra.run.dir=${DRY_RUNDIR}"
 # Remove paths=cluster if still present
 DRY_CMD=$(echo "$DRY_CMD" | sed 's/paths=cluster/paths=local/g')
 echo "       Running: ${DRY_CMD:0:100}..."
@@ -57,6 +73,7 @@ set +e  # Don't exit on error
 OUTPUT=$(eval "$DRY_CMD" 2>&1)
 EXIT_CODE=$?
 set -e
+rm -rf "${DRY_RUNDIR}"
 echo "$OUTPUT" | tail -30
 if [ $EXIT_CODE -ne 0 ]; then
     echo ""
