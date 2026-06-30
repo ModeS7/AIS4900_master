@@ -80,6 +80,21 @@ def volume_ssim(pred: torch.Tensor, real: torch.Tensor) -> float:
         return float('nan')
 
 
+def volume_lpips(pred: torch.Tensor, real: torch.Tensor, device: torch.device) -> float:
+    """3D LPIPS-to-reference via the repo's compute_lpips_3d (paired perceptual distance).
+
+    pred/real: [1,1,D,H,W] in [0,1]. Lower = perceptually closer to the real volume.
+    This is the per-volume perceptual axis that enables a *paired* significance test
+    (unlike FID, which is distributional). Best-effort: returns NaN if unavailable.
+    """
+    try:
+        from medgen.metrics.dispatch import compute_lpips_dispatch
+        return float(compute_lpips_dispatch(pred, real, spatial_dims=3, device=device))
+    except Exception as e:
+        logger.warning(f"LPIPS unavailable ({type(e).__name__}: {e}); reporting NaN")
+        return float('nan')
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description="Perception-Distortion proof of MSE mean-blur",
@@ -152,7 +167,7 @@ def main() -> None:
     for t_norm in args.t_values:
         logger.info("=" * 60)
         logger.info(f"t = {t_norm:.3f}")
-        denoised, psnrs, ssims, pred_stds = [], [], [], []
+        denoised, psnrs, ssims, lpipses, pred_stds, pids = [], [], [], [], [], []
 
         for vol_idx, (pid, clean_np, seg_np) in enumerate(cached):
             clean = torch.from_numpy(clean_np)[None, None].to(device)
@@ -160,13 +175,16 @@ def main() -> None:
             mask_np = (clean_np > 0.02).astype(np.float32)
 
             # Distortion + perception: one denoise per volume (base seed).
+            # Same volume order and seed across models => paired comparison.
             torch.manual_seed(args.seed + vol_idx)
             noise = torch.randn_like(clean)
             x0 = predict_single_step(model, strategy, clean, seg, noise, t_norm, T, device)
             x0_np = x0.squeeze().detach().cpu().numpy().astype(np.float32)
             denoised.append(x0_np)
+            pids.append(pid)
             psnrs.append(masked_psnr(x0_np, clean_np, mask_np))
             ssims.append(volume_ssim(x0, clean))
+            lpipses.append(volume_lpips(x0, clean, device))
 
             # Averaging signature: pred_std across n_noise seeds (subset of volumes).
             if vol_idx < n_pred_std:
@@ -191,23 +209,32 @@ def main() -> None:
         rec = {
             "t": t_norm,
             "num_volumes": len(denoised),
-            # distortion (full-reference) -- MSE baseline should be BEST here
+            "pids": pids,  # alignment key for paired tests across models
+            # distortion (full-reference) -- per-volume enables a PAIRED test
             "psnr_mean": float(np.nanmean(psnrs)),
             "psnr_std": float(np.nanstd(psnrs)),
+            "psnr_per_vol": [float(x) for x in psnrs],
             "ssim_mean": float(np.nanmean(ssims)),
-            # perception (distributional) -- MSE baseline should be WORST here
+            "ssim_per_vol": [float(x) for x in ssims],
+            # perceptual reference (paired, per-volume) -- LPIPS-to-real
+            "lpips_mean": float(np.nanmean(lpipses)),
+            "lpips_per_vol": [float(x) for x in lpipses],
+            # perception (distributional) -- KID carries a variance estimate
             "fid": m["fid"],
             "fid_radimagenet": m["fid_radimagenet"],
-            "kid": m["kid_mean"],
+            "kid": m["kid_mean"], "kid_std": m["kid_std"],
+            "kid_radimagenet": m["kid_radimagenet_mean"],
+            "kid_radimagenet_std": m["kid_radimagenet_std"],
             "cmmd": m["cmmd"],
             # mechanism -- averaging / posterior-mean collapse signature
             "pred_std_mean": float(np.mean(pred_stds)) if pred_stds else None,
         }
         records.append(rec)
         logger.info(
-            f"  PSNR={rec['psnr_mean']:.2f} SSIM={rec['ssim_mean']:.4f} | "
+            f"  PSNR={rec['psnr_mean']:.2f} SSIM={rec['ssim_mean']:.4f} "
+            f"LPIPS={rec['lpips_mean']:.4f} | "
             f"FID={rec['fid']:.3f} FID_RIN={rec['fid_radimagenet']:.4f} "
-            f"KID={rec['kid']:.5f} CMMD={rec['cmmd']:.4f} | "
+            f"KID={rec['kid']:.5f}±{rec['kid_std']:.5f} CMMD={rec['cmmd']:.4f} | "
             f"pred_std={rec['pred_std_mean']}"
         )
 

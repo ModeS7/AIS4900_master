@@ -43,8 +43,9 @@ RUNS="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
 # Models -> checkpoints (paths match the find_optimal_steps_*.slurm conventions).
 CKPT_BASELINE="${RUNS}/exp1_1_1000_pixel_bravo_20260301-020650/checkpoint_latest.pt"
 CKPT_LPIPSLOWT="${RUNS}/exp32_2_1000_pixel_bravo_lpips_lowt_20260412-153027/checkpoint_latest.pt"
-_SPEC_D_RUN=$(ls -td ${RUNS}/exp48d_lowt_only_huber_lpips_* 2>/dev/null | head -1)
-CKPT_SPEC_D="${_SPEC_D_RUN}/checkpoint_latest.pt"
+CKPT_EXP47B="$(ls -td ${RUNS}/exp47b_huber_lpips_lowt_* 2>/dev/null | head -1)/checkpoint_latest.pt"
+CKPT_SPEC_C="$(ls -td ${RUNS}/exp48c_lowt_only_lpips_huber_* 2>/dev/null | head -1)/checkpoint_latest.pt"
+CKPT_SPEC_D="$(ls -td ${RUNS}/exp48d_lowt_only_huber_lpips_* 2>/dev/null | head -1)/checkpoint_latest.pt"
 
 run_model () {
     label="$1"
@@ -56,14 +57,16 @@ run_model () {
     echo ""
     echo "==================== ${label} ===================="
     echo "Checkpoint: ${ckpt}"
+    # --num-volumes 60 captures the full test set (~51 patients); the helper caps
+    # at whatever exists. Same volume order + seed across models => paired tests.
     time python -m medgen.scripts.eval_perception_distortion \
         --checkpoint "${ckpt}" \
         --data-root "${DATA_ROOT}" \
         --output-dir "${OUT_ROOT}/${label}" \
         --t-values 0.05 0.1 0.2 \
-        --num-volumes 25 \
+        --num-volumes 60 \
         --n-noise 8 \
-        --pred-std-volumes 5 \
+        --pred-std-volumes 8 \
         --image-size 256 \
         --depth 160 \
         --ref-split test \
@@ -72,13 +75,15 @@ run_model () {
 
 run_model baseline    "${CKPT_BASELINE}"
 run_model lpips_lowt  "${CKPT_LPIPSLOWT}"
+run_model exp47b      "${CKPT_EXP47B}"
+run_model spec_exp48c "${CKPT_SPEC_C}"
 run_model spec_exp48d "${CKPT_SPEC_D}"
 
 echo ""
 echo "=========================================="
 echo "  Perception-Distortion points per model"
 echo "=========================================="
-for d in baseline lpips_lowt spec_exp48d; do
+for d in baseline lpips_lowt exp47b spec_exp48c spec_exp48d; do
     echo "--- ${d} ---"
     cat "${OUT_ROOT}/${d}/perception_distortion.json" 2>/dev/null
     echo ""
