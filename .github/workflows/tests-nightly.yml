@@ -1,16 +1,13 @@
 name: Nightly Tests
 
-# Runs nightly on self-hosted runner at 3 AM UTC.
+# Runs nightly on free GitHub-hosted Ubuntu runners at 3 AM UTC.
 # GPU-dependent jobs (e2e, slow integration, baseline) remain disabled
-# until a self-hosted GPU runner is configured with labels [self-hosted, gpu].
+# (free hosted runners have no GPU; enable them only if a GPU runner is added).
 
 on:
   schedule:
     - cron: "0 3 * * *"  # 3 AM UTC daily
   workflow_dispatch:
-
-env:
-  VENV: /home/mode/actions-venv/bin/activate
 
 jobs:
   # ==========================================================================
@@ -115,20 +112,15 @@ jobs:
 
   # CPU-only comprehensive test
   comprehensive-cpu:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Install package in editable mode
-        run: |
-          source $VENV
-          pip install -e .
+      - uses: ./.github/actions/setup-medgen
 
       - name: Run all non-GPU tests
         run: |
-          source $VENV
           pytest tests/ -m "not gpu and not baseline" \
             -v --tb=short --timeout=120 \
             --cov=src/medgen \
@@ -147,7 +139,7 @@ jobs:
   notify-failure:
     needs: [comprehensive-cpu]
     if: failure()
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Log failure
