@@ -191,9 +191,11 @@ def build_3d_augmentation(
                      Used for conditional modes (bravo, dual) where both must be
                      augmented consistently.
         level: Augmentation suite. One of:
-            - 'basic':  RandFlip (3 axes) + RandRotate90 (axial) — current default
-            - 'medium': basic + RandAffined + RandScaleIntensityd + RandAdjustContrastd
-            - 'mri':    medium + RandBiasFieldd + RandGaussianNoised
+            - 'basic':                RandFlip (3 axes) + RandRotate90 (axial) — current default
+            - 'medium_no_brightness': basic + RandAffined + RandAdjustContrastd
+                                      (medium without the RandScaleIntensityd brightness shift)
+            - 'medium':               medium_no_brightness + RandScaleIntensityd
+            - 'mri':                  medium + RandBiasFieldd + RandGaussianNoised
             Intensity transforms apply to 'image' only, not 'seg'.
 
     Returns:
@@ -216,10 +218,11 @@ def build_3d_augmentation(
         RandRotate90d(keys=keys, prob=0.5, spatial_axes=(1, 2)),
     ]
 
-    if level not in ('basic', 'medium', 'mri'):
-        raise ValueError(f"Unknown augmentation level {level!r}; expected 'basic' | 'medium' | 'mri'")
+    valid_levels = ('basic', 'medium_no_brightness', 'medium', 'mri')
+    if level not in valid_levels:
+        raise ValueError(f"Unknown augmentation level {level!r}; expected one of {valid_levels}")
 
-    if level in ('medium', 'mri'):
+    if level in ('medium_no_brightness', 'medium', 'mri'):
         # Small affine perturbation (simulates patient positioning variance).
         # Seg uses nearest-neighbor so binary values are preserved.
         aff_mode = ('bilinear', 'nearest') if include_seg else 'bilinear'
@@ -234,11 +237,17 @@ def build_3d_augmentation(
                 padding_mode='zeros',
             )
         )
-        # Intensity transforms apply to 'image' only (not seg).
-        transforms.extend([
-            RandScaleIntensityd(keys=['image'], prob=0.5, factors=0.15),   # ±15% brightness
+        # Intensity transforms apply to 'image' only (not seg). Brightness scaling
+        # is excluded from 'medium_no_brightness' to avoid leaking a global
+        # intensity shift into generated volumes; contrast/gamma is kept. Order is
+        # preserved so 'medium'/'mri' behavior is unchanged from before.
+        if level != 'medium_no_brightness':
+            transforms.append(
+                RandScaleIntensityd(keys=['image'], prob=0.5, factors=0.15),   # ±15% brightness
+            )
+        transforms.append(
             RandAdjustContrastd(keys=['image'], prob=0.5, gamma=(0.8, 1.2)),
-        ])
+        )
 
     if level == 'mri':
         # MRI-specific transforms on 'image' only.
