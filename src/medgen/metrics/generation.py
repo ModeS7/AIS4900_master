@@ -389,7 +389,13 @@ def compute_fid(
     # Matrix square root using scipy
     try:
         from scipy import linalg
-        covmean, _ = linalg.sqrtm(sigma_r @ sigma_g, disp=False)
+        # NOTE: do NOT pass disp=False. scipy deprecated the `disp` kwarg and
+        # removed it in 1.18 (raises TypeError). Without it, sqrtm returns just
+        # the matrix on every scipy version (the legacy disp=True default also
+        # returns the matrix, not the (matrix, errest) tuple).
+        covmean = linalg.sqrtm(sigma_r @ sigma_g)
+        if isinstance(covmean, tuple):  # defensive: legacy disp=False tuple return
+            covmean = covmean[0]
 
         # Handle numerical issues
         if np.iscomplexobj(covmean):
