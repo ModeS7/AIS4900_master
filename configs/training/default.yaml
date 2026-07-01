@@ -32,6 +32,7 @@ augment_type: diffusion    # Augmentation type: "diffusion" (conservative) or "v
 augmentation_level: basic  # 3D aug suite: 'basic' (flips+rot90), 'medium' (adds affine+intensity), 'mri' (adds bias field + noise)
 augmentation_t_schedule: null  # [t_on, t_full, t_off] ramp for in-trainer t-gated augmentation. null = dataloader-level (uniform, controlled by augment flag)
 augmentation_max_prob: 1.0     # Ceiling on per-step aug application probability; scales the schedule weight. <1 for matched-dose controls (uniform = schedule [0,0,1] + max_prob=p)
+augmentation_tada_schedule: null  # [r_rough, r_fine, delta] TADA parabola in log10(SNR) (Park 2023). Overrides augmentation_t_schedule when set. null = off
 rescale_data: false        # Rescale [0,1] data to [-1,1] for pixel-space diffusion (opt-in)
 
 # Batch-level augmentations (VAE only - mixup/cutmix/mosaic/copy-paste)

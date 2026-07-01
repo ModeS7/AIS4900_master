@@ -20,6 +20,7 @@ augment: false  # Disable augmentation for faster debug
 augmentation_level: basic
 augmentation_t_schedule: null
 augmentation_max_prob: 1.0
+augmentation_tada_schedule: null
 
 # Single-process data loading: fast and side-effect-free for validation dry runs
 # (no DataLoader worker subprocesses to leak).

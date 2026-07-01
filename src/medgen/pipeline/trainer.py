@@ -10,6 +10,7 @@ and implements 2D-specific diffusion training functionality:
 - Compiled forward paths for performance
 """
 import logging
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -687,6 +688,41 @@ class DiffusionTrainer(DiffusionTrainerBase):
         # Ramp from 1.0 at t_full_end down to 0 at t_off
         return 1.0 - (t_val - t_full_end) / max(t_off - t_full_end, 1e-6)
 
+    @staticmethod
+    def _compute_tada_logsnr_weight(
+        t_val: float,
+        schedule: list[float] | tuple[float, float, float],
+        num_timesteps: int,
+    ) -> float:
+        """TADA-style timestep-aware augmentation weight (Park et al., NeurIPS 2023).
+
+        A parabola in log10(SNR): augmentation is SUPPRESSED in the intermediate
+        'content' noise band and STRONG at the near-clean and near-noise ends —
+        where TADA found augmentation does not cause distribution shift.
+
+        schedule = [r_rough, r_fine, delta]: r_rough/r_fine are the content-band
+        edges in log10(SNR) (TADA default [-3.0, 0.0]); delta is the weight at the
+        band edges. w = kappa*(r - r_rough)*(r - r_fine) + delta, clipped to [0, 1],
+        with kappa = 4*delta/(r_rough - r_fine)^2 so w == 0 at the band center.
+
+        SNR is schedule-agnostic; for rectified flow (x_t = (1-t)x0 + t*eps, t=0
+        clean) SNR = ((1-t)/t)^2, so r = log10(SNR) = 2*log10((1-t)/t). NOTE: the
+        band edges are ported from TADA's DDPM/2D calibration; at 128^3 the SNR
+        scale is resolution-shifted (Hoogeboom 2023), so treat [-3, 0] as the
+        'as-published' port, not a re-tuned optimum.
+        """
+        if schedule is None or len(schedule) != 3:
+            return 1.0
+        r_rough, r_fine, delta = float(schedule[0]), float(schedule[1]), float(schedule[2])
+        # Normalize the sampled timestep to t in (0, 1); auto-detect integer vs normalized.
+        t = t_val / num_timesteps if t_val > 1.0 else t_val
+        t = min(max(t, 1e-6), 1.0 - 1e-6)
+        r = 2.0 * math.log10((1.0 - t) / t)  # log10 SNR for rectified flow
+        denom = (r_rough - r_fine) ** 2
+        kappa = 4.0 * delta / denom if denom > 1e-12 else 0.0
+        w = kappa * (r - r_rough) * (r - r_fine) + delta
+        return float(min(max(w, 0.0), 1.0))
+
     def _maybe_apply_inner_augmentation(
         self,
         images: torch.Tensor | dict[str, torch.Tensor],
@@ -707,7 +743,8 @@ class DiffusionTrainer(DiffusionTrainerBase):
           assumes single-tensor layout.
         """
         aug_schedule = self.cfg.training.get('augmentation_t_schedule', None)
-        if aug_schedule is None:
+        tada_schedule = self.cfg.training.get('augmentation_tada_schedule', None)
+        if aug_schedule is None and tada_schedule is None:
             return images, labels
         if isinstance(images, dict):
             return images, labels
@@ -716,7 +753,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
             return images, labels
 
         t_val = float(timesteps.max().item())
-        w = self._compute_t_schedule_weight(t_val, aug_schedule, self.num_timesteps)
+        # TADA parabola-in-log-SNR (if set) takes precedence over the piecewise window.
+        if tada_schedule is not None:
+            w = self._compute_tada_logsnr_weight(t_val, tada_schedule, self.num_timesteps)
+        else:
+            w = self._compute_t_schedule_weight(t_val, aug_schedule, self.num_timesteps)
         # Ceiling on the per-step application probability (default 1.0). Scaling the
         # schedule weight enables matched-dose controls: e.g. schedule [0.0,0.0,1.0]
         # (weight == 1 for all t) with max_prob=p applies augmentation at a constant
