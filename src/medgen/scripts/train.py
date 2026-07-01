@@ -883,10 +883,14 @@ def _train_3d(cfg: DictConfig) -> None:
                 if test_result is None:
                     logger.warning("No test cache found for latent diffusion")
             else:
-                # Pixel test loader: for pixel-space training and LDM (encode on-the-fly)
-                from medgen.data.loaders.volume_3d import create_vae_3d_test_dataloader
-                modality = get_modality_for_mode(mode)
-                test_result = create_vae_3d_test_dataloader(cfg, modality)
+                # Mode-aware test loader via the unified dispatch — the same path the 3D
+                # train/val loaders already use (maps split='test' -> test_new/).
+                # Conditional modes (bravo, dual, ...) get their seg mask in the batch,
+                # which evaluate_test_set requires. The old VAE test loader omitted seg
+                # and crashed conditional 3D diffusion at the end-of-training test eval.
+                # For latent diffusion this yields pixel conditional data, which
+                # evaluate_test_set encodes on the fly (unchanged behavior).
+                test_result = ModeFactory.create_test_dataloader(cfg, mode_config)
         except (RuntimeError, ValueError, FileNotFoundError) as e:
             logger.warning(f"Could not create test dataloader: {e}")
 

@@ -19,6 +19,7 @@ augment: false  # Disable augmentation for faster debug
 # (validate_before_submit.sh dry run) instead of erroring on a missing key.
 augmentation_level: basic
 augmentation_t_schedule: null
+augmentation_max_prob: 1.0
 
 # Single-process data loading: fast and side-effect-free for validation dry runs
 # (no DataLoader worker subprocesses to leak).

@@ -717,6 +717,11 @@ class DiffusionTrainer(DiffusionTrainerBase):
 
         t_val = float(timesteps.max().item())
         w = self._compute_t_schedule_weight(t_val, aug_schedule, self.num_timesteps)
+        # Ceiling on the per-step application probability (default 1.0). Scaling the
+        # schedule weight enables matched-dose controls: e.g. schedule [0.0,0.0,1.0]
+        # (weight == 1 for all t) with max_prob=p applies augmentation at a constant
+        # probability p across ALL timesteps (a uniform, placement-neutral control).
+        w = w * float(self.cfg.training.get('augmentation_max_prob', 1.0))
         if w <= 0 or torch.rand(1).item() >= w:
             return images, labels
 
