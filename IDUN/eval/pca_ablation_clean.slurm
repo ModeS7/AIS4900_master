@@ -45,7 +45,7 @@ if [ ! -f "${ABLATION_DIR}/brain_pca_64x64x40.npz" ]; then
     time python -m medgen.scripts.compute_brain_pca \
         --data-root "${DATA_ROOT}" \
         --output "${ABLATION_DIR}/brain_pca_64x64x40.npz" \
-        --splits train val \
+        --fit-splits train --heldout-splits test_new \
         --n-components 100 \
         --pca-size 64 --pca-depth 40
 else
@@ -58,7 +58,7 @@ if [ ! -f "${ABLATION_DIR}/brain_pca_128x128x80.npz" ]; then
     time python -m medgen.scripts.compute_brain_pca \
         --data-root "${DATA_ROOT}" \
         --output "${ABLATION_DIR}/brain_pca_128x128x80.npz" \
-        --splits train val \
+        --fit-splits train --heldout-splits test_new \
         --n-components 100 \
         --pca-size 128 --pca-depth 80
 else

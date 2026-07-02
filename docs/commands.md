@@ -876,9 +876,12 @@ python -m medgen.scripts.compute_brain_atlas \
     --data-root <data> --output data/brain_atlas.npz
 
 # Compute PCA shape model from real brain masks
+# Fit on train, calibrate k + accept-threshold on a DISJOINT held-out set (test_new).
+# --n-components: int or 'full' (cumEVR=1.0); threshold = held-out-real percentile.
 python -m medgen.scripts.compute_brain_pca \
     --data-root <data> --output data/brain_pca_256x256x160.npz \
-    --n-components 30
+    --fit-splits train --heldout-splits test_new \
+    --n-components full --threshold-percentile 99
 
 # Generate PCA explained-variance plots for thesis
 # NOTE: --npz (not --pca-path)

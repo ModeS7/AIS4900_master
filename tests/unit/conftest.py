@@ -17,8 +17,15 @@ def lpips_available():
         compute_lpips(torch.rand(2, 1, 64, 64), torch.rand(2, 1, 64, 64))
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
-        # Google Drive rate-limiting, network errors, download failures
-        skip_patterns = ["FileURLRetrievalError", "Too many users", "gdown", "urlopen"]
+        # Weight-download / network failures => LPIPS unavailable, skip (don't error).
+        # Covers: Google Drive rate-limiting (gdown), and torch.hub fetching the
+        # RadImageNet repo hitting GitHub's API rate limit on hosted CI runners
+        # (surfaces as HTTP 403 -> KeyError: 'Authorization' inside torch.hub).
+        skip_patterns = [
+            "FileURLRetrievalError", "Too many users", "gdown", "urlopen",
+            "HTTP Error", "rate limit", "Authorization", "torch.hub",
+            "Connection", "Temporary failure", "Max retries", "URLError",
+        ]
         if any(p in err for p in skip_patterns):
             pytest.skip(f"LPIPS model weights unavailable: {err}")
         raise
