@@ -140,7 +140,7 @@ def main():
             reject = {name: float((be > thr).mean()) for name, be in per_bad_err.items()}
             rows.append({
                 'resolution': f"{ps_}x{ps_}x{pd_}", 'k': k, 'cum_evr': float(cum_evr[k - 1]),
-                'auc': aucs, 'threshold_p{:g}'.format(args.accept_percentile): thr,
+                'auc': aucs, f'threshold_p{args.accept_percentile:g}': thr,
                 'reject_rate': reject, 'good_err_mean': float(eg.mean()),
             })
             logger.info(f"  k={k:>4} cumEVR={cum_evr[k-1]:.3f}  AUC_ALL={aucs['ALL']:.3f}  "
