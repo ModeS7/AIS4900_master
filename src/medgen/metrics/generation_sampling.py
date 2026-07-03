@@ -40,6 +40,8 @@ class StreamingFeatures(NamedTuple):
     per_modality_resnet: dict[str, torch.Tensor] | None = None
     per_modality_biomed: dict[str, torch.Tensor] | None = None
     per_modality_resnet_rin: dict[str, torch.Tensor] | None = None
+    # Med3D whole-volume features (true 3D, for Gaussian-MMD)
+    med3d: torch.Tensor | None = None
     # PCA brain shape metrics (3D only)
     pca_mean_error: float | None = None
     pca_pass_rate: float | None = None
@@ -613,6 +615,24 @@ def generate_and_extract_features_3d_streaming(
     self_.biomed.unload()
     torch.cuda.empty_cache()
 
+    # --- Med3D (true 3D, whole-volume) ---
+    # One 2048-d feature per whole volume (no slicing) for Gaussian-MMD. Note: during
+    # per-epoch eval only a handful of volumes are generated, so med3d has very few
+    # rows — the MMD is noisy there and is guarded downstream; most meaningful at
+    # extended/test evaluation with more samples.
+    gen_med3d = None
+    if getattr(self_, 'med3d', None) is not None:
+        logger.debug("[3D GenMetrics] Phase 2e: Med3D whole-volume features")
+        all_med3d = []
+        for sample_cpu in cpu_samples:
+            sample_gpu = sample_cpu.to(self_.device)
+            all_med3d.append(self_.med3d.extract_features(sample_gpu).cpu())
+            del sample_gpu
+        self_.med3d.unload()
+        torch.cuda.empty_cache()
+        gen_med3d = torch.cat(all_med3d, dim=0)
+        del all_med3d
+
     # --- Per-modality features (dual/triple) ---
     pm_resnet: dict[str, torch.Tensor] | None = None
     pm_biomed: dict[str, torch.Tensor] | None = None
@@ -671,4 +691,5 @@ def generate_and_extract_features_3d_streaming(
         pca_mean_error=pca_mean_error,
         pca_pass_rate=pca_pass_rate,
         pca_errors=pca_errors if pca_mean_error is not None else None,
+        med3d=gen_med3d,
     )

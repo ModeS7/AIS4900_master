@@ -182,6 +182,23 @@ def _compute_triplanar_metrics(
         for key, value in val_3d.items():
             results[f'{key}_val'] = value
 
+    # Med3D whole-volume Gaussian-MMD (true 3D). Uses the same compute_cmmd primitive
+    # (RBF kernel, median-heuristic bandwidth) as the CMMD path. Guarded on >=2 samples
+    # per set — MMD is undefined below that, and per-epoch eval generates few volumes,
+    # so the value is noisy there (read as a trend; most meaningful at extended/test).
+    # Auto-logged to TensorBoard as Generation_3d/{prefix}MED3D_MMD_{split}.
+    med3d_gen = getattr(streaming, 'med3d', None)
+    train_med3d = getattr(self_.cache, 'train_med3d', None)
+    if med3d_gen is not None and med3d_gen.shape[0] >= 2 and train_med3d is not None and train_med3d.shape[0] >= 2:
+        results[f'3d_{prefix}MED3D_MMD_train'] = compute_cmmd(
+            train_med3d.to(self_.device), med3d_gen.to(self_.device),
+        )
+        val_med3d = getattr(self_.cache, 'val_med3d', None)
+        if val_med3d is not None and val_med3d.shape[0] >= 2:
+            results[f'3d_{prefix}MED3D_MMD_val'] = compute_cmmd(
+                val_med3d.to(self_.device), med3d_gen.to(self_.device),
+            )
+
 
 def _extract_per_modality_generated_features(
     self_: GenerationMetrics,

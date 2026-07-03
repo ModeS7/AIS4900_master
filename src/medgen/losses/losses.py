@@ -57,6 +57,7 @@ class PerceptualLoss(nn.Module):
         cache_dir: str | None = None,
         pretrained: bool = True,
         device: torch.device | None = None,
+        is_fake_3d: bool = True,
         use_compile: bool = False,
     ) -> None:
         super().__init__()
@@ -65,13 +66,18 @@ class PerceptualLoss(nn.Module):
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
-        # Create underlying MONAI perceptual loss
-        self._loss_fn = MonaiPerceptualLoss(
+        # Create underlying MONAI perceptual loss. is_fake_3d only applies to 3D
+        # backends: is_fake_3d=False + a MedicalNet network = a TRUE-3D perceptual loss
+        # (whole volume through a 3D ResNet); is_fake_3d=True is the 2.5D slice approach.
+        monai_kwargs = dict(
             spatial_dims=spatial_dims,
             network_type=network_type,
             cache_dir=cache_dir,
             pretrained=pretrained,
         )
+        if spatial_dims == 3:
+            monai_kwargs["is_fake_3d"] = is_fake_3d
+        self._loss_fn = MonaiPerceptualLoss(**monai_kwargs)
 
         if device is not None:
             self._loss_fn = self._loss_fn.to(device)
@@ -82,6 +88,9 @@ class PerceptualLoss(nn.Module):
             self._loss_fn = torch.compile(self._loss_fn, mode="default")
 
         self.network_type = network_type
+        # True-3D backend feeds whole volumes to MONAI; otherwise the wrapper does
+        # slice-wise 2.5D perceptual loss in _forward_3d.
+        self.is_true_3d = spatial_dims == 3 and not is_fake_3d
 
     def _forward_tensor(
         self,
@@ -101,8 +110,10 @@ class PerceptualLoss(nn.Module):
         Returns:
             Scalar perceptual loss tensor.
         """
-        # 3D volumes: compute slice-wise perceptual loss along depth axis
+        # 3D volumes: true-3D backend takes the whole volume; otherwise slice-wise 2.5D.
         if input.ndim == 5:
+            if self.is_true_3d:
+                return self._forward_true3d(input, target)
             return self._forward_3d(input, target)
 
         num_channels = input.shape[1]
@@ -149,6 +160,28 @@ class PerceptualLoss(nn.Module):
                         chunk_inp[:, ch:ch+1].float(),
                         chunk_tgt[:, ch:ch+1].float(),
                     ))
+        return sum(losses) / len(losses)
+
+    def _forward_true3d(
+        self,
+        input: Tensor,
+        target: Tensor,
+    ) -> Tensor:
+        """Compute a TRUE-3D perceptual loss on whole volumes.
+
+        The underlying MONAI loss (e.g. MedicalNet with is_fake_3d=False) handles
+        [B, C, D, H, W] natively, so feed the whole volume. MedicalNet is single-channel;
+        multi-channel volumes (dual/triple) are processed per channel and averaged.
+        """
+        num_channels = input.shape[1]
+        if num_channels == 1:
+            return self._loss_fn(input.float(), target.float())
+        losses = []
+        for ch in range(num_channels):
+            losses.append(self._loss_fn(
+                input[:, ch:ch + 1].float(),
+                target[:, ch:ch + 1].float(),
+            ))
         return sum(losses) / len(losses)
 
     def _forward_dict(

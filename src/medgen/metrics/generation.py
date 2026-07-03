@@ -45,7 +45,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from medgen.core.dict_utils import get_with_fallbacks
 
-from .feature_extractors import BiomedCLIPFeatures, ResNet50Features
+from .feature_extractors import BiomedCLIPFeatures, Med3DFeatures, ResNet50Features
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ class GenerationMetricsConfig:
     size_bin_fov_mm: float = 240.0  # Field of view in mm
     compile_extractors: bool = True  # torch.compile on feature extractors (disable for 3D to save ~10GB VRAM)
     resnet_network_type: str = "imagenet"  # 'imagenet' or 'radimagenet' for ResNet50 features
+    med3d_mmd_enabled: bool = True  # Med3D whole-volume Gaussian-MMD (3D only; opt-out flag)
 
     @classmethod
     def from_hydra(cls, cfg: DictConfig, spatial_dims: int = 2) -> 'GenerationMetricsConfig':
@@ -174,6 +175,7 @@ class GenerationMetricsConfig:
             size_bin_fov_mm=size_bin_fov_mm,
             compile_extractors=compile_extractors,
             resnet_network_type=gen_cfg.get('resnet_network_type', 'imagenet'),
+            med3d_mmd_enabled=gen_cfg.get('med3d_mmd_enabled', True),
         )
 
 
@@ -439,10 +441,12 @@ class ReferenceFeatureCache:
         resnet_rin_extractor: ResNet50Features | None = None,
         original_depth: int | None = None,
         image_keys: list[str] | None = None,
+        med3d_extractor: 'Med3DFeatures | None' = None,
     ) -> None:
         self.resnet = resnet_extractor
         self.resnet_rin = resnet_rin_extractor
         self.biomed = biomed_extractor
+        self.med3d = med3d_extractor
         self.cache_dir = Path(cache_dir)
         self.device = device
         self.batch_size = batch_size
@@ -465,6 +469,10 @@ class ReferenceFeatureCache:
         self.train_resnet_rin_3d: torch.Tensor | None = None
         self.val_resnet_rin_3d: torch.Tensor | None = None
 
+        # Med3D whole-volume feature storage (true 3D, for Gaussian-MMD)
+        self.train_med3d: torch.Tensor | None = None
+        self.val_med3d: torch.Tensor | None = None
+
         # Per-modality feature storage (dual/triple modes)
         # Keys: modality name -> feature tensor
         self.per_modality: dict[str, dict[str, torch.Tensor]] = {}
@@ -478,6 +486,7 @@ class ReferenceFeatureCache:
         name: str,
         max_samples: int | None = None,
         triplanar: bool = False,
+        whole_volume: bool = False,
     ) -> torch.Tensor:
         """Extract features from a dataloader, filtering for positive masks.
 
@@ -537,17 +546,24 @@ class ReferenceFeatureCache:
                 images = images[positive_mask]
 
             if is_3d:
-                # 3D: extract slice-wise features (axial-only or tri-planar)
-                if triplanar:
+                if whole_volume:
+                    # True 3D whole-volume extractor (Med3D): one 2048-d feature per
+                    # volume, fed one at a time to bound memory at native resolution.
+                    for i in range(images.shape[0]):
+                        all_features.append(extractor.extract_features(images[i:i + 1]).cpu())
+                        sample_count += 1
+                elif triplanar:
                     features = extract_features_3d_triplanar(
                         images, extractor, chunk_size=self.batch_size,
                         original_depth=self.original_depth,
                     )
+                    all_features.append(features.cpu())
+                    sample_count += features.shape[0]
                 else:
                     features = extract_features_3d(images, extractor, chunk_size=self.batch_size)
-                all_features.append(features.cpu())
-                # For 3D, sample_count is number of slices
-                sample_count += features.shape[0]
+                    all_features.append(features.cpu())
+                    # For 3D, sample_count is number of slices
+                    sample_count += features.shape[0]
             else:
                 # 2D: extract in sub-batches
                 for i in range(0, images.shape[0], self.batch_size):
@@ -609,6 +625,27 @@ class ReferenceFeatureCache:
             )
             cache_data['train_resnet_rin_3d'] = self.train_resnet_rin_3d
             cache_data['val_resnet_rin_3d'] = self.val_resnet_rin_3d
+
+    def _extract_med3d_features(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        cache_data: dict[str, torch.Tensor],
+    ) -> None:
+        """Extract whole-volume Med3D reference features (true 3D) into cache_data."""
+        if self.med3d is None:
+            return
+        logger.info("  Extracting whole-volume Med3D train features...")
+        self.train_med3d = self._extract_features_from_loader(
+            train_loader, self.med3d, "train_med3d", whole_volume=True,
+        )
+        logger.info("  Extracting whole-volume Med3D val features...")
+        self.val_med3d = self._extract_features_from_loader(
+            val_loader, self.med3d, "val_med3d", whole_volume=True,
+        )
+        self.med3d.unload()
+        cache_data['train_med3d'] = self.train_med3d
+        cache_data['val_med3d'] = self.val_med3d
 
     def _extract_per_modality_features(
         self,
@@ -721,6 +758,9 @@ class ReferenceFeatureCache:
             self.val_biomed_3d = cached.get('val_biomed_3d')
             self.train_resnet_rin_3d = cached.get('train_resnet_rin_3d')
             self.val_resnet_rin_3d = cached.get('val_resnet_rin_3d')
+            # Med3D whole-volume features (may be missing from old caches)
+            self.train_med3d = cached.get('train_med3d')
+            self.val_med3d = cached.get('val_med3d')
             logger.info(
                 f"Loaded: train={self.train_resnet.shape[0]}, "
                 f"val={self.val_resnet.shape[0]} samples"
@@ -748,6 +788,13 @@ class ReferenceFeatureCache:
                 self._extract_triplanar_features(train_loader, val_loader, cached)
                 updated = True
                 logger.info("  Updated cache with tri-planar features")
+
+            # Backfill whole-volume Med3D features if missing from old cache
+            if self.med3d is not None and self.train_med3d is None:
+                logger.info("  Med3D features missing from cache, extracting...")
+                self._extract_med3d_features(train_loader, val_loader, cached)
+                updated = True
+                logger.info("  Updated cache with Med3D features")
 
             # Load or backfill per-modality features
             if self.image_keys:
@@ -808,6 +855,10 @@ class ReferenceFeatureCache:
         # Extract tri-planar features for 3D data
         if self.original_depth is not None:
             self._extract_triplanar_features(train_loader, val_loader, cache_data)
+
+        # Extract whole-volume Med3D features (true 3D) for Gaussian-MMD
+        if self.med3d is not None:
+            self._extract_med3d_features(train_loader, val_loader, cache_data)
 
         # Extract per-modality features for dual/triple modes
         if self.image_keys:
@@ -890,6 +941,12 @@ class GenerationMetrics:
         self.resnet_rin = ResNet50Features(device, network_type='radimagenet', cache_dir=Path(config.cache_dir), compile_model=config.compile_extractors)
         self.biomed = BiomedCLIPFeatures(device, cache_dir=config.cache_dir, compile_model=config.compile_extractors)
 
+        # Med3D true-3D whole-volume extractor (3D runs only; opt-out via med3d_mmd_enabled).
+        # original_depth is the 3D gate used throughout this module (tri-planar path too).
+        self.med3d = None
+        if config.original_depth is not None and getattr(config, 'med3d_mmd_enabled', True):
+            self.med3d = Med3DFeatures(device, input_size=None, compile_model=config.compile_extractors)
+
         # Reference feature cache
         self.cache = ReferenceFeatureCache(
             self.resnet,
@@ -900,6 +957,7 @@ class GenerationMetrics:
             resnet_rin_extractor=self.resnet_rin,
             original_depth=config.original_depth,
             image_keys=self.image_keys,
+            med3d_extractor=self.med3d,
         )
 
         # PCA shape models (optional, for 3D shape quality tracking)
@@ -964,6 +1022,8 @@ class GenerationMetrics:
         self.resnet.unload()
         self.resnet_rin.unload()
         self.biomed.unload()
+        if self.med3d is not None:
+            self.med3d.unload()
 
 
 # =============================================================================

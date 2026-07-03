@@ -7,6 +7,7 @@ distributional metrics (KID, CMMD, FID) between real and generated images.
 Classes:
     ResNet50Features: ResNet50 feature extractor (ImageNet or RadImageNet)
     BiomedCLIPFeatures: BiomedCLIP feature extractor (medical domain)
+    Med3DFeatures: MedicalNet 3D ResNet-50 whole-volume extractor (true 3D, for MMD)
 
 Usage:
     from medgen.metrics.feature_extractors import ResNet50Features, BiomedCLIPFeatures
@@ -347,3 +348,137 @@ class BiomedCLIPFeatures(nn.Module):
             self._processor = None
             torch.cuda.empty_cache()
             logger.debug("BiomedCLIP unloaded from GPU")
+
+
+class Med3DFeatures(nn.Module):
+    """True-3D whole-volume feature extractor (MedicalNet / Med3D ResNet-50).
+
+    Uses MONAI's MedicalNet-pretrained 3D ResNet-50 (Chen et al. 2019, arXiv:1904.00625)
+    to map a whole volume to a 2048-dim feature vector (global-average-pooled layer4,
+    ``feed_forward=False``). Unlike the 2D extractors, this processes the FULL volume in
+    3D — no middle-slice, no tri-planar aggregation — so it captures through-plane
+    structure. Intended for Gaussian-kernel MMD (see ``compute_cmmd``), which is stable
+    at the small (~hundreds of volumes) sample sizes typical of 3D medical datasets.
+
+    Weights auto-download from HuggingFace (``TencentMedicalNet/MedicalNet-Resnet50``);
+    on offline compute nodes they must already be cached (HF_HUB_OFFLINE).
+
+    Args:
+        device: PyTorch device for computation.
+        datasets23: Use the 23-dataset MedicalNet weights (default) vs the original set.
+        input_size: Optional (D, H, W) to resize volumes to before extraction. None
+            (default) feeds native resolution — the adaptive pool handles any size.
+        compile_model: Whether to torch.compile the model.
+    """
+
+    def __init__(
+        self,
+        device: torch.device,
+        datasets23: bool = True,
+        input_size: tuple[int, int, int] | None = None,
+        compile_model: bool = True,
+    ) -> None:
+        super().__init__()
+        self.device = device
+        self.datasets23 = datasets23
+        self.input_size = input_size
+        self.compile_model = compile_model
+        self._model: nn.Module | None = None
+
+    def _ensure_model(self) -> None:
+        """Lazy-load the MedicalNet 3D ResNet-50."""
+        if self._model is not None:
+            return
+
+        # Compute nodes are offline — weights must be pre-cached (login-node/first run).
+        import os
+        os.environ.setdefault('HF_HUB_OFFLINE', '1')
+
+        from monai.networks.nets import resnet50
+        from monai.networks.nets.resnet import get_medicalnet_pretrained_resnet_args
+
+        # MONAI enforces the exact shortcut_type/bias_downsample for the pretrained
+        # weights; fetch them rather than hardcode.
+        bias_downsample, shortcut_type = get_medicalnet_pretrained_resnet_args(50)
+        model = resnet50(
+            pretrained=True,
+            spatial_dims=3,
+            n_input_channels=1,
+            feed_forward=False,          # drop the FC head -> 2048-d pooled features
+            shortcut_type=shortcut_type,
+            bias_downsample=bias_downsample,
+        )
+        model = model.to(self.device)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad = False
+
+        if self.compile_model:
+            try:
+                model = torch.compile(model, mode="reduce-overhead")
+                logger.info("Med3D ResNet-50 compiled with torch.compile")
+            except RuntimeError as e:
+                logger.warning(f"torch.compile failed for Med3D: {e}")
+        else:
+            logger.debug("Med3D loaded without torch.compile (load/unload mode)")
+
+        self._model = model
+        logger.debug("Loaded MedicalNet 3D ResNet-50 for feature extraction")
+
+    @torch.no_grad()
+    def extract_features(
+        self,
+        volumes: torch.Tensor,
+        use_amp: bool = True,
+    ) -> torch.Tensor:
+        """Extract whole-volume Med3D features.
+
+        Args:
+            volumes: Volumes [B, C, D, H, W] in [0, 1]. Multi-channel volumes are
+                collapsed to a single channel (mean) since MedicalNet is single-channel.
+            use_amp: Whether to use automatic mixed precision.
+
+        Returns:
+            Feature tensor [B, 2048].
+        """
+        self._ensure_model()
+
+        if volumes.dim() != 5:
+            raise ValueError(
+                f"Med3DFeatures expects 5D [B, C, D, H, W]; got shape {tuple(volumes.shape)}"
+            )
+
+        # MedicalNet is single-channel: collapse multi-channel (dual/triple) volumes.
+        if volumes.shape[1] != 1:
+            volumes = volumes.mean(dim=1, keepdim=True)
+
+        volumes = volumes.to(self.device, non_blocking=True).float()
+
+        # Optional resize to a fixed grid (default: native resolution).
+        if self.input_size is not None and tuple(volumes.shape[2:]) != tuple(self.input_size):
+            volumes = F.interpolate(
+                volumes, size=tuple(self.input_size), mode='trilinear', align_corners=False
+            )
+
+        # Per-volume z-score (MedicalNet training-intensity convention).
+        flat = volumes.reshape(volumes.shape[0], -1)
+        mean = flat.mean(dim=1).view(-1, 1, 1, 1, 1)
+        std = flat.std(dim=1).view(-1, 1, 1, 1, 1) + 1e-8
+        volumes = (volumes - mean) / std
+
+        with autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
+            features = self._model(volumes)
+
+        # Safety: pool any residual spatial dims (feed_forward=False already pools).
+        if features.dim() > 2:
+            features = features.mean(dim=list(range(2, features.dim())))
+
+        return features.float()
+
+    def unload(self) -> None:
+        """Unload the model to free GPU memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            torch.cuda.empty_cache()
+            logger.debug("Med3D unloaded from GPU")

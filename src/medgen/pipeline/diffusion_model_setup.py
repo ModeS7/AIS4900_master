@@ -331,14 +331,29 @@ def setup_model(trainer: DiffusionTrainer, train_dataset: Dataset) -> None:
     # This saves ~200MB GPU memory from loading ResNet50
     cache_dir = trainer._paths_config.cache_dir
     if trainer.perceptual_weight > 0:
+        # Perceptual backbone is config-selectable. Default: 2D RadImageNet-ResNet50
+        # (2.5D slice-wise for 3D volumes). A MedicalNet backbone
+        # (e.g. medicalnet_resnet10_23datasets) switches to a TRUE-3D whole-volume
+        # perceptual loss (spatial_dims=3, is_fake_3d=False).
+        p_net = trainer.cfg.training.get('perceptual_network_type', 'radimagenet_resnet50')
+        p_true_3d = 'medicalnet_' in p_net
+        # Perceptual-loss compile: default heuristic compiles the 2D backbone but skips
+        # the true-3D MedicalNet one (compile is fragile on its dynamic 3D feature
+        # extraction). Override explicitly via training.perceptual_compile for benchmarking.
+        _pc = trainer.cfg.training.get('perceptual_compile', None)
+        p_compile = (use_compile and not p_true_3d) if _pc is None else bool(_pc)
         trainer.perceptual_loss_fn = PerceptualLoss(
-            spatial_dims=2,
-            network_type="radimagenet_resnet50",
+            spatial_dims=3 if p_true_3d else 2,
+            network_type=p_net,
+            is_fake_3d=not p_true_3d,
             cache_dir=cache_dir,
             pretrained=True,
             device=trainer.device,
-            use_compile=use_compile,
+            use_compile=p_compile,
         )
+        if trainer.is_main_process:
+            kind = f"TRUE-3D whole-volume ({p_net})" if p_true_3d else f"2.5D slice-wise ({p_net})"
+            logger.info(f"Perceptual loss: {kind}")
     else:
         trainer.perceptual_loss_fn = None
         if trainer.is_main_process:
