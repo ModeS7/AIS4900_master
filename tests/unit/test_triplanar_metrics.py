@@ -209,6 +209,7 @@ class TestStreamingFeatures:
             'resnet_3d', 'biomed_3d', 'resnet_rin_3d',
             'diversity_samples',
             'per_modality_resnet', 'per_modality_biomed', 'per_modality_resnet_rin',
+            'med3d',
             'pca_mean_error', 'pca_pass_rate', 'pca_errors',
         )
 
@@ -256,8 +257,8 @@ class TestStreamingFeatures:
         # Indexable
         assert sf[0] is sf.resnet
         assert sf[1] is sf.biomed
-        # Length
-        assert len(sf) == 13
+        # Length (14 = 13 original fields + med3d)
+        assert len(sf) == 14
 
 
 # =============================================================================

@@ -1290,8 +1290,12 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             pred_decoded = predicted_clean
                             images_decoded = images
 
-                        # For 3D: extract center slice (2.5D perceptual loss)
-                        if self.spatial_dims == 3:
+                        # For 3D with a 2D perceptual backbone: extract the center slice.
+                        # A TRUE-3D backbone (e.g. MedicalNet) consumes the whole volume,
+                        # so leave it 5D in that case.
+                        if self.spatial_dims == 3 and not getattr(
+                            self.perceptual_loss_fn, 'is_true_3d', False
+                        ):
                             pred_decoded = self._extract_center_slice(pred_decoded)
                             images_decoded = self._extract_center_slice(images_decoded)
 
