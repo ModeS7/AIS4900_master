@@ -199,16 +199,19 @@ def compute_lpips_huber_loss(
     timesteps: Tensor,
     num_timesteps: int,
 ) -> Tensor:
-    """(1-t)-weighted Pseudo-Huber loss for LPIPS-Huber combination.
+    """(1-t)-weighted Pseudo-Huber loss.
 
+    Shared by BOTH loss_type='lpips_huber' and loss_type='weighted_huber'.
     From "Improving Training of Rectified Flows" (Lee et al., NeurIPS 2024).
     Paper formula (Eq. in Section 3.2):
 
         L = (1-t) * Huber(v_target, v_pred) + LPIPS(x₀, x̂₀)
 
-    This function computes ONLY the (1-t)*Huber term.
-    The LPIPS term is computed separately in the trainer (constant weight,
-    no time dependence — matching the paper).
+    This function computes ONLY the (1-t)*Huber term (the shared part).
+    - weighted_huber: this term alone (Huber-only).
+    - lpips_huber:    this term PLUS the LPIPS term, which is computed separately
+                      in the trainer (constant weight, gated on perceptual_weight>0
+                      — enforced in DiffusionTrainerBase). Matching the paper.
 
     Convention (MONAI RFlowScheduler, same as Lee et al.):
         t=0 → clean data,  t=T (t_norm=1) → pure noise.

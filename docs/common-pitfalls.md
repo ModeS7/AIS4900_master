@@ -729,7 +729,7 @@ num_train_timesteps: 1000         # Total timesteps
 
 **Euler integration**: `x_{t-dt} = x_t + dt * v` (ADDITION, not subtraction).
 
-**Time-dependent loss weighting**: `(1 - t̃)` = 1.0 near clean, 0.0 near noise. Used by LPIPS-Huber to fade Huber out near noise (LPIPS stays constant). See `pipeline/losses.py:compute_lpips_huber_loss()`.
+**Time-dependent loss weighting**: `(1 - t̃)` = 1.0 near clean, 0.0 near noise. Used by LPIPS-Huber to fade Huber out near noise (LPIPS stays constant). See `pipeline/losses.py:compute_lpips_huber_loss()`. **WARNING**: `loss_type=lpips_huber` computes ONLY the Huber half — the LPIPS half needs `perceptual_weight>0` separately. See pitfall #89.
 
 ## 69. Velocity MSE vs Reconstruction MSE - Know the Difference
 **Problem**: Confusing what different MSE metrics measure in RFlow training.
@@ -953,3 +953,16 @@ The training dataloader (`seg.py`) reads from config in the correct `(D, H, W)` 
 **Problem**: `DiffusionTrainer` saves and restores `torch.get_rng_state()` / `torch.cuda.get_rng_state()` around validation so the training data order is deterministic. `SegmentationTrainer.compute_validation_losses()` did not — validation data loading consumed RNG state, making training non-reproducible across runs with different validation frequencies.
 
 **Fix**: Added RNG save/restore around the validation loop in `segmentation_trainer.py`.
+
+## 89. `loss_type=lpips_huber` Silently Drops LPIPS Without `perceptual_weight` (Fixed July 2026)
+
+**Problem**: The name `lpips_huber` implies the fused Lee et al. loss `L = (1-t)·Huber + LPIPS`, but `compute_lpips_huber_loss()` computes **only** the `(1-t)`-weighted Huber term. The LPIPS half is a **separate** perceptual block in the trainer, gated on `perceptual_weight > 0` (`trainer.py:_apply_perceptual`) and multiplied by `perceptual_weight` again. So `strategy.loss_type=lpips_huber` **without** `training.perceptual_weight>0` trains Huber-only — no LPIPS — while every log/name says "LPIPS".
+
+**Who it bit**: **exp48c** (`loss_type=lpips_huber`, no `perceptual_weight`) and **exp47c** (`shifted_loss_type=lpips_huber`, no `perceptual_weight`). Both ran Huber-only. Confirmed 3 ways: code trace, training logs (`Perceptual loss disabled (perceptual_weight=0), skipping ResNet50 loading`), and TensorBoard (no perceptual curve, unlike exp48d). An audit of all 447 training slurms found **only** these two (exp9_4's `dcae.perceptual_loss_type=lpips` is an unrelated compression selector).
+
+**Impact**: None on conclusions. exp48c's correctly-run sibling **exp48d** (pseudo-Huber + LPIPS@0.1, same low-t curriculum) scored **0.2799** downstream Dice vs exp48c's **0.2826** — identical within noise → **LPIPS was inert at low-t**, the curriculum did the work. No rerun needed; the models and numbers are valid, only the *label* was wrong.
+
+**Fix**:
+- New honest loss type **`weighted_huber`** = the `(1-t)`-Huber alone (same math, no perceptual requirement). exp48c/exp47c slurms switched to it.
+- **`lpips_huber` now hard-errors** if `perceptual_weight<=0` — `validate_lpips_huber_perceptual()` in `base_config.py`, called from `DiffusionTrainerBase.__init__`. Fail-fast at startup instead of silent drop.
+- Regression tests in `tests/unit/test_config_validation.py::TestLpipsHuberPerceptualGuard`.

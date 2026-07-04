@@ -139,9 +139,9 @@ EXPERIMENTS = [
         't_shift_max_t': 250, 'shifted_type': 'l1',
     },
     {
-        'name': 'exp47c t-shift MSE→lpips_huber',
+        'name': 'exp47c t-shift MSE→weighted_huber (AS RAN: no LPIPS)',
         'family': '47',
-        't_shift_max_t': 250, 'shifted_type': 'lpips_huber',
+        't_shift_max_t': 250, 'shifted_type': 'weighted_huber',
     },
     {
         'name': 'exp47d t-shift MSE→Pseudo-Huber + LPIPS-lowt',
@@ -168,9 +168,9 @@ EXPERIMENTS = [
         'curriculum_max_t': 250,
     },
     {
-        'name': 'exp48c low-t-only lpips_huber',
+        'name': 'exp48c low-t-only weighted_huber (AS RAN: no LPIPS)',
         'family': '48',
-        'base_is_lpips_huber': True,
+        'base_is_weighted_huber': True,
         'curriculum_max_t': 250,
     },
     {
@@ -196,15 +196,28 @@ def evaluate(cfg, t):
         base_label = 'L1'
     elif cfg.get('base_is_huber'):
         base_label = 'Pseudo-Huber'
+    elif cfg.get('base_is_weighted_huber'):
+        # weighted_huber as base strategy loss (exp48c AS RAN): (1-t̃)·Huber ONLY,
+        # NO LPIPS (perceptual_weight was never set — see pitfall #89).
+        out['Huber ((1-t̃), no LPIPS)'] = 1.0 - t / T
+        return out
     elif cfg.get('base_is_lpips_huber'):
-        # lpips_huber as the base strategy loss (exp48c) — internally
-        # equivalent to (1-t̃)·Huber + LPIPS at all t in the trained range.
+        # A TRUE lpips_huber base (perceptual_weight>0): (1-t̃)·Huber + LPIPS.
+        # No current entry uses this; kept for reference (e.g. exp1h).
         out['Huber (in lpips_huber)'] = 1.0 - t / T
         out['LPIPS (in lpips_huber)'] = 1.0
         return out
 
+    if shifted_type == 'weighted_huber':
+        # exp47c AS RAN: MSE faded out, (1-t̃)·Huber faded in — NO LPIPS.
+        out['MSE'] = mse_weight(t, t_shift_max_t=t_shift_max_t, shifted_type='generic_pixel')
+        h, _ = lpips_huber_internal(t, t_shift_max_t)
+        out['Huber ((1-t̃), no LPIPS)'] = h
+        return out
+
     if shifted_type == 'lpips_huber':
-        # exp47c: MSE faded out, lpips_huber faded in inside [0, t_shift_max_t]
+        # A TRUE shifted lpips_huber (perceptual_weight>0): MSE faded out,
+        # (1-t̃)·Huber + LPIPS faded in. No current entry uses this.
         out['MSE'] = mse_weight(t, t_shift_max_t=t_shift_max_t, shifted_type='generic_pixel')
         h, lp = lpips_huber_internal(t, t_shift_max_t)
         out['Huber (in lpips_huber)'] = h
@@ -258,6 +271,7 @@ COLORS = {
     'L1': 'tab:cyan',
     'Pseudo-Huber': 'tab:purple',
     'Huber (in lpips_huber)': 'tab:purple',
+    'Huber ((1-t̃), no LPIPS)': 'tab:purple',
     'LPIPS': 'tab:red',
     'LPIPS (in lpips_huber)': 'tab:red',
     'ScoreAug (prob)': 'tab:orange',

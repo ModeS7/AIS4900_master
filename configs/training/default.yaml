@@ -198,6 +198,7 @@ augmented_diffusion:
 perceptual_weight: 0.0     # Weight for perceptual loss term (0 = disabled)
 perceptual_network_type: radimagenet_resnet50  # Perceptual backbone. 2D/2.5D: radimagenet_resnet50, vgg, alex. TRUE-3D whole-volume: medicalnet_resnet10_23datasets (or _resnet50_)
 perceptual_compile: null   # torch.compile the perceptual loss. null = heuristic (compile 2D, skip true-3D); true/false to override (for benchmarking)
+perceptual_25d: false      # For 3D: apply the 2D perceptual over ALL depth slices (2.5D) instead of just the center slice. Finer but slower. Ignored for true-3D backbones.
 perceptual_max_timestep: null  # Legacy low-t ramp: only apply when t < this (null = all timesteps)
 perceptual_t_schedule: null    # High-t schedule [t_on, t_full, t_off]: piecewise-linear
                                 # weight=0 below t_on, ramps to 1 at t_full, plateaus, drops to 0 at t_off.

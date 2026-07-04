@@ -14,8 +14,16 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp48c/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp48c: low-t-only training, pure lpips_huber (Karras Huber+LPIPS) across
-# trained window. Curriculum restricts t∈[0, 0.25].
+# exp48c: low-t-only training, (1-t)-weighted Huber across trained window.
+# Curriculum restricts t∈[0, 0.25].
+# BUGFIX NOTE (2026-07): this originally set strategy.loss_type=lpips_huber, in the
+#   MISTAKEN belief it was a fused "Karras Huber+LPIPS" loss. It is NOT — lpips_huber
+#   is only the (1-t)-Huber term; the LPIPS half needs perceptual_weight>0, which
+#   this run never set. So exp48c AS RAN was Huber-only, NO LPIPS. Its correctly-run
+#   sibling exp48d (pseudo_huber + LPIPS@0.1, same curriculum) scored 0.2799 vs
+#   exp48c's 0.2826 downstream Dice — identical within noise, i.e. LPIPS was inert
+#   at low-t here, so no rerun is needed. Renamed to `weighted_huber` (honest name,
+#   reproduces as-ran); lpips_huber now hard-errors without perceptual_weight.
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
@@ -90,7 +98,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.learning_rate=1e-5 \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
-    strategy.loss_type=lpips_huber \
+    strategy.loss_type=weighted_huber \
     training.curriculum.enabled=true \
     training.curriculum.warmup_epochs=1 \
     training.curriculum.min_t_start=0.0 \

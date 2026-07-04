@@ -565,3 +565,69 @@ class TestModeConfigSync:
                 f"Found {len(errors)} mode configs with mismatched names:\n"
                 + "\n".join(f"  - {e}" for e in errors)
             )
+
+
+class TestLpipsHuberPerceptualGuard:
+    """Guard: loss_type='lpips_huber' must have perceptual_weight>0.
+
+    REGRESSION: exp48c and exp47c set loss_type/shifted_loss_type=lpips_huber but
+    NOT perceptual_weight, so they silently trained WITHOUT the LPIPS term (only
+    the (1-t)-weighted Huber half). This validator turns that silent footgun into
+    a hard startup error. `weighted_huber` is the honest Huber-only name.
+    """
+
+    def test_lpips_huber_without_perceptual_weight_raises(self):
+        from medgen.pipeline.base_config import validate_lpips_huber_perceptual
+        with pytest.raises(ValueError, match="perceptual_weight"):
+            validate_lpips_huber_perceptual(
+                strategy_name='rflow',
+                velocity_loss_type='lpips_huber',
+                shifted_loss_type='',
+                perceptual_weight=0.0,
+            )
+
+    def test_shifted_lpips_huber_without_perceptual_weight_raises(self):
+        """exp47c's shape: shifted_loss_type=lpips_huber, perceptual_weight unset."""
+        from medgen.pipeline.base_config import validate_lpips_huber_perceptual
+        with pytest.raises(ValueError, match="weighted_huber"):
+            validate_lpips_huber_perceptual(
+                strategy_name='rflow',
+                velocity_loss_type='mse',
+                shifted_loss_type='lpips_huber',
+                perceptual_weight=0.0,
+            )
+
+    def test_lpips_huber_with_perceptual_weight_ok(self):
+        """The intended full recipe (exp1h) must pass."""
+        from medgen.pipeline.base_config import validate_lpips_huber_perceptual
+        validate_lpips_huber_perceptual(
+            strategy_name='rflow',
+            velocity_loss_type='lpips_huber',
+            shifted_loss_type='',
+            perceptual_weight=1.0,
+        )
+
+    def test_weighted_huber_needs_no_perceptual_weight(self):
+        """The honest Huber-only name (exp48c/exp47c as-ran) must pass at weight 0."""
+        from medgen.pipeline.base_config import validate_lpips_huber_perceptual
+        validate_lpips_huber_perceptual(
+            strategy_name='rflow',
+            velocity_loss_type='weighted_huber',
+            shifted_loss_type='',
+            perceptual_weight=0.0,
+        )
+
+    def test_non_rflow_strategy_is_exempt(self):
+        """Only RFlow honors these loss types; other strategies must not trip."""
+        from medgen.pipeline.base_config import validate_lpips_huber_perceptual
+        validate_lpips_huber_perceptual(
+            strategy_name='ddpm',
+            velocity_loss_type='lpips_huber',
+            shifted_loss_type='',
+            perceptual_weight=0.0,
+        )
+
+    def test_weighted_huber_in_valid_loss_types(self):
+        """StrategyConfig must accept the new honest name."""
+        from medgen.pipeline.base_config import StrategyConfig
+        StrategyConfig(name='rflow', loss_type='weighted_huber')  # no raise

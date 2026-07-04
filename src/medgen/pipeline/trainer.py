@@ -1184,7 +1184,10 @@ class DiffusionTrainer(DiffusionTrainerBase):
                         from .losses import compute_pseudo_huber_loss
                         target = self.strategy.compute_target(images, noise)
                         base_loss = compute_pseudo_huber_loss(prediction, target)
-                    elif self.velocity_loss_type == 'lpips_huber':
+                    elif self.velocity_loss_type in ('lpips_huber', 'weighted_huber'):
+                        # Same (1-t)-weighted Huber math for both. lpips_huber ALSO
+                        # adds the separate LPIPS term (perceptual_weight>0, enforced
+                        # in DiffusionTrainerBase); weighted_huber is Huber-only.
                         from .losses import compute_lpips_huber_loss
                         target = self.strategy.compute_target(images, noise)
                         base_loss = compute_lpips_huber_loss(
@@ -1225,7 +1228,9 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             elif _shifted_type == 'pseudo_huber':
                                 from .losses import compute_pseudo_huber_loss
                                 shifted_loss = compute_pseudo_huber_loss(prediction, target)
-                            elif _shifted_type == 'lpips_huber':
+                            elif _shifted_type in ('lpips_huber', 'weighted_huber'):
+                                # (1-t)-Huber for both; lpips_huber adds LPIPS via the
+                                # separate perceptual term (perceptual_weight>0 enforced).
                                 from .losses import compute_lpips_huber_loss
                                 shifted_loss = compute_lpips_huber_loss(
                                     prediction, target, timesteps, self.num_timesteps,
@@ -1290,12 +1295,14 @@ class DiffusionTrainer(DiffusionTrainerBase):
                             pred_decoded = predicted_clean
                             images_decoded = images
 
-                        # For 3D with a 2D perceptual backbone: extract the center slice.
-                        # A TRUE-3D backbone (e.g. MedicalNet) consumes the whole volume,
-                        # so leave it 5D in that case.
-                        if self.spatial_dims == 3 and not getattr(
-                            self.perceptual_loss_fn, 'is_true_3d', False
-                        ):
+                        # For 3D: extract the center slice for a plain 2D backbone.
+                        # Two exceptions consume the whole volume instead:
+                        #   - a TRUE-3D backbone (e.g. MedicalNet, is_true_3d) -> real 3D,
+                        #   - perceptual_25d=true -> 2.5D, the wrapper averages the loss over
+                        #     all depth slices (finer than a single center slice).
+                        _true3d = getattr(self.perceptual_loss_fn, 'is_true_3d', False)
+                        _p25d = bool(self.cfg.training.get('perceptual_25d', False))
+                        if self.spatial_dims == 3 and not _true3d and not _p25d:
                             pred_decoded = self._extract_center_slice(pred_decoded)
                             images_decoded = self._extract_center_slice(images_decoded)
 

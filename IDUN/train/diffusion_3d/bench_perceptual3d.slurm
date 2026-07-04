@@ -79,9 +79,22 @@ run_bench "2d_compile"   training.perceptual_network_type=radimagenet_resnet50  
 run_bench "2d_nocompile" training.perceptual_network_type=radimagenet_resnet50          training.perceptual_compile=false
 run_bench "3d_nocompile" training.perceptual_network_type=medicalnet_resnet10_23datasets training.perceptual_compile=false
 run_bench "3d_compile"   training.perceptual_network_type=medicalnet_resnet10_23datasets training.perceptual_compile=true
+# 2.5D VGG (exp52c/d backbone): 2D VGG applied over ALL depth slices. Measures its
+# loss SCALE (read 'Perceptual:' in the log) + its per-step cost (VGG over ~160 slices
+# per volume can be heavy — this reveals whether it's affordable).
+run_bench "25d_vgg_nocompile" training.perceptual_network_type=vgg training.perceptual_25d=true training.perceptual_compile=false
 
 echo ""; echo "########## SUMMARY ##########"
 cat "$SUMMARY"
 echo ""
 echo "Per-step rate: read the tqdm 'it/s' in each ########## BENCH block above"
 echo "(wall includes model/data setup; it/s is the clean per-step signal)."
+echo ""
+echo "########## PERCEPTUAL-WEIGHT CALIBRATION (for exp52c/d) ##########"
+echo "In each BENCH block, read the raw per-step 'Perceptual:' value (before weight)."
+echo "Baseline exp32_2 uses RadImageNet @ weight 0.1 (raw scale ~1.88 -> effective ~0.19)."
+echo "To match that effective pull with a different backbone:"
+echo "    weight = 0.1 * (scale_2d_radimagenet / scale_backbone)"
+echo "  MedicalNet-3D: 0.1 * 1.88/0.087 ~= 2.0  (already set in exp52a/b)."
+echo "  VGG-2.5D:      0.1 * (scale_2d_nocompile / scale_25d_vgg_nocompile)"
+echo "Put that VGG number into exp52c/d via:  PERC_W_VGG=<value> sbatch exp52c_...slurm"

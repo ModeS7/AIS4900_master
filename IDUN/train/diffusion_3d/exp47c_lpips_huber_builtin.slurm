@@ -14,12 +14,17 @@
 #SBATCH --error=IDUN/output/train/diffusion_3d/exp47c/%j.err
 #SBATCH --signal=B:SIGUSR1@120
 
-# exp47c: t-shift MSE → lpips_huber at low-t.
-# Custom loss is the built-in Karras lpips_huber formula (Huber + LPIPS as
-# a single fused loss with internal t-weighting).
+# exp47c: t-shift MSE → (1-t)-weighted Huber at low-t.
+# BUGFIX NOTE (2026-07): this originally set shifted_loss_type=lpips_huber in the
+#   MISTAKEN belief that lpips_huber is a "single fused Huber+LPIPS" loss. It is
+#   NOT — lpips_huber is only the (1-t)-Huber term; its LPIPS half needs
+#   perceptual_weight>0, which this run never set. So exp47c AS RAN was Huber-only
+#   (no LPIPS). Renamed to the honest `weighted_huber` to reproduce as-ran; the
+#   old lpips_huber name now hard-errors without perceptual_weight. The intended
+#   "MSE→Huber+LPIPS" variant is covered by exp47b (L1+LPIPS, perceptual_weight=0.1).
 # Three-way ablation across exp47b/c/d (all share the MSE-fades-out pattern):
 #   - 47b: custom = L1 + LPIPS
-#   - 47c: custom = lpips_huber (Karras single-fused loss, LPIPS internal)
+#   - 47c: custom = weighted_huber (as-ran: Huber-only; NO LPIPS — see note above)
 #   - 47d: custom = Pseudo-Huber + LPIPS
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
@@ -96,7 +101,7 @@ time python -m medgen.scripts.train --config-name=diffusion_3d \
     training.warmup_epochs=10 \
     training.gradient_clip_norm=0.5 \
     +training.base_loss_t_shift_max_t=250 \
-    +training.shifted_loss_type=lpips_huber \
+    +training.shifted_loss_type=weighted_huber \
     training.name=${EXP_NAME}_ \
     ${CHAIN_ARGS} &
 
