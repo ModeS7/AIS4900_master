@@ -1,28 +1,26 @@
 #!/bin/sh
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-03:00:00
+#SBATCH --time=0-04:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g|gpu40g"
-#SBATCH --job-name="eval_med3d_mmd"
+#SBATCH --constraint="gpu80g"
+#SBATCH --job-name="eval_all_metrics"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
-#SBATCH --output=IDUN/output/eval/eval_med3d_mmd_%j.out
-#SBATCH --error=IDUN/output/eval/eval_med3d_mmd_%j.err
+#SBATCH --output=IDUN/output/eval/eval_all_metrics_%j.out
+#SBATCH --error=IDUN/output/eval/eval_all_metrics_%j.err
 
-# Med3D whole-volume Gaussian-MMD of each generated set vs the real reference
-# (real_train), over the SAME sets as eval_diversity_msssim.slurm. LOWER = closer to
-# the real distribution. Same primitives as training's Generation_3d/MED3D_MMD:
-# Med3DFeatures (input_size=None, native res) + compute_cmmd (RBF, median bandwidth).
-# Bandwidth is fixed once from the reference so datasets are directly comparable.
-# real_test is scored too -> the real-vs-real MMD floor (should be ~0).
+# Full generation-metric panel vs real_train, over the SAME 9 sets as the diversity /
+# Med3D-MMD runs. Per dataset: FID/KID (ImageNet + RadImageNet), CMMD, Med3D-MMD, PCA
+# brain-shape pass-rate + error, MS-SSIM diversity. Point estimates on the loaded pool
+# (N shown); for equal-N bootstrap CIs use eval_diversity.slurm / eval_med3d_mmd.slurm.
 #
-# NOTE: Med3D on native 256x256x150 through a 3D ResNet-50 is memory-heavy. If this
-# OOMs, add e.g. --med3d-input-size 128 128 128 (Med3D adaptive-pools any size) and/or
-# lower --batch-size. Feature extraction is the cost; the 100-draw bootstrap is cheap.
+# gpu80g: Med3D runs on native 256x256x150 whole volumes (heavy). If it OOMs, lower
+# --med3d-batch (already 2). PCA threshold in the npz is the known-buggy 0.0196 (156-vs-181
+# sample bug) — compare the mean reconstruction error (threshold-free), not just pass%.
 
 set -e
 cd ${SLURM_SUBMIT_DIR}
@@ -33,7 +31,7 @@ REAL="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3"
 GEN="${CLUSTER_BASE}/MedicalDataSets/generated"
 SEGC="${GEN}/seg_candidates_525"
 
-echo "=== Med3D-MMD | Job ${SLURM_JOB_ID} | Node ${SLURM_JOB_NODELIST} ==="
+echo "=== All-metrics panel | Job ${SLURM_JOB_ID} | Node ${SLURM_JOB_NODELIST} ==="
 nvidia-smi
 
 module purge
@@ -44,7 +42,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-time python -m medgen.scripts.eval_med3d_mmd \
+time python -m medgen.scripts.eval_all_metrics \
     --reference "real_train:${REAL}/train" \
     --dataset "real_test:${REAL}/test1" \
     --dataset "exp1_1_imagenet:${GEN}/exp1_1_bravo_imagenet_525_brain_masked" \
@@ -57,8 +55,9 @@ time python -m medgen.scripts.eval_med3d_mmd \
     --pattern bravo.nii.gz \
     --target-shape 150 256 256 \
     --pool-cap 256 \
-    --subsample-n 51 \
-    --bootstrap 100 \
-    --batch-size 2 \
+    --trim-slices 0 \
+    --med3d-batch 2 \
+    --pca-model data/brain_pca_256x256x160.npz \
+    --pca-threshold 0.05 \
     --seed 42 \
-    --output IDUN/output/eval/med3d_mmd_${SLURM_JOB_ID}.json
+    --output IDUN/output/eval/all_metrics_${SLURM_JOB_ID}.json

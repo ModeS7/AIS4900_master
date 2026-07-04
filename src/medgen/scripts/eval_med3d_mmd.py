@@ -122,10 +122,14 @@ def mmd_with_ci(
     rng: np.random.Generator,
     compute_full: bool = True,
 ) -> dict:
-    """Full MMD(ref, all) plus bootstrap mean/95% CI at common N.
+    """Full MMD(ref, all) plus subsample mean/95% CI at common N.
 
-    Bootstrap resamples the dataset features WITH replacement (proper bootstrap; valid
-    even when the set size equals N). The reference is fixed (all reference features).
+    Resamples the dataset features to size N WITHOUT replacement. Duplicate samples
+    would create identical-pair terms k(v,v)=1 in the within-set MMD sum and inflate
+    MMD upward (worst for small pools, where the true MMD is ~0) — so replacement is
+    NOT used, matching eval_diversity.py. When pool == N there is only one subset, so
+    the CI collapses to the full value (honest: no subsampling freedom at that size).
+    The reference is fixed (all reference features).
     """
     ref = ref_feats.to(device)
     B = feats.shape[0]
@@ -139,7 +143,7 @@ def mmd_with_ci(
     draws = []
     if n >= 2 and bootstrap > 0:
         for _ in range(bootstrap):
-            idx = rng.choice(B, size=n, replace=True)  # WITH replacement (bootstrap)
+            idx = rng.choice(B, size=n, replace=False)  # WITHOUT replacement (no duplicate inflation)
             draws.append(_mmd(feats[idx]))
     draws = np.asarray(draws, dtype=np.float64)
 
