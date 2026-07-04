@@ -40,7 +40,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from medgen.metrics.quality import compute_msssim, compute_perceptual_diversity_3d
+from medgen.metrics.quality import compute_msssim, compute_perceptual_distance
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("eval_diversity")
@@ -124,27 +124,35 @@ def _pair_indices(n: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 @torch.no_grad()
-def msssim_diversity(
+def pairwise_diversity_3d(
     volumes: torch.Tensor,
     device: torch.device,
+    scorer,
+    is_similarity: bool,
     depth_stride: int = 1,
     pair_chunk: int = 512,
 ) -> float:
-    """Mean pairwise (1 - MS-SSIM) over same-slice pairs. Batched, GPU-friendly.
+    """Mean pairwise diversity over same-slice pairs. Batched, GPU-friendly.
 
-    Equivalent to metrics.quality.compute_msssim_diversity_3d but batches all pairs
-    of a slice into one compute_msssim call (which returns the batch mean MS-SSIM),
-    so the per-pair Python loop is avoided.
+    Same-slice pairwise formulation (compare slice d across volumes, average over d
+    and over all pairs), but all pairs of a slice are batched into ONE ``scorer``
+    call instead of the per-pair Python loop in metrics.quality — so 100s of volumes
+    are tractable for both MS-SSIM and a perceptual network.
 
     Args:
         volumes: [B, 1, D, H, W] in [0, 1], on CPU (slices moved to device per depth).
         device: compute device.
-        depth_stride: evaluate every k-th depth slice (>=1). Speeds up at the cost
-            of a coarser depth average; report it so it is never a silent cap.
-        pair_chunk: number of pairs per compute_msssim call (bounds VRAM).
+        scorer: ``scorer(gen[P,C,H,W], ref[P,C,H,W]) -> float`` returning the MEAN
+            statistic over the batch of P pairs.
+        is_similarity: True if the statistic is a SIMILARITY in [0, 1] (MS-SSIM) —
+            diversity = 1 - mean. False if it is a DISTANCE >= 0 (LPIPS/perceptual) —
+            diversity = mean (the distance itself; higher = more diverse). Do NOT
+            apply `1 -` to a distance.
+        depth_stride: evaluate every k-th depth slice (>=1). Larger = faster, coarser.
+        pair_chunk: number of pairs per scorer call (bounds VRAM).
 
     Returns:
-        Mean (1 - MS-SSIM) across all evaluated (pair, slice) combinations.
+        Mean diversity across all evaluated (pair, slice) combinations.
     """
     B, C, D, H, W = volumes.shape
     ii, jj = _pair_indices(B)
@@ -152,23 +160,19 @@ def msssim_diversity(
     if num_pairs == 0:
         return 0.0
 
-    sim_sum = 0.0
-    sim_count = 0
-    depths = range(0, D, depth_stride)
-    for d in depths:
+    stat_sum = 0.0
+    stat_count = 0
+    for d in range(0, D, depth_stride):
         sl = volumes[:, :, d].to(device)  # [B, C, H, W]
         for start in range(0, num_pairs, pair_chunk):
             pi = ii[start:start + pair_chunk]
             pj = jj[start:start + pair_chunk]
-            gen = sl[pi]  # [P, C, H, W]
-            ref = sl[pj]
-            # compute_msssim returns the MEAN MS-SSIM over the batch of pairs.
-            mean_sim = compute_msssim(gen, ref, data_range=1.0, spatial_dims=2)
+            mean_stat = scorer(sl[pi], sl[pj])  # mean over the P pairs
             n = len(pi)
-            sim_sum += mean_sim * n
-            sim_count += n
-    mean_msssim = sim_sum / sim_count if sim_count else 0.0
-    return 1.0 - mean_msssim
+            stat_sum += mean_stat * n
+            stat_count += n
+    mean_stat = stat_sum / stat_count if stat_count else 0.0
+    return (1.0 - mean_stat) if is_similarity else mean_stat
 
 
 @torch.no_grad()
@@ -181,6 +185,8 @@ def diversity_with_ci(
     pair_chunk: int,
     rng: np.random.Generator,
     metric: str = "msssim",
+    network_type: str = "alex",
+    compute_full: bool = True,
 ) -> dict:
     """Full-pool diversity plus subsample+bootstrap mean and 95% CI at common N.
 
@@ -188,15 +194,30 @@ def diversity_with_ci(
     it is NOT comparable across sets of different size — reported for transparency).
     The bootstrap number draws ``subsample_n`` volumes ``bootstrap`` times and
     averages, giving an equal-N, comparable estimate with a confidence interval.
+
+    metric='perceptual' scores mean pairwise perceptual DISTANCE (higher = more
+    diverse) using ``network_type`` (alex/vgg/squeeze = true LPIPS; radimagenet_* =
+    RadImageNet feature distance, NOT LPIPS). compute_full is skipped by default for
+    perceptual because the full pool (all pairs at N up to pool_cap) is far too
+    expensive for a network scorer — only the equal-N bootstrap is reported.
     """
     B = volumes.shape[0]
 
-    def _score(vols: torch.Tensor) -> float:
-        if metric == "perceptual":
-            return compute_perceptual_diversity_3d(vols.to(device), device=device, use_compile=False)
-        return msssim_diversity(vols, device, depth_stride, pair_chunk)
+    if metric == "perceptual":
+        def scorer(gen, ref):
+            return compute_perceptual_distance(
+                gen, ref, device=device, network_type=network_type, use_compile=False
+            )
+        is_similarity = False
+    else:
+        def scorer(gen, ref):
+            return compute_msssim(gen, ref, data_range=1.0, spatial_dims=2)
+        is_similarity = True
 
-    full = _score(volumes)
+    def _score(vols: torch.Tensor) -> float:
+        return pairwise_diversity_3d(vols, device, scorer, is_similarity, depth_stride, pair_chunk)
+
+    full = _score(volumes) if compute_full else None
 
     n = min(subsample_n, B)
     draws = []
@@ -208,8 +229,9 @@ def diversity_with_ci(
 
     result = {
         "metric": metric,
+        "network_type": network_type if metric == "perceptual" else None,
         "pool_size": int(B),
-        "full_pool_diversity": float(full),
+        "full_pool_diversity": float(full) if full is not None else None,
         "subsample_n": int(n),
         "bootstrap_draws": len(draws),
     }
@@ -256,8 +278,11 @@ def main() -> None:
     ap.add_argument("--subsample-n", type=int, default=0, help="Common N for the comparable estimate. 0 = min set size across all datasets.")
     ap.add_argument("--bootstrap", type=int, default=20, help="Bootstrap resamples for the CI (0 = skip, full-pool only).")
     ap.add_argument("--depth-stride", type=int, default=1, help="Evaluate every k-th depth slice (>=1). Larger = faster, coarser.")
-    ap.add_argument("--pair-chunk", type=int, default=512, help="Pairs per MS-SSIM call (bounds VRAM).")
-    ap.add_argument("--metric", choices=["msssim", "perceptual"], default="msssim", help="Diversity metric (default msssim). 'perceptual' = RadImageNet feature distance (NOT true LPIPS).")
+    ap.add_argument("--pair-chunk", type=int, default=512, help="Pairs per scorer call (bounds VRAM). Use a smaller value (e.g. 128) for perceptual.")
+    ap.add_argument("--metric", choices=["msssim", "perceptual"], default="msssim", help="Diversity metric (default msssim). 'perceptual' = mean pairwise perceptual distance (see --network-type).")
+    ap.add_argument("--network-type", default="alex", help="Perceptual backbone (metric=perceptual only): alex/vgg/squeeze = true LPIPS (default alex); radimagenet_resnet50 = RadImageNet distance (NOT LPIPS).")
+    ap.add_argument("--full-pool", dest="full_pool", action="store_true", default=None, help="Force computing the N-confounded full-pool number (default: on for msssim, off for perceptual — too expensive).")
+    ap.add_argument("--no-full-pool", dest="full_pool", action="store_false", help="Skip the full-pool number.")
     ap.add_argument("--seed", type=int, default=42, help="RNG seed for pool/bootstrap sampling.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--output", default="diversity_report.json", help="Where to write the JSON report.")
@@ -268,7 +293,12 @@ def main() -> None:
     target_shape = tuple(args.target_shape)
     datasets = [parse_dataset_arg(s) for s in args.dataset]
 
-    logger.info("Device=%s  target_shape=%s  metric=%s", device, target_shape, args.metric)
+    # Full-pool default: on for msssim (cheap), off for perceptual (network all-pairs
+    # at N up to pool_cap is intractable). Explicit --full-pool/--no-full-pool wins.
+    compute_full = (args.metric == "msssim") if args.full_pool is None else args.full_pool
+
+    metric_label = args.metric if args.metric != "perceptual" else f"perceptual:{args.network_type}"
+    logger.info("Device=%s  target_shape=%s  metric=%s  full_pool=%s", device, target_shape, metric_label, compute_full)
 
     # Pass 1: count files only (cheap glob) so the common subsample N can default to
     # the smallest set WITHOUT holding every dataset in RAM at once. Pass 2 loads,
@@ -285,6 +315,7 @@ def main() -> None:
     report = {
         "config": {
             "metric": args.metric,
+            "network_type": args.network_type if args.metric == "perceptual" else None,
             "target_shape": list(target_shape),
             "pool_cap": args.pool_cap,
             "subsample_n": subsample_n,
@@ -304,6 +335,7 @@ def main() -> None:
         res = diversity_with_ci(
             vols, device, subsample_n, args.bootstrap,
             args.depth_stride, args.pair_chunk, rng, metric=args.metric,
+            network_type=args.network_type, compute_full=compute_full,
         )
         res["total_found"] = total_found
         report["datasets"][label] = res
@@ -312,7 +344,7 @@ def main() -> None:
             torch.cuda.empty_cache()
 
     # Console table.
-    print(f"\n=== Diversity report ({args.metric}), higher = more diverse ===")
+    print(f"\n=== Diversity report ({metric_label}), higher = more diverse ===")
     print(f"{'dataset':30s} {'found':>6s} {'pool':>5s} {'fullN':>8s}  {'mean@N':>8s} {'95% CI':>17s}")
     for label, res in report["datasets"].items():
         ci = (
@@ -320,9 +352,10 @@ def main() -> None:
             if "diversity_mean" in res else "n/a"
         )
         mean = f"{res['diversity_mean']:.4f}" if "diversity_mean" in res else "n/a"
+        full = f"{res['full_pool_diversity']:.4f}" if res["full_pool_diversity"] is not None else "n/a"
         print(
             f"{label:30s} {res['total_found']:6d} {res['pool_size']:5d} "
-            f"{res['full_pool_diversity']:8.4f}  {mean:>8s} {ci:>17s}"
+            f"{full:>8s}  {mean:>8s} {ci:>17s}"
         )
     print(f"\n(mean@N and CI are at common N={subsample_n}, {args.bootstrap} bootstrap draws — the comparable numbers)")
 
