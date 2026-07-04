@@ -6,6 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
+#SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --job-name="eval_med3d_mmd"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=ALL
