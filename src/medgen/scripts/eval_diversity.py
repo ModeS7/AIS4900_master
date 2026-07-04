@@ -359,6 +359,7 @@ def main() -> None:
         )
     print(f"\n(mean@N and CI are at common N={subsample_n}, {args.bootstrap} bootstrap draws — the comparable numbers)")
 
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Wrote %s", args.output)

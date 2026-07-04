@@ -73,4 +73,4 @@ time python -m medgen.scripts.eval_diversity \
     --metric perceptual \
     --network-type alex \
     --seed 42 \
-    --output IDUN/output/eval/diversity_lpips_${SLURM_JOB_ID}.json
+    --output runs/eval/diversity_lpips_${SLURM_JOB_ID}.json

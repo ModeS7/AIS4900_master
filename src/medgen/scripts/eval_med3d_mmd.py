@@ -29,6 +29,7 @@ Example:
 import argparse
 import json
 import logging
+import os
 
 import numpy as np
 import torch
@@ -247,6 +248,7 @@ def main() -> None:
         print(f"{label:30s} {res['total_found']:6d} {res['pool_size']:5d} {full:>9s}  {mean:>9s} {ci:>21s}")
     print(f"\n(mean@N and CI at common N={subsample_n}, {args.bootstrap} bootstrap draws; bandwidth={bandwidth:.4f})")
 
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Wrote %s", args.output)

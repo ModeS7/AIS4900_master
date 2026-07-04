@@ -68,4 +68,4 @@ time python -m medgen.scripts.eval_diversity \
     --pair-chunk 512 \
     --metric msssim \
     --seed 42 \
-    --output IDUN/output/eval/diversity_msssim_${SLURM_JOB_ID}.json
+    --output runs/eval/diversity_msssim_${SLURM_JOB_ID}.json

@@ -60,4 +60,4 @@ time python -m medgen.scripts.eval_all_metrics \
     --pca-model data/brain_pca_256x256x160.npz \
     --pca-threshold 0.05 \
     --seed 42 \
-    --output IDUN/output/eval/all_metrics_${SLURM_JOB_ID}.json
+    --output runs/eval/all_metrics_${SLURM_JOB_ID}.json

@@ -25,6 +25,7 @@ Example:
 import argparse
 import json
 import logging
+import os
 
 import numpy as np
 import torch
@@ -224,6 +225,7 @@ def main() -> None:
               f"{r['cmmd']:>8.4f} {r['med3d_mmd']:>8.4f} {pca:>6s} {r['msssim_diversity']:>7.4f}")
     print("\n(FID/KID lower=better, CMMD/MED3D lower=better, PCA%=shape-pass higher=better, DIV higher=better; full panel + KID in JSON)")
 
+    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Wrote %s", args.output)

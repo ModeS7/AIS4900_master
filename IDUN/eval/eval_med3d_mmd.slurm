@@ -61,4 +61,4 @@ time python -m medgen.scripts.eval_med3d_mmd \
     --bootstrap 100 \
     --batch-size 2 \
     --seed 42 \
-    --output IDUN/output/eval/med3d_mmd_${SLURM_JOB_ID}.json
+    --output runs/eval/med3d_mmd_${SLURM_JOB_ID}.json
