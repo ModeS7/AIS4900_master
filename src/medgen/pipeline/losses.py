@@ -193,7 +193,7 @@ def compute_pseudo_huber_loss(
         return ((sq_norm + c * c).sqrt() - c).mean()
 
 
-def compute_lpips_huber_loss(
+def compute_weighted_huber_loss(
     prediction: Tensor,
     target: Tensor | dict[str, Tensor],
     timesteps: Tensor,
@@ -201,17 +201,18 @@ def compute_lpips_huber_loss(
 ) -> Tensor:
     """(1-t)-weighted Pseudo-Huber loss.
 
-    Shared by BOTH loss_type='lpips_huber' and loss_type='weighted_huber'.
-    From "Improving Training of Rectified Flows" (Lee et al., NeurIPS 2024).
-    Paper formula (Eq. in Section 3.2):
+    Shared by BOTH loss_type='weighted_huber' and loss_type='perceptual_huber'
+    (alias 'lpips_huber'). From "Improving Training of Rectified Flows"
+    (Lee et al., NeurIPS 2024). Paper formula (Eq. in Section 3.2):
 
-        L = (1-t) * Huber(v_target, v_pred) + LPIPS(x₀, x̂₀)
+        L = (1-t) * Huber(v_target, v_pred) + perceptual(x₀, x̂₀)
 
     This function computes ONLY the (1-t)*Huber term (the shared part).
-    - weighted_huber: this term alone (Huber-only).
-    - lpips_huber:    this term PLUS the LPIPS term, which is computed separately
-                      in the trainer (constant weight, gated on perceptual_weight>0
-                      — enforced in DiffusionTrainerBase). Matching the paper.
+    - weighted_huber:   this term alone (Huber-only).
+    - perceptual_huber: this term PLUS a perceptual term (backbone =
+                        perceptual_network_type; true LPIPS only if vgg/alex),
+                        computed separately in the trainer (constant weight, gated
+                        on perceptual_weight>0 — enforced in DiffusionTrainerBase).
 
     Convention (MONAI RFlowScheduler, same as Lee et al.):
         t=0 → clean data,  t=T (t_norm=1) → pure noise.
@@ -254,6 +255,10 @@ def compute_lpips_huber_loss(
         per_sample = (sq_norm + c * c).sqrt() - c
 
     return (per_sample * weight).mean()
+
+
+# Deprecated alias (old name); prefer compute_weighted_huber_loss.
+compute_lpips_huber_loss = compute_weighted_huber_loss
 
 
 def compute_region_weighted_mse(

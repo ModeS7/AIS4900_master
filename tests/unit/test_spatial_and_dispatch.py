@@ -113,9 +113,12 @@ class TestGetPoolingFn:
 # ============================================================================
 
 class TestComputeLpipsDispatch:
-    """Tests for compute_lpips_dispatch()."""
+    """Tests for compute_perceptual_distance_dispatch() (alias: compute_lpips_dispatch).
 
-    @patch('medgen.metrics.quality.compute_lpips', return_value=0.1)
+    Dispatch imports the canonical compute_perceptual_distance* names, so patch those.
+    """
+
+    @patch('medgen.metrics.quality.compute_perceptual_distance', return_value=0.1)
     def test_routes_to_2d(self, mock_fn):
         from medgen.metrics.dispatch import compute_lpips_dispatch
         pred = torch.randn(2, 1, 64, 64)
@@ -124,12 +127,12 @@ class TestComputeLpipsDispatch:
         mock_fn.assert_called_once()
         assert result == 0.1
 
-    @patch('medgen.metrics.quality.compute_lpips_3d', return_value=0.2)
+    @patch('medgen.metrics.quality.compute_perceptual_distance_3d', return_value=0.2)
     def test_routes_to_3d(self, mock_fn):
-        from medgen.metrics.dispatch import compute_lpips_dispatch
+        from medgen.metrics.dispatch import compute_perceptual_distance_dispatch
         pred = torch.randn(2, 1, 16, 64, 64)
         gt = torch.randn(2, 1, 16, 64, 64)
-        result = compute_lpips_dispatch(pred, gt, spatial_dims=3)
+        result = compute_perceptual_distance_dispatch(pred, gt, spatial_dims=3)
         mock_fn.assert_called_once()
         assert result == 0.2
 

@@ -48,7 +48,7 @@ from medgen.diffusion import (
     RFlowStrategy,
 )
 
-from .base_config import StrategyConfig, validate_lpips_huber_perceptual
+from .base_config import StrategyConfig, validate_perceptual_huber_requires_weight
 from .base_trainer import BaseTrainer
 from .diffusion_config import (
     AugmentedDiffusionConfig,
@@ -125,10 +125,10 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         # RFlow loss shape: pseudo_huber, lpips_huber, weighted_huber (exp1g / exp1h)
         self.velocity_loss_type: str = sc.loss_type if self.strategy_name == 'rflow' else 'mse'
 
-        # Fail-fast: `lpips_huber` is only the (1-t)-weighted Huber HALF of the
-        # Lee et al. loss; its LPIPS half needs perceptual_weight>0 (bit exp48c/
-        # exp47c). Enforced by a pure validator so it's unit-testable.
-        validate_lpips_huber_perceptual(
+        # Fail-fast: `perceptual_huber` (alias `lpips_huber`) is only the (1-t)-weighted
+        # Huber HALF of the Lee et al. loss; its perceptual half needs perceptual_weight>0
+        # (bit exp48c/exp47c). Enforced by a pure validator so it's unit-testable.
+        validate_perceptual_huber_requires_weight(
             strategy_name=self.strategy_name,
             velocity_loss_type=self.velocity_loss_type,
             shifted_loss_type=str(cfg.training.get('shifted_loss_type', '') or ''),

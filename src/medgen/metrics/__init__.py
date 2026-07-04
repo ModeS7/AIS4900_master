@@ -26,15 +26,19 @@ from .quality import (
     compute_msssim,
     compute_msssim_2d_slicewise,
     compute_psnr,
-    compute_lpips,
-    compute_lpips_3d,
+    compute_perceptual_distance,
+    compute_perceptual_distance_3d,
+    compute_lpips,          # deprecated alias of compute_perceptual_distance
+    compute_lpips_3d,       # deprecated alias of compute_perceptual_distance_3d
     reset_msssim_nan_warning,
     reset_lpips_nan_warning,
     clear_metric_caches,
     # Diversity metrics
-    compute_lpips_diversity,
+    compute_perceptual_diversity,
+    compute_perceptual_diversity_3d,
+    compute_lpips_diversity,        # deprecated alias of compute_perceptual_diversity
     compute_msssim_diversity,
-    compute_lpips_diversity_3d,
+    compute_lpips_diversity_3d,     # deprecated alias of compute_perceptual_diversity_3d
     compute_msssim_diversity_3d,
 )
 from .regional import (
@@ -69,7 +73,8 @@ from .tracking import (
     CodebookTracker,
 )
 from .dispatch import (
-    compute_lpips_dispatch,
+    compute_perceptual_distance_dispatch,
+    compute_lpips_dispatch,   # deprecated alias of compute_perceptual_distance_dispatch
     compute_msssim_dispatch,
     create_lpips_fn,
 )
@@ -92,15 +97,19 @@ __all__ = [
     'compute_msssim',
     'compute_msssim_2d_slicewise',
     'compute_psnr',
-    'compute_lpips',
-    'compute_lpips_3d',
+    'compute_perceptual_distance',
+    'compute_perceptual_distance_3d',
+    'compute_lpips',       # deprecated alias
+    'compute_lpips_3d',    # deprecated alias
     'reset_msssim_nan_warning',
     'reset_lpips_nan_warning',
     'clear_metric_caches',
     # Diversity metrics
-    'compute_lpips_diversity',
+    'compute_perceptual_diversity',
+    'compute_perceptual_diversity_3d',
+    'compute_lpips_diversity',       # deprecated alias
     'compute_msssim_diversity',
-    'compute_lpips_diversity_3d',
+    'compute_lpips_diversity_3d',    # deprecated alias
     'compute_msssim_diversity_3d',
     # Regional metrics
     'BaseRegionalMetricsTracker',
@@ -135,7 +144,8 @@ __all__ = [
     'create_worst_batch_figure_3d',
     'CodebookTracker',
     # Dispatch utilities
-    'compute_lpips_dispatch',
+    'compute_perceptual_distance_dispatch',
+    'compute_lpips_dispatch',   # deprecated alias
     'compute_msssim_dispatch',
     'create_lpips_fn',
     # Brain mask validation

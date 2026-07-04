@@ -183,12 +183,15 @@ class StrategyConfig:
     sigma_data: float = 0.0  # EDM preconditioning. 0 = disabled, 0.08 = bravo [0,1]
 
     # RFlow loss shape (exp1g / exp1h)
-    # NOTE: lpips_huber = (1-t)-weighted Huber + LPIPS, but the LPIPS half is a
-    # SEPARATE perceptual term gated on training.perceptual_weight>0. lpips_huber
-    # WITHOUT perceptual_weight silently drops LPIPS (bit exp48c/exp47c). Use
-    # weighted_huber for the (1-t)-Huber-alone recipe; lpips_huber now REQUIRES
-    # perceptual_weight>0 (validated in DiffusionTrainerBase).
-    loss_type: str = 'mse'   # mse | pseudo_huber | lpips_huber | weighted_huber | l1
+    # NOTE: perceptual_huber = (1-t)-weighted Huber + a perceptual term. The perceptual
+    # half is SEPARATE, gated on training.perceptual_weight>0; its backbone is
+    # perceptual_network_type (default RadImageNet — a perceptual loss, NOT necessarily
+    # true LPIPS: only vgg/alex/squeeze backbones are LPIPS). Selecting it WITHOUT
+    # perceptual_weight silently drops the perceptual half (bit exp48c/exp47c), so it now
+    # REQUIRES perceptual_weight>0 (validated in DiffusionTrainerBase). Use weighted_huber
+    # for the (1-t)-Huber-alone recipe. `lpips_huber` is a DEPRECATED ALIAS of
+    # perceptual_huber (kept for old configs; it was always a misnomer with the RadImageNet default).
+    loss_type: str = 'mse'   # mse | pseudo_huber | perceptual_huber (alias: lpips_huber) | weighted_huber | l1
 
     def __post_init__(self):
         valid_names = ('ddpm', 'rflow', 'irsde', 'resfusion', 'bridge')
@@ -202,7 +205,7 @@ class StrategyConfig:
         )
         if self.ode_solver not in valid_solvers:
             raise ValueError(f"ode_solver must be one of {valid_solvers}, got '{self.ode_solver}'")
-        valid_loss_types = ('mse', 'pseudo_huber', 'lpips_huber', 'weighted_huber', 'l1')
+        valid_loss_types = ('mse', 'pseudo_huber', 'perceptual_huber', 'lpips_huber', 'weighted_huber', 'l1')
         if self.loss_type not in valid_loss_types:
             raise ValueError(f"loss_type must be one of {valid_loss_types}, got '{self.loss_type}'")
 
@@ -227,38 +230,48 @@ class StrategyConfig:
         )
 
 
-def validate_lpips_huber_perceptual(
+# Loss types whose name promises a perceptual term (canonical + deprecated alias).
+PERCEPTUAL_HUBER_LOSS_TYPES = ('perceptual_huber', 'lpips_huber')
+
+
+def validate_perceptual_huber_requires_weight(
     strategy_name: str,
     velocity_loss_type: str,
     shifted_loss_type: str,
     perceptual_weight: float,
 ) -> None:
-    """Fail-fast: `lpips_huber` requires perceptual_weight>0.
+    """Fail-fast: `perceptual_huber` (and its alias `lpips_huber`) require perceptual_weight>0.
 
-    `lpips_huber` (as loss_type or shifted_loss_type) computes ONLY the
-    (1-t)-weighted Huber term; the LPIPS half of L=(1-t)*Huber+LPIPS is a
-    SEPARATE perceptual term gated on perceptual_weight>0. Naming it `lpips_huber`
-    without setting perceptual_weight silently drops LPIPS — this bit exp48c and
+    `perceptual_huber`/`lpips_huber` (as loss_type or shifted_loss_type) computes
+    ONLY the (1-t)-weighted Huber term; the perceptual half of
+    L=(1-t)*Huber+perceptual is a SEPARATE term gated on perceptual_weight>0
+    (backbone = perceptual_network_type). Selecting it without setting
+    perceptual_weight silently drops the perceptual half — this bit exp48c and
     exp47c (both ran Huber-only despite the name). Use `weighted_huber` for the
     honest Huber-only recipe. Only RFlow honors these loss types.
 
     Raises:
-        ValueError: if lpips_huber is selected with perceptual_weight<=0.
+        ValueError: if perceptual_huber/lpips_huber is selected with perceptual_weight<=0.
     """
     if strategy_name != 'rflow':
         return
-    uses_lpips_huber = (
-        velocity_loss_type == 'lpips_huber' or shifted_loss_type == 'lpips_huber'
+    uses_perceptual_huber = (
+        velocity_loss_type in PERCEPTUAL_HUBER_LOSS_TYPES
+        or shifted_loss_type in PERCEPTUAL_HUBER_LOSS_TYPES
     )
-    if uses_lpips_huber and (perceptual_weight or 0.0) <= 0:
+    if uses_perceptual_huber and (perceptual_weight or 0.0) <= 0:
         raise ValueError(
-            "loss_type/shifted_loss_type='lpips_huber' computes ONLY the "
-            "(1-t)-weighted Huber term; its LPIPS half requires "
-            "training.perceptual_weight>0 (got "
+            "loss_type/shifted_loss_type='perceptual_huber' (alias 'lpips_huber') "
+            "computes ONLY the (1-t)-weighted Huber term; its perceptual half "
+            "requires training.perceptual_weight>0 (got "
             f"{perceptual_weight}). Either set training.perceptual_weight>0 to "
-            "include LPIPS, or use loss_type='weighted_huber' for the Huber-only "
-            "recipe (this is what exp48c/exp47c actually ran)."
+            "include the perceptual term, or use loss_type='weighted_huber' for "
+            "the Huber-only recipe (this is what exp48c/exp47c actually ran)."
         )
+
+
+# Deprecated alias (old import name); prefer validate_perceptual_huber_requires_weight.
+validate_lpips_huber_perceptual = validate_perceptual_huber_requires_weight
 
 
 # =============================================================================

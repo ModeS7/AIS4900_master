@@ -964,5 +964,15 @@ The training dataloader (`seg.py`) reads from config in the correct `(D, H, W)` 
 
 **Fix**:
 - New honest loss type **`weighted_huber`** = the `(1-t)`-Huber alone (same math, no perceptual requirement). exp48c/exp47c slurms switched to it.
-- **`lpips_huber` now hard-errors** if `perceptual_weight<=0` — `validate_lpips_huber_perceptual()` in `base_config.py`, called from `DiffusionTrainerBase.__init__`. Fail-fast at startup instead of silent drop.
+- Renamed `lpips_huber` → **`perceptual_huber`** (canonical); `lpips_huber` kept as a deprecated alias. Both **hard-error** if `perceptual_weight<=0` — `validate_perceptual_huber_requires_weight()` in `base_config.py`, called from `DiffusionTrainerBase.__init__`. Fail-fast at startup instead of silent drop.
 - Regression tests in `tests/unit/test_config_validation.py::TestLpipsHuberPerceptualGuard`.
+
+## 90. "LPIPS" Metric Is Actually RadImageNet Perceptual Distance, Not LPIPS (Renamed July 2026)
+
+**Problem**: `compute_lpips()` (and `_3d`, `_diversity`, `_diversity_3d`, `_dispatch`) default to `network_type="radimagenet_resnet50"`. **RadImageNet-ResNet50 is not LPIPS.** True LPIPS (Zhang et al. 2018) = AlexNet/VGG/SqueezeNet features **+ a linear head trained on human perceptual judgments**; these functions are a plain feature-space distance on a *medical-imaging* backbone with no learned head. An audit found **no caller anywhere overrides the backbone** — so every logged `Validation/LPIPS`, `Generation_Diversity/LPIPS`, and every "Test LPIPS" number in the docs is really a **RadImageNet perceptual distance**.
+
+**Genuine LPIPS in the repo (left alone)**: `LPIPSLoss` (DC-AE compression, vgg backbone), `lpips.LPIPS(net='alex')` in `measure_velocity_breakdown.py`, and `perceptual_network_type=vgg` training runs (exp52c/d).
+
+**Fix (code)**: Renamed the metric functions to **`compute_perceptual_distance*`** (`compute_perceptual_distance`, `_3d`, `compute_perceptual_diversity`, `_3d`, `compute_perceptual_distance_dispatch`); old `compute_lpips*` names kept as **deprecated aliases** so all ~20 call sites and `metrics/__init__` exports keep working. Docstrings now state the backbone caveat.
+
+**Fix (thesis — TODO by author)**: Relabel reported "LPIPS" columns as **"RadImageNet perceptual distance"** (or note the backbone). Affected tables include `docs/experiment_results_3d.md` (exp1* "Test LPIPS" columns, e.g. exp1o_1 best 0.5329) and `docs/experiment_results.md:643` (exp9_4 0.0039 — that one *is* vgg, so it stays LPIPS). **NOT auto-changed**: the live TensorBoard tags (`Validation/LPIPS` etc.) were left as-is to preserve run-to-run plot continuity — changing them is a separate decision.

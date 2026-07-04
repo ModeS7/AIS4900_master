@@ -40,7 +40,9 @@ snr_gamma: 0.0                    # Min-SNR-γ for RFlow. 0 = disabled, 5.0 = st
 sigma_data: 0.0                   # EDM preconditioning. 0 = disabled, 0.08 = bravo [0,1]
 
 # Loss shape (exp1g / exp1h)
-# lpips_huber = (1-t)-Huber + LPIPS, but the LPIPS half needs training.perceptual_weight>0
-#   (else it's silently Huber-only — the exp48c/exp47c bug; now a hard error).
+# perceptual_huber = (1-t)-Huber + a perceptual term; the perceptual half needs
+#   training.perceptual_weight>0 (else it's silently Huber-only — the exp48c/exp47c bug;
+#   now a hard error). Backbone = perceptual_network_type (default RadImageNet, NOT true LPIPS).
 # weighted_huber = the (1-t)-Huber alone (honest name for the exp48c/exp47c as-ran recipe).
-loss_type: mse                    # mse (default), pseudo_huber, lpips_huber, weighted_huber, l1
+# lpips_huber = DEPRECATED alias of perceptual_huber (kept for old configs).
+loss_type: mse                    # mse (default), pseudo_huber, perceptual_huber (alias: lpips_huber), weighted_huber, l1

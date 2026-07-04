@@ -167,7 +167,7 @@ This catches:
 | Doc | Contents |
 |-----|----------|
 | `@docs/architecture.md` | File locations, trainer hierarchy, config structure, TensorBoard metrics |
-| `@docs/common-pitfalls.md` | 88 known issues, bug fixes, and gotchas (numbered 1-89 with #43 intentionally skipped → 88 actual entries) |
+| `@docs/common-pitfalls.md` | 89 known issues, bug fixes, and gotchas (numbered 1-90 with #43 intentionally skipped → 89 actual entries) |
 | `@docs/commands.md` | Full command reference with all options |
 | `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |

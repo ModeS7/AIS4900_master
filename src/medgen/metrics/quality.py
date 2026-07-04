@@ -102,7 +102,7 @@ class _WarningFlags:
 _warning_flags = _WarningFlags()
 
 # Lock for torch.compile operations (not thread-safe)
-# Must be RLock (reentrant) because compute_lpips holds the lock
+# Must be RLock (reentrant) because compute_perceptual_distance holds the lock
 # while calling _get_lpips_metric, which also acquires it.
 _compile_lock = threading.RLock()
 
@@ -339,7 +339,7 @@ def _get_lpips_metric(
     return metric
 
 
-def compute_lpips(
+def compute_perceptual_distance(
     generated: torch.Tensor,
     reference: torch.Tensor,
     device: torch.device | None = None,
@@ -347,9 +347,12 @@ def compute_lpips(
     cache_dir: str | None = None,
     use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
-    """Compute LPIPS (perceptual distance) between generated and reference images.
+    """Compute perceptual distance between generated and reference images.
 
-    Uses MONAI's PerceptualLoss with pretrained feature extractors.
+    A feature-space distance via MONAI's PerceptualLoss. NOTE: with the default
+    ``radimagenet_resnet50`` backbone this is NOT true LPIPS (LPIPS = Zhang et al.
+    2018, AlexNet/VGG/SqueezeNet + a learned linear head); it's a RadImageNet
+    perceptual distance. It is only genuine LPIPS if network_type is vgg/alex/squeeze.
     Lower values indicate more similar images (0 = identical).
 
     Note: Only works with 2D images. For 3D, use MS-SSIM instead.
@@ -439,7 +442,7 @@ def compute_lpips(
 # 2D pretrained networks" problem using a fundamentally different approach.
 
 
-def compute_lpips_3d(
+def compute_perceptual_distance_3d(
     generated: torch.Tensor,
     reference: torch.Tensor,
     device: torch.device | None = None,
@@ -447,11 +450,12 @@ def compute_lpips_3d(
     chunk_size: int = 32,
     use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
-    """Compute LPIPS slice-by-slice for 3D volumes (batched for efficiency).
+    """Compute perceptual distance slice-by-slice for 3D volumes (batched).
 
-    Since LPIPS uses 2D pretrained networks, this reshapes all depth slices
-    into a batch and computes LPIPS in chunked batches for memory efficiency.
-    Previous version ran the network D times per volume; this runs ~D/chunk_size times.
+    Feature-space distance via a 2D backbone applied over depth slices. Default
+    backbone is RadImageNet — NOT true LPIPS (see compute_perceptual_distance).
+    Reshapes all depth slices into a batch and computes in chunked batches for
+    memory efficiency (~D/chunk_size network calls per volume).
 
     Args:
         generated: Generated volumes [B, C, D, H, W] in [0, 1] range.
@@ -485,9 +489,9 @@ def compute_lpips_3d(
         gen_chunk = gen_flat[start:end]
         ref_chunk = ref_flat[start:end]
 
-        # compute_lpips returns a scalar (mean over batch)
+        # compute_perceptual_distance returns a scalar (mean over batch)
         # We need the sum, so multiply by chunk size
-        chunk_lpips = compute_lpips(gen_chunk, ref_chunk, device=device, network_type=network_type, use_compile=use_compile)
+        chunk_lpips = compute_perceptual_distance(gen_chunk, ref_chunk, device=device, network_type=network_type, use_compile=use_compile)
         total_lpips += chunk_lpips * (end - start)
 
     return total_lpips / total_slices
@@ -628,15 +632,16 @@ def compute_iou(
 # =============================================================================
 
 @torch.no_grad()
-def compute_lpips_diversity(
+def compute_perceptual_diversity(
     samples: torch.Tensor,
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
     use_compile: bool = _COMPILE_DEFAULT,
 ) -> float:
-    """Compute mean pairwise LPIPS diversity between generated samples.
+    """Compute mean pairwise perceptual-distance diversity between samples.
 
-    Measures how different the generated samples are from each other.
+    Measures how different the generated samples are from each other in the
+    backbone's feature space (default RadImageNet — NOT true LPIPS).
     Higher values indicate more diversity (less mode collapse).
 
     Args:
@@ -667,7 +672,7 @@ def compute_lpips_diversity(
             img_i = samples[i:i+1]  # [1, C, H, W]
             img_j = samples[j:j+1]  # [1, C, H, W]
 
-            lpips_dist = compute_lpips(img_i, img_j, device=device, network_type=network_type, use_compile=use_compile)
+            lpips_dist = compute_perceptual_distance(img_i, img_j, device=device, network_type=network_type, use_compile=use_compile)
             total_lpips += lpips_dist
             num_pairs += 1
 
@@ -715,13 +720,15 @@ def compute_msssim_diversity(
 
 
 @torch.no_grad()
-def compute_lpips_diversity_3d(
+def compute_perceptual_diversity_3d(
     volumes: torch.Tensor,
     device: torch.device | None = None,
     network_type: str = "radimagenet_resnet50",
     use_compile: bool = False,
 ) -> float:
-    """Compute mean pairwise LPIPS diversity for 3D volumes (same-slice comparison).
+    """Compute mean pairwise perceptual-distance diversity for 3D volumes (same-slice).
+
+    Default backbone RadImageNet — NOT true LPIPS (see compute_perceptual_distance).
 
     Compares the same slice index across different volumes, then averages.
     This measures generation diversity without mixing anatomical variation.
@@ -757,8 +764,8 @@ def compute_lpips_diversity_3d(
         # Get slice d from all volumes: [B, C, H, W]
         slices = volumes[:, :, d, :, :]
 
-        # Compute pairwise LPIPS for this slice across volumes
-        slice_diversity = compute_lpips_diversity(slices, device=device, network_type=network_type, use_compile=use_compile)
+        # Compute pairwise perceptual-distance diversity for this slice across volumes
+        slice_diversity = compute_perceptual_diversity(slices, device=device, network_type=network_type, use_compile=use_compile)
         total_diversity += slice_diversity
         num_slices += 1
 
@@ -805,3 +812,15 @@ def compute_msssim_diversity_3d(
         num_slices += 1
 
     return total_diversity / num_slices if num_slices > 0 else 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Deprecated aliases. These metrics were historically named "LPIPS", but they are
+# perceptual distances with a CONFIGURABLE backbone that DEFAULTS to RadImageNet —
+# which is NOT true LPIPS (Zhang et al. 2018 = AlexNet/VGG/SqueezeNet + learned head).
+# Kept so existing imports/call sites keep working; prefer the compute_perceptual_* names.
+# ─────────────────────────────────────────────────────────────────────────────
+compute_lpips = compute_perceptual_distance
+compute_lpips_3d = compute_perceptual_distance_3d
+compute_lpips_diversity = compute_perceptual_diversity
+compute_lpips_diversity_3d = compute_perceptual_diversity_3d
