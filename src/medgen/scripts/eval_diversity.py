@@ -211,7 +211,7 @@ def diversity_with_ci(
         "pool_size": int(B),
         "full_pool_diversity": float(full),
         "subsample_n": int(n),
-        "bootstrap_draws": int(len(draws)),
+        "bootstrap_draws": len(draws),
     }
     if len(draws):
         result.update(
@@ -312,7 +312,7 @@ def main() -> None:
             torch.cuda.empty_cache()
 
     # Console table.
-    print("\n=== Diversity report ({}), higher = more diverse ===".format(args.metric))
+    print(f"\n=== Diversity report ({args.metric}), higher = more diverse ===")
     print(f"{'dataset':30s} {'found':>6s} {'pool':>5s} {'fullN':>8s}  {'mean@N':>8s} {'95% CI':>17s}")
     for label, res in report["datasets"].items():
         ci = (
