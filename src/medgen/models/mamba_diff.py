@@ -349,7 +349,6 @@ class MambaDiff(nn.Module):
             grid_h = input_size // patch_size
             grid_w = grid_h
             self.grid_shape = (grid_h, grid_w)
-            num_patches = grid_h * grid_w
             pos_embed_data = get_2d_sincos_pos_embed(dims[0], grid_h)
         else:
             self.patch_embed = PatchEmbed3D(
@@ -360,7 +359,6 @@ class MambaDiff(nn.Module):
             grid_h = input_size // patch_size
             grid_w = grid_h
             self.grid_shape = (grid_d, grid_h, grid_w)
-            num_patches = grid_d * grid_h * grid_w
             pos_embed_data = get_3d_sincos_pos_embed(dims[0], grid_d, grid_h, grid_w)
 
         self.pos_embed = nn.Parameter(

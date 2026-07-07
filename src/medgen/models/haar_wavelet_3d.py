@@ -154,8 +154,6 @@ def haar_inverse_3d(z: Tensor, in_channels: int = 1) -> Tensor:
             f"Channel count must be divisible by 8, got {total_channels}"
         )
 
-    C = total_channels // 8
-
     # Unpack 8 subbands from channel dimension
     lll, llh, lhl, lhh, hll, hlh, hhl, hhh = z.chunk(8, dim=1)
     # Each: [B, C, D/2, H/2, W/2]

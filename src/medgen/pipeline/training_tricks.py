@@ -646,7 +646,6 @@ def compute_sda_loss(
         Requires trainer.sda to be set (i.e., SDA is enabled).
         SDA is mutually exclusive with ScoreAug.
     """
-    device = images.device if not isinstance(images, dict) else next(iter(images.values())).device
     is_dual = isinstance(images, dict)
 
     if is_dual:

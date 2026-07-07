@@ -874,8 +874,6 @@ class RFlowStrategy(DiffusionStrategy):
         # Parse model input into components
         parsed = self._parse_model_input(model_input, latent_channels=latent_channels)
         noisy_images = parsed.noisy_images
-        noisy_pre = parsed.noisy_pre
-        noisy_gd = parsed.noisy_gd
         image_conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 
@@ -975,10 +973,6 @@ class RFlowStrategy(DiffusionStrategy):
                 for ci in range(n):
                     velocity = self._to_velocity(preds[ci], noisy_channels[ci], timesteps_batch)
                     noisy_channels[ci], _ = self.scheduler.step(velocity, t, noisy_channels[ci], next_timestep)
-
-                # Keep noisy_pre/noisy_gd in sync (for backward compat in return)
-                noisy_pre = noisy_channels[0]
-                noisy_gd = noisy_channels[1]
 
             else:
                 # Single image or unconditional

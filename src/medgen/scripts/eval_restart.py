@@ -432,7 +432,6 @@ def _run_smoke_test() -> None:
     trim_slices = 2
     num_volumes = 2
     seed = 42
-    voxel_size = (1.0, 1.0, 1.0)
 
     logger.info("=== SMOKE TEST (output: %s) ===", output_dir)
 

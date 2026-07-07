@@ -266,7 +266,6 @@ def visualize_denoising_trajectory_3d(
 
     # Extract parameters for decoupled generation functions
     num_train_timesteps = trainer.scheduler.num_train_timesteps if trainer.scheduler is not None else 1000
-    is_conditional = trainer.mode.is_conditional
     latent_channels = trainer.space.latent_channels
     scale_factor = trainer.space.scale_factor
 

@@ -233,7 +233,6 @@ def main():
     logger.info(f"Loading {len(bravo_files)} volumes from {val_dir}")
 
     voxel_size = (240.0 / pixel_image_size, 240.0 / pixel_image_size, 1.0)
-    trim_slices = 10
 
     # ── Run tests ──
     noise_levels = [0, 100, 250, 500, 750, 900, 1000]

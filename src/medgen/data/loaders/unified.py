@@ -907,9 +907,6 @@ def _create_compression_3d_loader(
     is kept for interface consistency with 2D loaders.
     """
     from medgen.data.loaders import volume_3d
-    from medgen.data.loaders.volume_3d import VolumeConfig
-
-    vol_cfg = VolumeConfig.from_cfg(cfg)
 
     if mode == 'seg_compression':
         raise ValueError("3D seg_compression mode not yet supported")

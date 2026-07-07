@@ -294,9 +294,6 @@ def _infer_vae_config_from_state_dict(state_dict: dict) -> dict:
     resblock_indices = [i for i in sorted_indices if block_types[i] == 'resblock']
     downsample_indices = sorted(i for i in sorted_indices if block_types[i] == 'downsample')
 
-    # Number of downsamples = number of levels - 1
-    num_levels = len(downsample_indices) + 1
-
     # Group ResBlocks into levels (before each downsample = one level)
     levels: list[list[int]] = []
     remaining_resblocks = list(resblock_indices)

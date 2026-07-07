@@ -93,7 +93,6 @@ src/medgen/
 │   ├── figures.py               # Reconstruction figures
 │   ├── constants.py             # RANO-BM tumor size thresholds
 │   ├── brain_mask.py            # Brain mask utilities
-│   ├── codebook_manager.py      # VQ-VAE codebook tracking
 │   ├── dispatch.py              # Metric dispatch by trainer type
 │   ├── metric_computation.py    # Metric computation utilities
 │   ├── metric_logger.py         # Metric logging
@@ -153,13 +152,10 @@ src/medgen/
 │   ├── dcae_trainer.py          # DCAETrainer (unified 2D/3D via .create_3d())
 │   ├── checkpoint_manager.py    # Checkpoint save/load management
 │   ├── checkpointing.py         # Checkpoint utilities
-│   ├── compile_manager.py       # torch.compile management
 │   ├── discriminator_manager.py # GAN discriminator lifecycle
-│   ├── gen_metrics_manager.py   # Generation metrics management
 │   ├── evaluation.py            # Legacy test evaluation
 │   ├── validation.py            # Legacy validation
 │   ├── visualization.py         # Validation visualization
-│   ├── loss_helper.py           # Loss computation helpers
 │   ├── losses.py                # Pipeline-level loss wrappers
 │   ├── profiling.py             # Training profiling
 │   ├── results.py               # TrainingStepResult dataclass
@@ -1574,12 +1570,9 @@ Verbatim from `src/medgen/pipeline/checkpoint_manager.py:155-180`:
 - `src/medgen/pipeline/vqvae_trainer.py`: VQVAETrainer (unified 2D/3D via .create_3d())
 - `src/medgen/pipeline/dcae_trainer.py`: DCAETrainer (unified 2D/3D via .create_3d())
 - `src/medgen/pipeline/checkpoint_manager.py`: Checkpoint save/load management
-- `src/medgen/pipeline/compile_manager.py`: torch.compile management
 - `src/medgen/pipeline/discriminator_manager.py`: GAN discriminator lifecycle
-- `src/medgen/pipeline/gen_metrics_manager.py`: Generation metrics management
 - `src/medgen/pipeline/training_tricks.py`: Training trick configs (gradient noise, curriculum, etc.)
 - `src/medgen/pipeline/results.py`: TrainingStepResult dataclass
-- `src/medgen/pipeline/loss_helper.py`: Loss computation helpers
 - `src/medgen/pipeline/utils.py`: Shared utilities
 - `src/medgen/pipeline/optimizers/sam.py`: SAM/ASAM optimizer wrapper
 

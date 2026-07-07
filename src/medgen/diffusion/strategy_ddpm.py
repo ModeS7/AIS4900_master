@@ -321,8 +321,6 @@ class DDPMStrategy(DiffusionStrategy):
         # Parse model input into components
         parsed = self._parse_model_input(model_input, latent_channels=latent_channels)
         noisy_images = parsed.noisy_images
-        noisy_pre = parsed.noisy_pre
-        noisy_gd = parsed.noisy_gd
         image_conditioning = parsed.conditioning
         is_dual = parsed.is_dual
 

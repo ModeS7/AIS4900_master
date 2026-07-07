@@ -919,7 +919,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if generated > 0:
             logger.info(f"Resuming from sample {generated}/{cfg.num_images}")
         total_retries = 0
-        brain_retries = 0
         max_brain_retries = cfg.get('max_brain_retries', 5)
         outer_retries = 0  # retries per sample (reset on successful save)
         max_outer_retries = cfg.get('max_outer_retries', 20)

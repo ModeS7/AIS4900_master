@@ -268,8 +268,6 @@ def estimate_adaptive_thresholds(
             "estimate_adaptive_thresholds before running."
         )
 
-    batch_size = sample_shape[0] if len(sample_shape) > 3 else 1
-
     # Compute input_img_size_numel for scheduler (spatial dims only, no channels)
     # Must match strategy_rflow.py generate() computation
     if len(sample_shape) == 5:

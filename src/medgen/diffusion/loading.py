@@ -342,7 +342,7 @@ def load_diffusion_model_with_metadata(
         if 'pos_embed' in state_dict:
             pe_shape = state_dict['pos_embed'].shape
             if resolved_spatial_dims == 3 and len(pe_shape) == 5:
-                d_grid, h_grid, w_grid = pe_shape[1], pe_shape[2], pe_shape[3]
+                d_grid, h_grid, _w_grid = pe_shape[1], pe_shape[2], pe_shape[3]
                 inferred_depth = d_grid * patch_size
                 inferred_input = h_grid * patch_size
                 if inferred_depth != mamba_depth_size or inferred_input != mamba_input_size:
@@ -353,7 +353,7 @@ def load_diffusion_model_with_metadata(
                 mamba_depth_size = inferred_depth
                 mamba_input_size = inferred_input
             elif resolved_spatial_dims == 2 and len(pe_shape) == 4:
-                h_grid, w_grid = pe_shape[1], pe_shape[2]
+                h_grid, _w_grid = pe_shape[1], pe_shape[2]
                 inferred_input = h_grid * patch_size
                 if inferred_input != mamba_input_size:
                     logger.info(

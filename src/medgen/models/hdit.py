@@ -299,11 +299,9 @@ class HDiT(nn.Module):
         for _i, grid in enumerate(self.grid_dims_per_level):
             if spatial_dims == 2:
                 gh, gw = grid
-                num_tokens = gh * gw
                 sincos = get_2d_sincos_pos_embed(hidden_size, gh)
             else:
                 gd, gh, gw = grid
-                num_tokens = gd * gh * gw
                 sincos = get_3d_sincos_pos_embed(hidden_size, gd, gh, gw)
             pe = nn.Parameter(torch.from_numpy(sincos).float().unsqueeze(0))
             self.pos_embeds.append(pe)
