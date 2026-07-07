@@ -51,27 +51,33 @@ conda activate AIS4900
 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
 
 # ============================================================================
-# TRAINING EXAMPLES (uncomment one):
+# TRAINING EXAMPLES (uncomment one). RFlow is the primary strategy.
+# Resolution: model.image_size=256 (there is no separate unet_256 config).
+# 3D (model.spatial_dims=3) and 256x256 need more --mem than the 16G default
+# above — see the memory rubric in the SBATCH header.
 # ============================================================================
 
-# DDPM 128 bravo (default)
-time python -m medgen.scripts.train paths=cluster
+# RFlow 2D bravo, 128x128 (fits --mem=16G)
+time python -m medgen.scripts.train paths=cluster mode=bravo strategy=rflow
 
-# RFlow 128 bravo
-# time python -m medgen.scripts.train paths=cluster strategy=rflow
+# RFlow 3D bravo, 256x256x160 (primary workflow — needs --mem=32G)
+# time python -m medgen.scripts.train paths=cluster mode=bravo strategy=rflow model.spatial_dims=3
 
-# DDPM 128 seg (unconditional mask generation)
-# time python -m medgen.scripts.train paths=cluster mode=seg
+# RFlow 2D bravo, 256x256 (needs --mem=64G)
+# time python -m medgen.scripts.train paths=cluster mode=bravo strategy=rflow model.image_size=256
 
-# DDPM 256 dual (T1 pre + post)
-# time python -m medgen.scripts.train paths=cluster mode=dual model=unet_256
+# RFlow seg (unconditional mask generation)
+# time python -m medgen.scripts.train paths=cluster mode=seg strategy=rflow
+
+# RFlow dual (T1 pre + post)
+# time python -m medgen.scripts.train paths=cluster mode=dual strategy=rflow
 
 # Custom overrides
-# time python -m medgen.scripts.train paths=cluster training.epochs=1000 training.batch_size=32
+# time python -m medgen.scripts.train paths=cluster mode=bravo strategy=rflow training.epochs=1000 training.batch_size=32
 
 # ============================================================================
 # MULTI-GPU (requires: --gres=gpu:4, --ntasks-per-node=4, --mem=128G)
 # ============================================================================
-# time srun python -m medgen.scripts.train paths=cluster training.use_multi_gpu=true model=unet_256
+# time srun python -m medgen.scripts.train paths=cluster mode=bravo strategy=rflow model.image_size=256 training.use_multi_gpu=true
 
 conda deactivate
