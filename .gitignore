@@ -31,6 +31,9 @@ eval/obj_eval/cache/
 # benchmark outputs
 misc/bench/benchmark_results/
 
+# script-generated figures (e.g. compare_histograms.py --output default)
+misc/histogram_comparison.png
+
 # Logs
 /runs/
 *.log
