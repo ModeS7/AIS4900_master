@@ -72,7 +72,7 @@ class MetricAccumulator:
         Returns:
             Dict of computed metrics for this batch.
         """
-        from .dispatch import compute_lpips_dispatch, compute_msssim_dispatch
+        from .dispatch import compute_msssim_dispatch, compute_perceptual_distance_dispatch
         from .quality import compute_psnr
 
         batch_metrics = {}
@@ -90,7 +90,7 @@ class MetricAccumulator:
             batch_metrics['msssim'] = msssim
 
         if self.compute_lpips_flag:
-            lpips = compute_lpips_dispatch(pred, target, self.spatial_dims, device=self.device)
+            lpips = compute_perceptual_distance_dispatch(pred, target, self.spatial_dims, device=self.device)
             self._lpips_sum += lpips
             self._lpips_count += 1
             batch_metrics['lpips'] = lpips

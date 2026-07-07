@@ -41,7 +41,7 @@ import torch
 import torch.nn.functional as F
 
 from medgen.data.utils import save_nifti
-from medgen.metrics.quality import compute_lpips_3d
+from medgen.metrics.quality import compute_perceptual_distance_3d
 from medgen.scripts.analyze_generation_spectrum import (
     BANDS,
     compute_radial_power_spectrum_3d,
@@ -174,7 +174,7 @@ def main() -> None:
     baseline_lpips_vals = []
     for i in range(real_stack_t.shape[0]):
         for j in range(synth_stack_t.shape[0]):
-            val = compute_lpips_3d(real_stack_t[i:i + 1], synth_stack_t[j:j + 1],
+            val = compute_perceptual_distance_3d(real_stack_t[i:i + 1], synth_stack_t[j:j + 1],
                                    device=device, chunk_size=32)
             baseline_lpips_vals.append(float(val))
     baseline_lpips = float(np.mean(baseline_lpips_vals))
@@ -235,7 +235,7 @@ def main() -> None:
         lpips_vals = []
         for i in range(real_stack_t.shape[0]):
             for j in range(mixed_stack_t.shape[0]):
-                val = compute_lpips_3d(real_stack_t[i:i + 1], mixed_stack_t[j:j + 1],
+                val = compute_perceptual_distance_3d(real_stack_t[i:i + 1], mixed_stack_t[j:j + 1],
                                        device=device, chunk_size=32)
                 lpips_vals.append(float(val))
         mixed_lpips = float(np.mean(lpips_vals))

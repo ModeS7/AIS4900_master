@@ -223,8 +223,8 @@ class TestLpipsFactory:
         trainer.log_lpips = True
         from medgen.pipeline.diffusion_trainer_base import DiffusionTrainerBase
         fn = DiffusionTrainerBase._create_lpips_fn(trainer)
-        from medgen.metrics import compute_lpips
-        assert fn is compute_lpips
+        from medgen.metrics import compute_perceptual_distance
+        assert fn is compute_perceptual_distance
 
     def test_3d_returns_3d_function(self):
         """3D trainer with log_lpips=True gets 3D LPIPS function."""
@@ -232,8 +232,8 @@ class TestLpipsFactory:
         trainer.log_lpips = True
         from medgen.pipeline.diffusion_trainer_base import DiffusionTrainerBase
         fn = DiffusionTrainerBase._create_lpips_fn(trainer)
-        from medgen.metrics import compute_lpips_3d
-        assert fn is compute_lpips_3d
+        from medgen.metrics import compute_perceptual_distance_3d
+        assert fn is compute_perceptual_distance_3d
 
 
 class TestSpatialDimsParameter:

@@ -38,7 +38,7 @@ from torch.amp import autocast
 
 from medgen.data.utils import save_nifti
 from medgen.diffusion import RFlowStrategy, load_diffusion_model
-from medgen.metrics.quality import compute_lpips_3d
+from medgen.metrics.quality import compute_perceptual_distance_3d
 from medgen.scripts.analyze_generation_spectrum import (
     BANDS,
     compute_radial_power_spectrum_3d,
@@ -209,7 +209,7 @@ def main() -> None:
         baseline_vals = []
         for i in range(real_lpips_t.shape[0]):
             for j in range(synth_t.shape[0]):
-                baseline_vals.append(float(compute_lpips_3d(
+                baseline_vals.append(float(compute_perceptual_distance_3d(
                     real_lpips_t[i:i + 1], synth_t[j:j + 1], device=device, chunk_size=32,
                 )))
         baseline_lpips = float(np.mean(baseline_vals))
@@ -250,7 +250,7 @@ def main() -> None:
             lpips_vals = []
             for i in range(real_lpips_t.shape[0]):
                 for j in range(mixed_t.shape[0]):
-                    lpips_vals.append(float(compute_lpips_3d(
+                    lpips_vals.append(float(compute_perceptual_distance_3d(
                         real_lpips_t[i:i + 1], mixed_t[j:j + 1], device=device, chunk_size=32,
                     )))
             mixed_lpips = float(np.mean(lpips_vals))

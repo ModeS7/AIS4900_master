@@ -185,7 +185,7 @@ class PerceptualLossManager:
             spatial_dims: Spatial dimensions (2 or 3).
 
         Returns:
-            compute_lpips for 2D, compute_lpips_3d for 3D.
+            compute_perceptual_distance for 2D, compute_perceptual_distance_3d for 3D.
         """
         from medgen.metrics.dispatch import create_lpips_fn
         return create_lpips_fn(spatial_dims)

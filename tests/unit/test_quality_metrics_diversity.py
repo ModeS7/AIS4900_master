@@ -4,22 +4,22 @@ import pytest
 import torch
 
 from medgen.metrics.quality import (
-    compute_lpips_diversity,
     compute_msssim_diversity,
-    compute_lpips_diversity_3d,
     compute_msssim_diversity_3d,
+    compute_perceptual_diversity,
+    compute_perceptual_diversity_3d,
 )
 
 
 @pytest.mark.usefixtures("lpips_available")
 class TestLPIPSDiversity:
-    """Test compute_lpips_diversity functions for 2D and 3D."""
+    """Test compute_perceptual_diversity functions for 2D and 3D."""
 
     @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
-        ((1, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((1, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((1, 1, 64, 64), compute_perceptual_diversity, "2D"),
+        ((1, 1, 4, 64, 64), compute_perceptual_diversity_3d, "3D"),
     ])
     def test_single_sample_returns_zero(self, shape, func, desc):
         """Need >= 2 samples for diversity."""
@@ -30,8 +30,8 @@ class TestLPIPSDiversity:
     @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,repeat_dims,func,desc", [
-        ((1, 1, 64, 64), (4, 1, 1, 1), compute_lpips_diversity, "2D"),
-        ((1, 1, 4, 64, 64), (2, 1, 1, 1, 1), compute_lpips_diversity_3d, "3D"),
+        ((1, 1, 64, 64), (4, 1, 1, 1), compute_perceptual_diversity, "2D"),
+        ((1, 1, 4, 64, 64), (2, 1, 1, 1, 1), compute_perceptual_diversity_3d, "3D"),
     ])
     def test_identical_samples_returns_near_zero(self, shape, repeat_dims, func, desc):
         """No diversity in identical samples."""
@@ -43,8 +43,8 @@ class TestLPIPSDiversity:
     @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
-        ((4, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((2, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((4, 1, 64, 64), compute_perceptual_diversity, "2D"),
+        ((2, 1, 4, 64, 64), compute_perceptual_diversity_3d, "3D"),
     ])
     def test_diverse_samples_returns_positive(self, shape, func, desc):
         """Random samples have positive diversity."""
@@ -55,8 +55,8 @@ class TestLPIPSDiversity:
     @pytest.mark.timeout(60)
     @pytest.mark.slow
     @pytest.mark.parametrize("shape,func,desc", [
-        ((3, 1, 64, 64), compute_lpips_diversity, "2D"),
-        ((2, 1, 4, 64, 64), compute_lpips_diversity_3d, "3D"),
+        ((3, 1, 64, 64), compute_perceptual_diversity, "2D"),
+        ((2, 1, 4, 64, 64), compute_perceptual_diversity_3d, "3D"),
     ])
     def test_output_is_float(self, shape, func, desc):
         """Returns Python float with valid value."""

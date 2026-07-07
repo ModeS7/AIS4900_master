@@ -33,7 +33,7 @@ from monai.apps.generation.maisi.networks.autoencoderkl_maisi import Autoencoder
 from monai.inferers import SlidingWindowInferer
 
 # Use existing project utilities
-from medgen.metrics.quality import compute_psnr, compute_msssim, compute_lpips_3d
+from medgen.metrics.quality import compute_psnr, compute_msssim, compute_perceptual_distance_3d
 
 
 def load_maisi_vae(bundle_path: str, device: torch.device) -> AutoencoderKlMaisi:
@@ -210,17 +210,17 @@ def main():
         l1_val = F.l1_loss(reconstructed, volume_tensor).item()
 
         # LPIPS (2D metric applied slice-by-slice)
-        # compute_lpips_3d expects [B, C, D, H, W] but we have [B, C, H, W, D]
+        # compute_perceptual_distance_3d expects [B, C, D, H, W] but we have [B, C, H, W, D]
         try:
             recon_for_lpips = reconstructed.permute(0, 1, 4, 2, 3)  # [B,C,H,W,D] -> [B,C,D,H,W]
             vol_for_lpips = volume_tensor.permute(0, 1, 4, 2, 3)
-            lpips_val = compute_lpips_3d(recon_for_lpips, vol_for_lpips, device=device)
+            lpips_val = compute_perceptual_distance_3d(recon_for_lpips, vol_for_lpips, device=device)
 
             # Detailed diagnostics for first sample
             if len(all_metrics["lpips"]) == 0:
                 print("\n=== LPIPS Diagnostics (first sample) ===")
                 # Sanity check: LPIPS of original vs itself should be ~0
-                lpips_sanity = compute_lpips_3d(vol_for_lpips, vol_for_lpips, device=device)
+                lpips_sanity = compute_perceptual_distance_3d(vol_for_lpips, vol_for_lpips, device=device)
                 print(f"LPIPS sanity check (orig vs orig): {lpips_sanity:.6f} (should be ~0)")
                 print(f"Original range: [{volume_tensor.min():.4f}, {volume_tensor.max():.4f}]")
                 print(f"Reconstructed range: [{reconstructed.min():.4f}, {reconstructed.max():.4f}]")
@@ -232,10 +232,10 @@ def main():
                 slice_indices = np.linspace(0, D-1, min(10, D), dtype=int)
                 slice_lpips = []
                 for i in slice_indices:
-                    from medgen.metrics.quality import compute_lpips
+                    from medgen.metrics.quality import compute_perceptual_distance
                     gen_slice = recon_for_lpips[:, :, i:i+1, :, :].squeeze(2)  # [B, C, H, W]
                     ref_slice = vol_for_lpips[:, :, i:i+1, :, :].squeeze(2)
-                    slice_lpips_val = compute_lpips(gen_slice, ref_slice, device=device)
+                    slice_lpips_val = compute_perceptual_distance(gen_slice, ref_slice, device=device)
                     slice_lpips.append((i, slice_lpips_val))
                     print(f"  Slice {i:3d}: LPIPS={slice_lpips_val:.4f}, "
                           f"mean_orig={ref_slice.mean():.4f}, mean_recon={gen_slice.mean():.4f}")

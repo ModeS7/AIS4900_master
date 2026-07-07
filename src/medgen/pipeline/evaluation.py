@@ -20,7 +20,7 @@ from medgen.metrics import (
     compute_psnr,
     create_reconstruction_figure,
 )
-from medgen.metrics.dispatch import compute_lpips_dispatch, compute_msssim_dispatch
+from medgen.metrics.dispatch import compute_msssim_dispatch, compute_perceptual_distance_dispatch
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -198,7 +198,7 @@ def evaluate_test_set(
                 ) / n
                 if trainer.log_lpips:
                     lpips_val = sum(
-                        compute_lpips_dispatch(metrics_pred[k], metrics_gt[k], trainer.spatial_dims, trainer.device)
+                        compute_perceptual_distance_dispatch(metrics_pred[k], metrics_gt[k], trainer.spatial_dims, trainer.device)
                         for k in keys
                     ) / n
                 else:
@@ -207,7 +207,7 @@ def evaluate_test_set(
                 msssim_val = compute_msssim_dispatch(metrics_pred, metrics_gt, trainer.spatial_dims)
                 psnr_val = compute_psnr(metrics_pred, metrics_gt)
                 if trainer.log_lpips:
-                    lpips_val = compute_lpips_dispatch(metrics_pred, metrics_gt, trainer.spatial_dims, trainer.device)
+                    lpips_val = compute_perceptual_distance_dispatch(metrics_pred, metrics_gt, trainer.spatial_dims, trainer.device)
                 else:
                     lpips_val = 0.0
 

@@ -161,9 +161,9 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
         from medgen.metrics import (
             compute_dice,
             compute_iou,
-            compute_lpips_3d,
             compute_msssim,
             compute_msssim_2d_slicewise,
+            compute_perceptual_distance_3d,
             compute_psnr,
         )
 
@@ -208,7 +208,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
 
             # LPIPS (3D batched)
             if self.metrics_config.compute_lpips:
-                metrics['lpips'] = compute_lpips_3d(
+                metrics['lpips'] = compute_perceptual_distance_3d(
                     reconstructed.float(), images.float(), device=self.device
                 )
 
@@ -230,7 +230,7 @@ class Compression3DTestEvaluator(BaseTestEvaluator):
                         if self.metrics_config.compute_psnr:
                             self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
                         if self.metrics_config.compute_lpips:
-                            self._per_channel_metrics[key]['lpips'] += compute_lpips_3d(rec_ch.float(), img_ch.float(), device=self.device)
+                            self._per_channel_metrics[key]['lpips'] += compute_perceptual_distance_3d(rec_ch.float(), img_ch.float(), device=self.device)
 
                     self._per_channel_count += 1
 

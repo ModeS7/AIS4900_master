@@ -627,11 +627,11 @@ class DiffusionTrainerBase(BaseTrainer, ABC):
         if not log_lpips:
             return None
         if self.spatial_dims == 2:
-            from medgen.metrics import compute_lpips
-            return compute_lpips
+            from medgen.metrics import compute_perceptual_distance
+            return compute_perceptual_distance
         else:
-            from medgen.metrics import compute_lpips_3d
-            return compute_lpips_3d
+            from medgen.metrics import compute_perceptual_distance_3d
+            return compute_perceptual_distance_3d
 
     def _create_regional_tracker(self, loss_fn=None):
         """Create dimension-appropriate regional tracker.

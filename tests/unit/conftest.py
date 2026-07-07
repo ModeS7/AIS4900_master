@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import Mock
 import torch
 
-from medgen.metrics.quality import compute_lpips
+from medgen.metrics.quality import compute_perceptual_distance
 
 
 @pytest.fixture(scope="session")
@@ -14,7 +14,7 @@ def lpips_available():
     (Google Drive rate-limiting, network errors, etc.).
     """
     try:
-        compute_lpips(torch.rand(2, 1, 64, 64), torch.rand(2, 1, 64, 64))
+        compute_perceptual_distance(torch.rand(2, 1, 64, 64), torch.rand(2, 1, 64, 64))
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         # Weight-download / network failures => LPIPS unavailable, skip (don't error).

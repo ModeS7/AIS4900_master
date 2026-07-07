@@ -9,7 +9,7 @@ Modules covered:
 import pytest
 import torch
 import torch.nn.functional as F
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 # ============================================================================
@@ -120,10 +120,10 @@ class TestComputeLpipsDispatch:
 
     @patch('medgen.metrics.quality.compute_perceptual_distance', return_value=0.1)
     def test_routes_to_2d(self, mock_fn):
-        from medgen.metrics.dispatch import compute_lpips_dispatch
+        from medgen.metrics.dispatch import compute_perceptual_distance_dispatch
         pred = torch.randn(2, 1, 64, 64)
         gt = torch.randn(2, 1, 64, 64)
-        result = compute_lpips_dispatch(pred, gt, spatial_dims=2)
+        result = compute_perceptual_distance_dispatch(pred, gt, spatial_dims=2)
         mock_fn.assert_called_once()
         assert result == 0.1
 
@@ -173,9 +173,37 @@ class TestCreateLpipsFn:
 
     def test_returns_correct_fn(self):
         from medgen.metrics.dispatch import create_lpips_fn
-        from medgen.metrics.quality import compute_lpips, compute_lpips_3d
-        assert create_lpips_fn(2) is compute_lpips
-        assert create_lpips_fn(3) is compute_lpips_3d
+        from medgen.metrics.quality import compute_perceptual_distance, compute_perceptual_distance_3d
+        assert create_lpips_fn(2) is compute_perceptual_distance
+        assert create_lpips_fn(3) is compute_perceptual_distance_3d
+
+
+class TestDeprecatedPerceptualAliases:
+    """Deprecation contract: old compute_lpips* names must stay bound to the
+    canonical compute_perceptual_* functions (kept for back-compat)."""
+
+    def test_metric_aliases_point_to_canonical(self):
+        from medgen.metrics.quality import (
+            compute_lpips,
+            compute_lpips_3d,
+            compute_lpips_diversity,
+            compute_lpips_diversity_3d,
+            compute_perceptual_distance,
+            compute_perceptual_distance_3d,
+            compute_perceptual_diversity,
+            compute_perceptual_diversity_3d,
+        )
+        assert compute_lpips is compute_perceptual_distance
+        assert compute_lpips_3d is compute_perceptual_distance_3d
+        assert compute_lpips_diversity is compute_perceptual_diversity
+        assert compute_lpips_diversity_3d is compute_perceptual_diversity_3d
+
+    def test_dispatch_alias_points_to_canonical(self):
+        from medgen.metrics.dispatch import (
+            compute_lpips_dispatch,
+            compute_perceptual_distance_dispatch,
+        )
+        assert compute_lpips_dispatch is compute_perceptual_distance_dispatch
 
 
 # ============================================================================

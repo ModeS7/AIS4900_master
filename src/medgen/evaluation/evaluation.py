@@ -584,8 +584,8 @@ class CompressionTestEvaluator(BaseTestEvaluator):
         from medgen.metrics import (
             compute_dice,
             compute_iou,
-            compute_lpips,
             compute_msssim,
+            compute_perceptual_distance,
             compute_psnr,
         )
 
@@ -622,7 +622,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
 
             # LPIPS
             if self.metrics_config.compute_lpips:
-                metrics['lpips'] = compute_lpips(
+                metrics['lpips'] = compute_perceptual_distance(
                     reconstructed.float(), images.float(), device=self.device
                 )
 
@@ -646,7 +646,7 @@ class CompressionTestEvaluator(BaseTestEvaluator):
                     if self.metrics_config.compute_psnr:
                         self._per_channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
                     if self.metrics_config.compute_lpips:
-                        self._per_channel_metrics[key]['lpips'] += compute_lpips(rec_ch.float(), img_ch.float(), device=self.device)
+                        self._per_channel_metrics[key]['lpips'] += compute_perceptual_distance(rec_ch.float(), img_ch.float(), device=self.device)
 
                 self._per_channel_count += 1
 

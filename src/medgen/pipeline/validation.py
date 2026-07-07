@@ -15,9 +15,9 @@ from medgen.metrics import (
     RegionalMetricsTracker,
     compute_dice,
     compute_iou,
-    compute_lpips,
-    compute_lpips_3d,
     compute_msssim,
+    compute_perceptual_distance,
+    compute_perceptual_distance_3d,
     compute_psnr,
 )
 
@@ -266,11 +266,11 @@ def compute_validation_losses(
                     channel_psnr[key] = compute_psnr(metrics_pred[key], metrics_gt[key])
                     if trainer.log_lpips:
                         if trainer.spatial_dims == 3:
-                            channel_lpips[key] = compute_lpips_3d(
+                            channel_lpips[key] = compute_perceptual_distance_3d(
                                 metrics_pred[key], metrics_gt[key], trainer.device, use_compile=False
                             )
                         else:
-                            channel_lpips[key] = compute_lpips(metrics_pred[key], metrics_gt[key], trainer.device)
+                            channel_lpips[key] = compute_perceptual_distance(metrics_pred[key], metrics_gt[key], trainer.device)
 
                     # Accumulate per-channel metrics
                     if key not in per_channel_metrics:
@@ -294,9 +294,9 @@ def compute_validation_losses(
                         # 3D: use center-slice LPIPS (2.5D approach)
                         # Disable torch.compile for 3D to avoid CUDA Graph pools (~8 GiB)
                         # that permanently fragment GPU memory and block generation metrics
-                        lpips_val = compute_lpips_3d(metrics_pred, metrics_gt, trainer.device, use_compile=False)
+                        lpips_val = compute_perceptual_distance_3d(metrics_pred, metrics_gt, trainer.device, use_compile=False)
                     else:
-                        lpips_val = compute_lpips(metrics_pred, metrics_gt, trainer.device)
+                        lpips_val = compute_perceptual_distance(metrics_pred, metrics_gt, trainer.device)
                 else:
                     lpips_val = 0.0
 
@@ -666,7 +666,7 @@ def compute_per_modality_validation(
                     # Compute metrics in pixel space
                     total_psnr += compute_psnr(metrics_pred, metrics_gt)
                     if trainer.log_lpips:
-                        total_lpips += compute_lpips(metrics_pred, metrics_gt, device=trainer.device)
+                        total_lpips += compute_perceptual_distance(metrics_pred, metrics_gt, device=trainer.device)
                     total_msssim += compute_msssim(metrics_pred, metrics_gt)
 
                     # Regional tracking (tumor vs background)

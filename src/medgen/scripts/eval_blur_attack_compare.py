@@ -39,7 +39,7 @@ import torch
 
 from medgen.metrics.feature_extractors import ResNet50Features
 from medgen.metrics.generation_3d import compute_fid_3d
-from medgen.metrics.quality import compute_lpips_3d
+from medgen.metrics.quality import compute_perceptual_distance_3d
 from medgen.scripts.analyze_generation_spectrum import (
     BANDS,
     compute_radial_power_spectrum_3d,
@@ -118,7 +118,7 @@ def cross_lpips(real_t: torch.Tensor, method_t: torch.Tensor, device: torch.devi
     vals = []
     for i in range(real_t.shape[0]):
         for j in range(method_t.shape[0]):
-            vals.append(float(compute_lpips_3d(
+            vals.append(float(compute_perceptual_distance_3d(
                 real_t[i:i + 1], method_t[j:j + 1], device=device, chunk_size=32,
             )))
     return float(np.mean(vals)) if vals else float('nan')
@@ -156,7 +156,7 @@ def diversity_lpips(method_t: torch.Tensor, device: torch.device,
         pairs.append((int(i), int(j)))
     vals = []
     for i, j in pairs:
-        vals.append(float(compute_lpips_3d(
+        vals.append(float(compute_perceptual_distance_3d(
             method_t[i:i + 1], method_t[j:j + 1], device=device, chunk_size=32,
         )))
     return float(np.mean(vals)) if vals else float('nan')

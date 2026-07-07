@@ -380,8 +380,8 @@ class UnifiedMetrics:
         """
         if not self.uses_image_quality:
             return 0.0
-        from .dispatch import compute_lpips_dispatch
-        val = compute_lpips_dispatch(pred, gt, self.spatial_dims, device=self.device)
+        from .dispatch import compute_perceptual_distance_dispatch
+        val = compute_perceptual_distance_dispatch(pred, gt, self.spatial_dims, device=self.device)
         self._val_lpips_sum += val
         self._val_lpips_count += 1
         return val

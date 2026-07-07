@@ -18,10 +18,10 @@ from torch.utils.data import DataLoader
 from .generation import compute_cmmd, compute_fid, compute_kid
 from .generation_3d import extract_features_3d, extract_features_3d_triplanar
 from .quality import (
-    compute_lpips_diversity,
-    compute_lpips_diversity_3d,
     compute_msssim_diversity,
     compute_msssim_diversity_3d,
+    compute_perceptual_diversity,
+    compute_perceptual_diversity_3d,
 )
 
 if TYPE_CHECKING:
@@ -314,13 +314,13 @@ def compute_diversity_metrics(
     try:
         if is_3d:
             # 3D: compare same slice across volumes
-            lpips_div = compute_lpips_diversity_3d(
+            lpips_div = compute_perceptual_diversity_3d(
                 samples, device=self_.device
             )
             msssim_div = compute_msssim_diversity_3d(samples)
         else:
             # 2D: compare all generated images
-            lpips_div = compute_lpips_diversity(
+            lpips_div = compute_perceptual_diversity(
                 samples, device=self_.device
             )
             msssim_div = compute_msssim_diversity(samples)

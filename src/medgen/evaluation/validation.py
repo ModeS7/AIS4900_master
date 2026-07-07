@@ -22,7 +22,7 @@ from medgen.metrics import (
     compute_msssim,
     compute_psnr,
 )
-from medgen.metrics.dispatch import compute_lpips_dispatch, compute_msssim_dispatch
+from medgen.metrics.dispatch import compute_msssim_dispatch, compute_perceptual_distance_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +286,7 @@ class ValidationRunner:
                         if self.config.log_psnr:
                             total_psnr += compute_psnr(reconstruction, images)
                         if self.config.log_lpips:
-                            total_lpips += compute_lpips_dispatch(
+                            total_lpips += compute_perceptual_distance_dispatch(
                                 reconstruction.float(), images.float(),
                                 self.config.spatial_dims, device=self.device
                             )

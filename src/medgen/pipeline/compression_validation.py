@@ -379,7 +379,7 @@ def compute_per_modality_validation(
     """Compute per-modality validation metrics (2D or 3D).
 
     For 3D volumes:
-    - Uses compute_lpips_3d (slice-by-slice)
+    - Uses compute_perceptual_distance_3d (slice-by-slice)
     - Computes both volumetric MS-SSIM-3D and slice-wise MS-SSIM-2D
 
     Args:
@@ -492,8 +492,8 @@ def compute_per_channel_validation(
         epoch: Current epoch number.
     """
     from medgen.metrics import (
-        compute_lpips,
         compute_msssim,
+        compute_perceptual_distance,
         compute_psnr,
     )
 
@@ -524,7 +524,7 @@ def compute_per_channel_validation(
                 if trainer.log_psnr:
                     channel_metrics[key]['psnr'] += compute_psnr(rec_ch, img_ch)
                 if trainer.log_lpips:
-                    channel_metrics[key]['lpips'] += compute_lpips(rec_ch, img_ch, device=trainer.device)
+                    channel_metrics[key]['lpips'] += compute_perceptual_distance(rec_ch, img_ch, device=trainer.device)
                 if trainer.log_msssim:
                     channel_metrics[key]['msssim'] += compute_msssim(rec_ch, img_ch)
 

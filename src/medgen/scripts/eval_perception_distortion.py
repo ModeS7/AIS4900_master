@@ -81,15 +81,15 @@ def volume_ssim(pred: torch.Tensor, real: torch.Tensor) -> float:
 
 
 def volume_lpips(pred: torch.Tensor, real: torch.Tensor, device: torch.device) -> float:
-    """3D LPIPS-to-reference via the repo's compute_lpips_3d (paired perceptual distance).
+    """3D LPIPS-to-reference via the repo's compute_perceptual_distance_3d (paired perceptual distance).
 
     pred/real: [1,1,D,H,W] in [0,1]. Lower = perceptually closer to the real volume.
     This is the per-volume perceptual axis that enables a *paired* significance test
     (unlike FID, which is distributional). Best-effort: returns NaN if unavailable.
     """
     try:
-        from medgen.metrics.dispatch import compute_lpips_dispatch
-        return float(compute_lpips_dispatch(pred, real, spatial_dims=3, device=device))
+        from medgen.metrics.dispatch import compute_perceptual_distance_dispatch
+        return float(compute_perceptual_distance_dispatch(pred, real, spatial_dims=3, device=device))
     except Exception as e:
         logger.warning(f"LPIPS unavailable ({type(e).__name__}: {e}); reporting NaN")
         return float('nan')

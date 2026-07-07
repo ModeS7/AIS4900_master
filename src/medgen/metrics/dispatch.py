@@ -76,10 +76,10 @@ def create_lpips_fn(spatial_dims: int) -> Callable:
         spatial_dims: 2 or 3.
 
     Returns:
-        compute_lpips for 2D, compute_lpips_3d for 3D.
+        compute_perceptual_distance for 2D, compute_perceptual_distance_3d for 3D.
     """
-    from .quality import compute_lpips, compute_lpips_3d
+    from .quality import compute_perceptual_distance, compute_perceptual_distance_3d
 
     if spatial_dims == 3:
-        return compute_lpips_3d
-    return compute_lpips
+        return compute_perceptual_distance_3d
+    return compute_perceptual_distance

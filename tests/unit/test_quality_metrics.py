@@ -7,8 +7,8 @@ from medgen.metrics.quality import (
     compute_psnr,
     compute_msssim,
     compute_msssim_2d_slicewise,
-    compute_lpips,
-    compute_lpips_3d,
+    compute_perceptual_distance,
+    compute_perceptual_distance_3d,
     compute_dice,
     compute_iou,
     clear_metric_caches,
@@ -175,14 +175,14 @@ class TestMSSSIM2DSlicewise:
 
 @pytest.mark.usefixtures("lpips_available")
 class TestLPIPS:
-    """Test compute_lpips function (2D only)."""
+    """Test compute_perceptual_distance function (2D only)."""
 
     @pytest.mark.timeout(30)
     @pytest.mark.slow
     def test_identical_images_returns_near_zero(self):
         """Perfect match should return ~0."""
         images = torch.rand(4, 1, 64, 64)
-        lpips = compute_lpips(images, images)
+        lpips = compute_perceptual_distance(images, images)
         assert lpips < 0.01
 
     @pytest.mark.timeout(30)
@@ -191,7 +191,7 @@ class TestLPIPS:
         """Different images have positive LPIPS."""
         img1 = torch.rand(4, 1, 64, 64)
         img2 = torch.rand(4, 1, 64, 64)
-        lpips = compute_lpips(img1, img2)
+        lpips = compute_perceptual_distance(img1, img2)
         assert lpips > 0.0
 
     @pytest.mark.timeout(30)
@@ -200,7 +200,7 @@ class TestLPIPS:
         """Grayscale (1 channel) is repeated to 3 channels."""
         images = torch.rand(2, 1, 64, 64)
         reference = torch.rand(2, 1, 64, 64)
-        lpips = compute_lpips(images, reference)
+        lpips = compute_perceptual_distance(images, reference)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
         assert lpips >= 0.0  # LPIPS is non-negative distance
@@ -211,7 +211,7 @@ class TestLPIPS:
         """2-channel input computes per-channel average."""
         images = torch.rand(2, 2, 64, 64)
         reference = torch.rand(2, 2, 64, 64)
-        lpips = compute_lpips(images, reference)
+        lpips = compute_perceptual_distance(images, reference)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
         assert lpips >= 0.0
@@ -222,7 +222,7 @@ class TestLPIPS:
         """3-channel input used directly."""
         images = torch.rand(2, 3, 64, 64)
         reference = torch.rand(2, 3, 64, 64)
-        lpips = compute_lpips(images, reference)
+        lpips = compute_perceptual_distance(images, reference)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
         assert lpips >= 0.0
@@ -233,7 +233,7 @@ class TestLPIPS:
         """C > 3 channels averaged per-channel."""
         images = torch.rand(2, 4, 64, 64)
         reference = torch.rand(2, 4, 64, 64)
-        lpips = compute_lpips(images, reference)
+        lpips = compute_perceptual_distance(images, reference)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
         assert lpips >= 0.0
@@ -243,21 +243,21 @@ class TestLPIPS:
     def test_lpips_returns_float(self):
         """Returns Python float, not tensor."""
         images = torch.rand(2, 1, 64, 64)
-        lpips = compute_lpips(images, images)
+        lpips = compute_perceptual_distance(images, images)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
 
 
 @pytest.mark.usefixtures("lpips_available")
 class TestLPIPS3D:
-    """Test compute_lpips_3d for 3D volumes."""
+    """Test compute_perceptual_distance_3d for 3D volumes."""
 
     @pytest.mark.timeout(30)
     @pytest.mark.slow
     def test_identical_volumes_returns_near_zero(self):
         """Perfect match should return ~0."""
         volumes = torch.rand(2, 1, 8, 64, 64)
-        lpips = compute_lpips_3d(volumes, volumes)
+        lpips = compute_perceptual_distance_3d(volumes, volumes)
         assert lpips < 0.01
 
     @pytest.mark.timeout(30)
@@ -266,7 +266,7 @@ class TestLPIPS3D:
         """Different volumes have positive LPIPS."""
         vol1 = torch.rand(2, 1, 8, 64, 64)
         vol2 = torch.rand(2, 1, 8, 64, 64)
-        lpips = compute_lpips_3d(vol1, vol2)
+        lpips = compute_perceptual_distance_3d(vol1, vol2)
         assert lpips > 0.0
 
     @pytest.mark.timeout(30)
@@ -275,8 +275,8 @@ class TestLPIPS3D:
         """chunk_size controls batch size."""
         volumes = torch.rand(2, 1, 16, 64, 64)
         # Should work with different chunk sizes
-        lpips1 = compute_lpips_3d(volumes, volumes, chunk_size=4)
-        lpips2 = compute_lpips_3d(volumes, volumes, chunk_size=8)
+        lpips1 = compute_perceptual_distance_3d(volumes, volumes, chunk_size=4)
+        lpips2 = compute_perceptual_distance_3d(volumes, volumes, chunk_size=8)
         # Both should be near zero for identical inputs
         assert lpips1 < 0.01
         assert lpips2 < 0.01
@@ -286,7 +286,7 @@ class TestLPIPS3D:
     def test_lpips_3d_returns_scalar(self):
         """Returns single float."""
         volumes = torch.rand(2, 1, 8, 64, 64)
-        lpips = compute_lpips_3d(volumes, volumes)
+        lpips = compute_perceptual_distance_3d(volumes, volumes)
         assert isinstance(lpips, float)
         assert not torch.isnan(torch.tensor(lpips))
         assert lpips >= 0.0
