@@ -272,9 +272,8 @@ AIS4900_master/
 │   ├── downstream_nnunet.md         # nnU-Net pipeline + all results + threshold sweep + random-split test + Ottesen 2023/2025 comparison
 │   ├── profiling_results.md         # VRAM profiling (DiT, UNet, HDiT, UViT)
 │   ├── proven_techniques.md         # Confirmed positive/negative techniques for 3D brain MRI
-│   ├── future_work_v2.md            # Diffusion-tricks inventory (67 implemented)
-│   ├── scoreaug_omega.md            # ScoreAug omega encoding spec (paper conformance)
-│   └── notes_for_report.txt         # Historical design notes (Dec 2025)
+│   ├── future_work.md              # Diffusion-tricks inventory (67 impl) + project directions
+│   └── scoreaug_omega.md            # ScoreAug omega encoding spec (paper conformance)
 │
 └── papers/                          # Reference papers + PAPERS.md catalog
 ```

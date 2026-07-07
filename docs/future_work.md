@@ -1,7 +1,11 @@
-# Diffusion Training Tricks — Complete Inventory
+# Future Work — Diffusion Tricks Inventory & Project Directions
 
-Comprehensive catalog of every diffusion training trick, technique, and method.
-Covers what's implemented in this codebase and what exists in the literature.
+Comprehensive catalog of every diffusion training trick, technique, and method —
+what's implemented in this codebase and what exists in the literature (the
+#1–#125 inventory below). The final section, **"Beyond Training Tricks"**, holds
+the broader non-trick project directions (reward fine-tuning, data-centric
+quality gates, medical-specific validation, uncertainty) merged from the former
+root-level `FUTURE_WORK_v1.md` in July 2026.
 
 **Project context**: 3D brain MRI (BrainMetShare-3), 105 training volumes, RFlow strategy,
 primarily UNet architecture, single A100/H100 GPU, pixel-space best so far.
@@ -281,3 +285,84 @@ These don't apply to our setup (RFlow, unconditional/seg-conditioned, no text, 3
 | Not implemented — LOW (unlikely FID improvement) | 33 (#69–#80, #109, #120–#125, existing #81–#94) |
 | Not applicable (wrong strategy/domain) | 14 (#95–#108) |
 | **Total** | **125** |
+
+---
+
+## Beyond Training Tricks — Broader Project Directions
+
+The #1–#125 inventory above is diffusion-training-technique-focused. The
+directions below target the **pipeline and clinical utility**, not the denoiser
+itself, so they sit outside that numbering. Merged from the original
+`FUTURE_WORK_v1` checklist (July 2026); trick-level v1 items were dropped as
+duplicates of the inventory (Reflow → #72, Laplace/Cauchy → #69/#70, MMDiT →
+#103, ODE solvers → #61, learned step scheduling → #65/#75).
+
+### Conditioning (not yet implemented)
+- **SPADE conditioning** — spatial adaptive normalization: per-pixel γ(x,y),
+  β(x,y) derived from the mask, for stronger mask adherence. Orthogonal to the
+  implemented channel-concat / CFG / ControlNet / FiLM stack.
+
+### Reward-Based Fine-Tuning
+- **DRaFT (Direct Reward Fine-Tuning)** — train a distortion classifier, then
+  backprop through it to reduce the generator's failure rate. Distinct from
+  RLHF (#108, out of scope): direct reward backprop, not RL infrastructure.
+- **Distortion detector** — binary good/distorted classifier on generated
+  samples; prerequisite for DRaFT and for the quality gates below.
+- **Distortion dataset** — label ~500 generated images to train that classifier.
+
+### Data-Centric Approaches
+- **Quality gates** — run every generated image through the distortion
+  classifier, keep only those above a confidence threshold, over-generate to
+  compensate for rejects. Simpler than DRaFT (no fine-tuning); immediate
+  downstream-segmentation win.
+- **Hard-example mining** — identify mask characteristics (size, location,
+  count) that correlate with segmentation failures; bias mask generation toward
+  those hard cases.
+- **Per-patient failure analysis** — is the ~6–10% distortion rate uniform or
+  concentrated in specific patients/anatomies? Generate ~100 per patient and
+  measure per-patient distortion rate.
+
+### Medical-Specific Techniques
+- **Anatomy-aware loss** — penalize high tumor probability in anatomically
+  implausible regions (e.g. ventricles) via atlas/parcellation; soft (weighted)
+  or hard (masked-out) form.
+- **Brain atlas (MNI152) registration** — register generated brains to the MNI
+  template and use registration quality (mutual information) as an
+  anatomical-validity check.
+- **Cycle consistency** — real_mask → gen_image → pred_mask ≈ real_mask (and the
+  reverse); validates that the seg and bravo models are mutually coherent.
+
+### Inference-Time
+- **Best-of-N sampling** — generate N images per mask, keep the one the
+  distortion classifier scores best. ~4× compute, no retraining; could cut the
+  distortion rate from ~6% to <1%.
+
+### Interpretability & Analysis
+- **Attention visualization** — where the model / DiT focuses during generation.
+- **Failure-mode taxonomy** — systematically categorize distortions (anatomical,
+  textural, boundary, intensity, artifact, conditioning failure). Thesis content.
+- **Timestep distortion analysis** — which denoising steps introduce failures.
+
+### Uncertainty Quantification
+- **Monte Carlo uncertainty** — generate the same mask N times, compute a
+  per-voxel variance map; high-variance regions = model uncertainty (clinically
+  valuable).
+- **Ensemble models** — train several models, use disagreement as uncertainty.
+
+### Validation Methodology
+- **Synthetic + traditional augmentation** — combine both to maximize diversity.
+- **Dual-T1 evaluation** — quantitative metrics for paired pre/post-contrast.
+- **Clinical expert evaluation** — blinded radiologist studies.
+
+### Compute / Efficiency (v1-unique, low priority)
+- **NVIDIA 2:4 structured sparsity** — up to 2× on linear layers (A100/H100).
+- **Network pruning** — magnitude/gradient-based; diffusion tolerates it well.
+
+  Both are speed plays; the inventory's stance is that the quality ceiling is
+  data-limited (105 volumes), not compute-limited — so these are efficiency
+  wins, not quality wins.
+
+### Priority Ranking (from v1)
+- **Quick wins (1–2 days):** best-of-N sampling; quality gates.
+- **Medium (3–5 days):** failure-mode taxonomy; label distortion dataset; SPADE.
+- **Thesis-worthy (1–2 weeks):** DRaFT; cycle-consistency analysis; MC uncertainty.

@@ -175,9 +175,8 @@ This catches:
 | `@docs/downstream_nnunet.md` | nnU-Net segmentation pipeline + all results + threshold sweep + random-split methodology test + Ottesen 2023/2025 comparison |
 | `@docs/profiling_results.md` | VRAM profiling for DiT, UNet, HDiT, UViT |
 | `@docs/proven_techniques.md` | Confirmed positive/negative techniques for 3D brain MRI generation |
-| `@docs/future_work_v2.md` | 125 diffusion tricks inventory (67 implemented, 58+ not) |
+| `@docs/future_work.md` | 125-trick diffusion inventory (67 implemented, 58+ not) + broader non-trick project directions (merged from former FUTURE_WORK_v1) |
 | `@docs/scoreaug_omega.md` | ScoreAug omega-vector encoding spec (paper conformance, layout, identity-as-zeros invariant) |
-| `@docs/notes_for_report.txt` | Historical design notes (Dec 2025) — VAE features, ScoreAug, DiT, VQ-VAE |
 | `@papers/PAPERS.md` | Reference papers (VAE, DDPM, RFlow, DC-AE, etc.) — **check here FIRST before web search.** Note: directory is in `.gitignore`, so the file is local-only |
 
 ---
