@@ -11,7 +11,7 @@ For each .out file we record:
   - Head/tail (40 lines each) for narrative context
   - Stderr tail when the run crashed/OOM'd
 
-Output: idun_logs_extracted.json — one record per .out file.
+Output: reports/idun_logs_extracted.json — one record per .out file.
 """
 from __future__ import annotations
 
@@ -314,7 +314,7 @@ def extract_log(out_path: Path, root: Path) -> dict[str, Any]:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--root", default=str(ROOT_DEFAULT))
-    p.add_argument("--out", default="idun_logs_extracted.json")
+    p.add_argument("--out", default="reports/idun_logs_extracted.json")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--only", default=None, help="substring filter on .out path")
     p.add_argument("--log", default="idun_logs_extraction.log")

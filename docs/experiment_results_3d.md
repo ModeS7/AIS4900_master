@@ -47,7 +47,7 @@ respectable mid-tier models, not failed ones. Both are now candidate
 continuation targets — exp32_2-style LPIPS-lowt fine-tunes.
 
 The matching SLURMs are in `IDUN/eval/tier1/find_optimal_steps_*.slurm`,
-results captured in `IDUN_LOG_SUMMARIES.md` per-job blocks.
+results captured in `reports/IDUN_LOG_SUMMARIES.md` per-job blocks.
 
 ---
 

@@ -1,16 +1,15 @@
-"""Helpers to render per-job markdown narratives from idun_logs_extracted.json."""
+"""Helpers to render per-job markdown narratives from reports/idun_logs_extracted.json."""
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable
 
 ROOT = Path("/home/mode/NTNU/AIS4900_master")
 
 
 def load() -> list[dict]:
-    return json.loads((ROOT / "idun_logs_extracted.json").read_text())
+    return json.loads((ROOT / "reports" / "idun_logs_extracted.json").read_text())
 
 
 def jobs_in(records: list[dict], subdir_prefix: str) -> list[dict]:

@@ -60,8 +60,8 @@ After all jobs complete, re-run the IDUN log extractor to pull `best_steps` +
 best-FID + best-FID_radimagenet + best-PCA values into the structured JSON:
 
 ```bash
-python scripts/extract_idun_logs.py --out idun_logs_extracted.json
-# Then review IDUN_LOG_SUMMARIES.md (regenerate the eval/ section):
+python misc/reporting/extract_idun_logs.py --out reports/idun_logs_extracted.json
+# Then review reports/IDUN_LOG_SUMMARIES.md (regenerate the eval/ section):
 python /tmp/emit_idun_eval.py > /tmp/idun_eval.md
 ```
 

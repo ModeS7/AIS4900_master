@@ -1,7 +1,7 @@
 # IDUN/output/ — SLURM job log summaries
 
 Generated from `IDUN/output/**/*.out` (and matched `.err`) via
-`scripts/extract_idun_logs.py` → `idun_logs_extracted.json`. Covers
+`misc/reporting/extract_idun_logs.py` → `reports/idun_logs_extracted.json`. Covers
 **1,291 SLURM jobs** spanning Dec 2025 – Apr 2026 across 10 subdirectories.
 
 This complements [`EXPERIMENT_SUMMARIES.md`](EXPERIMENT_SUMMARIES.md) (which
@@ -13872,12 +13872,12 @@ Traceback (most recent call last):
 - Browse by subdir → family for a chronological view of one experiment's SLURM lifecycle (initial submit → resumes → final eval).
 - For per-epoch loss/FID curves of the same experiment, see `EXPERIMENT_SUMMARIES.md`.
 - Cross-reference between the two via `## IDUN log cross-reference` at the bottom of `EXPERIMENT_SUMMARIES.md`.
-- For the underlying JSON, `idun_logs_extracted.json` (14 MB) has every record's full structured fields.
+- For the underlying JSON, `reports/idun_logs_extracted.json` (14 MB) has every record's full structured fields.
 
 ### Regenerating this document
 
 ```
-python scripts/extract_idun_logs.py --out idun_logs_extracted.json
+python misc/reporting/extract_idun_logs.py --out reports/idun_logs_extracted.json
 python /tmp/emit_idun_eval.py > /tmp/idun_eval.md
 python /tmp/emit_idun_generate.py > /tmp/idun_gen.md
 python /tmp/emit_idun_misc.py profiling > /tmp/idun_prof.md

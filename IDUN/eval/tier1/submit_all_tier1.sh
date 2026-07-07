@@ -82,5 +82,5 @@ if [[ $DRY_RUN -eq 0 ]]; then
     echo "  tail -f IDUN/output/eval/find_optimal_steps_<exp>_<jobid>.out"
     echo ""
     echo "Aggregate results once done:"
-    echo "  python scripts/extract_idun_logs.py --only find_optimal_steps_exp --out /tmp/tier1_results.json"
+    echo "  python misc/reporting/extract_idun_logs.py --only find_optimal_steps_exp --out /tmp/tier1_results.json"
 fi

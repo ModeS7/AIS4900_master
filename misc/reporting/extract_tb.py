@@ -5,14 +5,14 @@ file (may be nested — e.g. nnU-Net uses fold_0/tensorboard/), groups events
 files by their containing directory, and uses EventAccumulator to merge
 multi-file sequences into a single series per scalar tag.
 
-Output: runs_tb_extracted.json — one record per run with all scalar summaries,
+Output: reports/runs_tb_extracted.json — one record per run with all scalar summaries,
 image/text tag names, wall-time span, and parsed metadata (category, mode,
 timestamp). Downstream narrative generation reads this JSON only.
 
 Usage:
-    python scripts/extract_tb.py                 # dump to runs_tb_extracted.json
-    python scripts/extract_tb.py --limit 5       # test mode: first 5 runs
-    python scripts/extract_tb.py --only bravo    # filter to runs whose name
+    python misc/reporting/extract_tb.py          # dump to reports/runs_tb_extracted.json
+    python misc/reporting/extract_tb.py --limit 5  # test mode: first 5 runs
+    python misc/reporting/extract_tb.py --only bravo  # filter to runs whose name
                                                    # contains 'bravo'
 """
 from __future__ import annotations
@@ -182,7 +182,7 @@ def extract_run(run_dir: Path, root: Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default="runs_tb", help="TB runs root")
-    parser.add_argument("--out", default="runs_tb_extracted.json")
+    parser.add_argument("--out", default="reports/runs_tb_extracted.json")
     parser.add_argument("--limit", type=int, default=0, help="process only first N runs")
     parser.add_argument("--only", default=None, help="only runs whose path contains this substring")
     parser.add_argument("--log", default="runs_tb_extraction.log")

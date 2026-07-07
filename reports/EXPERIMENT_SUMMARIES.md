@@ -1,7 +1,7 @@
 # MedGen Experiment Summaries
 
-Generated from `runs_tb/` TensorBoard event files via `scripts/extract_tb.py` →
-`runs_tb_extracted.json`. Covers **391 training runs** across 19 subdirectories,
+Generated from `runs_tb/` TensorBoard event files via `misc/reporting/extract_tb.py` →
+`reports/runs_tb_extracted.json`. Covers **391 training runs** across 19 subdirectories,
 Dec 2025 – Apr 2026.
 
 Per-experiment entries report:
@@ -17952,14 +17952,14 @@ root; any related metrics live within the base diffusion run's
 
 1. Re-run the extractor if `runs_tb/` has new runs:
    ```
-   python scripts/extract_tb.py --out runs_tb_extracted.json
+   python misc/reporting/extract_tb.py --out reports/runs_tb_extracted.json
    ```
 2. Re-emit any category section:
    ```
    python /tmp/emit_category.py diffusion_3d bravo > /tmp/new.md
    ```
 3. Replace the corresponding `## <category>/<mode>` section in
-   `EXPERIMENT_SUMMARIES.md`.
+   `reports/EXPERIMENT_SUMMARIES.md`.
 
 All family intros and memory cross-refs live in `/tmp/emit_category.py`'s
 `FAMILY_INTRO` dict; extend there when adding new experiments. The old-discard

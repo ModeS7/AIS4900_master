@@ -1,8 +1,8 @@
-"""Helpers to render per-experiment narratives from runs_tb_extracted.json.
+"""Helpers to render per-experiment narratives from reports/runs_tb_extracted.json.
 
 Usage (interactive):
-    from scripts.narrate_runs import load_records, runs_in, render_run
-    all_recs = load_records("runs_tb_extracted.json")
+    from misc.reporting.narrate_runs import load_records, runs_in, render_run
+    all_recs = load_records("reports/runs_tb_extracted.json")
     for r in runs_in(all_recs, category="diffusion_3d", mode="bravo"):
         print(render_run(r))
 
@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # Tag groups (first tag found wins within a group for headline reporting)
 LOSS_TAGS = [
@@ -174,7 +173,7 @@ def render_run(record: dict, memory_hint: str | None = None) -> str:
     """Emit a markdown narrative block for one run.
 
     Args:
-        record: the JSON record from runs_tb_extracted.json.
+        record: the JSON record from reports/runs_tb_extracted.json.
         memory_hint: optional pre-written sentence to lead the block with
             (for runs that have matching memory entries).
     """
@@ -427,7 +426,7 @@ def render_family(records: list[dict], family_prefix: str) -> str:
 
 if __name__ == "__main__":
     import sys
-    recs = load_records(sys.argv[1] if len(sys.argv) > 1 else "runs_tb_extracted.json")
+    recs = load_records(sys.argv[1] if len(sys.argv) > 1 else "reports/runs_tb_extracted.json")
     print(f"Loaded {len(recs)} records")
     by_cat: dict[tuple[str, str], int] = {}
     for r in recs:
