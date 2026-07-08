@@ -57,7 +57,7 @@ Techniques that have shown measurable improvement over baseline (exp1/exp1_1: 27
 | **More Euler steps (ImageNet FID)** | eval_ode_solvers | ImageNet FID degrades past 27 steps. RadImageNet FID improves up to ~48 steps |
 | **FreeU** | exp1_1 post-hoc | Marginal: best config (b=1.0, s=0.9) FID=19.87 vs baseline 19.12 |
 | **CFG-Zero*** | exp1n post-hoc | Best scale=1.0 (FID 44.79). All scales >1.0 much worse (155+). Not helpful |
-| **Stacking techniques** | exp24 (1000ep) | Combined ScoreAug+AdjOffset+PHEMA+UniformT (FID 62.87) ≈ ScoreAug alone (FID 62.57). Added 742 gradient spikes vs 9 |
+| **Stacking techniques** | exp24 (1000ep) | Combined ScoreAug+AdjOffset+PHEMA+UniformT (FID 62.87) ≈ ScoreAug alone (FID 62.57). Added 742 gradient spikes vs 139 |
 | **DiffRS** | Part 8 eval | Negative — discriminator-based rejection sampling did not improve quality |
 | **Restart Sampling** | Part 8 eval | No gain over Euler 25 |
 | **Gaussian normalization** | Part 14 eval | Catastrophic — breaks generation |

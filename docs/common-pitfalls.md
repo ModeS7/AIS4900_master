@@ -38,7 +38,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 ## 9. Seg Mode Perceptual Loss
 - **Automatically disabled** for seg mode diffusion
 - Pretrained ImageNet features don't apply to binary masks
-- You'll see log message: "Seg mode: perceptual loss disabled"
+- You'll see log message: "seg mode: perceptual loss and LPIPS disabled (binary masks)"
 
 ## 10. Regional Losses Work for All Modes
 - **Conditional modes** (bravo, dual): Uses conditioning seg mask
@@ -72,7 +72,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 - Some options are N/A for VAE (e.g., `timestep_losses`, `intermediate_steps`)
 
 ## 16. LPIPS Model Loading
-- First validation may be slow (downloads AlexNet if not cached)
+- First validation may be slow (downloads the RadImageNet ResNet50 perceptual backbone if not cached — the "LPIPS" metric defaults to RadImageNet, not AlexNet; see #90)
 - Set `training.logging.lpips=false` to disable if not needed
 
 ## 17. Multi-GPU and Logging
@@ -89,7 +89,7 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 - `compile_fused_forward` is **auto-disabled** when using DDP (multi-GPU)
 - Error: `Dynamo does not know how to trace method 'set_runtime_stats_and_log' of class 'Logger'`
 - DDP wrapper has internal logging that `torch.compile` can't trace
-- You'll see: "Disabled compiled fused forward for DDP (multi-GPU)"
+- Compiled fused forward is silently disabled under DDP/multi-GPU (no dedicated log message; set in `diffusion_model_setup.py`)
 - Other compiled components (perceptual loss, VAE) still work
 
 ## 20. Augmentation Type Mismatch
@@ -165,11 +165,10 @@ Reference this file with `@docs/common-pitfalls.md` when debugging issues.
 - **Impact**: 3D VAE experiments before this fix had near-zero KL regularization
 - **Action required**: Re-run 3D VAE experiments after updating code
 
-## 33. 3D Loaders Don't Support Augmentation
+## 33. 3D Loader Augmentation (RESOLVED — now supported)
 - 2D loaders have `augment: bool = True` parameter
-- 3D loaders (`src/medgen/data/loaders/volume_3d.py`) do NOT support data augmentation
-- Reason: Albumentations is 2D-only; 3D requires MONAI transforms
-- Workarounds: TTA during inference, multiple training seeds, or implement MONAI 3D transforms
+- 3D loaders now ALSO support augmentation via MONAI transforms: `build_3d_augmentation()` in `src/medgen/data/loaders/volume_3d.py` (RandFlipd, RandRotate90d), wired through `augment=True` in the 3D loader factories
+- Historical note: originally a limitation because Albumentations is 2D-only; the MONAI-3D-transform workaround has since been implemented
 
 ## 34. Regional Metrics Use Pixel-Weighted Aggregation
 - Both tumor AND background use pixel-weighted averaging (fixed Jan 2026)
@@ -651,7 +650,7 @@ model_input = model_input[:1]  # Use single sample for FLOPs
 
 **Previous behavior**: Code had a fallback for RFlow using `(1-t)/t` as a heuristic approximation, but this has no theoretical basis and may produce suboptimal results.
 
-**Fix applied**: Added guards in both `DiffusionTrainer` and `Diffusion3DTrainer` that auto-disable Min-SNR with a warning when `strategy=rflow`:
+**Fix applied**: Added guards in the shared `DiffusionTrainerBase` (2D/3D are unified into one `DiffusionTrainer`) that auto-disable Min-SNR with a warning when `strategy=rflow`:
 ```python
 if self.use_min_snr and self.strategy_name == 'rflow':
     warnings.warn(
@@ -874,7 +873,7 @@ def _get_2d_feret(self, region) -> float:
 
 **Fix**: Removed all `torch.clamp(0, 1)` from `_forward_single` and `_forward_dual` in all three files (4 clamps each = 12 total).
 
-**Affected code**: `src/medgen/pipeline/diffusion_model_setup.py`, `src/medgen/pipeline/compile_manager.py`, `src/medgen/pipeline/training_tricks.py`
+**Affected code**: `src/medgen/pipeline/diffusion_model_setup.py`, `compile_manager.py` (since removed as dead code, Jul 2026), `src/medgen/pipeline/training_tricks.py`
 
 ## 79. Seg Binarization Inconsistency (Fixed)
 

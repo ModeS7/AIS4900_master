@@ -98,7 +98,7 @@ four things in `nnUNetTrainerBrainMets`:
 | `batch_dice` | from plans | **False** | Per-sample Dice (forced); avoids whole-batch averaging that flatters easy patches |
 | `oversample_foreground_percent` | 0.33 | **1.0** | Every patch is guaranteed to contain a tumor voxel |
 
-Three trainer variants ship in `trainer.py`:
+Four trainer variants ship in `trainer.py`:
 - `nnUNetTrainerBrainMets` — production trainer (above)
 - `nnUNetTrainerBrainMets_200epochs` — same but capped at 200 epochs (cheaper experiments)
 - `nnUNetTrainerVanilla` — passive subclass for the abandoned vanilla baseline (verified to collapse to Dice 0)

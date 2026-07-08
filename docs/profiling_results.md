@@ -355,7 +355,7 @@ model.num_head_channels: 64
 ```bash
 'model.channels=[256, 512, 1024, 2048]'
 'model.attention_levels=[false, false, true, true]'
-'model.num_res_blocks=[2, 2, 2, 2]'
+'model.num_res_blocks=[3, 3, 3, 3]'
 model.num_head_channels=64
 ```
 
@@ -363,7 +363,7 @@ model.num_head_channels=64
 ```bash
 'model.channels=[512, 1024, 2048]'
 'model.attention_levels=[false, true, true]'
-'model.num_res_blocks=[2, 2, 2]'
+'model.num_res_blocks=[3, 3, 3]'
 model.num_head_channels=64
 ```
 

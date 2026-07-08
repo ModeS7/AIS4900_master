@@ -35,7 +35,7 @@ For thesis-relevant headline numbers and where to find supporting code:
 | Generation-pipeline filtering (atlas, PCA, single-component) | [`docs/architecture.md`](docs/architecture.md) + `src/medgen/scripts/generate.py` |
 | Restoration network (post-hoc deblur) | `docs/experiment_results_3d.md` Part 25 |
 | ODE-solver / step-count study | [`docs/eval-ode-solvers.md`](docs/eval-ode-solvers.md) |
-| 87 known issues / gotchas (development log, "lessons learnt") | [`docs/common-pitfalls.md`](docs/common-pitfalls.md) |
+| 89 known issues / gotchas (development log, "lessons learnt") | [`docs/common-pitfalls.md`](docs/common-pitfalls.md) |
 
 The **single most important downstream finding for the thesis** is documented
 in `docs/downstream_nnunet.md`: on the official Grøvik 2020 BrainMetShare-3
@@ -69,7 +69,7 @@ python -m medgen.scripts.train mode=bravo strategy=rflow \
 python -m medgen.scripts.train_segmentation scenario=baseline
 
 # === GENERATION ===
-python -m medgen.scripts.generate checkpoint_path=runs/.../best.pt mode=bravo strategy=rflow
+python -m medgen.scripts.generate gen_mode=bravo image_model=runs/.../best.pt seg_model=runs/seg/model.pt
 
 # === LR FINDER ===
 python -m medgen.scripts.lr_finder mode=dual strategy=rflow
@@ -241,7 +241,7 @@ AIS4900_master/
 │   ├── train/compression/           # Compression experiments (VAE/VQ-VAE/DC-AE)
 │   ├── train/diffusion/             # 2D diffusion experiments
 │   ├── train/diffusion_3d/          # 3D diffusion experiments (pixel/latent/DiT)
-│   ├── downstream/                  # Segmentation evaluation jobs
+│   ├── train/downstream/           # Segmentation evaluation jobs (nnU-Net)
 │   ├── generate/                    # Generation jobs
 │   ├── profiling/                   # VRAM profiling jobs
 │   └── submit_prefer_h100.sh       # H100 with A100 fallback
@@ -252,9 +252,12 @@ AIS4900_master/
 │   ├── profiling/                   # Memory profiling (UNet, VAE, DiT, HDiT, UViT)
 │   ├── visualization/               # NIfTI viewer, scheduler plots
 │   ├── tensorboard/                 # TensorBoard utilities
+│   ├── reporting/                   # TB/log extractors → reports/ summaries
 │   ├── profile_dit_memory.py        # 3D DiT VRAM profiling across variants
 │   ├── local_ci.sh                  # Local CI (mirrors GitHub Actions)
 │   └── validate_before_submit.sh    # Pre-submission validation
+│
+├── reports/                         # Generated experiment/log summaries + extractor JSONs
 │
 ├── tests/                           # Test suite (1383 tests, verified via `pytest --collect-only`)
 │   ├── unit/                        # Unit tests
@@ -265,7 +268,7 @@ AIS4900_master/
 ├── docs/                            # Documentation
 │   ├── architecture.md              # Architecture reference, TensorBoard metrics
 │   ├── commands.md                  # Full command reference
-│   ├── common-pitfalls.md           # 87 known issues and solutions
+│   ├── common-pitfalls.md           # 89 known issues and solutions
 │   ├── eval-ode-solvers.md          # ODE solver evaluation results
 │   ├── experiment_results.md        # 2D experiment results
 │   ├── experiment_results_3d.md     # 3D experiment results (pixel/latent/compression/downstream)
@@ -435,7 +438,7 @@ logging:
 |-----|----------|
 | `docs/architecture.md` | Architecture reference, TensorBoard metrics, config details |
 | `docs/commands.md` | Full command reference with all options |
-| `docs/common-pitfalls.md` | 87 known issues, bug fixes, and gotchas |
+| `docs/common-pitfalls.md` | 89 known issues, bug fixes, and gotchas |
 | `docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal) |
 | `docs/experiment_results.md` | 2D experiment results (3D moved to `experiment_results_3d.md`) |
 | `docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |

@@ -603,7 +603,7 @@ Per-subband N(0,1) normalization. Multiple strategy variants.
 Tests auxiliary bin prediction loss for improving size-bin adherence.
 The model jointly predicts denoised seg mask AND a bin classification loss.
 
-**Config**: seg_conditioned_3d, LR=5e-5, aux_loss_weight=0.1, cfg_dropout=0.25,
+**Config**: seg_conditioned_3d, LR=5e-5, aux_loss_weight=0.1, cfg_dropout_prob=0.25,
 regional_weighting=true, embedding_dim=64, projection 4-layer MLP.
 
 ---

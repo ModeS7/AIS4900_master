@@ -18,6 +18,13 @@ Euler outperforms all other solvers on FID and KID at every comparable NFE level
 
 ### 2. Optimal config: euler/25 steps (NFE=25, 19s/vol)
 
+> **Update (2026-07):** the sweep below tested only a coarse grid {5,10,25,50,100}.
+> A later finer golden-section search (`find_optimal_steps.py`) refined the optimum
+> to **27 steps** for ImageNet FID — **19.12** on the *test* split (exp1_1 @1000ep),
+> see `docs/proven_techniques.md`. The **27.50** below is against the combined "all"
+> reference split at 25 steps, so the headline generation number is 19.12@27, not
+> 27.50@25. RadImageNet FID favors more steps (~48).
+
 | Config | NFE | FID | KID | CMMD | Time/vol |
 |--------|-----|-----|-----|------|----------|
 | euler/25 | 25 | **27.50** | **0.0240** | 0.1131 | 19.0s |

@@ -61,7 +61,7 @@ results captured in `reports/IDUN_LOG_SUMMARIES.md` per-job blocks.
 | **Bravo pixel 256 (Tier 1)** | exp34_1_1000 (Mamba L) | — | **35.77** | 1000 | Tier 1 optima @ 14 steps; vindicated |
 | **Bravo pixel 256 (in-train)** | exp1p_1 (uniform T) | 0.00256 | **58.85** | 500 | Best 256x256 in-training FID at 500ep |
 | **Bravo pixel 256 (combined)** | exp24 (all techniques) | 0.00347 | **62.87** | 1000 | ScoreAug+AdjOffset+PHEMA+UniformT |
-| **Bravo pixel 256 (loss)** | exp23 (ScoreAug) | **0.00200** | 62.57 | 1000 | Best val loss of any experiment |
+| **Bravo pixel 256 (loss)** | exp23 (ScoreAug) | **0.00200** | 62.57 | 1000 | Best val loss among bravo pixel runs |
 | **Bravo LDM 4x (FID)** | exp22_2 (DiT-L) | 0.0847 | **47.41** | 500 | Best LDM FID |
 | **Bravo LDM 4x (UNet)** | exp21_2 (MAISI 167M) | 0.0767 | **50.89** | 500 | Best LDM UNet |
 | **Bravo LDM 4x+ScoreAug** | exp27 (DiT-L 1000ep) | — | **57.24** | 1000 | ScoreAug DiT-L |
@@ -608,7 +608,7 @@ Never completed — kept resubmitting but only ran 1 epoch per job (likely memor
 
 | Epochs | Val Loss | Final MSE | FID | KID | CMMD | Spikes | VRAM | Status |
 |--------|----------|-----------|-----|-----|------|--------|------|--------|
-| 500 | 0.00239 | 0.00199 | 99.62 | 0.114 | **0.160** | 10 | 77.4GB | Completed |
+| 500 | 0.00230 | 0.00199 | 99.62 | 0.114 | **0.160** | 10 | 77.4GB | Completed |
 
 **Best CMMD (0.160) of ALL experiments.** KID trajectory strong improve (-10.9%/100ep) but KID absolute still high (0.035). High FID (99.6) despite good CMMD — may need more training or different evaluation.
 
@@ -778,11 +778,11 @@ All evaluations use **exp1_1 bravo pixel 256x256x160** (best 3D bravo model).
 | **25** | **27.50** | **0.024** | 0.113 | 18.1s |
 | 50 | 30.25 | 0.027 | **0.109** | 36.1s |
 
-25 steps is the FID sweet spot. Beyond 25, FID degrades (error accumulation).
+25 steps was the FID sweet spot on this coarse grid; a finer golden-section search later refined the optimum to 27 (ImageNet FID 19.12 on test) — see `docs/eval-ode-solvers.md` and `docs/proven_techniques.md`.
 
-### Full ODE Solver Comparison (Not Yet Run)
+### Full ODE Solver Comparison (Completed — see docs/eval-ode-solvers.md)
 
-`eval_ode_solvers.py` tests 33 configs: 5 fixed-step solvers (euler, midpoint, heun2, heun3, rk4) x 5 step counts + 4 adaptive solvers (fehlberg2, bosh3, dopri5, dopri8) x 2 tolerances. SLURM job crashed before producing results. Needs resubmission.
+`eval_ode_solvers.py` evaluated 40 configs (5 fixed-step solvers × 5 step counts + 4 adaptive solvers × variable tolerances). Euler wins at every NFE budget; all higher-order/adaptive solvers are worse. Full results in `docs/eval-ode-solvers.md`.
 
 ### DiffRS (Discriminator-Guided Reflow)
 
@@ -880,7 +880,7 @@ MSE ~3x higher due to [-1,1] scale. Latest model FID (72.00) is competitive. 31 
 | Best (ep 443) | **0.00209** | 0.002532 | 32.36 | 0.8944 | 92.49 | 0.1024 | 0.2773 |
 | Latest (500ep) | — | — | — | — | 72.52 | 0.0704 | 0.2260 |
 
-**Best val loss of any experiment (0.00209).** 13 gradient spikes. Latest FID 72.52 shows good generation quality. Training completed in 5.81h (fastest 270M run).
+**Lowest val loss in the offset-noise family (0.00209)** — the lowest among bravo pixel runs is exp23 (ScoreAug, 0.00200). 13 gradient spikes. Latest FID 72.52 shows good generation quality. Training completed in 5.81h (fastest 270M run).
 
 ---
 
@@ -964,7 +964,7 @@ Good generation metrics (FID 58.85 latest). CMMD trajectory was strongly improvi
 | Best (ep ~750) | **0.00200** | 0.002195 | 33.04 | 0.5915 | 72.39 | 0.0579 | 0.1936 |
 | Latest (1000ep) | — | 0.003152 | 33.34 | 0.5307 | **62.57** | **0.0531** | **0.1850** |
 
-139 gradient spikes (9 optimizer skips). Training: ~5.15h (final chain segment).
+139 gradient spikes total (summed across chain segments; the counter resets per segment, so the 9 in the final segment alone is not the run total). Training: ~5.15h.
 
 **Post-hoc optimal steps (25 volumes, test split):**
 
@@ -993,7 +993,7 @@ All 500 epochs unless noted. FID/KID/CMMD are from **latest** checkpoint in-trai
 | exp1n | CFG-Zero* | 0.00265 | 132.83 | 0.174 | 0.248 | 1 |
 | **exp1o_1** | **PosthocEMA** | 0.00235 | **62.64†** | 0.054 | 0.190 | 6 |
 | **exp1p_1** | **Uniform T** | 0.00256 | **58.85** | **0.046** | **0.198** | 34 |
-| **exp23** | **ScoreAug (1000ep)** | **0.00200** | 62.57 | 0.053 | 0.185 | 9 |
+| **exp23** | **ScoreAug (1000ep)** | **0.00200** | 62.57 | 0.053 | 0.185 | 139 |
 | **exp24** | **Combined (1000ep)** | 0.00347 | 62.87 | 0.053 | 0.259 | 742 |
 
 †Best checkpoint FID, not latest.
@@ -1751,7 +1751,7 @@ PostHocEMA synthesis with training sigma_rels [0.05, 0.28] produces unstable int
 
 2. **LDM DiT is the most efficient approach**: exp22_2 (DiT-L 478M) achieves FID 47.41 in only 3.53h of training. DiT models in latent space train 10x faster than pixel UNets while achieving competitive generation quality.
 
-3. **ScoreAug alone ≈ combined techniques**: exp24 (ScoreAug + AdjOffset + PosthocEMA + UniformT, 1000ep) achieved FID 62.87, essentially identical to exp23 (ScoreAug only, FID 62.57). Stacking techniques did not improve generation quality — but added instability (742 vs 9 gradient spikes). ScoreAug is the dominant contributor.
+3. **ScoreAug alone ≈ combined techniques**: exp24 (ScoreAug + AdjOffset + PosthocEMA + UniformT, 1000ep) achieved FID 62.87, essentially identical to exp23 (ScoreAug only, FID 62.57). Stacking techniques did not improve generation quality — but added instability (742 vs 139 gradient spikes). ScoreAug is the dominant contributor.
 
 4. **ScoreAug helps pixel-space but HURTS latent-space**: exp23 (pixel, 1000ep) improved to FID 20.38. But exp27 (DiT-L LDM + ScoreAug, 1000ep) degraded to 57.24 vs baseline 47.41. exp28 (MAISI UNet LDM + ScoreAug) was even worse (79.91 vs 50.89). ScoreAug augmentations are too destructive for compact latent representations. Diffusion Mixup (exp28_1) and ScoreAug v2 (exp28_2) also failed in latent space.
 

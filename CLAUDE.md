@@ -51,7 +51,7 @@ Don't assume anything that wasn't explicitly stated. If something is unclear or 
 | **bridge strategy** | Diffusion Bridge Model for paired restoration (Zhang et al. 2025, arXiv:2504.15267); γ_max=0.125 for 3D brain MRI |
 | **irsde strategy** | IR-SDE mean-reverting SDE (Luo et al., ICML 2023); L1 loss, posterior sampling at inference |
 | **resfusion strategy** | Resfusion residual noise diffusion (Shi et al., NeurIPS 2024); short T=12 schedule, ~5–12 reverse steps |
-| **WDM** | Wavelet Diffusion Model (Friedrich et al. 2024, arXiv:2402.19043); 3D-only, requires `strategy.prediction_type=sample` (x₀) and `wavelet=default`. Config: `model=wdm_3d` |
+| **WDM** | Wavelet Diffusion Model (Friedrich et al. 2024, arXiv:2402.19043); 3D-only, requires `strategy.prediction_type=sample` (x₀) and `wavelet.enabled=true` (under `--config-name=diffusion_3d`). Config: `model=wdm_3d` |
 | `train.py` | Diffusion (2D default, use `model.spatial_dims=3` for 3D) |
 | `train_compression.py` | Unified compression training (VAE/VQ-VAE/DC-AE, use `--config-name=` to select) |
 | **Continuous timesteps** | RFlow with `use_discrete_timesteps: false` - floats in [0, 1000] |
@@ -88,8 +88,8 @@ python -m medgen.scripts.train model=mamba model.variant=S mode=bravo strategy=r
 python -m medgen.scripts.train model=mamba_3d model.variant=S mode=bravo strategy=rflow model.spatial_dims=3  # 3D
 
 # === DIFFUSION (WDM, wavelet-domain, 3D only) ===
-python -m medgen.scripts.train model=wdm_3d wavelet=default mode=bravo \
-    strategy=ddpm strategy.prediction_type=sample model.spatial_dims=3
+python -m medgen.scripts.train --config-name=diffusion_3d model=wdm_3d wavelet.enabled=true mode=bravo \
+    strategy=ddpm strategy.prediction_type=sample
 
 # === RESTORATION (RFlow / IR-SDE / Bridge / Resfusion) ===
 # All four strategies work with mode=restoration per configs/mode/restoration.yaml
@@ -106,7 +106,7 @@ python -m medgen.scripts.restore_volumes \
 
 # === GENERATE WITH HANDOFF (two-stage low-t/high-t) ===
 # generate.py: Hydra config keys (image_model = low-t, image_model_high_t = base)
-python -m medgen.scripts.generate mode=bravo \
+python -m medgen.scripts.generate gen_mode=bravo \
     image_model=<fine-tuned-low-t-model.pt> \
     image_model_high_t=<base-model.pt> \
     handoff_t=0.25
@@ -169,7 +169,7 @@ This catches:
 | `@docs/architecture.md` | File locations, trainer hierarchy, config structure, TensorBoard metrics |
 | `@docs/common-pitfalls.md` | 89 known issues, bug fixes, and gotchas (numbered 1-90 with #43 intentionally skipped → 89 actual entries) |
 | `@docs/commands.md` | Full command reference with all options |
-| `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler/25 optimal for RFlow) |
+| `@docs/eval-ode-solvers.md` | ODE solver evaluation results (Euler optimal; ~27 steps for ImageNet FID — coarse grid in the doc says 25) |
 | `@docs/experiment_results.md` | Comprehensive 2D experiment results and metrics |
 | `@docs/experiment_results_3d.md` | 3D experiment results (pixel, latent, compression, downstream) |
 | `@docs/downstream_nnunet.md` | nnU-Net segmentation pipeline + all results + threshold sweep + random-split methodology test + Ottesen 2023/2025 comparison |

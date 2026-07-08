@@ -359,14 +359,15 @@ python -m medgen.scripts.train_compression --config-name=vae_3d mode=multi_modal
 @dataclass
 class TrainingStepResult:
     total_loss: float
-    reconstruction_loss: float = 0.0
-    perceptual_loss: float = 0.0
+    reconstruction_loss: float
+    perceptual_loss: float
     regularization_loss: float = 0.0  # KL or VQ loss
     adversarial_loss: float = 0.0
     discriminator_loss: float = 0.0
-    mse_loss: float = 0.0
+    base_loss: float = 0.0        # primary diffusion loss (MSE/L1/pseudo-Huber/etc.)
+    aux_bin_loss: float = 0.0     # auxiliary size-bin prediction loss (0 if disabled)
 
-    def to_legacy_dict(self, reg_key: str = 'kl') -> Dict[str, float]:
+    def to_legacy_dict(self, reg_key: str | None = 'kl') -> Dict[str, float]:
         """Convert to legacy format for train_epoch averaging."""
 ```
 
@@ -687,7 +688,7 @@ in this repo (no `configs/latent/mamba*.yaml`). See
 `src/medgen/models/mamba_diff.py` and `mamba_blocks.py`.
 
 Reference: LaMamba-Diff (Fu et al. 2024, arXiv:2408.02615; cited in
-`src/medgen/models/mamba_diff.py:15`).
+`src/medgen/models/mamba_diff.py:14`).
 
 ### WDM (Wavelet Diffusion Model, 3D-only)
 
@@ -830,11 +831,12 @@ def create_warmup_constant_scheduler(
 ```python
 def train(
     train_loader, train_dataset, val_loader=None,
-    start_epoch=0, max_epochs=None, early_stop_fn=None
+    per_modality_val_loaders=None, start_epoch=0, max_epochs=None
 ) -> int  # Returns last epoch number
 ```
 - `max_epochs`: Override total epochs
-- `early_stop_fn`: Callback `(epoch, val_loss) -> bool` for early stopping
+- `per_modality_val_loaders`: optional `dict[str, DataLoader]` for multi-modality metrics
+- Note: `train()` is inherited from `BaseTrainer`; there is no `early_stop_fn` parameter
 
 ---
 
@@ -924,11 +926,11 @@ of inference steps:
 | Space | scale_factor | rescale | Purpose |
 |-------|--------------|---------|---------|
 | `PixelSpace` | 1 | opt-in | Direct pixel diffusion (default) |
-| `SpaceToDepthSpace` | 2 | opt-in | 2D pixel rearrangement (no learned transform) |
+| `SpaceToDepthSpace` | 2 | opt-in | 3D pixel rearrangement (PixelUnshuffle3D, no learned transform) |
 | `WaveletSpace` | 2 | default off (`rescale: false` in `configs/wavelet/default.yaml:27`) | 3D Haar wavelet decomposition (8 subbands, per-subband normalized) |
 | `LatentSpace` | 4-128 | N/A | Compressed diffusion via VAE/VQ-VAE/DC-AE (auto-detected from checkpoint) |
 
-**[-1,1] Rescaling**: All spaces except `LatentSpace` support an optional `rescale` parameter that maps [0,1] data to [-1,1] inside `encode()` and back in `decode()`. This keeps all downstream code (metrics, viz, saving) at [0,1]. Use `training.rescale_data=true` for pixel/S2D spaces, or `wavelet.rescale=true` (default) for wavelet space.
+**[-1,1] Rescaling**: All spaces except `LatentSpace` support an optional `rescale` parameter that maps [0,1] data to [-1,1] inside `encode()` and back in `decode()`. This keeps all downstream code (metrics, viz, saving) at [0,1]. Use `training.rescale_data=true` for pixel/S2D spaces, or `wavelet.rescale=true` (opt-in; default is false) for wavelet space.
 
 **Brain-only N(0,1) normalization**: `PixelSpace` also supports per-channel shift/scale normalization via `pixel_norm=bravo` (or `t1_pre`, `t1_gd`). This normalizes using brain-only statistics: `encode: (x - shift) / scale`, `decode: z * scale + shift`. Brain voxels get mean=0, std=1 (matching noise distribution); background maps to ~-2.44. Configs in `configs/pixel_norm/`. Conditioning (seg masks) is NOT normalized — only the noisy image channel. Priority order: shift/scale > rescale [-1,1] > identity.
 
@@ -962,7 +964,7 @@ of inference steps:
    python -m medgen.scripts.train mode=dual strategy=rflow
 
 4. Generate images:
-   python -m medgen.scripts.generate checkpoint_path=dual.pt mode=dual strategy=rflow
+   python -m medgen.scripts.generate image_model=dual.pt gen_mode=dual strategy=rflow
 ```
 
 ---
@@ -1077,7 +1079,7 @@ Shows the batch with highest loss for debugging:
 
 ### Diffusion Augmentation (Conservative)
 
-Only lossless spatial transforms. Verbatim from `src/medgen/augmentation/augmentation.py:121-136`:
+Only lossless spatial transforms. Verbatim from `src/medgen/augmentation/augmentation.py:134-137`:
 
 ```python
 return A.Compose([
@@ -1439,14 +1441,14 @@ Verbatim factory names from `src/medgen/data/loaders/volume_3d.py`:
 
 | Function | File:Line | Purpose |
 |----------|-----------|---------|
-| `create_vae_3d_dataloader()` | `volume_3d.py:714` | 3D volumetric compression (VAE/VQ-VAE/DC-AE) train |
-| `create_vae_3d_validation_dataloader()` | `volume_3d.py:759` | 3D compression validation |
-| `create_vae_3d_test_dataloader()` | `volume_3d.py:782` | 3D compression test |
-| `create_vae_3d_multi_modality_dataloader()` | `volume_3d.py:919` | Multi-modality 3D compression train |
-| `create_vae_3d_multi_modality_validation_dataloader()` | `volume_3d.py:969` | Multi-modality 3D val |
-| `create_vae_3d_multi_modality_test_dataloader()` | `volume_3d.py:990` | Multi-modality 3D test |
-| `create_segmentation_dataloader()` | `volume_3d.py:1223` | 3D segmentation training |
-| `create_single_modality_dataloader_with_seg()` | `volume_3d.py:1332` | Single-modality 3D with seg conditioning |
+| `create_vae_3d_dataloader()` | `volume_3d.py:723` | 3D volumetric compression (VAE/VQ-VAE/DC-AE) train |
+| `create_vae_3d_validation_dataloader()` | `volume_3d.py:768` | 3D compression validation |
+| `create_vae_3d_test_dataloader()` | `volume_3d.py:791` | 3D compression test |
+| `create_vae_3d_multi_modality_dataloader()` | `volume_3d.py:928` | Multi-modality 3D compression train |
+| `create_vae_3d_multi_modality_validation_dataloader()` | `volume_3d.py:978` | Multi-modality 3D val |
+| `create_vae_3d_multi_modality_test_dataloader()` | `volume_3d.py:999` | Multi-modality 3D test |
+| `create_segmentation_dataloader()` | `volume_3d.py:1232` | 3D segmentation training |
+| `create_single_modality_dataloader_with_seg()` | `volume_3d.py:1341` | Single-modality 3D with seg conditioning |
 
 ### Shared Infrastructure
 
@@ -2180,13 +2182,13 @@ Prefers H100, falls back to H100|A100 after timeout:
 
 ```bash
 # Submit with 10 min H100 wait (default)
-./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_vae_baseline.slurm
+./IDUN/submit_prefer_h100.sh IDUN/train/diffusion/exp16_rflow_128_bs32.slurm
 
 # Custom timeout (30 min)
-./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_vae_baseline.slurm 1800
+./IDUN/submit_prefer_h100.sh IDUN/train/diffusion/exp16_rflow_128_bs32.slurm 1800
 
 # Run in background
-./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_vae_baseline.slurm --bg
+./IDUN/submit_prefer_h100.sh IDUN/train/diffusion/exp16_rflow_128_bs32.slurm --bg
 ```
 
 Background mode:

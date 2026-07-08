@@ -86,7 +86,7 @@ python -m medgen.scripts.train_compression --config-name=dcae_3d mode=multi_moda
     dcae_3d.disable_gan=true
 
 # DC-AE Segmentation Mask Compression (BCE+Dice+Boundary loss)
-python -m medgen.scripts.train_compression --config-name=dcae mode=seg dcae.seg_mode=true
+python -m medgen.scripts.train_compression --config-name=dcae mode=seg_compression dcae.seg_mode=true
 
 # DC-AE 1.5: Structured Latent Space (for f64/f128 only, NOT f32)
 python -m medgen.scripts.train_compression --config-name=dcae dcae=f64 mode=multi_modality \
@@ -199,7 +199,7 @@ python -m medgen.scripts.train --config-name=diffusion_3d \
 
 # 3D Wavelet Diffusion with dedicated WDM UNet
 python -m medgen.scripts.train --config-name=diffusion_3d \
-    mode=bravo strategy=rflow \
+    mode=bravo strategy=ddpm strategy.prediction_type=sample \
     model=wdm_3d \
     wavelet.enabled=true
 
@@ -207,7 +207,7 @@ python -m medgen.scripts.train --config-name=diffusion_3d \
 # (default OFF per configs/wavelet/default.yaml:27 — opt-in for the WDM-paper recipe)
 # wavelet.rescale=true maps [0,1] -> [-1,1] before wavelet decomposition
 python -m medgen.scripts.train --config-name=diffusion_3d \
-    mode=bravo strategy=rflow \
+    mode=bravo strategy=ddpm strategy.prediction_type=sample \
     model=wdm_3d \
     wavelet.enabled=true \
     wavelet.rescale=true
@@ -913,6 +913,33 @@ python -m medgen.scripts.plot_tumor_detection --output-dir <plots>
 python -m medgen.scripts.lr_finder mode=bravo strategy=rflow model.spatial_dims=3
 ```
 
+### Thesis evaluation & reader-study tools
+
+| Script (`python -m medgen.scripts.<name>`) | What |
+|---|---|
+| `eval_all_metrics` | Full generation-metric panel (FID/KID/CMMD/MS-SSIM-3D/Med3D) for each set vs a real reference |
+| `eval_diversity` | Sample-to-sample diversity (MS-SSIM-3D + perceptual-3D) |
+| `eval_med3d_mmd` | Med3D whole-volume Gaussian-MMD |
+| `eval_perception_distortion` | Perception–distortion proof of the mean-blur failure mode |
+| `eval_compression_fids` / `eval_compression_visual` | Compression-model FID / visual comparison |
+| `build_reader_study` | Assemble a blind radiologist reader study |
+| `validate_pca_filter` / `ablate_pca_filter` | Tune / ablate the PCA brain-shape filter |
+| `brain_mask_existing` | Brain-mask a directory of existing volumes |
+
+Run any with `--help` for arguments.
+
+### Reporting pipeline (TensorBoard / SLURM logs → `reports/`)
+
+```bash
+# 1. Extract raw TensorBoard metrics / SLURM logs into JSON:
+python misc/reporting/extract_tb.py --out reports/runs_tb_extracted.json
+python misc/reporting/extract_idun_logs.py --out reports/idun_logs_extracted.json
+
+# 2. narrate_runs.py / narrate_idun.py expose render helpers (interactive import:
+#    load_records / runs_in / render_run) used to assemble reports/EXPERIMENT_SUMMARIES.md
+#    and reports/IDUN_LOG_SUMMARIES.md from the JSON — the scripts don't write the .md themselves.
+```
+
 ---
 
 ## Pixel Normalization Statistics
@@ -1021,10 +1048,10 @@ sbatch IDUN/train/diffusion/exp1_rflow_128_baseline.slurm
 sbatch IDUN/train/diffusion_3d/exp13_dit_4x_bravo.slurm
 
 # Prefer H100, fallback to H100|A100 after 10 min
-./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_progressive_baseline.slurm
+./IDUN/submit_prefer_h100.sh IDUN/train/diffusion/exp16_rflow_128_bs32.slurm
 
 # Run in background
-./IDUN/submit_prefer_h100.sh IDUN/train/vae/exp1_progressive_baseline.slurm --bg
+./IDUN/submit_prefer_h100.sh IDUN/train/diffusion/exp16_rflow_128_bs32.slurm --bg
 ```
 
 **Auto-chaining**: 3D SLURM scripts use SIGUSR1 signal handling to automatically save checkpoint and resubmit before wall time expires. Configure `CHAIN_MAX` in the script to set max segments (default: 20).
