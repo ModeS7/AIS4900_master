@@ -348,25 +348,31 @@ class SegRegionalMetricsTracker:
         if not records:
             summary: dict[str, float] = {
                 'detection_rate': 0.0,
+                'n_detected': 0,
+                'n_total': 0,
                 'false_positives': float(self._false_positives),
             }
             for size in TUMOR_SIZE_CATEGORIES:
+                summary[f'n_detected_{size}'] = 0
+                summary[f'n_total_{size}'] = 0
                 summary[f'fp_{size}'] = float(self._fp_by_size[size])
             return summary
 
         total_detected = sum(1 for r in records if r['detected'])
         summary = {
             'detection_rate': total_detected / len(records),
+            'n_detected': total_detected,          # raw counts so detected/total is exact
+            'n_total': len(records),
             'false_positives': float(self._false_positives),
         }
 
         for size in TUMOR_SIZE_CATEGORIES:
             size_records = [r for r in records if r['size_cat'] == size]
-            if size_records:
-                detected = sum(1 for r in size_records if r['detected'])
-                summary[f'detection_rate_{size}'] = detected / len(size_records)
-            else:
-                summary[f'detection_rate_{size}'] = 0.0
+            n_size = len(size_records)
+            detected = sum(1 for r in size_records if r['detected'])
+            summary[f'detection_rate_{size}'] = detected / n_size if n_size else 0.0
+            summary[f'n_detected_{size}'] = detected
+            summary[f'n_total_{size}'] = n_size
             summary[f'fp_{size}'] = float(self._fp_by_size[size])
 
         return summary

@@ -351,16 +351,18 @@ class BiomedCLIPFeatures(nn.Module):
 
 
 class Med3DFeatures(nn.Module):
-    """True-3D whole-volume feature extractor (MedicalNet / Med3D ResNet-50).
+    """True-3D whole-volume feature extractor (MedicalNet / Med3D ResNet).
 
-    Uses MONAI's MedicalNet-pretrained 3D ResNet-50 (Chen et al. 2019, arXiv:1904.00625)
-    to map a whole volume to a 2048-dim feature vector (global-average-pooled layer4,
-    ``feed_forward=False``). Unlike the 2D extractors, this processes the FULL volume in
-    3D — no middle-slice, no tri-planar aggregation — so it captures through-plane
-    structure. Intended for Gaussian-kernel MMD (see ``compute_cmmd``), which is stable
-    at the small (~hundreds of volumes) sample sizes typical of 3D medical datasets.
+    Uses a MONAI MedicalNet-pretrained 3D ResNet (Chen et al. 2019, arXiv:1904.00625) to
+    map a whole volume to a pooled feature vector (global-average-pooled layer4,
+    ``feed_forward=False``). ``model_depth`` selects the backbone: BasicBlock depths
+    (10/18/34) give 512-d features, Bottleneck depths (50/101/152/200) give 2048-d.
+    Unlike the 2D extractors, this processes the FULL volume in 3D — no middle-slice, no
+    tri-planar aggregation — so it captures through-plane structure. Intended for
+    Gaussian-kernel MMD (see ``compute_cmmd``), which is stable at the small (~hundreds
+    of volumes) sample sizes typical of 3D medical datasets.
 
-    Weights auto-download from HuggingFace (``TencentMedicalNet/MedicalNet-Resnet50``);
+    Weights auto-download from HuggingFace (``TencentMedicalNet/MedicalNet-Resnet{depth}``);
     on offline compute nodes they must already be cached (HF_HUB_OFFLINE).
 
     Args:
@@ -369,7 +371,13 @@ class Med3DFeatures(nn.Module):
         input_size: Optional (D, H, W) to resize volumes to before extraction. None
             (default) feeds native resolution — the adaptive pool handles any size.
         compile_model: Whether to torch.compile the model.
+        model_depth: MedicalNet ResNet depth, one of ``SUPPORTED_DEPTHS`` (default 50).
     """
+
+    # MedicalNet pretrained depths available in MONAI (Chen et al. 2019). BasicBlock
+    # depths (10/18/34) yield 512-d features; Bottleneck depths (50/101/152/200) yield
+    # 2048-d features. MMD works in whichever space, so any depth is a valid backbone.
+    SUPPORTED_DEPTHS = (10, 18, 34, 50, 101, 152, 200)
 
     def __init__(
         self,
@@ -377,16 +385,26 @@ class Med3DFeatures(nn.Module):
         datasets23: bool = True,
         input_size: tuple[int, int, int] | None = None,
         compile_model: bool = True,
+        model_depth: int = 50,
     ) -> None:
         super().__init__()
+        if model_depth not in self.SUPPORTED_DEPTHS:
+            raise ValueError(
+                f"model_depth must be one of {self.SUPPORTED_DEPTHS}, got {model_depth}"
+            )
         self.device = device
         self.datasets23 = datasets23
         self.input_size = input_size
         self.compile_model = compile_model
+        self.model_depth = model_depth
         self._model: nn.Module | None = None
 
+    def load(self) -> None:
+        """Eagerly load the backbone (public hook for fail-fast weight checks)."""
+        self._ensure_model()
+
     def _ensure_model(self) -> None:
-        """Lazy-load the MedicalNet 3D ResNet-50."""
+        """Lazy-load the MedicalNet 3D ResNet at ``model_depth``."""
         if self._model is not None:
             return
 
@@ -394,17 +412,18 @@ class Med3DFeatures(nn.Module):
         import os
         os.environ.setdefault('HF_HUB_OFFLINE', '1')
 
-        from monai.networks.nets import resnet50
+        from monai.networks.nets import resnet as monai_resnet
         from monai.networks.nets.resnet import get_medicalnet_pretrained_resnet_args
 
         # MONAI enforces the exact shortcut_type/bias_downsample for the pretrained
-        # weights; fetch them rather than hardcode.
-        bias_downsample, shortcut_type = get_medicalnet_pretrained_resnet_args(50)
-        model = resnet50(
+        # weights; fetch them per depth rather than hardcode.
+        bias_downsample, shortcut_type = get_medicalnet_pretrained_resnet_args(self.model_depth)
+        ctor = getattr(monai_resnet, f"resnet{self.model_depth}")
+        model = ctor(
             pretrained=True,
             spatial_dims=3,
             n_input_channels=1,
-            feed_forward=False,          # drop the FC head -> 2048-d pooled features
+            feed_forward=False,          # drop the FC head -> pooled features (512 or 2048)
             shortcut_type=shortcut_type,
             bias_downsample=bias_downsample,
         )
@@ -416,14 +435,14 @@ class Med3DFeatures(nn.Module):
         if self.compile_model:
             try:
                 model = torch.compile(model, mode="reduce-overhead")
-                logger.info("Med3D ResNet-50 compiled with torch.compile")
+                logger.info("Med3D ResNet-%d compiled with torch.compile", self.model_depth)
             except RuntimeError as e:
                 logger.warning(f"torch.compile failed for Med3D: {e}")
         else:
             logger.debug("Med3D loaded without torch.compile (load/unload mode)")
 
         self._model = model
-        logger.debug("Loaded MedicalNet 3D ResNet-50 for feature extraction")
+        logger.debug("Loaded MedicalNet 3D ResNet-%d for feature extraction", self.model_depth)
 
     @torch.no_grad()
     def extract_features(
