@@ -91,11 +91,28 @@ finish_output() {
     MED3D_DATASETS+=(--dataset "${label}:${CURRENT_VOLS}")
 }
 
+reuse_if_complete() {
+    local label="$1"
+    local count=0
+    if [ -d "${CURRENT_VOLS}" ]; then
+        count=$(find "${CURRENT_VOLS}" -maxdepth 1 -type f -name '*_bravo.nii.gz' | wc -l)
+    fi
+    if [ -f "${CURRENT_OUT}/search_results.json" ] && [ "${count}" -eq 25 ]; then
+        echo "=== ${label}: reusing completed metrics and 25 saved volumes ==="
+        finish_output "${label}"
+        return 0
+    fi
+    return 1
+}
+
 run_standalone() {
     local label="$1"
     local checkpoint="$2"
     local steps="$3"
     prepare_output "${label}" "${steps}"
+    if reuse_if_complete "${label}"; then
+        return
+    fi
 
     echo ""
     echo "=== ${label}: standalone, ${steps} Euler steps ==="
@@ -123,6 +140,9 @@ run_handoff() {
     local high_checkpoint="$3"
     local steps="$4"
     prepare_output "${label}" "${steps}"
+    if reuse_if_complete "${label}"; then
+        return
+    fi
 
     echo ""
     echo "=== ${label}: handoff t=0.25, ${steps} Euler steps ==="
@@ -166,7 +186,7 @@ time python -m medgen.scripts.eval_med3d_mmd_networks \
     --reference "train:${DATA_ROOT}/train" \
     "${MED3D_DATASETS[@]}" \
     --networks 50 \
-    --pattern '*_bravo.nii.gz' \
+    --pattern '*bravo.nii.gz' \
     --target-shape 150 256 256 \
     --pool-cap 0 \
     --subsample-n 25 \
