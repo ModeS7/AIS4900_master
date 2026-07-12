@@ -1,34 +1,32 @@
 """Unit test specific fixtures - mocks and synthetic data."""
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import Mock
 import torch
 
-from medgen.metrics.quality import compute_perceptual_distance
+from medgen.metrics import quality
 
 
-@pytest.fixture(scope="session")
+class _FastPerceptualMetric(torch.nn.Module):
+    """Deterministic stand-in for MONAI's pretrained perceptual backbone."""
+
+    def forward(self, generated: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+        return torch.mean(torch.abs(generated - reference))
+
+
+@pytest.fixture
 def lpips_available():
-    """Check if LPIPS model weights can be downloaded.
+    """Use a fast local perceptual metric for unit-level behavior tests.
 
-    Skips tests when the RadImageNet weights are unavailable
-    (Google Drive rate-limiting, network errors, etc.).
+    Unit tests verify channel handling, aggregation, and return contracts. Loading
+    MONAI's real pretrained RadImageNet backbone here makes the CPU suite depend on
+    network availability and can take longer than the per-test timeout.
     """
-    try:
-        compute_perceptual_distance(torch.rand(2, 1, 64, 64), torch.rand(2, 1, 64, 64))
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}"
-        # Weight-download / network failures => LPIPS unavailable, skip (don't error).
-        # Covers: Google Drive rate-limiting (gdown), and torch.hub fetching the
-        # RadImageNet repo hitting GitHub's API rate limit on hosted CI runners
-        # (surfaces as HTTP 403 -> KeyError: 'Authorization' inside torch.hub).
-        skip_patterns = [
-            "FileURLRetrievalError", "Too many users", "gdown", "urlopen",
-            "HTTP Error", "rate limit", "Authorization", "torch.hub",
-            "Connection", "Temporary failure", "Max retries", "URLError",
-        ]
-        if any(p in err for p in skip_patterns):
-            pytest.skip(f"LPIPS model weights unavailable: {err}")
-        raise
+    quality.clear_metric_caches()
+    metric = _FastPerceptualMetric().eval()
+    with patch.object(quality, "_get_lpips_metric", return_value=metric):
+        yield
+    quality.clear_metric_caches()
 
 
 @pytest.fixture
