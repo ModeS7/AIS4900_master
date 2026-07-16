@@ -76,6 +76,45 @@ class TestKID:
         assert isinstance(kid1, float)
         assert isinstance(kid2, float)
 
+    def test_seed_is_reproducible_and_does_not_consume_global_rng(self):
+        """An explicit seed owns its RNG stream and is unaffected by global RNG use."""
+        data_rng = torch.Generator().manual_seed(17)
+        real = torch.randn(40, 8, generator=data_rng)
+        fake = torch.randn(40, 8, generator=data_rng)
+
+        torch.manual_seed(991)
+        expected_global_draw = torch.rand(4)
+        torch.manual_seed(991)
+        first = compute_kid(real, fake, subset_size=12, num_subsets=8, seed=123)
+        actual_global_draw = torch.rand(4)
+
+        torch.manual_seed(1)
+        _ = torch.rand(100)
+        second = compute_kid(real, fake, subset_size=12, num_subsets=8, seed=123)
+
+        assert first == second
+        assert torch.equal(actual_global_draw, expected_global_draw)
+
+    def test_accepts_generator_and_rejects_generator_with_seed(self):
+        """Callers may supply a reusable local generator, but not two RNG sources."""
+        data_rng = torch.Generator().manual_seed(23)
+        real = torch.randn(30, 6, generator=data_rng)
+        fake = torch.randn(30, 6, generator=data_rng)
+        first = compute_kid(
+            real, fake, subset_size=10, num_subsets=5,
+            generator=torch.Generator().manual_seed(44),
+        )
+        second = compute_kid(
+            real, fake, subset_size=10, num_subsets=5,
+            generator=torch.Generator().manual_seed(44),
+        )
+        assert first == second
+
+        with pytest.raises(ValueError, match="either generator or seed"):
+            compute_kid(
+                real, fake, generator=torch.Generator().manual_seed(44), seed=44,
+            )
+
 
 class TestCMMD:
     """Test compute_cmmd function."""
@@ -110,6 +149,50 @@ class TestCMMD:
         assert isinstance(cmmd, float)
         assert not torch.isnan(torch.tensor(cmmd))
         assert cmmd >= 0.0
+
+    def test_capped_seed_is_reproducible_and_does_not_consume_global_rng(self):
+        """Seeded cap selection is local and stable despite unrelated random draws."""
+        data_rng = torch.Generator().manual_seed(29)
+        real = torch.randn(24, 10, generator=data_rng)
+        fake = torch.randn(24, 10, generator=data_rng) + 0.4
+
+        torch.manual_seed(992)
+        expected_global_draw = torch.rand(4)
+        torch.manual_seed(992)
+        first = compute_cmmd(
+            real, fake, kernel_bandwidth=0.8, max_samples=9, seed=456,
+        )
+        actual_global_draw = torch.rand(4)
+
+        torch.manual_seed(2)
+        _ = torch.rand(100)
+        second = compute_cmmd(
+            real, fake, kernel_bandwidth=0.8, max_samples=9, seed=456,
+        )
+
+        assert first == second
+        assert torch.equal(actual_global_draw, expected_global_draw)
+
+    def test_capped_cmmd_accepts_generator_and_rejects_generator_with_seed(self):
+        """Capped CMMD supports a caller-owned local random stream."""
+        data_rng = torch.Generator().manual_seed(31)
+        real = torch.randn(18, 7, generator=data_rng)
+        fake = torch.randn(18, 7, generator=data_rng)
+        first = compute_cmmd(
+            real, fake, max_samples=7,
+            generator=torch.Generator().manual_seed(55),
+        )
+        second = compute_cmmd(
+            real, fake, max_samples=7,
+            generator=torch.Generator().manual_seed(55),
+        )
+        assert first == second
+
+        with pytest.raises(ValueError, match="either generator or seed"):
+            compute_cmmd(
+                real, fake, max_samples=7,
+                generator=torch.Generator().manual_seed(55), seed=55,
+            )
 
 
 class TestFID:

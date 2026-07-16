@@ -19,14 +19,22 @@ Usage:
     python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \\
         seg_model=... image_model=...
 """
+import hashlib
+import json
 import logging
+import os
 import random
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
+from typing import Any
 
 import hydra
+import nibabel as nib
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.amp import autocast
 
 from medgen.core import (
@@ -60,6 +68,18 @@ def _create_strategy(name: str) -> DiffusionStrategy:
     if name not in strategies:
         raise ValueError(f"Unknown strategy: {name}. Choose from {list(strategies.keys())}")
     return strategies[name]()
+
+
+def _validate_expected_strategy(cfg: DictConfig) -> None:
+    """Fail before GPU work if a locked protocol's configured strategy changed."""
+    expected_strategy = cfg.get('expected_strategy', None)
+    if expected_strategy is not None and str(cfg.strategy) != str(expected_strategy):
+        raise ValueError(
+            f"Generation strategy is {cfg.strategy!s}, but the protocol requires "
+            f"{expected_strategy!s}"
+        )
+
+
 from medgen.metrics.brain_mask import (
     BrainPCAModel,
     create_brain_mask,
@@ -185,6 +205,217 @@ def get_noise_shape(batch_size: int, channels: int, spatial_dims: int,
         return (batch_size, channels, depth, image_size, image_size)
 
 
+_SEED_STREAM_OFFSETS = {
+    # Keep the first BRAVO draw exactly base_seed + sample_index. This is the
+    # pre-specified stream used by the fixed-mask paper evaluation.
+    'bravo': 0,
+    'seg': 1_000_000_000,
+    'seg_input': 2_000_000_000,
+}
+_SEED_ATTEMPT_STRIDE = 1_000_000
+
+
+def _derive_sample_seed(
+    base_seed: int | None,
+    sample_index: int,
+    *,
+    stream: str = 'bravo',
+    attempt: int = 0,
+) -> int | None:
+    """Derive an order-independent seed for one sample and retry stream.
+
+    ``None`` deliberately returns ``None`` so historical stochastic generation
+    remains the default. The first BRAVO attempt is ``base_seed + sample_index``;
+    other stages and retries occupy disjoint deterministic streams.
+    """
+    if base_seed is None:
+        return None
+    if stream not in _SEED_STREAM_OFFSETS:
+        raise ValueError(f"Unknown generation seed stream: {stream}")
+    if sample_index < 0 or attempt < 0:
+        raise ValueError("sample_index and attempt must be non-negative")
+    seed = int(base_seed) + sample_index + _SEED_STREAM_OFFSETS[stream] + attempt * _SEED_ATTEMPT_STRIDE
+    if not 0 <= seed < 2**63:
+        raise ValueError(f"Derived generation seed is outside [0, 2**63): {seed}")
+    return seed
+
+
+def _torch_generator(device: torch.device, seed: int | None) -> torch.Generator | None:
+    """Create a local generator without perturbing PyTorch's global RNG."""
+    if seed is None:
+        return None
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
+    return generator
+
+
+def _randn(
+    shape: tuple[int, ...],
+    device: torch.device,
+    *,
+    seed: int | None = None,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Draw noise, optionally from a local deterministic generator."""
+    if seed is not None and generator is not None:
+        raise ValueError("Pass either seed or generator, not both")
+    local_generator = generator if generator is not None else _torch_generator(device, seed)
+    return torch.randn(shape, device=device, generator=local_generator)
+
+
+def _seed_process_rngs(seed: int | None) -> None:
+    """Seed non-sample RNGs when deterministic generation is requested."""
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _config_to_dict(value: Any) -> dict[str, Any]:
+    """Convert checkpoint config containers to a plain dictionary."""
+    if isinstance(value, DictConfig):
+        converted = OmegaConf.to_container(value, resolve=True)
+        return converted if isinstance(converted, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _checkpoint_generation_signature(checkpoint_path: str | Path) -> dict[str, Any]:
+    """Read compatibility-relevant metadata from a diffusion checkpoint."""
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    config = _config_to_dict(checkpoint.get('config', {}))
+    nested_model = _config_to_dict(config.get('model', {}))
+    model_config = _config_to_dict(checkpoint.get('model_config', {}))
+    architecture = {**config, **nested_model, **model_config}
+
+    strategy = config.get('strategy')
+    if isinstance(strategy, dict):
+        strategy = strategy.get('name')
+    pixel = _config_to_dict(config.get('pixel', {}))
+    return {
+        'in_channels': architecture.get('in_channels'),
+        'out_channels': architecture.get('out_channels'),
+        'spatial_dims': architecture.get('spatial_dims'),
+        'strategy': strategy,
+        'sigma_data': config.get('sigma_data'),
+        'pixel': {
+            key: pixel.get(key)
+            for key in ('rescale', 'pixel_shift', 'pixel_scale')
+            if key in pixel
+        },
+    }
+
+
+def _validate_checkpoint_signature(
+    signature: dict[str, Any],
+    *,
+    checkpoint_path: str | Path,
+    in_channels: int,
+    out_channels: int,
+    spatial_dims: int,
+    strategy: str,
+) -> None:
+    """Fail before model loading when checkpoint metadata contradicts the run."""
+    expected = {
+        'in_channels': in_channels,
+        'out_channels': out_channels,
+        'spatial_dims': spatial_dims,
+        'strategy': strategy,
+    }
+    for key, expected_value in expected.items():
+        actual = signature.get(key)
+        if actual is not None and actual != expected_value:
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} has {key}={actual!r}, "
+                f"but generation requires {expected_value!r}"
+            )
+
+
+def _load_image_model_with_optional_handoff(
+    cfg: DictConfig,
+    device: torch.device,
+    *,
+    in_channels: int,
+    out_channels: int,
+    spatial_dims: int,
+    compile_model: bool = True,
+) -> torch.nn.Module:
+    """Load one image model or a validated high-t/low-t handoff pair.
+
+    Both the 2D and 3D generation paths call this helper, preventing the 3D
+    path from silently ignoring ``image_model_high_t``.
+    """
+    low_path = cfg.image_model
+    high_path = cfg.get('image_model_high_t', None)
+    low_signature = _checkpoint_generation_signature(low_path)
+    _validate_checkpoint_signature(
+        low_signature,
+        checkpoint_path=low_path,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        spatial_dims=spatial_dims,
+        strategy=str(cfg.strategy),
+    )
+    if not high_path:
+        return load_diffusion_model(
+            low_path,
+            device=device,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            compile_model=compile_model,
+            spatial_dims=spatial_dims,
+        )
+
+    high_signature = _checkpoint_generation_signature(high_path)
+    _validate_checkpoint_signature(
+        high_signature,
+        checkpoint_path=high_path,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        spatial_dims=spatial_dims,
+        strategy=str(cfg.strategy),
+    )
+    for key in ('sigma_data', 'pixel'):
+        low_value = low_signature.get(key)
+        high_value = high_signature.get(key)
+        if low_value not in (None, {}) and high_value not in (None, {}) and low_value != high_value:
+            raise ValueError(
+                f"Handoff checkpoints disagree on {key}: "
+                f"high-t={high_value!r}, low-t={low_value!r}"
+            )
+
+    from medgen.models.handoff import HandoffWrapper
+
+    logger.info(
+        "Two-model handoff: high-t ← %s, low-t ← %s, handoff_t=%s",
+        high_path, low_path, cfg.handoff_t,
+    )
+    low_model = load_diffusion_model(
+        low_path,
+        device=device,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        compile_model=compile_model,
+        spatial_dims=spatial_dims,
+    )
+    high_model = load_diffusion_model(
+        high_path,
+        device=device,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        compile_model=False,
+        spatial_dims=spatial_dims,
+    )
+    return HandoffWrapper(
+        high_t_model=high_model,
+        low_t_model=low_model,
+        handoff_t=float(cfg.handoff_t),
+        num_train_timesteps=1000,
+    )
+
+
 def _get_offset_noise_config(checkpoint_path: str) -> tuple[bool, float]:
     """Extract adjusted offset noise config from a checkpoint.
 
@@ -208,12 +439,24 @@ def _get_offset_noise_config(checkpoint_path: str) -> tuple[bool, float]:
     return False, 0.0
 
 
-def _maybe_add_generation_offset(noise: torch.Tensor, adjusted: bool, strength: float) -> torch.Tensor:
-    """Apply generation offset noise if adjusted mode is enabled."""
+def _maybe_add_generation_offset(
+    noise: torch.Tensor,
+    adjusted: bool,
+    strength: float,
+    *,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Apply generation offset noise, using the sample-local RNG when provided."""
     if not adjusted:
         return noise
-    from medgen.pipeline.training_tricks import add_generation_offset
-    return add_generation_offset(noise, strength)
+    offset_shape = list(noise.shape[:2]) + [1] * (noise.ndim - 2)
+    offset = torch.randn(
+        offset_shape,
+        device=noise.device,
+        dtype=noise.dtype,
+        generator=generator,
+    )
+    return noise + strength * offset
 
 
 def generate_batch(
@@ -318,6 +561,7 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 2D. Valid: {VALID_2D_MODES}")
 
     device = torch.device("cuda")
+    _seed_process_rngs(cfg.get('seed', None))
     batch_size = auto_adjust_batch_size(cfg.batch_size, 2, device)
 
     # Initialize strategy
@@ -371,27 +615,14 @@ def run_2d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     else:  # dual
         in_ch, out_ch = 3, 2
 
-    image_model = load_diffusion_model(
-        cfg.image_model, device=device,
-        in_channels=in_ch, out_channels=out_ch, compile_model=True
+    image_model = _load_image_model_with_optional_handoff(
+        cfg,
+        device,
+        in_channels=in_ch,
+        out_channels=out_ch,
+        spatial_dims=2,
+        compile_model=True,
     )
-
-    # Optional two-model handoff: load high-t model and wrap.
-    high_t_path = cfg.get('image_model_high_t')
-    if high_t_path:
-        from medgen.models.handoff import HandoffWrapper
-        logger.info(f"Two-model handoff: high-t ← {high_t_path}, "
-                    f"low-t ← {cfg.image_model}, handoff_t={cfg.handoff_t}")
-        high_t_model = load_diffusion_model(
-            high_t_path, device=device,
-            in_channels=in_ch, out_channels=out_ch, compile_model=False,
-        )
-        image_model = HandoffWrapper(
-            high_t_model=high_t_model,
-            low_t_model=image_model,
-            handoff_t=float(cfg.handoff_t),
-            num_train_timesteps=1000,
-        )
 
     # DiffRS (opt-in, applied to image model only)
     diffrs_disc, diffrs_cfg = _build_diffrs(cfg, image_model, device)
@@ -517,13 +748,280 @@ def save_bins_csv(bins_data: list[tuple[int, list[int]]], output_path: Path) -> 
         bins_data: List of (sample_id, bins) tuples
         output_path: Path to save CSV file
     """
-    with open(output_path, 'w') as f:
-        # Header: id, bin_0, bin_1, ..., bin_6, total_tumors
-        f.write('id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors\n')
-        for sample_id, bins in bins_data:
-            bins_str = ','.join(map(str, bins))
-            total = sum(bins)
-            f.write(f'{sample_id:05d},{bins_str},{total}\n')
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f'.{output_path.name}.tmp-{uuid.uuid4().hex}')
+    try:
+        with open(temporary, 'w') as f:
+            # Header: id, bin_0, bin_1, ..., bin_6, total_tumors
+            f.write('id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors\n')
+            for sample_id, bins in bins_data:
+                bins_str = ','.join(map(str, bins))
+                total = sum(bins)
+                f.write(f'{sample_id:05d},{bins_str},{total}\n')
+        os.replace(temporary, output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _discover_real_seg_files(
+    real_seg_dir: str | Path,
+    *,
+    num_images: int,
+    expected_cases: int | None = None,
+    require_bravo_pairs: bool = False,
+) -> list[Path]:
+    """Find and strictly validate a real conditioning-mask pool."""
+    directory = Path(real_seg_dir)
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Real seg directory does not exist: {directory}")
+    files = sorted(directory.glob('*/seg.nii.gz'))
+    if not files:
+        raise FileNotFoundError(f"No seg.nii.gz files found in {directory}")
+
+    patient_ids = [path.parent.name for path in files]
+    if len(patient_ids) != len(set(patient_ids)):
+        raise ValueError(f"Duplicate patient identifiers found under {directory}")
+    if expected_cases is not None and len(files) != int(expected_cases):
+        raise ValueError(
+            f"Expected exactly {expected_cases} real masks under {directory}, found {len(files)}"
+        )
+    if num_images > len(files):
+        raise ValueError(
+            f"Requested {num_images} samples but only {len(files)} unique real masks are available. "
+            "Real masks are not cycled."
+        )
+    if require_bravo_pairs:
+        bravo_files = sorted(directory.glob('*/bravo.nii.gz'))
+        bravo_ids = {path.parent.name for path in bravo_files}
+        mask_ids = set(patient_ids)
+        missing = sorted(mask_ids - bravo_ids)
+        extra = sorted(bravo_ids - mask_ids)
+        if missing or extra:
+            details = []
+            if missing:
+                details.append(f"missing BRAVO for {', '.join(missing[:5])}")
+            if extra:
+                details.append(f"BRAVO without mask for {', '.join(extra[:5])}")
+            raise ValueError(
+                "Real mask/BRAVO patient identifiers do not match: " + '; '.join(details)
+            )
+    return files
+
+
+def _validate_real_seg_volume(
+    volume: np.ndarray,
+    *,
+    source: Path,
+    image_size: int,
+    expected_depth: int | None = None,
+) -> None:
+    """Reject malformed real conditioning masks before generation."""
+    if volume.ndim != 3:
+        raise ValueError(f"Real mask {source} must be 3D, got shape {volume.shape}")
+    if volume.shape[:2] != (image_size, image_size):
+        raise ValueError(
+            f"Real mask {source} has in-plane shape {volume.shape[:2]}, "
+            f"expected {(image_size, image_size)}"
+        )
+    if expected_depth is not None and volume.shape[2] != expected_depth:
+        raise ValueError(
+            f"Real mask {source} has depth {volume.shape[2]}, expected {expected_depth}"
+        )
+    if not np.isfinite(volume).all():
+        raise ValueError(f"Real mask {source} contains non-finite values")
+    close_to_binary = np.isclose(volume, 0.0, atol=1e-6) | np.isclose(volume, 1.0, atol=1e-6)
+    if not close_to_binary.all():
+        invalid = np.unique(volume[~close_to_binary])
+        raise ValueError(
+            f"Real mask {source} is not binary; values include {invalid[:10]}"
+        )
+    if not np.any(volume > 0.5):
+        raise ValueError(f"Real mask {source} is empty after thresholding at 0.5")
+
+
+def _preflight_real_seg_files(
+    files: list[Path],
+    *,
+    num_images: int,
+    image_size: int,
+    expected_depth: int | None = None,
+) -> None:
+    """Validate every selected real mask before loading a GPU model."""
+    for path in files[:num_images]:
+        volume = nib.load(str(path)).get_fdata().astype(np.float32)  # type: ignore[attr-defined]
+        _validate_real_seg_volume(
+            volume,
+            source=path,
+            image_size=image_size,
+            expected_depth=expected_depth,
+        )
+
+
+def _validate_output_arrays(arrays: dict[str, np.ndarray]) -> None:
+    """Validate one sample before atomically publishing its directory."""
+    if not arrays:
+        raise ValueError("Cannot save an empty sample")
+    shapes = {name: tuple(array.shape) for name, array in arrays.items()}
+    if len(set(shapes.values())) != 1:
+        raise ValueError(f"Sample arrays have mismatched shapes: {shapes}")
+    for name, array in arrays.items():
+        if array.ndim != 3:
+            raise ValueError(f"{name} must be a 3D array, got shape {array.shape}")
+        if not np.isfinite(array).all():
+            raise ValueError(f"{name} contains non-finite values")
+    if 'seg.nii.gz' in arrays:
+        unique = np.unique(arrays['seg.nii.gz'])
+        if not np.isin(unique, (0.0, 1.0)).all():
+            raise ValueError(f"seg.nii.gz is not binary; values include {unique[:10]}")
+
+
+def _save_sample_directory_atomic(
+    output_dir: Path,
+    sample_index: int,
+    arrays: dict[str, np.ndarray],
+    *,
+    voxel_size: tuple[float, float, float],
+) -> Path:
+    """Write all files in a temporary directory, then publish as one rename."""
+    _validate_output_arrays(arrays)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sample_dir = output_dir / f'{sample_index:05d}'
+    if sample_dir.exists():
+        raise FileExistsError(f"Refusing to overwrite existing sample directory: {sample_dir}")
+    temporary = output_dir / f'.{sample_index:05d}.tmp-{uuid.uuid4().hex}'
+    temporary.mkdir()
+    try:
+        for filename, array in arrays.items():
+            written_path = temporary / filename
+            save_nifti(array, str(written_path), voxel_size=voxel_size)
+            # Reload before publishing. This catches truncated/corrupt writes and
+            # verifies that serialization preserved the expected volume shape.
+            written = nib.load(str(written_path)).get_fdata().astype(np.float32)  # type: ignore[attr-defined]
+            if written.shape != array.shape:
+                raise RuntimeError(
+                    f"Serialized {filename} has shape {written.shape}, expected {array.shape}"
+                )
+            if not np.isfinite(written).all():
+                raise RuntimeError(f"Serialized {filename} contains non-finite values")
+            if filename == 'seg.nii.gz' and not np.isin(np.unique(written), (0.0, 1.0)).all():
+                raise RuntimeError(f"Serialized {filename} is not binary")
+        os.replace(temporary, sample_dir)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return sample_dir
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _checkpoint_provenance(path_value: str | Path | None, *, hash_file: bool) -> dict[str, Any] | None:
+    if not path_value:
+        return None
+    path = Path(path_value).expanduser().resolve()
+    stat = path.stat()
+    result: dict[str, Any] = {
+        'path': str(path),
+        'size_bytes': stat.st_size,
+        'mtime_ns': stat.st_mtime_ns,
+    }
+    if hash_file:
+        result['sha256'] = _sha256_file(path)
+    return result
+
+
+def _git_commit() -> str | None:
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'.{path.name}.tmp-{uuid.uuid4().hex}')
+    try:
+        with temporary.open('w') as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write('\n')
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_generation_manifest(
+    cfg: DictConfig,
+    output_dir: Path,
+    samples: list[dict[str, Any]],
+) -> None:
+    """Write machine-readable provenance after a complete generation run."""
+    hash_checkpoints = bool(cfg.get('provenance_hash_checkpoints', False))
+    manifest = {
+        'schema_version': 1,
+        'status': 'complete',
+        'git_commit': _git_commit(),
+        'mode': str(cfg.gen_mode),
+        'spatial_dims': int(cfg.spatial_dims),
+        'seed': cfg.get('seed', None),
+        'num_images': int(cfg.num_images),
+        'models': {
+            'seg': _checkpoint_provenance(cfg.get('seg_model', None), hash_file=hash_checkpoints),
+            'image_low_t': _checkpoint_provenance(cfg.get('image_model', None), hash_file=hash_checkpoints),
+            'image_high_t': _checkpoint_provenance(
+                cfg.get('image_model_high_t', None), hash_file=hash_checkpoints
+            ),
+        },
+        'sampling': {
+            'strategy': str(cfg.strategy),
+            'ode_solver': str(cfg.get('ode_solver', 'euler')),
+            'num_steps': int(cfg.num_steps),
+            'num_steps_seg': int(cfg.get('num_steps_seg', None) or cfg.num_steps),
+            'num_steps_bravo': int(cfg.get('num_steps_bravo', None) or cfg.num_steps),
+            'shift_ratio_seg': float(cfg.get('shift_ratio_seg', None) or cfg.get('shift_ratio', 1.0)),
+            'shift_ratio_bravo': float(cfg.get('shift_ratio_bravo', None) or cfg.get('shift_ratio', 1.0)),
+            'cfg_scale_seg': float(cfg.cfg_scale_seg),
+            'cfg_scale_bravo': float(cfg.cfg_scale_bravo),
+            'handoff_t': float(cfg.handoff_t) if cfg.get('image_model_high_t', None) else None,
+        },
+        'geometry': {
+            'image_size': int(cfg.image_size),
+            'generation_depth': int(cfg.depth),
+            'trim_slices': int(cfg.get('trim_slices', 10)),
+            'fov_mm': float(cfg.get('fov_mm', 240.0)),
+        },
+        'quality_control': {
+            'brain_atlas_path': cfg.get('brain_atlas_path', None),
+            'brain_pca_path': cfg.get('brain_pca_path', None),
+            'seg_pca_path': cfg.get('seg_pca_path', None),
+            'validate_brain_mask': bool(cfg.get('validate_brain_mask', True)),
+            'mask_outside_brain': bool(cfg.get('mask_outside_brain', True)),
+            'mask_outside_brain_dilate_pixels': int(
+                cfg.get('mask_outside_brain_dilate_pixels', 2)
+            ),
+            'diffrs_checkpoint': cfg.get('diffrs_checkpoint', None),
+        },
+        'real_seg_dir': str(Path(cfg.real_seg_dir).resolve()) if cfg.get('real_seg_dir', None) else None,
+        'expected_real_cases': cfg.get('expected_real_cases', None),
+        'expected_real_depth': cfg.get('expected_real_depth', None),
+        'require_real_bravo_pairs': bool(cfg.get('require_real_bravo_pairs', False)),
+        'validate_real_seg_masks': bool(cfg.get('validate_real_seg_masks', True)),
+        'samples': samples,
+    }
+    _write_json_atomic(output_dir / 'generation_manifest.json', manifest)
 
 
 def _generate_bravo(
@@ -538,6 +1036,7 @@ def _generate_bravo(
     diffrs_cfg: dict | None = None,
     offset_adjusted: bool = False,
     offset_strength: float = 0.0,
+    noise_seed: int | None = None,
 ) -> np.ndarray:
     """Generate a BRAVO volume conditioned on a binary seg mask.
 
@@ -550,8 +1049,18 @@ def _generate_bravo(
     if bravo_space is not None:
         seg_tensor = bravo_space.encode(seg_tensor)
 
-    noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
-    noise = _maybe_add_generation_offset(noise, offset_adjusted, offset_strength)
+    generator = _torch_generator(device, noise_seed)
+    noise = _randn(
+        get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth),
+        device,
+        generator=generator,
+    )
+    noise = _maybe_add_generation_offset(
+        noise,
+        offset_adjusted,
+        offset_strength,
+        generator=generator,
+    )
     bravo = generate_batch(bravo_model, strategy, noise, steps_bravo, device,
                            conditioning=seg_tensor,
                            cfg_scale=cfg.cfg_scale_bravo,
@@ -576,6 +1085,7 @@ def _generate_dual(
     dual_space: object | None,
     offset_adjusted: bool = False,
     offset_strength: float = 0.0,
+    noise_seed: int | None = None,
 ) -> np.ndarray:
     """Generate a dual-modality (T1pre + T1gd) volume conditioned on a seg mask.
 
@@ -588,8 +1098,18 @@ def _generate_dual(
         seg_tensor = dual_space.encode(seg_tensor)
 
     # Dual: 2 noise channels (T1pre + T1gd) concatenated with 1 seg channel → 3 input
-    noise = torch.randn(get_noise_shape(1, 2, 3, cfg.image_size, cfg.depth), device=device)
-    noise = _maybe_add_generation_offset(noise, offset_adjusted, offset_strength)
+    generator = _torch_generator(device, noise_seed)
+    noise = _randn(
+        get_noise_shape(1, 2, 3, cfg.image_size, cfg.depth),
+        device,
+        generator=generator,
+    )
+    noise = _maybe_add_generation_offset(
+        noise,
+        offset_adjusted,
+        offset_strength,
+        generator=generator,
+    )
     dual = generate_batch(dual_model, strategy, noise, steps_bravo, device,
                           conditioning=seg_tensor,
                           cfg_scale=cfg.cfg_scale_bravo,
@@ -615,6 +1135,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         raise ValueError(f"Invalid gen_mode '{cfg.gen_mode}' for 3D. Valid: {VALID_3D_MODES}")
 
     device = torch.device("cuda")
+    base_seed = cfg.get('seed', None)
+    _seed_process_rngs(base_seed)
 
     strategy = _create_strategy(cfg.strategy)
     strategy.setup_scheduler(
@@ -722,6 +1244,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Collect all bins info for CSV
     all_bins: list[tuple[int, list[int]]] = []
+    manifest_samples: list[dict[str, Any]] = []
 
     # Mode: seg_conditioned only (just generate seg masks)
     if cfg.gen_mode == 'seg_conditioned':
@@ -762,7 +1285,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             valid_mask = False
             retries = 0
             while not valid_mask and retries < max_retries:
-                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                seg_seed = _derive_sample_seed(base_seed, generated, stream='seg', attempt=retries)
+                noise = _randn(
+                    get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth),
+                    device,
+                    seed=seg_seed,
+                )
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      size_bins=size_bins,
                                      cfg_scale=cfg.cfg_scale_seg,
@@ -808,10 +1336,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
             # Save in subdirectory: 00000/seg.nii.gz
-            sample_dir = output_dir / f"{generated:05d}"
-            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            _save_sample_directory_atomic(
+                output_dir,
+                generated,
+                {'seg.nii.gz': seg_binary},
+                voxel_size=voxel,
+            )
+            manifest_samples.append({
+                'index': generated,
+                'patient_id': None,
+                'conditioning_mask': None,
+                'seg_noise_seed': seg_seed,
+                'image_noise_seed': None,
+            })
             all_bins.append((generated, bins))
             generated += 1
 
@@ -835,9 +1373,19 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         real_seg_files = None
         if real_seg_dir:
             real_seg_dir = Path(real_seg_dir)
-            real_seg_files = sorted(real_seg_dir.glob("*/seg.nii.gz"))
-            if not real_seg_files:
-                raise FileNotFoundError(f"No seg.nii.gz files found in {real_seg_dir}")
+            real_seg_files = _discover_real_seg_files(
+                real_seg_dir,
+                num_images=int(cfg.num_images),
+                expected_cases=cfg.get('expected_real_cases', None),
+                require_bravo_pairs=bool(cfg.get('require_real_bravo_pairs', False)),
+            )
+            if cfg.get('validate_real_seg_masks', True):
+                _preflight_real_seg_files(
+                    real_seg_files,
+                    num_images=int(cfg.num_images),
+                    image_size=int(cfg.image_size),
+                    expected_depth=cfg.get('expected_real_depth', None),
+                )
             logger.info(f"Using real seg masks from {real_seg_dir} ({len(real_seg_files)} available)")
         else:
             logger.info("Loading seg_conditioned model...")
@@ -847,10 +1395,13 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             )
 
         logger.info(f"Loading {cfg.gen_mode} model (in={image_in_ch}, out={image_out_ch})...")
-        bravo_model = load_diffusion_model(
-            cfg.image_model, device=device,
-            in_channels=image_in_ch, out_channels=image_out_ch,
-            compile_model=True, spatial_dims=3,
+        bravo_model = _load_image_model_with_optional_handoff(
+            cfg,
+            device,
+            in_channels=image_in_ch,
+            out_channels=image_out_ch,
+            spatial_dims=3,
+            compile_model=True,
         )
 
         # Config from bravo checkpoint
@@ -937,10 +1488,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 )
             if real_seg_files is not None:
                 # Load real seg mask from dataset
-                seg_idx = generated % len(real_seg_files)
-                seg_path = real_seg_files[seg_idx]
-                import nibabel as nib
-                seg_vol = nib.load(str(seg_path)).get_fdata().astype(np.float32)
+                seg_path = real_seg_files[generated]
+                seg_vol = nib.load(str(seg_path)).get_fdata().astype(np.float32)  # type: ignore[attr-defined]
+                if cfg.get('validate_real_seg_masks', True):
+                    _validate_real_seg_volume(
+                        seg_vol,
+                        source=seg_path,
+                        image_size=int(cfg.image_size),
+                        expected_depth=cfg.get('expected_real_depth', None),
+                    )
                 seg_vol = np.transpose(seg_vol, (2, 0, 1))  # [H, W, D] -> [D, H, W]
                 # Pad/crop depth
                 d = seg_vol.shape[0]
@@ -963,7 +1519,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 while not valid_mask and retries < max_retries:
                     # Generate seg with size bin conditioning
                     _apply_shift(shift_seg)
-                    noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                    seg_attempt = outer_retries * max_retries + retries
+                    seg_seed = _derive_sample_seed(
+                        base_seed,
+                        generated,
+                        stream='seg',
+                        attempt=seg_attempt,
+                    )
+                    noise = _randn(
+                        get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth),
+                        device,
+                        seed=seg_seed,
+                    )
                     seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                          size_bins=size_bins,
                                          cfg_scale=cfg.cfg_scale_seg,
@@ -1030,12 +1597,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             for bravo_attempt in range(max_brain_retries):
                 # Generate BRAVO (or dual) conditioned on seg mask
                 _apply_shift(shift_bravo)
+                image_attempt = outer_retries * max_brain_retries + bravo_attempt
+                image_seed = _derive_sample_seed(
+                    base_seed,
+                    generated,
+                    stream='bravo',
+                    attempt=image_attempt,
+                )
                 if is_dual:
                     dual_channels = _generate_dual(
                         seg_binary, bravo_model, strategy, steps_bravo, device, cfg,
                         bravo_space,
                         offset_adjusted=_bravo_offset_adjusted,
                         offset_strength=_bravo_offset_strength,
+                        noise_seed=image_seed,
                     )
                     # Use channel 0 (T1pre) for brain-mask / PCA validation — same
                     # anatomy is visible across both channels, T1pre has more uniform
@@ -1047,6 +1622,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         bravo_space, diffrs_disc, diffrs_cfg,
                         offset_adjusted=_bravo_offset_adjusted,
                         offset_strength=_bravo_offset_strength,
+                        noise_seed=image_seed,
                     )
 
                 # Stage 2a — Reject disconnected brain volumes
@@ -1129,15 +1705,27 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Save in subdirectory: 00000/{seg,bravo}.nii.gz for bravo mode
             # or 00000/{seg,t1_pre,t1_gd}.nii.gz for dual mode.
-            sample_dir = output_dir / f"{generated:05d}"
-            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            save_nifti(seg_binary_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            sample_arrays = {'seg.nii.gz': seg_binary_save}
             if is_dual:
-                save_nifti(dual_channels_save[0], str(sample_dir / "t1_pre.nii.gz"), voxel_size=voxel)
-                save_nifti(dual_channels_save[1], str(sample_dir / "t1_gd.nii.gz"), voxel_size=voxel)
+                sample_arrays['t1_pre.nii.gz'] = dual_channels_save[0]
+                sample_arrays['t1_gd.nii.gz'] = dual_channels_save[1]
             else:
-                save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
+                sample_arrays['bravo.nii.gz'] = bravo_np
+            _save_sample_directory_atomic(
+                output_dir,
+                generated,
+                sample_arrays,
+                voxel_size=voxel,
+            )
+            manifest_samples.append({
+                'index': generated,
+                'patient_id': seg_path.parent.name if real_seg_files is not None else None,
+                'conditioning_mask': str(seg_path.resolve()) if real_seg_files is not None else None,
+                'seg_noise_seed': None if real_seg_files is not None else seg_seed,
+                'image_noise_seed': image_seed,
+                'image_attempt': image_attempt,
+            })
             all_bins.append((generated, bins))
 
             generated += 1
@@ -1197,7 +1785,17 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             valid_mask = False
             retries = 0
             while not valid_mask and retries < max_retries:
-                noise = torch.randn(get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth), device=device)
+                seg_seed = _derive_sample_seed(
+                    base_seed,
+                    generated,
+                    stream='seg_input',
+                    attempt=retries,
+                )
+                noise = _randn(
+                    get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth),
+                    device,
+                    seed=seg_seed,
+                )
                 seg = generate_batch(seg_model, strategy, noise, steps_seg, device,
                                      bin_maps=bin_maps,
                                      cfg_scale=cfg.cfg_scale_seg,
@@ -1243,10 +1841,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
             # Save in subdirectory: 00000/seg.nii.gz
-            sample_dir = output_dir / f"{generated:05d}"
-            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+            _save_sample_directory_atomic(
+                output_dir,
+                generated,
+                {'seg.nii.gz': seg_binary},
+                voxel_size=voxel,
+            )
+            manifest_samples.append({
+                'index': generated,
+                'patient_id': None,
+                'conditioning_mask': None,
+                'seg_noise_seed': seg_seed,
+                'image_noise_seed': None,
+            })
             all_bins.append((generated, bins))
             generated += 1
 
@@ -1263,6 +1871,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")
+    _write_generation_manifest(cfg, output_dir, manifest_samples)
     logger.info(f"Saved {len(all_bins)} samples to {output_dir}")
     logger.info(f"Bins info saved to {output_dir / 'bins.csv'}")
 
@@ -1270,6 +1879,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 @hydra.main(version_base=None, config_path="../../../configs", config_name="generate")
 def main(cfg: DictConfig) -> None:
     """Main entry point for generation."""
+    _validate_expected_strategy(cfg)
+
     # Build output directory from paths config
     generated_dir = Path(cfg.paths.generated_dir)
     if cfg.output_subdir:

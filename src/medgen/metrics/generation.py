@@ -188,6 +188,9 @@ def compute_kid(
     generated_features: torch.Tensor,
     subset_size: int = 100,
     num_subsets: int = 50,
+    *,
+    generator: torch.Generator | None = None,
+    seed: int | None = None,
 ) -> tuple[float, float]:
     """Compute Kernel Inception Distance between real and generated features.
 
@@ -200,10 +203,20 @@ def compute_kid(
         generated_features: Generated image features [M, D].
         subset_size: Size of random subsets for MMD estimation.
         num_subsets: Number of random subsets to average over.
+        generator: Optional local CPU random generator used for subset selection.
+            Passing a generator avoids consuming PyTorch's global RNG state.
+        seed: Optional seed used to create a local CPU generator. Mutually
+            exclusive with ``generator``.
 
     Returns:
         Tuple of (kid_mean, kid_std).
     """
+    if generator is not None and seed is not None:
+        raise ValueError("Pass either generator or seed, not both")
+    if seed is not None:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+
     real_features = real_features.float()
     generated_features = generated_features.float()
 
@@ -226,8 +239,12 @@ def compute_kid(
 
     for _ in range(num_subsets):
         # Random subset indices
-        real_idx = torch.randperm(n_real)[:subset_size]
-        gen_idx = torch.randperm(n_gen)[:subset_size]
+        real_idx = torch.randperm(n_real, generator=generator)[:subset_size].to(
+            real_features.device
+        )
+        gen_idx = torch.randperm(n_gen, generator=generator)[:subset_size].to(
+            generated_features.device
+        )
 
         real_subset = real_features[real_idx]
         gen_subset = generated_features[gen_idx]
@@ -265,6 +282,9 @@ def compute_cmmd(
     generated_features: torch.Tensor,
     kernel_bandwidth: float | None = None,
     max_samples: int = 10_000,
+    *,
+    generator: torch.Generator | None = None,
+    seed: int | None = None,
 ) -> float:
     """Compute CLIP Maximum Mean Discrepancy with RBF kernel.
 
@@ -280,20 +300,35 @@ def compute_cmmd(
         generated_features: Generated image CLIP features [M, D].
         kernel_bandwidth: RBF kernel bandwidth (sigma). If None, uses median heuristic.
         max_samples: Cap feature count to avoid O(N²) OOM. 0 disables subsampling.
+        generator: Optional local CPU random generator used when either feature
+            set exceeds ``max_samples``. Passing one avoids consuming PyTorch's
+            global RNG state.
+        seed: Optional seed used to create a local CPU generator. Mutually
+            exclusive with ``generator``.
 
     Returns:
         CMMD value (lower is better).
     """
+    if generator is not None and seed is not None:
+        raise ValueError("Pass either generator or seed, not both")
+    if seed is not None:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+
     real_features = real_features.float()
     generated_features = generated_features.float()
 
     # Subsample to avoid O(N²) OOM on large feature sets (e.g., 3D tri-planar)
     if max_samples > 0:
         if real_features.shape[0] > max_samples:
-            idx = torch.randperm(real_features.shape[0])[:max_samples]
+            idx = torch.randperm(real_features.shape[0], generator=generator)[:max_samples].to(
+                real_features.device
+            )
             real_features = real_features[idx]
         if generated_features.shape[0] > max_samples:
-            idx = torch.randperm(generated_features.shape[0])[:max_samples]
+            idx = torch.randperm(
+                generated_features.shape[0], generator=generator
+            )[:max_samples].to(generated_features.device)
             generated_features = generated_features[idx]
 
     # L2 normalize features (CLIP embeddings are typically normalized)

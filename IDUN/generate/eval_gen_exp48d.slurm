@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
 #SBATCH --time=0-12:00:00
@@ -7,123 +7,16 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="eval_exp48d"
+#SBATCH --job-name="gen_exp1_to_exp48d"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=IDUN/output/generate/eval_exp48d_%j.out
-#SBATCH --error=IDUN/output/generate/eval_exp48d_%j.err
-#SBATCH --signal=B:SIGUSR1@120
+#SBATCH --output=IDUN/output/generate/gen_exp1_to_exp48d_%j.out
+#SBATCH --error=IDUN/output/generate/gen_exp1_to_exp48d_%j.err
 
-# ============================================================================
-# Source-selection eval for exp48d (leak-free redo).
-# 1) Generate 105 BRAVO volumes conditioned on the 105 REAL TRAIN masks,
-#    fixed 100 steps, NO filters, bravo-only -> MedicalDataSets/evalModels/exp48d/
-# 2) Compute the full metric panel vs TRAIN-105 ONLY: ImageNet + RadImageNet FID/KID,
-#    CMMD (BiomedCLIP), Med3D-MMD (true-3D), intra-set MS-SSIM diversity.
-# Two-stage handoff: exp1_1_1000_pixel_bravo (high-t, first 75% of steps, t>0.25) + exp48d (low-t, t<=0.25).
-# NOTE: Med3D + BiomedCLIP weights auto-download from HF; pre-cache on the LOGIN node.
-# ============================================================================
-
-: "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-cd ${SLURM_SUBMIT_DIR}
-
-MODEL="exp48d"
-GLOB="exp48d_lowt_only_huber_lpips_*"
-HIGH_T_GLOB="exp1_1_1000_pixel_bravo_*"
-NUM=105
-STEPS=100
-HANDOFF_T=0.25
-
-BRAVO_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
-TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"    # 105 real train (*/seg.nii.gz + bravo.nii.gz)
-OUT_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels"
-GEN_DIR="${OUT_ROOT}/${MODEL}"
-RESULT_DIR="${CLUSTER_BASE}/AIS4900_master/runs/eval/eval_models_metrics"
-mkdir -p "${GEN_DIR}" "${RESULT_DIR}"
-
-# Resolve low-t checkpoint (latest, fall back to best).
-RUN_DIR=$(ls -td ${BRAVO_ROOT}/${GLOB} 2>/dev/null | head -1)
-CKPT="${RUN_DIR}/checkpoint_latest.pt"; [ ! -f "${CKPT}" ] && CKPT="${RUN_DIR}/checkpoint_best.pt"
-if [ ! -f "${CKPT}" ]; then echo "FATAL: no ckpt for ${MODEL} (glob=${GLOB} under ${BRAVO_ROOT})"; exit 3; fi
-
-# Optional high-t handoff partner (exp48 curriculum models only).
-HANDOFF_ARGS=""
-if [ -n "${HIGH_T_GLOB}" ]; then
-    HIGH_RUN_DIR=$(ls -td ${BRAVO_ROOT}/${HIGH_T_GLOB} 2>/dev/null | head -1)
-    HIGH_CKPT="${HIGH_RUN_DIR}/checkpoint_latest.pt"; [ ! -f "${HIGH_CKPT}" ] && HIGH_CKPT="${HIGH_RUN_DIR}/checkpoint_best.pt"
-    if [ ! -f "${HIGH_CKPT}" ]; then echo "FATAL: no high-t ckpt (glob=${HIGH_T_GLOB})"; exit 3; fi
-    HANDOFF_ARGS="+image_model_high_t=${HIGH_CKPT} handoff_t=${HANDOFF_T}"
-fi
-
-# Chain/resume (105 vols usually fit one job; kept for safety).
-CHAIN_MAX=10
-CHAIN_COUNT=${CHAIN_COUNT:-0}
-CURRENT=$(find "${GEN_DIR}" -maxdepth 1 -type d -name "[0-9]*" | wc -l)
-
-handle_timeout() {
-    echo "=== Wall time approaching (SIGUSR1). Saving and resubmitting... ==="
-    kill -USR1 $PID 2>/dev/null; wait $PID 2>/dev/null
-    DONE=$(find "${GEN_DIR}" -maxdepth 1 -type d -name "[0-9]*" | wc -l)
-    if [ "${DONE}" -ge "${NUM}" ]; then echo "Generation complete (${DONE}/${NUM})."; exit 0; fi
-    NEXT=$((CHAIN_COUNT + 1))
-    if [ "${NEXT}" -ge "${CHAIN_MAX}" ]; then echo "Chain limit reached."; exit 1; fi
-    sbatch --export=ALL,CHAIN_COUNT=${NEXT} "$0"
-    echo "Resubmitted chain ${NEXT}/${CHAIN_MAX}"; exit 0
-}
-trap handle_timeout SIGUSR1
-
-module purge
-module load Anaconda3/2024.02-1
-conda activate AIS4900
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
-export PYTORCH_ALLOC_CONF=expandable_segments:True
-
-echo "=== [${MODEL}] STEP 1/2 : generate 105 BRAVO @ ${STEPS} steps, real train masks, NO filters ==="
-echo "  low-t  : ${CKPT}"
-[ -n "${HIGH_T_GLOB}" ] && echo "  high-t : ${HIGH_CKPT}  (handoff_t=${HANDOFF_T})"
-echo "  masks  : ${TRAIN_DIR}"
-echo "  out    : ${GEN_DIR}  (resume from ${CURRENT}/${NUM})"
-
-time python -m medgen.scripts.generate \
-    paths=cluster \
-    spatial_dims=3 \
-    gen_mode=bravo \
-    image_size=256 \
-    depth=160 \
-    image_model="${CKPT}" \
-    ${HANDOFF_ARGS} \
-    real_seg_dir="${TRAIN_DIR}" \
-    num_images=${NUM} \
-    current_image=${CURRENT} \
-    num_steps_bravo=${STEPS} \
-    validate_size_bins=false \
-    validate_brain_mask=false \
-    brain_atlas_path=null \
-    brain_pca_path=null \
-    paths.generated_dir="${OUT_ROOT}" \
-    output_subdir="${MODEL}" \
-    verbose=true &
-PID=$!
-wait $PID
-
-# Bravo-only: drop any seg.nii.gz the pipeline copied in.
-find "${GEN_DIR}" -name "seg.nii.gz" -delete 2>/dev/null
-
-DONE=$(find "${GEN_DIR}" -name "bravo.nii.gz" | wc -l)
-echo "Generated ${DONE}/${NUM} bravo volumes in ${GEN_DIR}."
-if [ "${DONE}" -lt "${NUM}" ]; then
-    echo "Generation incomplete (${DONE}/${NUM}) — skipping metrics; a resubmit will finish it."
-    exit 0
-fi
-
-echo "=== [${MODEL}] STEP 2/2 : metric panel vs TRAIN-105 (FID/KID ImageNet+RadImageNet, CMMD, Med3D-MMD, diversity) ==="
-time python -m medgen.scripts.eval_all_metrics \
-    --reference train:"${TRAIN_DIR}" \
-    --dataset ${MODEL}:"${GEN_DIR}" \
-    --pattern bravo.nii.gz \
-    --pool-cap 0 \
-    --pca-model none \
-    --output "${RESULT_DIR}/${MODEL}.json"
-
-echo "Done [${MODEL}]: panel -> ${RESULT_DIR}/${MODEL}.json"
+set -Eeuo pipefail
+REPO_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+exec bash "$REPO_ROOT/IDUN/generate/run_eval_generator.sh" \
+    exp1_to_exp48d_t025 \
+    exp48d_lowt_only_huber_lpips_20260425-172756 \
+    exp1_1_1000_pixel_bravo_20260402-121556 \
+    0.25

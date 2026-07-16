@@ -22,6 +22,7 @@ defaults:
 # Core settings
 spatial_dims: 2           # 2 for images, 3 for volumes
 strategy: rflow           # ddpm or rflow
+expected_strategy: null   # Optional fail-fast assertion for locked evaluation protocols
 gen_mode: bravo           # bravo, dual, seg_conditioned
 
 # Model paths (relative to working dir or absolute)
@@ -50,6 +51,7 @@ num_steps: 50             # Number of diffusion steps (used as default for both 
 num_steps_seg: null       # Override steps for seg model (null = use num_steps)
 num_steps_bravo: null     # Override steps for bravo/image model (null = use num_steps)
 current_image: 0          # Starting counter for resuming
+seed: null                # Base generation seed (null preserves stochastic generation)
 
 # Size bin settings (for seg_conditioned or 3D seg generation)
 size_bins: null           # Fixed size bins as comma-separated ints, e.g., "0,0,1,0,0,0,1"
@@ -96,7 +98,18 @@ brain_dilate_pixels: 0           # Dilate brain mask by N pixels before validati
 max_brain_retries: 5             # Max retries for brain mask validation
 brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 brain_pca_path: null             # "auto" = use bundled PCA model, path = custom, null = skip
+seg_pca_path: null               # "auto" = use bundled seg PCA model, path = custom, null = skip
 real_seg_dir: null               # Path to dir with real seg masks (*/seg.nii.gz). Skips seg generation.
+expected_real_cases: null        # If set, require exactly this many unique masks in real_seg_dir
+expected_real_depth: null        # If set, require this exact input-mask depth before pad/crop
+require_real_bravo_pairs: false  # Require bravo.nii.gz beside every real conditioning mask
+validate_real_seg_masks: true    # Reject non-finite, empty, or wrong in-plane real masks
+
+# Optional post-processing of generated image backgrounds. This used to be an
+# implicit default in generate.py; it is explicit here so experiments can turn
+# it off and record that choice in their provenance manifest.
+mask_outside_brain: true
+mask_outside_brain_dilate_pixels: 2
 
 # Size bin parameters (used when size_bins is null for random sampling)
 bin_edges: [0, 3, 6, 10, 15, 20, 30]  # Feret diameter bin edges (mm)
@@ -114,6 +127,7 @@ diffrs_iter_warmup: 10           # Warmup iterations for threshold estimation
 # Output settings
 output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")
 verbose: true             # Enable progress bars (false for cluster)
+provenance_hash_checkpoints: false  # SHA-256 model files in manifest (slower for large checkpoints)
 
 # Hydra configuration
 hydra:
