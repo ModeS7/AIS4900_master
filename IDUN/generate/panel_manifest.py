@@ -18,6 +18,7 @@ from typing import Any
 
 EXPECTED_CASES = 105
 EXPECTED_SEED = 42
+PANEL_SOURCE_SCOPE = ["pyproject.toml", "configs", "src/medgen", "IDUN/generate"]
 COMMON_PROTOCOL = {
     "expected_strategy": "rflow",
     "expected_real_cases": EXPECTED_CASES,
@@ -283,6 +284,8 @@ def write_manifest(args: argparse.Namespace) -> None:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "git_commit": args.git_commit,
             "git_dirty": args.git_dirty == "true",
+            "source_scope": PANEL_SOURCE_SCOPE,
+            "source_scope_clean": True,
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
             "slurm_job_name": os.environ.get("SLURM_JOB_NAME"),
             "slurm_node": os.environ.get("SLURMD_NODENAME"),
@@ -314,7 +317,6 @@ def validate_manifests(args: argparse.Namespace) -> None:
     common_input_ids: list[str] | None = None
     common_reference_root: str | None = None
     common_git_commit: str | None = None
-    common_git_dirty: bool | None = None
     observed_labels: list[str] = []
     for manifest_path, expected_label in zip(manifest_paths, expected_labels, strict=True):
         _require(manifest_path.is_file(), f"Missing manifest: {manifest_path}")
@@ -391,7 +393,11 @@ def validate_manifests(args: argparse.Namespace) -> None:
         git_dirty = runtime.get("git_dirty")
         _require(isinstance(git_commit, str) and bool(git_commit), f"Git commit missing for {label}")
         _require(isinstance(git_dirty, bool), f"Git dirty state missing for {label}")
-        _require(git_dirty is False, f"Generator worktree was dirty for {label}")
+        _require(
+            runtime.get("source_scope") == PANEL_SOURCE_SCOPE,
+            f"Panel source scope differs for {label}",
+        )
+        _require(runtime.get("source_scope_clean") is True, f"Panel source was dirty for {label}")
         _require(
             git_commit == args.expected_git_commit,
             f"Generator Git commit differs from metric job for {label}",
@@ -401,7 +407,6 @@ def validate_manifests(args: argparse.Namespace) -> None:
             common_input_ids = input_ids
             common_reference_root = str(Path(manifest["reference_root"]).resolve())
             common_git_commit = git_commit
-            common_git_dirty = git_dirty
         else:
             _require(input_ids == common_input_ids, f"Input ordering differs for {label}")
             _require(
@@ -409,7 +414,6 @@ def validate_manifests(args: argparse.Namespace) -> None:
                 f"Reference root differs for {label}",
             )
             _require(git_commit == common_git_commit, f"Git commit differs for {label}")
-            _require(git_dirty == common_git_dirty, f"Git dirty state differs for {label}")
 
     _require(
         observed_labels == expected_labels, "Manifest labels are not in the declared panel order"

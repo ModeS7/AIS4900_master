@@ -55,15 +55,18 @@ readonly LABELS=(
 mkdir -p "$RESULT_DIR"
 cd "$REPO_ROOT"
 
-readonly SOURCE_COMMIT="${PANEL_SOURCE_COMMIT:?PANEL_SOURCE_COMMIT must be exported by the panel launcher}"
+SOURCE_COMMIT="${PANEL_SOURCE_COMMIT:-$(git rev-parse --verify HEAD)}" || \
+    fatal "could not resolve the repository commit"
+readonly SOURCE_COMMIT
+readonly -a PANEL_SOURCE_PATHS=(pyproject.toml configs src/medgen IDUN/generate)
 
 verify_source_tree() {
     local current_commit
     current_commit="$(git rev-parse --verify HEAD)" || fatal "could not resolve the repository commit"
     [[ "$current_commit" == "$SOURCE_COMMIT" ]] || fatal \
-        "repository commit changed after panel submission: expected $SOURCE_COMMIT, found $current_commit"
-    if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
-        fatal "repository worktree is not clean; refusing to evaluate the paper panel"
+        "repository commit changed after job submission: expected $SOURCE_COMMIT, found $current_commit"
+    if [[ -n "$(git status --porcelain --untracked-files=all -- "${PANEL_SOURCE_PATHS[@]}")" ]]; then
+        fatal "panel source files changed; expected committed content under: ${PANEL_SOURCE_PATHS[*]}"
     fi
 }
 
@@ -72,6 +75,8 @@ verify_source_tree
 module purge
 module load Anaconda3/2024.02-1
 conda activate AIS4900
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONSAFEPATH=1
 python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 

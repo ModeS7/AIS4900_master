@@ -248,10 +248,12 @@ class TestFixedGeneratorPanelSlurm:
             'mv -- "$STAGING_DIR" "$FINAL_DIR"',
             "panel_job_manifest.json",
             "generation_manifest.json",
-            "git status --porcelain --untracked-files=all",
-            "--git-dirty false",
-            "PANEL_SOURCE_COMMIT must be exported by the panel launcher",
+            "git status --porcelain --untracked-files=all --",
+            'PANEL_SOURCE_PATHS=(pyproject.toml configs src/medgen IDUN/generate)',
+            '--git-dirty "$GIT_DIRTY"',
+            'PANEL_SOURCE_COMMIT:-$(git rev-parse --verify HEAD)',
             "verify_source_tree",
+            'export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"',
         )
         for token in required:
             assert token in content
@@ -278,9 +280,11 @@ class TestFixedGeneratorPanelSlurm:
         assert "validate-report --report" in content
         assert content.count("--expected-git-commit") == 2
         assert '--source-git-commit "$SOURCE_COMMIT"' in content
-        assert "git status --porcelain --untracked-files=all" in content
-        assert "PANEL_SOURCE_COMMIT must be exported by the panel launcher" in content
+        assert "git status --porcelain --untracked-files=all --" in content
+        assert 'PANEL_SOURCE_PATHS=(pyproject.toml configs src/medgen IDUN/generate)' in content
+        assert 'PANEL_SOURCE_COMMIT:-$(git rev-parse --verify HEAD)' in content
         assert content.count("verify_source_tree") >= 3
+        assert 'export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"' in content
         assert content.index("validate --panel-root") < content.index(
             "medgen.scripts.eval_all_metrics"
         )
@@ -292,32 +296,13 @@ class TestFixedGeneratorPanelSlurm:
         assert "test1" not in content
         assert "checkpoint_best" not in content
 
-    def test_launcher_submits_afterok_dependency_and_dry_runs(self, generate_dir):
-        launcher = generate_dir / "submit_eval_generator_panel.sh"
-        content = launcher.read_text()
-        assert "sbatch --parsable" in content
-        assert '--dependency="afterok:${dependency}"' in content
-        assert "eval_generator_panel_metrics.slurm" in content
-        assert "git status --porcelain --untracked-files=all" in content
-        assert "export PANEL_SOURCE_COMMIT" in content
-        for wrapper_name in self.EXPECTED:
-            assert content.count(f"IDUN/generate/{wrapper_name}") == 1
-
-        result = subprocess.run(
-            ["bash", str(launcher), "--dry-run"],
-            cwd=generate_dir.parent.parent,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert result.stdout.count("sbatch --parsable IDUN/generate/eval_gen_") == 14
-        assert "afterok:<14-colon-separated-job-ids>" in result.stdout
+    def test_no_all_at_once_panel_launcher(self, generate_dir):
+        assert not (generate_dir / "submit_eval_generator_panel.sh").exists()
 
     def test_panel_shell_files_pass_bash_syntax_check(self, generate_dir):
         files = [
             *generate_dir.glob("eval_gen_exp*.slurm"),
             generate_dir / "run_eval_generator.sh",
             generate_dir / "eval_generator_panel_metrics.slurm",
-            generate_dir / "submit_eval_generator_panel.sh",
         ]
         subprocess.run(["bash", "-n", *map(str, files)], check=True)
