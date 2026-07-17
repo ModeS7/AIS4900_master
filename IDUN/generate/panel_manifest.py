@@ -19,6 +19,22 @@ from typing import Any
 EXPECTED_CASES = 105
 EXPECTED_SEED = 42
 PANEL_SOURCE_SCOPE = ["pyproject.toml", "configs", "src/medgen", "IDUN/generate"]
+# Jobs 24795091--24795099 completed from this source before the five handoff
+# jobs were corrected and rerun. Keep that split explicit and fail closed.
+STANDALONE_SOURCE_COMMIT = "9b6615fd559001f9448eda6a4607c057758197ad"
+STANDALONE_LABELS = (
+    "exp1_1_1000",
+    "exp1_1_1000plus",
+    "exp32_2_1000",
+    "exp32_3_1000",
+    "exp47a",
+    "exp47b",
+    "exp47c",
+    "exp47d",
+    "exp47e",
+)
+HANDOFF_LABELS = tuple(f"exp1_to_exp48{suffix}_t025" for suffix in "abcde")
+PANEL_LABELS = STANDALONE_LABELS + HANDOFF_LABELS
 COMMON_PROTOCOL = {
     "expected_strategy": "rflow",
     "expected_real_cases": EXPECTED_CASES,
@@ -311,12 +327,14 @@ def validate_manifests(args: argparse.Namespace) -> None:
         len(manifest_paths) == len(expected_labels), "Manifest and expected-label counts differ"
     )
     _require(len(manifest_paths) == 14, f"Expected 14 panel manifests, got {len(manifest_paths)}")
-    _require(len(set(expected_labels)) == 14, "Expected labels are not unique")
+    _require(
+        expected_labels == list(PANEL_LABELS),
+        "Expected labels are not the frozen nine-standalone/five-handoff panel",
+    )
 
     panel_root = Path(args.panel_root).resolve()
     common_input_ids: list[str] | None = None
     common_reference_root: str | None = None
-    common_git_commit: str | None = None
     observed_labels: list[str] = []
     for manifest_path, expected_label in zip(manifest_paths, expected_labels, strict=True):
         _require(manifest_path.is_file(), f"Missing manifest: {manifest_path}")
@@ -340,7 +358,7 @@ def validate_manifests(args: argparse.Namespace) -> None:
             f"Protocol mismatch for {label}",
         )
 
-        is_composite = label.startswith("exp1_to_exp48")
+        is_composite = label in HANDOFF_LABELS
         expected_handoff = 0.25 if is_composite else None
         _require(
             manifest["protocol"].get("handoff_t") == expected_handoff,
@@ -398,27 +416,35 @@ def validate_manifests(args: argparse.Namespace) -> None:
             f"Panel source scope differs for {label}",
         )
         _require(runtime.get("source_scope_clean") is True, f"Panel source was dirty for {label}")
-        _require(
-            git_commit == args.expected_git_commit,
-            f"Generator Git commit differs from metric job for {label}",
-        )
+        if is_composite:
+            _require(
+                git_commit == args.expected_git_commit,
+                f"Handoff generator Git commit differs from metric job for {label}",
+            )
+        else:
+            _require(
+                git_commit == STANDALONE_SOURCE_COMMIT,
+                f"Standalone generator Git commit differs from the frozen source for {label}",
+            )
 
         if common_input_ids is None:
             common_input_ids = input_ids
             common_reference_root = str(Path(manifest["reference_root"]).resolve())
-            common_git_commit = git_commit
         else:
             _require(input_ids == common_input_ids, f"Input ordering differs for {label}")
             _require(
                 str(Path(manifest["reference_root"]).resolve()) == common_reference_root,
                 f"Reference root differs for {label}",
             )
-            _require(git_commit == common_git_commit, f"Git commit differs for {label}")
 
     _require(
         observed_labels == expected_labels, "Manifest labels are not in the declared panel order"
     )
-    print(f"Validated {len(observed_labels)} panel manifests with one common 105-case protocol")
+    print(
+        f"Validated {len(observed_labels)} panel manifests with one common 105-case protocol; "
+        f"standalone source={STANDALONE_SOURCE_COMMIT}, "
+        f"handoff/metric source={args.expected_git_commit}"
+    )
 
 
 def validate_report(args: argparse.Namespace) -> None:
@@ -429,8 +455,8 @@ def validate_report(args: argparse.Namespace) -> None:
 
     expected_labels = args.expected_label
     _require(
-        len(expected_labels) == 14 and len(set(expected_labels)) == 14,
-        "Expected exactly 14 unique report labels",
+        expected_labels == list(PANEL_LABELS),
+        "Expected labels are not the frozen nine-standalone/five-handoff panel",
     )
     config = report.get("config", {})
     _require(
@@ -467,6 +493,23 @@ def validate_report(args: argparse.Namespace) -> None:
             generation_manifest.get("sha256") == _sha256(expected_manifest),
             f"{label}: generation manifest hash differs",
         )
+        with expected_manifest.open(encoding="utf-8") as handle:
+            generated_provenance = json.load(handle)
+        generator_commit = generated_provenance.get("git_commit")
+        _require(
+            isinstance(generator_commit, str) and bool(generator_commit),
+            f"{label}: generation manifest Git commit missing",
+        )
+        if label in HANDOFF_LABELS:
+            _require(
+                generator_commit == args.expected_git_commit,
+                f"{label}: handoff generation commit differs from metric job",
+            )
+        else:
+            _require(
+                generator_commit == STANDALONE_SOURCE_COMMIT,
+                f"{label}: standalone generation commit differs from frozen source",
+            )
         _require(
             list(result.get("per_reference", {})) == ["train"],
             f"{label}: report contains a non-train reference",
@@ -476,7 +519,9 @@ def validate_report(args: argparse.Namespace) -> None:
             f"{label}: PCA result found despite disabled PCA",
         )
     print(
-        "Validated combined metric report: 14 datasets x 105 volumes, train-only reference, no PCA"
+        "Validated combined metric report: 14 datasets x 105 volumes, train-only reference, "
+        f"no PCA; standalone source={STANDALONE_SOURCE_COMMIT}, "
+        f"handoff/metric source={args.expected_git_commit}"
     )
 
 

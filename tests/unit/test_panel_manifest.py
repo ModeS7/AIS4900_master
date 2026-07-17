@@ -18,7 +18,13 @@ def panel_manifest_module():
     return module
 
 
-def _generation_manifest(input_root: Path, patient_ids: list[str], low_checkpoint: dict):
+def _generation_manifest(
+    input_root: Path,
+    patient_ids: list[str],
+    low_checkpoint: dict,
+    *,
+    git_commit: str = "standalone-commit",
+):
     return {
         "schema_version": 1,
         "status": "complete",
@@ -26,6 +32,7 @@ def _generation_manifest(input_root: Path, patient_ids: list[str], low_checkpoin
         "spatial_dims": 3,
         "seed": 42,
         "num_images": 105,
+        "git_commit": git_commit,
         "real_seg_dir": str(input_root),
         "expected_real_cases": 105,
         "expected_real_depth": 150,
@@ -107,13 +114,21 @@ def test_core_generation_manifest_validation_executes_and_fails_closed(
 def test_metric_report_validation_requires_all_14_train_only_pools(
     tmp_path: Path, panel_manifest_module
 ):
-    labels = [f"candidate_{index:02d}" for index in range(14)]
+    labels = list(panel_manifest_module.PANEL_LABELS)
     datasets = {}
     for label in labels:
         dataset_path = tmp_path / label
         dataset_path.mkdir()
         manifest_path = dataset_path / "generation_manifest.json"
-        manifest_path.write_text('{"status":"complete"}\n', encoding="utf-8")
+        generation_commit = (
+            "abc123"
+            if label in panel_manifest_module.HANDOFF_LABELS
+            else panel_manifest_module.STANDALONE_SOURCE_COMMIT
+        )
+        manifest_path.write_text(
+            json.dumps({"status": "complete", "git_commit": generation_commit}) + "\n",
+            encoding="utf-8",
+        )
         datasets[label] = {
             "source_path": str(dataset_path),
             "generation_manifest": {
@@ -140,6 +155,27 @@ def test_metric_report_validation_requires_all_14_train_only_pools(
         report=str(path), expected_label=labels, expected_git_commit="abc123"
     )
     panel_manifest_module.validate_report(args)
+
+    handoff_label = panel_manifest_module.HANDOFF_LABELS[0]
+    handoff_manifest = Path(datasets[handoff_label]["generation_manifest"]["path"])
+    handoff_manifest.write_text(
+        json.dumps({"status": "complete", "git_commit": "wrong-commit"}) + "\n",
+        encoding="utf-8",
+    )
+    datasets[handoff_label]["generation_manifest"]["sha256"] = panel_manifest_module._sha256(
+        handoff_manifest
+    )
+    path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValueError, match="handoff generation commit differs"):
+        panel_manifest_module.validate_report(args)
+
+    handoff_manifest.write_text(
+        json.dumps({"status": "complete", "git_commit": "abc123"}) + "\n",
+        encoding="utf-8",
+    )
+    datasets[handoff_label]["generation_manifest"]["sha256"] = panel_manifest_module._sha256(
+        handoff_manifest
+    )
 
     report["datasets"][labels[3]]["pool_size"] = 104
     path.write_text(json.dumps(report), encoding="utf-8")

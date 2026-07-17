@@ -207,6 +207,7 @@ class TestFixedGeneratorPanelSlurm:
             content = wrappers[name].read_text()
             assert content.startswith("#!/usr/bin/env bash\n")
             assert "set -Eeuo pipefail" in content
+            assert "--export" not in content
             assert content.count("run_eval_generator.sh") == 1
             assert "medgen.scripts.generate" not in content
             assert "medgen.scripts.eval_all_metrics" not in content
