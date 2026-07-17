@@ -37,7 +37,7 @@ python IDUN/generate/panel_manifest.py recover-handoff \
     --slurm-job-id 24795269 \
     --failure-log "$REPO_ROOT/IDUN/output/generate/gen_exp1_to_exp48a_24795269.err" \
     --output-log "$REPO_ROOT/IDUN/output/generate/gen_exp1_to_exp48a_24795269.out" \
-    --observed-manifest-write-commit b442ea392b8f8a41d10049872b82bd9cdfcd3f7f \
+    --observed-runner-checkout-commit b442ea392b8f8a41d10049872b82bd9cdfcd3f7f \
     --input-root "$TRAIN_ROOT" \
     --dataset-root "$PANEL_ROOT/.staging/exp1_to_exp48a_t025.job-24795269" \
     --final-dataset-root "$PANEL_ROOT/exp1_to_exp48a_t025" \

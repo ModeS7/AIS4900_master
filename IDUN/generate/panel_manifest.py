@@ -32,7 +32,7 @@ POST_CHANGE_SOURCE_COMMIT = "b442ea392b8f8a41d10049872b82bd9cdfcd3f7f"
 # this panel. Normally completed handoff jobs may therefore record either
 # audited source, while recovery remains restricted to job 24795269 below.
 ALLOWED_HANDOFF_SOURCE_COMMITS = {HANDOFF_SOURCE_COMMIT, POST_CHANGE_SOURCE_COMMIT}
-RECOVERABLE_MANIFEST_WRITE_COMMITS = {POST_CHANGE_SOURCE_COMMIT}
+RECOVERABLE_RUNNER_CHECKOUT_COMMITS = {POST_CHANGE_SOURCE_COMMIT}
 HANDOFF_RECOVERY_JOBS = {
     "exp1_to_exp48a_t025": ("24795269", "exp48a_lowt_only_lpips_strong_20260425-160342"),
 }
@@ -444,14 +444,14 @@ def recover_handoff(args: argparse.Namespace) -> None:
         "Output-log filename does not contain the requested job ID",
     )
 
-    observed_commit = args.observed_manifest_write_commit
+    runner_commit = args.observed_runner_checkout_commit
     _require(
-        observed_commit in RECOVERABLE_MANIFEST_WRITE_COMMITS,
-        f"Manifest-write commit is not in the audited recovery allow-list: {observed_commit}",
+        runner_commit in RECOVERABLE_RUNNER_CHECKOUT_COMMITS,
+        f"Runner checkout commit is not in the audited recovery allow-list: {runner_commit}",
     )
     expected_failure = (
         "repository commit changed after job submission: "
-        f"expected {HANDOFF_SOURCE_COMMIT}, found {observed_commit}"
+        f"expected {HANDOFF_SOURCE_COMMIT}, found {runner_commit}"
     )
     _require(
         expected_failure in failure_log.read_text(encoding="utf-8", errors="replace"),
@@ -503,15 +503,17 @@ def recover_handoff(args: argparse.Namespace) -> None:
     recorded_commit = generation_manifest.get("git_commit")
     if recovery is None:
         _require(
-            recorded_commit == observed_commit,
-            "Generation manifest does not record the checkout seen when it was written",
+            recorded_commit in ALLOWED_HANDOFF_SOURCE_COMMITS,
+            "Generation manifest records neither audited checkout involved in the transition: "
+            f"{recorded_commit}",
         )
         original_sha256 = _sha256(generation_manifest_path)
         generation_manifest["git_commit"] = HANDOFF_SOURCE_COMMIT
         generation_manifest["provenance_recovery"] = {
-            "reason": "live_checkout_changed_after_generation_process_started",
+            "reason": "live_checkout_changed_between_process_start_and_runner_final_check",
             "source_git_commit": HANDOFF_SOURCE_COMMIT,
-            "observed_manifest_write_commit": observed_commit,
+            "generation_manifest_original_git_commit": recorded_commit,
+            "post_generation_runner_git_commit": runner_commit,
             "original_generation_manifest_sha256": original_sha256,
             "failed_job_log": str(failure_log),
             "failed_job_log_sha256": _sha256(failure_log),
@@ -527,15 +529,21 @@ def recover_handoff(args: argparse.Namespace) -> None:
             "Previously recovered manifest no longer records the frozen source commit",
         )
         _require(
-            recovery.get("reason") == "live_checkout_changed_after_generation_process_started"
+            recovery.get("reason")
+            == "live_checkout_changed_between_process_start_and_runner_final_check"
             and recovery.get("failed_job_log") == str(failure_log)
             and recovery.get("failed_job_log_sha256") == _sha256(failure_log)
             and recovery.get("output_log") == str(output_log)
             and recovery.get("output_log_sha256") == _sha256(output_log)
-            and recovery.get("observed_manifest_write_commit") == observed_commit
+            and recovery.get("post_generation_runner_git_commit") == runner_commit
             and recovery.get("source_git_commit") == HANDOFF_SOURCE_COMMIT
             and recovery.get("slurm_job_id") == str(args.slurm_job_id),
             "Existing provenance-recovery record differs from this request",
+        )
+        original_commit = recovery.get("generation_manifest_original_git_commit")
+        _require(
+            original_commit in ALLOWED_HANDOFF_SOURCE_COMMITS,
+            "Existing provenance-recovery record has an unaudited original Git commit",
         )
         original_sha256 = recovery.get("original_generation_manifest_sha256", "")
         _require(
@@ -544,7 +552,7 @@ def recover_handoff(args: argparse.Namespace) -> None:
             "Existing provenance-recovery record has an invalid original-manifest hash",
         )
         reconstructed_original = dict(generation_manifest)
-        reconstructed_original["git_commit"] = observed_commit
+        reconstructed_original["git_commit"] = original_commit
         reconstructed_original.pop("provenance_recovery")
         _require(
             _json_sha256(reconstructed_original) == original_sha256,
@@ -821,7 +829,12 @@ def build_parser() -> argparse.ArgumentParser:
     recover_parser.add_argument("--slurm-job-id", required=True)
     recover_parser.add_argument("--failure-log", required=True)
     recover_parser.add_argument("--output-log", required=True)
-    recover_parser.add_argument("--observed-manifest-write-commit", required=True)
+    recover_parser.add_argument(
+        "--observed-runner-checkout-commit",
+        "--observed-manifest-write-commit",
+        dest="observed_runner_checkout_commit",
+        required=True,
+    )
     recover_parser.add_argument("--input-root", required=True)
     recover_parser.add_argument("--dataset-root", required=True)
     recover_parser.add_argument("--final-dataset-root", required=True)

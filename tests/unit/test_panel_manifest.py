@@ -111,12 +111,16 @@ def test_core_generation_manifest_validation_executes_and_fails_closed(
         )
 
 
+@pytest.mark.parametrize(
+    "manifest_commit_name", ["HANDOFF_SOURCE_COMMIT", "POST_CHANGE_SOURCE_COMMIT"]
+)
 def test_recover_handoff_validates_failed_checkout_transition_and_publishes(
-    tmp_path: Path, panel_manifest_module
+    tmp_path: Path, panel_manifest_module, manifest_commit_name: str
 ):
     label = "exp1_to_exp48a_t025"
     job_id = "24795269"
-    observed_commit = next(iter(panel_manifest_module.RECOVERABLE_MANIFEST_WRITE_COMMITS))
+    runner_commit = panel_manifest_module.POST_CHANGE_SOURCE_COMMIT
+    manifest_commit = getattr(panel_manifest_module, manifest_commit_name)
     patient_ids = [f"Mets_{index:03d}" for index in range(105)]
 
     input_root = tmp_path / "train"
@@ -152,7 +156,7 @@ def test_recover_handoff_validates_failed_checkout_transition_and_publishes(
         input_root.resolve(),
         patient_ids,
         low_checkpoint,
-        git_commit=observed_commit,
+        git_commit=manifest_commit,
     )
     generation_manifest["models"]["image_high_t"] = high_checkpoint
     generation_manifest["sampling"]["handoff_t"] = 0.25
@@ -166,7 +170,7 @@ def test_recover_handoff_validates_failed_checkout_transition_and_publishes(
     failure_log = tmp_path / f"gen_exp1_to_exp48a_{job_id}.err"
     failure_log.write_text(
         "FATAL: repository commit changed after job submission: "
-        f"expected {panel_manifest_module.HANDOFF_SOURCE_COMMIT}, found {observed_commit}\n",
+        f"expected {panel_manifest_module.HANDOFF_SOURCE_COMMIT}, found {runner_commit}\n",
         encoding="utf-8",
     )
     output_log = tmp_path / f"gen_exp1_to_exp48a_{job_id}.out"
@@ -181,7 +185,7 @@ def test_recover_handoff_validates_failed_checkout_transition_and_publishes(
         slurm_job_id=job_id,
         failure_log=str(failure_log),
         output_log=str(output_log),
-        observed_manifest_write_commit=observed_commit,
+        observed_runner_checkout_commit=runner_commit,
         input_root=str(input_root),
         dataset_root=str(staging_root),
         final_dataset_root=str(final_root),
@@ -197,7 +201,8 @@ def test_recover_handoff_validates_failed_checkout_transition_and_publishes(
     recovered = json.loads((final_root / "generation_manifest.json").read_text())
     assert recovered["git_commit"] == panel_manifest_module.HANDOFF_SOURCE_COMMIT
     recovery = recovered["provenance_recovery"]
-    assert recovery["observed_manifest_write_commit"] == observed_commit
+    assert recovery["generation_manifest_original_git_commit"] == manifest_commit
+    assert recovery["post_generation_runner_git_commit"] == runner_commit
     assert recovery["original_generation_manifest_sha256"] == original_manifest_sha256
     assert recovery["slurm_job_id"] == job_id
     panel_job = json.loads((final_root / "panel_job_manifest.json").read_text())
