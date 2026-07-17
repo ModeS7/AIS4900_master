@@ -159,6 +159,53 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
         return 0.0 < white_percentage < max_white_percentage
 
 
+def _generated_seg_rejection_reason(
+    binary_mask: np.ndarray,
+    *,
+    max_white_percentage: float,
+    brain_atlas: np.ndarray | None = None,
+    brain_tolerance: float = 0.0,
+    brain_dilate_pixels: int = 0,
+) -> str | None:
+    """Return a stable rejection reason for one generated ``[D, H, W]`` mask.
+
+    This is a coarse artifact filter, not a distribution-matching score. It
+    leaves accepted lesion morphology unchanged.
+    """
+    if binary_mask.ndim != 3:
+        return 'wrong_shape'
+    if not np.isfinite(binary_mask).all():
+        return 'non_finite'
+    if not 0.0 < max_white_percentage <= 1.0:
+        raise ValueError("max_white_percentage must be in (0, 1]")
+    if not 0.0 <= brain_tolerance <= 1.0:
+        raise ValueError("brain_tolerance must be in [0, 1]")
+    if brain_dilate_pixels < 0:
+        raise ValueError("brain_dilate_pixels must be non-negative")
+
+    foreground = binary_mask > 0.5
+    if not foreground.any():
+        return 'empty'
+    slice_fractions = foreground.reshape(foreground.shape[0], -1).mean(axis=1)
+    if float(slice_fractions.max()) >= max_white_percentage:
+        return 'slice_foreground_limit'
+
+    if brain_atlas is not None:
+        if brain_atlas.shape != foreground.shape:
+            raise ValueError(
+                f"Brain atlas shape {brain_atlas.shape} does not match mask shape "
+                f"{foreground.shape}"
+            )
+        if not is_seg_inside_atlas(
+            foreground,
+            brain_atlas,
+            tolerance=brain_tolerance,
+            dilate_pixels=brain_dilate_pixels,
+        ):
+            return 'outside_brain_atlas'
+    return None
+
+
 def _xyz_to_dhw(voxel_xyz: tuple[float, float, float]) -> tuple[float, float, float]:
     """Reorder (x, y, z) voxel spacing to (D, H, W) expected by size-bin / Feret functions.
 
@@ -285,6 +332,9 @@ def _config_to_dict(value: Any) -> dict[str, Any]:
 def _checkpoint_generation_signature(checkpoint_path: str | Path) -> dict[str, Any]:
     """Read compatibility-relevant metadata from a diffusion checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
+    from medgen.diffusion.loading import detect_wrapper_type
+
     config = _config_to_dict(checkpoint.get('config', {}))
     nested_model = _config_to_dict(config.get('model', {}))
     model_config = _config_to_dict(checkpoint.get('model_config', {}))
@@ -299,6 +349,8 @@ def _checkpoint_generation_signature(checkpoint_path: str | Path) -> dict[str, A
         'out_channels': architecture.get('out_channels'),
         'spatial_dims': architecture.get('spatial_dims'),
         'strategy': strategy,
+        'mode': config.get('mode'),
+        'wrapper_type': detect_wrapper_type(state_dict),
         'sigma_data': config.get('sigma_data'),
         'pixel': {
             key: pixel.get(key)
@@ -392,12 +444,17 @@ def _load_image_model_with_optional_handoff(
         "Two-model handoff: high-t ← %s, low-t ← %s, handoff_t=%s",
         high_path, low_path, cfg.handoff_t,
     )
+    if compile_model:
+        logger.info(
+            "Disabling torch.compile for the two-model handoff to avoid retaining "
+            "CUDA-graph private pools for one model while the other model runs"
+        )
     low_model = load_diffusion_model(
         low_path,
         device=device,
         in_channels=in_channels,
         out_channels=out_channels,
-        compile_model=compile_model,
+        compile_model=False,
         spatial_dims=spatial_dims,
     )
     high_model = load_diffusion_model(
@@ -873,6 +930,8 @@ def _validate_output_arrays(arrays: dict[str, np.ndarray]) -> None:
         unique = np.unique(arrays['seg.nii.gz'])
         if not np.isin(unique, (0.0, 1.0)).all():
             raise ValueError(f"seg.nii.gz is not binary; values include {unique[:10]}")
+        if not np.any(arrays['seg.nii.gz'] > 0.5):
+            raise ValueError("seg.nii.gz is empty")
 
 
 def _save_sample_directory_atomic(
@@ -905,6 +964,8 @@ def _save_sample_directory_atomic(
                 raise RuntimeError(f"Serialized {filename} contains non-finite values")
             if filename == 'seg.nii.gz' and not np.isin(np.unique(written), (0.0, 1.0)).all():
                 raise RuntimeError(f"Serialized {filename} is not binary")
+            if filename == 'seg.nii.gz' and not np.any(written > 0.5):
+                raise RuntimeError(f"Serialized {filename} is empty")
         os.replace(temporary, sample_dir)
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -933,6 +994,17 @@ def _checkpoint_provenance(path_value: str | Path | None, *, hash_file: bool) ->
     if hash_file:
         result['sha256'] = _sha256_file(path)
     return result
+
+
+def _explicit_file_provenance(
+    path_value: str | Path | None,
+    *,
+    hash_file: bool,
+) -> dict[str, Any] | None:
+    """Describe an explicitly configured file, leaving ``auto`` unresolved."""
+    if path_value is None or str(path_value).lower() == 'auto':
+        return None
+    return _checkpoint_provenance(path_value, hash_file=hash_file)
 
 
 def _git_commit() -> str | None:
@@ -1005,8 +1077,22 @@ def _write_generation_manifest(
         },
         'quality_control': {
             'brain_atlas_path': cfg.get('brain_atlas_path', None),
+            'brain_atlas_provenance': _explicit_file_provenance(
+                cfg.get('brain_atlas_path', None),
+                hash_file=hash_checkpoints,
+            ),
             'brain_pca_path': cfg.get('brain_pca_path', None),
             'seg_pca_path': cfg.get('seg_pca_path', None),
+            'validate_size_bins': bool(cfg.get('validate_size_bins', True)),
+            'component_connectivity': int(
+                cfg.get('seg_component_connectivity', 6)
+            ),
+            'max_white_percentage': float(
+                cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
+            ),
+            'max_attempts_per_mask': int(cfg.get('max_retries', 10)),
+            'brain_tolerance': float(cfg.get('brain_tolerance', 0.0)),
+            'brain_dilate_pixels': int(cfg.get('brain_dilate_pixels', 0)),
             'validate_brain_mask': bool(cfg.get('validate_brain_mask', True)),
             'mask_outside_brain': bool(cfg.get('mask_outside_brain', True)),
             'mask_outside_brain_dilate_pixels': int(
@@ -1154,7 +1240,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # EDM preconditioning (loaded from bravo/image model checkpoint)
     # Determine which model to check based on gen_mode
-    _precond_model = cfg.get('image_model', cfg.get('seg_model', None))
+    _precond_model = cfg.get('image_model', None) or cfg.get('seg_model', None)
     if _precond_model:
         _pc_ckpt = torch.load(_precond_model, map_location='cpu', weights_only=False)
         _pc_cfg = _pc_ckpt.get('config', {})
@@ -1250,6 +1336,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
     if cfg.gen_mode == 'seg_conditioned':
         _apply_shift(shift_seg)
         logger.info("Loading seg_conditioned model...")
+        seg_signature = _checkpoint_generation_signature(cfg.seg_model)
+        _validate_checkpoint_signature(
+            seg_signature,
+            checkpoint_path=cfg.seg_model,
+            in_channels=1,
+            out_channels=1,
+            spatial_dims=3,
+            strategy=str(cfg.strategy),
+        )
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
@@ -1260,32 +1355,64 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         voxel_spacing = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
         bin_edges = list(cfg.get('bin_edges', DEFAULT_BIN_EDGES))
         num_bins = cfg.get('num_bins', 7)
-        max_retries = cfg.get('max_retries', 10)
+        component_connectivity = int(cfg.get('seg_component_connectivity', 6))
+        if component_connectivity not in (6, 18, 26):
+            raise ValueError(
+                "seg_component_connectivity must be one of 6, 18, or 26"
+            )
+        max_attempts = int(cfg.get('max_retries', 10))
+        max_white_pct = float(cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE))
+        if max_attempts < 1:
+            raise ValueError("max_retries must allow at least one generation attempt")
 
         # Atlas validation settings
-        brain_tolerance = cfg.get('brain_tolerance', 0.0)
-        brain_dilate = cfg.get('brain_dilate_pixels', 0)
+        brain_tolerance = float(cfg.get('brain_tolerance', 0.0))
+        brain_dilate = int(cfg.get('brain_dilate_pixels', 0))
+
+        trim_slices = int(trim_slices)
+        if trim_slices < 0 or trim_slices >= cfg.depth:
+            raise ValueError(
+                f"trim_slices must be in [0, {cfg.depth}), got {trim_slices}"
+            )
+        output_depth = cfg.depth - trim_slices
+        output_atlas = brain_atlas[:output_depth] if brain_atlas is not None else None
 
         logger.info(f"Generating {cfg.num_images} seg masks...")
+        logger.info(
+            f"Mask artifact filter: non-empty and per-slice foreground < {max_white_pct:.2%}"
+        )
+        logger.info(
+            f"Measured lesion components: {component_connectivity}-connectivity"
+        )
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
         if brain_atlas is not None:
-            logger.info(f"Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
+            logger.info(
+                f"Atlas validation: reject draw (tolerance={brain_tolerance:.0%}, "
+                f"dilate={brain_dilate}px)"
+            )
+        logger.info(f"Fail-closed attempt cap: {max_attempts} draws per accepted mask")
 
         generated = cfg.get('current_image', 0)
-        if generated > 0:
-            logger.info(f"Resuming from sample {generated}/{cfg.num_images}")
+        if generated != 0:
+            raise ValueError(
+                "Mask-only generation requires current_image=0 so bins.csv and the "
+                "generation manifest describe the complete frozen pool"
+            )
         total_retries = 0
 
         while generated < cfg.num_images:
             bins = fixed_bins if fixed_bins else sample_random_size_bins(cfg.min_tumors, cfg.max_tumors)
             size_bins = torch.tensor([bins], dtype=torch.long, device=device)
 
-            # Retry loop for valid seg mask
+            # Deterministic, fail-closed retry loop for one accepted mask.
             valid_mask = False
-            retries = 0
-            while not valid_mask and retries < max_retries:
-                seg_seed = _derive_sample_seed(base_seed, generated, stream='seg', attempt=retries)
+            rejection_counts: dict[str, int] = {}
+            accepted_attempt = -1
+            actual_bins: np.ndarray | None = None
+            output_seg: np.ndarray | None = None
+            for attempt in range(max_attempts):
+                seg_seed = _derive_sample_seed(base_seed, generated, stream='seg', attempt=attempt)
                 noise = _randn(
                     get_noise_shape(1, 1, 3, cfg.image_size, cfg.depth),
                     device,
@@ -1301,39 +1428,61 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 # Binarize
                 seg_binary = binarize_seg(seg[0, 0]).cpu().numpy()
 
+                # Validate the depth that will be published. Foreground only
+                # in padded slices must not become an empty saved mask.
+                candidate = seg_binary[:output_depth]
+                rejection_reason = _generated_seg_rejection_reason(
+                    candidate,
+                    max_white_percentage=max_white_pct,
+                    brain_atlas=output_atlas,
+                    brain_tolerance=brain_tolerance,
+                    brain_dilate_pixels=brain_dilate,
+                )
+                if rejection_reason is not None:
+                    rejection_counts[rejection_reason] = (
+                        rejection_counts.get(rejection_reason, 0) + 1
+                    )
+                    total_retries += 1
+                    if cfg.verbose and attempt == 0:
+                        logger.warning(
+                            f"Sample {generated}: rejected mask ({rejection_reason}), retrying..."
+                        )
+                    continue
+
+                actual_bins = compute_size_bins_3d(
+                    candidate,
+                    bin_edges,
+                    _xyz_to_dhw(voxel_spacing),
+                    num_bins,
+                    connectivity=component_connectivity,
+                )
+
                 # Validate size bins match conditioning
                 if validate_size_bins:
-                    actual_bins = compute_size_bins_3d(seg_binary, bin_edges, _xyz_to_dhw(voxel_spacing), num_bins)
                     if not np.array_equal(actual_bins, np.array(bins)):
-                        retries += 1
+                        rejection_counts['size_bin_mismatch'] = (
+                            rejection_counts.get('size_bin_mismatch', 0) + 1
+                        )
                         total_retries += 1
-                        if cfg.verbose and retries == 1:
+                        if cfg.verbose and attempt == 0:
                             logger.warning(f"Sample {generated}: size bins mismatch "
                                        f"(requested={bins}, got={actual_bins.tolist()}), retrying...")
                         continue
 
-                # Atlas validation: check tumors are inside brain atlas
-                if brain_atlas is not None:
-                    if not is_seg_inside_atlas(seg_binary, brain_atlas,
-                                              tolerance=brain_tolerance,
-                                              dilate_pixels=brain_dilate):
-                        retries += 1
-                        total_retries += 1
-                        if cfg.verbose and retries == 1:
-                            logger.warning(f"Sample {generated}: seg outside brain atlas, retrying...")
-                        continue
-
+                output_seg = candidate
+                accepted_attempt = attempt
                 valid_mask = True
+                break
 
             if not valid_mask:
-                logger.warning(f"Sample {generated}: failed after {max_retries} retries, using last attempt")
+                raise RuntimeError(
+                    f"Sample {generated}: no mask passed quality control after "
+                    f"{max_attempts} deterministic draws; rejections={rejection_counts}"
+                )
+            assert output_seg is not None and actual_bins is not None
 
             # Transpose [D, H, W] -> [H, W, D] for NIfTI (slices should be HxW)
-            seg_binary = np.transpose(seg_binary, (1, 2, 0))
-
-            # Trim last N slices to match training data (training pads, so we remove padding)
-            if trim_slices > 0:
-                seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
+            seg_binary = np.transpose(output_seg, (1, 2, 0))
 
             # Save in subdirectory: 00000/seg.nii.gz
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
@@ -1349,8 +1498,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 'conditioning_mask': None,
                 'seg_noise_seed': seg_seed,
                 'image_noise_seed': None,
+                'seg_attempt': accepted_attempt,
+                'rejected_attempts': accepted_attempt,
+                'rejection_counts': rejection_counts,
+                'actual_size_bins': actual_bins.astype(int).tolist(),
             })
-            all_bins.append((generated, bins))
+            # Requested bins do not condition an unconditional checkpoint. Save
+            # measured bins so bins.csv never implies adherence that was absent.
+            all_bins.append((generated, actual_bins.astype(int).tolist()))
             generated += 1
 
             # Log progress and clear cache periodically

@@ -4,8 +4,9 @@
 Provides dataloaders that return (seg_volume, size_bins) tuples where size_bins
 is a N-dimensional vector of tumor counts per size bin.
 
-Key difference from 2D: Uses 3D connected components so tumors touching
-in ANY direction (including depth) count as ONE tumor.
+Key difference from 2D: Uses volumetric rather than slice-wise connected
+components. Connectivity follows ``compute_size_bins_3d`` and historically
+defaults to 6-connectivity.
 
 NOTE: Utility functions have been consolidated into datasets.py.
 This file now imports from there for backward compatibility.
@@ -117,8 +118,8 @@ class SegDataset(TorchDataset):
     Wraps Base3DVolumeDataset to add size bin computation on full 3D volumes.
     Supports classifier-free guidance dropout.
 
-    Key difference from 2D: Computes bins on full 3D volume so tumors touching
-    in depth are correctly counted as single tumors.
+    Key difference from 2D: Computes bins on the full 3D volume, using the
+    connectivity convention defined by ``compute_size_bins_3d``.
     """
 
     def __init__(

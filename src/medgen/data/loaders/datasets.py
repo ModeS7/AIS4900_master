@@ -170,8 +170,9 @@ def compute_size_bins(
 # NOTE: The following _3d functions use DIFFERENT ALGORITHMS from 2D:
 # - compute_feret_diameter_3d(): Computes 3D distance with anisotropic voxel
 #   spacing (depth, height, width can differ). 2D only has single pixel_spacing.
-# - compute_size_bins_3d(): Uses 3D connected components (26-connectivity vs
-#   8-connectivity in 2D), so tumors touching in depth count as ONE tumor.
+# - compute_size_bins_3d(): Uses 3D connected components with an explicit
+#   connectivity convention.  The default remains the historical
+#   6-connectivity; callers can request 18- or 26-connectivity.
 # These are NOT candidates for unification - they solve fundamentally different
 # geometric problems.
 
@@ -218,11 +219,12 @@ def compute_size_bins_3d(
     bin_edges: list[float],
     voxel_spacing: tuple[float, float, float],
     num_bins: int = None,
+    connectivity: int = 6,
 ) -> np.ndarray:
     """Compute tumor count per size bin for a 3D segmentation volume.
 
-    Uses 3D connected components so tumors touching in ANY direction
-    (including depth) count as ONE tumor.
+    The historical default is 6-connectivity (face-neighbour contact).  Pass
+    18 or 26 to also join edge- or corner-touching foreground voxels.
 
     Args:
         seg_volume: 3D binary segmentation volume [D, H, W].
@@ -230,6 +232,8 @@ def compute_size_bins_3d(
         voxel_spacing: Voxel size in mm as (depth_mm, height_mm, width_mm).
         num_bins: Number of bins. If > len(edges)-1, last bin is overflow (>= last edge).
                   Default: len(edges)-1 (no separate overflow bin).
+        connectivity: 3D connected-component neighbourhood. Must be one of
+            6 (faces), 18 (faces and edges), or 26 (faces, edges, and corners).
 
     Returns:
         Array of shape [num_bins] with tumor counts per bin.
@@ -247,9 +251,13 @@ def compute_size_bins_3d(
     # Remove batch/channel dimensions if present [1, D, H, W] -> [D, H, W]
     seg_volume = np.squeeze(seg_volume)
 
-    # 3D connected components - ndimage.label works for N-dimensional data
-    # This ensures tumors touching in ANY direction are counted as ONE tumor
-    labeled, num_features = ndimage.label(seg_volume > 0.5)
+    connectivity_rank = {6: 1, 18: 2, 26: 3}.get(connectivity)
+    if connectivity_rank is None:
+        raise ValueError(
+            f"connectivity must be one of 6, 18, or 26, got {connectivity}"
+        )
+    structure = ndimage.generate_binary_structure(3, connectivity_rank)
+    labeled, num_features = ndimage.label(seg_volume > 0.5, structure=structure)
 
     if num_features == 0:
         return bin_counts

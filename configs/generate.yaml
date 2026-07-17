@@ -85,12 +85,13 @@ ode_solver: euler
 ode_atol: 1e-5                    # Absolute tolerance (dopri5 only)
 ode_rtol: 1e-5                    # Relative tolerance (dopri5 only)
 
-# Seg mask validation (3D: per-slice check, same threshold as 2D)
+# Generated seg-mask artifact filtering (3D: per-slice foreground guard)
 max_white_percentage: 0.04   # Max tumor percentage per slice (4%)
-max_retries: 10              # Max retries for invalid seg masks
+max_retries: 10              # Total deterministic draws allowed per accepted seg mask
 
 # Validation settings (seg_conditioned)
 validate_size_bins: true         # Validate generated tumors match requested size bins
+seg_component_connectivity: 6    # Historical default; locked mask-pool protocol uses 26
 validate_brain_mask: true        # Validate tumors are inside brain mask (3D)
 brain_threshold: 0.05            # Brain mask intensity threshold
 brain_tolerance: 0.0             # Tolerance for tumor-outside-brain overlap

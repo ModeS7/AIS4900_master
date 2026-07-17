@@ -296,6 +296,53 @@ class TestFixedGeneratorPanelSlurm:
         assert "test1" not in content
         assert "checkpoint_best" not in content
 
+    def test_common_mask_pool_job_locks_filtering_and_publication(self, generate_dir):
+        content = (generate_dir / "generate_common_seg_masks.slurm").read_text()
+        required = (
+            "set -Eeuo pipefail",
+            "exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt",
+            'readonly NUM_MASKS=525',
+            'readonly SEED=42',
+            'readonly STEPS=100',
+            'readonly MAX_ATTEMPTS=50',
+            'readonly MAX_WHITE_PER_SLICE=0.04',
+            'readonly COMPONENT_CONNECTIVITY=26',
+            'EXPECTED_ATLAS_SHA256="c0c00cfc37177cd555d956a02554895cc9041280f7f32df20cb9ae21388c75ba"',
+            '${MASK_SOURCE_COMMIT:?Set MASK_SOURCE_COMMIT to the Git commit at submission time}',
+            '${MASK_SEG_CKPT_SHA256:?Set MASK_SEG_CKPT_SHA256 to the checkpoint hash at submission time}',
+            "expected_strategy=rflow",
+            "gen_mode=seg_conditioned",
+            "current_image=0",
+            "num_steps_seg=\"$STEPS\"",
+            "ode_solver=euler",
+            "shift_ratio_seg=1.0",
+            "validate_size_bins=false",
+            'seg_component_connectivity="$COMPONENT_CONNECTIVITY"',
+            "brain_tolerance=0.0",
+            "brain_pca_path=null",
+            "seg_pca_path=null",
+            "provenance_hash_checkpoints=true",
+            "audit_seg_mask_pool",
+            '--published-root "$FINAL_DIR"',
+            '--expected-git-commit "$SOURCE_COMMIT"',
+            'mv -T -- "$STAGING_DIR" "$FINAL_DIR"',
+            "verify_source_tree",
+        )
+        for token in required:
+            assert token in content
+        for forbidden in (
+            "checkpoint_best.pt",
+            "\n    strategy=rflow \\\n",
+            "MASK_SOURCE_COMMIT:-",
+            "MASK_SEG_CKPT_SHA256:-",
+            "shift_ratio_seg=3.47",
+            "brain_atlas_path=auto",
+            "seg_pca_path=auto",
+            "sbatch",
+            "SIGUSR1",
+        ):
+            assert forbidden not in content
+
     def test_no_all_at_once_panel_launcher(self, generate_dir):
         assert not (generate_dir / "submit_eval_generator_panel.sh").exists()
 
@@ -304,5 +351,6 @@ class TestFixedGeneratorPanelSlurm:
             *generate_dir.glob("eval_gen_exp*.slurm"),
             generate_dir / "run_eval_generator.sh",
             generate_dir / "eval_generator_panel_metrics.slurm",
+            generate_dir / "generate_common_seg_masks.slurm",
         ]
         subprocess.run(["bash", "-n", *map(str, files)], check=True)

@@ -13,6 +13,7 @@ from medgen.models.handoff import HandoffWrapper
 from medgen.scripts.generate import (
     _derive_sample_seed,
     _discover_real_seg_files,
+    _generated_seg_rejection_reason,
     _load_image_model_with_optional_handoff,
     _preflight_real_seg_files,
     _randn,
@@ -187,6 +188,50 @@ def test_atomic_sample_publish_reloads_all_niftis_and_refuses_overwrite(tmp_path
         )
 
 
+def test_atomic_sample_publish_rejects_empty_segmentation(tmp_path: Path):
+    with pytest.raises(ValueError, match='empty'):
+        _save_sample_directory_atomic(
+            tmp_path,
+            0,
+            {'seg.nii.gz': np.zeros((4, 4, 3), dtype=np.float32)},
+            voxel_size=(1.0, 1.0, 1.0),
+        )
+
+
+def test_generated_mask_filter_is_strict_and_reports_stable_reasons():
+    atlas = np.ones((3, 10, 10), dtype=bool)
+    valid = np.zeros(atlas.shape, dtype=np.float32)
+    valid[1, 5, 5] = 1.0
+    assert _generated_seg_rejection_reason(
+        valid,
+        max_white_percentage=0.04,
+        brain_atlas=atlas,
+    ) is None
+
+    empty = np.zeros_like(valid)
+    assert _generated_seg_rejection_reason(
+        empty,
+        max_white_percentage=0.04,
+        brain_atlas=atlas,
+    ) == 'empty'
+
+    too_large = valid.copy()
+    too_large[1, 0, :4] = 1.0
+    assert _generated_seg_rejection_reason(
+        too_large,
+        max_white_percentage=0.04,
+        brain_atlas=atlas,
+    ) == 'slice_foreground_limit'
+
+    restricted_atlas = atlas.copy()
+    restricted_atlas[1, 5, 5] = False
+    assert _generated_seg_rejection_reason(
+        valid,
+        max_white_percentage=0.04,
+        brain_atlas=restricted_atlas,
+    ) == 'outside_brain_atlas'
+
+
 @pytest.mark.parametrize(
     ('spatial_dims', 'in_channels', 'out_channels'),
     [(2, 2, 1), (3, 2, 1)],
@@ -229,8 +274,40 @@ def test_shared_image_loader_builds_handoff_for_2d_and_3d(
         )
 
     assert isinstance(model, HandoffWrapper)
+    assert model.low_t_model is loaded[0]
+    assert model.high_t_model is loaded[1]
     assert loader.call_count == 2
     assert all(call.kwargs['spatial_dims'] == spatial_dims for call in loader.call_args_list)
+    assert all(call.kwargs['compile_model'] is False for call in loader.call_args_list)
+
+
+@pytest.mark.parametrize('compile_model', [False, True])
+def test_shared_image_loader_preserves_compile_setting_for_standalone_model(
+    tmp_path: Path,
+    compile_model: bool,
+):
+    checkpoint = tmp_path / 'standalone.pt'
+    _checkpoint(checkpoint, spatial_dims=3, in_channels=2, out_channels=1)
+    config = OmegaConf.create({
+        'image_model': str(checkpoint),
+        'image_model_high_t': None,
+        'strategy': 'rflow',
+    })
+    loaded = torch.nn.Identity()
+
+    with patch('medgen.scripts.generate.load_diffusion_model', return_value=loaded) as loader:
+        model = _load_image_model_with_optional_handoff(
+            config,
+            torch.device('cpu'),
+            in_channels=2,
+            out_channels=1,
+            spatial_dims=3,
+            compile_model=compile_model,
+        )
+
+    assert model is loaded
+    loader.assert_called_once()
+    assert loader.call_args.kwargs['compile_model'] is compile_model
 
 
 def test_handoff_loader_rejects_incompatible_pixel_normalization(tmp_path: Path):
