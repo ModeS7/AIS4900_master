@@ -30,7 +30,7 @@ import argparse
 import hashlib
 import json
 import logging
-import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -80,18 +80,6 @@ def _child_seed(seed: int | None, *scope: object) -> int | None:
 def scoped_numpy_rng(base_seed: int, *scope: object) -> np.random.Generator:
     """Create an independent NumPy stream for one named sampling operation."""
     return np.random.default_rng(derive_seed(base_seed, *scope))
-
-
-def generation_manifest_provenance(dataset_path: str) -> dict[str, str] | None:
-    """Return the path and SHA-256 of a dataset's generation manifest, if present."""
-    manifest_path = os.path.abspath(os.path.join(dataset_path, "generation_manifest.json"))
-    if not os.path.isfile(manifest_path):
-        return None
-    digest = hashlib.sha256()
-    with open(manifest_path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {"path": manifest_path, "sha256": digest.hexdigest()}
 
 
 # =============================================================================
@@ -212,11 +200,6 @@ def main() -> None:
     ap.add_argument("--pca-model", default="data/brain_pca_256x256x160.npz", help="Brain-shape PCA npz ('none' to skip).")
     ap.add_argument("--pca-threshold", type=float, default=0.05)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument(
-        "--source-git-commit",
-        default=None,
-        help="Optional exact source commit recorded in the metric report for provenance.",
-    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--output", default="all_metrics_report.json")
     args = ap.parse_args()
@@ -292,7 +275,6 @@ def main() -> None:
             "target_shape": list(target_shape), "pool_cap": args.pool_cap,
             "diversity_cap": args.diversity_cap, "trim_slices": args.trim_slices,
             "pca_model": args.pca_model, "pattern": args.pattern, "seed": args.seed,
-            "source_git_commit": args.source_git_commit,
             "metric_rng": {
                 "base_seed": args.seed,
                 "derivation": "SHA-256 of JSON [base_seed, scope...] to a 63-bit local seed",
@@ -322,7 +304,6 @@ def main() -> None:
         report["datasets"][label] = {
             "per_reference": per_ref,
             "source_path": path,
-            "generation_manifest": generation_manifest_provenance(path),
             "total_found": total_found,
             "pool_size": int(vols.shape[0]),
             **ri,
@@ -351,8 +332,9 @@ def main() -> None:
         pcae = f"{r['pca_mean_error']:.5f}" if "pca_mean_error" in r else "n/a"
         print(f"{label:28s} {r['pool_size']:>4d} {r.get('diversity_n', 0):>5d} {r['msssim_diversity']:>11.4f} {pca:>6s} {pcae:>9s}")
 
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    with open(args.output, "w") as f:
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
         json.dump(report, f, indent=2)
     logger.info("Wrote %s", args.output)
 

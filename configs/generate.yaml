@@ -22,7 +22,6 @@ defaults:
 # Core settings
 spatial_dims: 2           # 2 for images, 3 for volumes
 strategy: rflow           # ddpm or rflow
-expected_strategy: null   # Optional fail-fast assertion for locked evaluation protocols
 gen_mode: bravo           # bravo, dual, seg_conditioned
 
 # Model paths (relative to working dir or absolute)
@@ -97,6 +96,9 @@ brain_threshold: 0.05            # Brain mask intensity threshold
 brain_tolerance: 0.0             # Tolerance for tumor-outside-brain overlap
 brain_dilate_pixels: 0           # Dilate brain mask by N pixels before validation
 max_brain_retries: 5             # Max retries for brain mask validation
+conditioning_brain_qc_mode: cleanup # "reject" retries images without changing fixed masks
+brain_containment_margin_mm: 3.0 # Physical boundary allowance in reject mode
+max_image_attempts_per_mask: null # Explicit fixed-mask cap in reject mode
 brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 brain_pca_path: null             # "auto" = use bundled PCA model, path = custom, null = skip
 seg_pca_path: null               # "auto" = use bundled seg PCA model, path = custom, null = skip
@@ -106,9 +108,7 @@ expected_real_depth: null        # If set, require this exact input-mask depth b
 require_real_bravo_pairs: false  # Require bravo.nii.gz beside every real conditioning mask
 validate_real_seg_masks: true    # Reject non-finite, empty, or wrong in-plane real masks
 
-# Optional post-processing of generated image backgrounds. This used to be an
-# implicit default in generate.py; it is explicit here so experiments can turn
-# it off and record that choice in their provenance manifest.
+# Optional post-processing of generated image backgrounds.
 mask_outside_brain: true
 mask_outside_brain_dilate_pixels: 2
 
@@ -128,7 +128,6 @@ diffrs_iter_warmup: 10           # Warmup iterations for threshold estimation
 # Output settings
 output_subdir: ""         # Subdirectory under generated_dir (e.g., "3d_full_pipeline")
 verbose: true             # Enable progress bars (false for cluster)
-provenance_hash_checkpoints: false  # SHA-256 model files in manifest (slower for large checkpoints)
 
 # Hydra configuration
 hydra:

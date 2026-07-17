@@ -7,11 +7,13 @@
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g"
-#SBATCH --job-name="eval_gen_panel_metrics"
+#SBATCH --job-name="synthmask_metrics"
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=END,FAIL
-#SBATCH --output=IDUN/output/generate/eval_gen_panel_metrics_%j.out
-#SBATCH --error=IDUN/output/generate/eval_gen_panel_metrics_%j.err
+#SBATCH --output=IDUN/output/generate/synthmask_metrics_%j.out
+#SBATCH --error=IDUN/output/generate/synthmask_metrics_%j.err
+
+# Submit manually after all 14 standalone generation jobs have completed.
 
 set -Eeuo pipefail
 
@@ -21,13 +23,13 @@ fatal() {
 }
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
-export CLUSTER_BASE
-readonly PANEL_ID="${PANEL_ID:-source_selection_train105_seed42_euler100}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask105_seed42_euler100}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"
-readonly PANEL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${PANEL_ID}"
-readonly RESULT_DIR="${CLUSTER_BASE}/AIS4900_master/runs/eval/${PANEL_ID}"
-readonly REPORT="${RESULT_DIR}/all_metrics_train105.json"
+readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
+readonly RESULT_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/eval"
+readonly FINAL_DIR="${RESULT_ROOT}/${EVAL_ID}"
+readonly REPORT="${FINAL_DIR}/all_metrics_train105.json"
 readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
@@ -45,28 +47,26 @@ readonly LABELS=(
     exp1_to_exp48e_t025
 )
 
-[[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
 [[ -d "$TRAIN_DIR" ]] || fatal "training reference not found: $TRAIN_DIR"
-[[ ! -e "$REPORT" ]] || fatal "metric report already exists; refusing to overwrite: $REPORT"
-cd "$REPO_ROOT"
-
-module purge
-module load Anaconda3/2024.02-1
-conda activate AIS4900
-export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-export PYTHONSAFEPATH=1
-python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
-export PYTORCH_ALLOC_CONF=expandable_segments:True
+[[ ! -e "$FINAL_DIR" ]] || fatal "metric output already exists: $FINAL_DIR"
 
 DATASET_ARGS=()
 for label in "${LABELS[@]}"; do
-    dataset_dir="${PANEL_ROOT}/${label}"
+    dataset_dir="${EVAL_ROOT}/${label}"
     count="$(find "$dataset_dir" -mindepth 2 -maxdepth 2 -type f -name bravo.nii.gz | wc -l)"
     [[ "$count" -eq 105 ]] || fatal "$label contains $count BRAVO volumes, expected 105"
     DATASET_ARGS+=(--dataset "${label}:${dataset_dir}")
 done
 
-echo "=== One combined train-reference metric pass for all 14 datasets ==="
+cd "$REPO_ROOT"
+module purge
+module load Anaconda3/2024.02-1
+conda activate AIS4900
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
+
+echo "=== Computing train-reference metrics for all 14 datasets ==="
 time python -m medgen.scripts.eval_all_metrics \
     --reference "train:${TRAIN_DIR}" \
     "${DATASET_ARGS[@]}" \
@@ -83,4 +83,4 @@ time python -m medgen.scripts.eval_all_metrics \
     --output "$REPORT"
 
 [[ -s "$REPORT" ]] || fatal "metric report was not created"
-echo "Completed combined metric report: $REPORT"
+echo "Completed metric report: $REPORT"

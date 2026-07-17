@@ -151,6 +151,66 @@ def compute_outside_brain_ratio(
     }
 
 
+def evaluate_conditioning_brain_containment(
+    image: torch.Tensor | np.ndarray,
+    seg: torch.Tensor | np.ndarray,
+    *,
+    brain_threshold: float = 0.05,
+    margin_mm: float = 3.0,
+    voxel_spacing_mm: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> dict[str, bool | float | None]:
+    """Check that every conditioning-positive voxel is near the main brain."""
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().numpy()
+    if isinstance(seg, torch.Tensor):
+        seg = seg.detach().cpu().numpy()
+    image = np.squeeze(image)
+    seg = np.squeeze(seg)
+
+    if image.ndim != 3 or seg.ndim != 3:
+        raise ValueError(
+            "Conditioning-brain containment requires 3D image and mask arrays"
+        )
+    if image.shape != seg.shape:
+        raise ValueError(
+            f"Image shape {image.shape} does not match conditioning-mask shape {seg.shape}"
+        )
+    if not np.isfinite(image).all() or not np.isfinite(seg).all():
+        raise ValueError("Image and conditioning mask must contain only finite values")
+    if not np.isfinite(brain_threshold) or not 0.0 <= brain_threshold <= 1.0:
+        raise ValueError("brain_threshold must be in [0, 1]")
+    if not np.isfinite(margin_mm) or margin_mm < 0.0:
+        raise ValueError("margin_mm must be non-negative")
+    if len(voxel_spacing_mm) != 3 or any(
+        not np.isfinite(float(value)) or float(value) <= 0.0
+        for value in voxel_spacing_mm
+    ):
+        raise ValueError("voxel_spacing_mm must contain three positive values")
+
+    tumor_mask = seg > 0.5
+    if not np.any(tumor_mask):
+        return {'valid': True, 'max_distance_mm': 0.0}
+
+    brain_mask = create_brain_mask(
+        image,
+        threshold=brain_threshold,
+        fill_holes=True,
+        dilate_pixels=0,
+    )
+    if not np.any(brain_mask):
+        return {'valid': False, 'max_distance_mm': None}
+
+    distance_mm = ndimage.distance_transform_edt(
+        ~brain_mask,
+        sampling=tuple(float(value) for value in voxel_spacing_mm),
+    )
+    maximum_distance = float(distance_mm[tumor_mask].max())
+    return {
+        'valid': maximum_distance <= float(margin_mm) + 1e-6,
+        'max_distance_mm': maximum_distance,
+    }
+
+
 def load_brain_atlas(atlas_path: str | Path, expected_shape: tuple[int, ...] | None = None) -> np.ndarray:
     """Load a pre-computed brain atlas from NIfTI file.
 

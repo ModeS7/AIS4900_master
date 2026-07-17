@@ -19,22 +19,15 @@ Usage:
     python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \\
         seg_model=... image_model=...
 """
-import hashlib
-import json
 import logging
-import os
 import random
-import shutil
-import subprocess
-import uuid
 from pathlib import Path
-from typing import Any
 
 import hydra
 import nibabel as nib
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.amp import autocast
 
 from medgen.core import (
@@ -70,19 +63,10 @@ def _create_strategy(name: str) -> DiffusionStrategy:
     return strategies[name]()
 
 
-def _validate_expected_strategy(cfg: DictConfig) -> None:
-    """Fail before GPU work if a locked protocol's configured strategy changed."""
-    expected_strategy = cfg.get('expected_strategy', None)
-    if expected_strategy is not None and str(cfg.strategy) != str(expected_strategy):
-        raise ValueError(
-            f"Generation strategy is {cfg.strategy!s}, but the protocol requires "
-            f"{expected_strategy!s}"
-        )
-
-
 from medgen.metrics.brain_mask import (
     BrainPCAModel,
     create_brain_mask,
+    evaluate_conditioning_brain_containment,
     has_single_brain_component,
     is_seg_inside_atlas,
     load_brain_atlas,
@@ -322,70 +306,6 @@ def _seed_process_rngs(seed: int | None) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _config_to_dict(value: Any) -> dict[str, Any]:
-    """Convert checkpoint config containers to a plain dictionary."""
-    if isinstance(value, DictConfig):
-        converted = OmegaConf.to_container(value, resolve=True)
-        return converted if isinstance(converted, dict) else {}
-    return value if isinstance(value, dict) else {}
-
-
-def _checkpoint_generation_signature(checkpoint_path: str | Path) -> dict[str, Any]:
-    """Read compatibility-relevant metadata from a diffusion checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    state_dict = checkpoint.get('model_state_dict', checkpoint)
-    from medgen.diffusion.loading import detect_wrapper_type
-
-    config = _config_to_dict(checkpoint.get('config', {}))
-    nested_model = _config_to_dict(config.get('model', {}))
-    model_config = _config_to_dict(checkpoint.get('model_config', {}))
-    architecture = {**config, **nested_model, **model_config}
-
-    strategy = config.get('strategy')
-    if isinstance(strategy, dict):
-        strategy = strategy.get('name')
-    pixel = _config_to_dict(config.get('pixel', {}))
-    return {
-        'in_channels': architecture.get('in_channels'),
-        'out_channels': architecture.get('out_channels'),
-        'spatial_dims': architecture.get('spatial_dims'),
-        'strategy': strategy,
-        'mode': config.get('mode'),
-        'wrapper_type': detect_wrapper_type(state_dict),
-        'sigma_data': config.get('sigma_data'),
-        'pixel': {
-            key: pixel.get(key)
-            for key in ('rescale', 'pixel_shift', 'pixel_scale')
-            if key in pixel
-        },
-    }
-
-
-def _validate_checkpoint_signature(
-    signature: dict[str, Any],
-    *,
-    checkpoint_path: str | Path,
-    in_channels: int,
-    out_channels: int,
-    spatial_dims: int,
-    strategy: str,
-) -> None:
-    """Fail before model loading when checkpoint metadata contradicts the run."""
-    expected = {
-        'in_channels': in_channels,
-        'out_channels': out_channels,
-        'spatial_dims': spatial_dims,
-        'strategy': strategy,
-    }
-    for key, expected_value in expected.items():
-        actual = signature.get(key)
-        if actual is not None and actual != expected_value:
-            raise ValueError(
-                f"Checkpoint {checkpoint_path} has {key}={actual!r}, "
-                f"but generation requires {expected_value!r}"
-            )
-
-
 def _load_image_model_with_optional_handoff(
     cfg: DictConfig,
     device: torch.device,
@@ -395,22 +315,13 @@ def _load_image_model_with_optional_handoff(
     spatial_dims: int,
     compile_model: bool = True,
 ) -> torch.nn.Module:
-    """Load one image model or a validated high-t/low-t handoff pair.
+    """Load one image model or a high-t/low-t handoff pair.
 
     Both the 2D and 3D generation paths call this helper, preventing the 3D
     path from silently ignoring ``image_model_high_t``.
     """
     low_path = cfg.image_model
     high_path = cfg.get('image_model_high_t', None)
-    low_signature = _checkpoint_generation_signature(low_path)
-    _validate_checkpoint_signature(
-        low_signature,
-        checkpoint_path=low_path,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        spatial_dims=spatial_dims,
-        strategy=str(cfg.strategy),
-    )
     if not high_path:
         return load_diffusion_model(
             low_path,
@@ -420,24 +331,6 @@ def _load_image_model_with_optional_handoff(
             compile_model=compile_model,
             spatial_dims=spatial_dims,
         )
-
-    high_signature = _checkpoint_generation_signature(high_path)
-    _validate_checkpoint_signature(
-        high_signature,
-        checkpoint_path=high_path,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        spatial_dims=spatial_dims,
-        strategy=str(cfg.strategy),
-    )
-    for key in ('sigma_data', 'pixel'):
-        low_value = low_signature.get(key)
-        high_value = high_signature.get(key)
-        if low_value not in (None, {}) and high_value not in (None, {}) and low_value != high_value:
-            raise ValueError(
-                f"Handoff checkpoints disagree on {key}: "
-                f"high-t={high_value!r}, low-t={low_value!r}"
-            )
 
     from medgen.models.handoff import HandoffWrapper
 
@@ -807,18 +700,13 @@ def save_bins_csv(bins_data: list[tuple[int, list[int]]], output_path: Path) -> 
         output_path: Path to save CSV file
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output_path.with_name(f'.{output_path.name}.tmp-{uuid.uuid4().hex}')
-    try:
-        with open(temporary, 'w') as f:
-            # Header: id, bin_0, bin_1, ..., bin_6, total_tumors
-            f.write('id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors\n')
-            for sample_id, bins in bins_data:
-                bins_str = ','.join(map(str, bins))
-                total = sum(bins)
-                f.write(f'{sample_id:05d},{bins_str},{total}\n')
-        os.replace(temporary, output_path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    with output_path.open('w') as f:
+        # Header: id, bin_0, bin_1, ..., bin_6, total_tumors
+        f.write('id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors\n')
+        for sample_id, bins in bins_data:
+            bins_str = ','.join(map(str, bins))
+            total = sum(bins)
+            f.write(f'{sample_id:05d},{bins_str},{total}\n')
 
 
 def _discover_real_seg_files(
@@ -913,204 +801,6 @@ def _preflight_real_seg_files(
             image_size=image_size,
             expected_depth=expected_depth,
         )
-
-
-def _validate_output_arrays(arrays: dict[str, np.ndarray]) -> None:
-    """Validate one sample before atomically publishing its directory."""
-    if not arrays:
-        raise ValueError("Cannot save an empty sample")
-    shapes = {name: tuple(array.shape) for name, array in arrays.items()}
-    if len(set(shapes.values())) != 1:
-        raise ValueError(f"Sample arrays have mismatched shapes: {shapes}")
-    for name, array in arrays.items():
-        if array.ndim != 3:
-            raise ValueError(f"{name} must be a 3D array, got shape {array.shape}")
-        if not np.isfinite(array).all():
-            raise ValueError(f"{name} contains non-finite values")
-    if 'seg.nii.gz' in arrays:
-        unique = np.unique(arrays['seg.nii.gz'])
-        if not np.isin(unique, (0.0, 1.0)).all():
-            raise ValueError(f"seg.nii.gz is not binary; values include {unique[:10]}")
-        if not np.any(arrays['seg.nii.gz'] > 0.5):
-            raise ValueError("seg.nii.gz is empty")
-
-
-def _save_sample_directory_atomic(
-    output_dir: Path,
-    sample_index: int,
-    arrays: dict[str, np.ndarray],
-    *,
-    voxel_size: tuple[float, float, float],
-) -> Path:
-    """Write all files in a temporary directory, then publish as one rename."""
-    _validate_output_arrays(arrays)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    sample_dir = output_dir / f'{sample_index:05d}'
-    if sample_dir.exists():
-        raise FileExistsError(f"Refusing to overwrite existing sample directory: {sample_dir}")
-    temporary = output_dir / f'.{sample_index:05d}.tmp-{uuid.uuid4().hex}'
-    temporary.mkdir()
-    try:
-        for filename, array in arrays.items():
-            written_path = temporary / filename
-            save_nifti(array, str(written_path), voxel_size=voxel_size)
-            # Reload before publishing. This catches truncated/corrupt writes and
-            # verifies that serialization preserved the expected volume shape.
-            written = nib.load(str(written_path)).get_fdata().astype(np.float32)  # type: ignore[attr-defined]
-            if written.shape != array.shape:
-                raise RuntimeError(
-                    f"Serialized {filename} has shape {written.shape}, expected {array.shape}"
-                )
-            if not np.isfinite(written).all():
-                raise RuntimeError(f"Serialized {filename} contains non-finite values")
-            if filename == 'seg.nii.gz' and not np.isin(np.unique(written), (0.0, 1.0)).all():
-                raise RuntimeError(f"Serialized {filename} is not binary")
-            if filename == 'seg.nii.gz' and not np.any(written > 0.5):
-                raise RuntimeError(f"Serialized {filename} is empty")
-        os.replace(temporary, sample_dir)
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return sample_dir
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _checkpoint_provenance(path_value: str | Path | None, *, hash_file: bool) -> dict[str, Any] | None:
-    if not path_value:
-        return None
-    path = Path(path_value).expanduser().resolve()
-    stat = path.stat()
-    result: dict[str, Any] = {
-        'path': str(path),
-        'size_bytes': stat.st_size,
-        'mtime_ns': stat.st_mtime_ns,
-    }
-    if hash_file:
-        result['sha256'] = _sha256_file(path)
-    return result
-
-
-def _explicit_file_provenance(
-    path_value: str | Path | None,
-    *,
-    hash_file: bool,
-) -> dict[str, Any] | None:
-    """Describe an explicitly configured file, leaving ``auto`` unresolved."""
-    if path_value is None or str(path_value).lower() == 'auto':
-        return None
-    return _checkpoint_provenance(path_value, hash_file=hash_file)
-
-
-def _git_commit() -> str | None:
-    repo_root = Path(__file__).resolve().parents[3]
-    try:
-        result = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip() or None
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f'.{path.name}.tmp-{uuid.uuid4().hex}')
-    try:
-        with temporary.open('w') as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write('\n')
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _write_generation_manifest(
-    cfg: DictConfig,
-    output_dir: Path,
-    samples: list[dict[str, Any]],
-) -> None:
-    """Write machine-readable provenance after a complete generation run."""
-    hash_checkpoints = bool(cfg.get('provenance_hash_checkpoints', False))
-    manifest = {
-        'schema_version': 1,
-        'status': 'complete',
-        'git_commit': _git_commit(),
-        'mode': str(cfg.gen_mode),
-        'spatial_dims': int(cfg.spatial_dims),
-        'seed': cfg.get('seed', None),
-        'num_images': int(cfg.num_images),
-        'models': {
-            'seg': _checkpoint_provenance(cfg.get('seg_model', None), hash_file=hash_checkpoints),
-            'image_low_t': _checkpoint_provenance(cfg.get('image_model', None), hash_file=hash_checkpoints),
-            'image_high_t': _checkpoint_provenance(
-                cfg.get('image_model_high_t', None), hash_file=hash_checkpoints
-            ),
-        },
-        'sampling': {
-            'strategy': str(cfg.strategy),
-            'ode_solver': str(cfg.get('ode_solver', 'euler')),
-            'num_steps': int(cfg.num_steps),
-            'num_steps_seg': int(cfg.get('num_steps_seg', None) or cfg.num_steps),
-            'num_steps_bravo': int(cfg.get('num_steps_bravo', None) or cfg.num_steps),
-            'shift_ratio_seg': float(cfg.get('shift_ratio_seg', None) or cfg.get('shift_ratio', 1.0)),
-            'shift_ratio_bravo': float(cfg.get('shift_ratio_bravo', None) or cfg.get('shift_ratio', 1.0)),
-            'cfg_scale_seg': float(cfg.cfg_scale_seg),
-            'cfg_scale_bravo': float(cfg.cfg_scale_bravo),
-            'handoff_t': float(cfg.handoff_t) if cfg.get('image_model_high_t', None) else None,
-        },
-        'geometry': {
-            'image_size': int(cfg.image_size),
-            'generation_depth': int(cfg.depth),
-            'trim_slices': int(cfg.get('trim_slices', 10)),
-            'fov_mm': float(cfg.get('fov_mm', 240.0)),
-        },
-        'quality_control': {
-            'brain_atlas_path': cfg.get('brain_atlas_path', None),
-            'brain_atlas_provenance': _explicit_file_provenance(
-                cfg.get('brain_atlas_path', None),
-                hash_file=hash_checkpoints,
-            ),
-            'brain_pca_path': cfg.get('brain_pca_path', None),
-            'seg_pca_path': cfg.get('seg_pca_path', None),
-            'validate_size_bins': bool(cfg.get('validate_size_bins', True)),
-            'component_connectivity': int(
-                cfg.get('seg_component_connectivity', 6)
-            ),
-            'max_white_percentage': (
-                None
-                if cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE) is None
-                else float(cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE))
-            ),
-            'max_attempts_per_mask': int(cfg.get('max_retries', 10)),
-            'brain_tolerance': float(cfg.get('brain_tolerance', 0.0)),
-            'brain_dilate_pixels': int(cfg.get('brain_dilate_pixels', 0)),
-            'validate_brain_mask': bool(cfg.get('validate_brain_mask', True)),
-            'mask_outside_brain': bool(cfg.get('mask_outside_brain', True)),
-            'mask_outside_brain_dilate_pixels': int(
-                cfg.get('mask_outside_brain_dilate_pixels', 2)
-            ),
-            'diffrs_checkpoint': cfg.get('diffrs_checkpoint', None),
-        },
-        'real_seg_dir': str(Path(cfg.real_seg_dir).resolve()) if cfg.get('real_seg_dir', None) else None,
-        'expected_real_cases': cfg.get('expected_real_cases', None),
-        'expected_real_depth': cfg.get('expected_real_depth', None),
-        'require_real_bravo_pairs': bool(cfg.get('require_real_bravo_pairs', False)),
-        'validate_real_seg_masks': bool(cfg.get('validate_real_seg_masks', True)),
-        'samples': samples,
-    }
-    _write_json_atomic(output_dir / 'generation_manifest.json', manifest)
 
 
 def _generate_bravo(
@@ -1323,7 +1013,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             strategy.scheduler.base_img_size_numel = base_numel
 
     # Log output dimensions
-    trim_slices = cfg.get('trim_slices', 10)
+    trim_slices = int(cfg.get('trim_slices', 10))
     output_depth = cfg.depth - trim_slices if trim_slices > 0 else cfg.depth
     logger.info(f"Output volume: {cfg.image_size}x{cfg.image_size}x{output_depth} (gen {cfg.depth}, trim {trim_slices})")
     if steps_seg != steps_bravo:
@@ -1333,21 +1023,11 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Collect all bins info for CSV
     all_bins: list[tuple[int, list[int]]] = []
-    manifest_samples: list[dict[str, Any]] = []
 
     # Mode: seg_conditioned only (just generate seg masks)
     if cfg.gen_mode == 'seg_conditioned':
         _apply_shift(shift_seg)
         logger.info("Loading seg_conditioned model...")
-        seg_signature = _checkpoint_generation_signature(cfg.seg_model)
-        _validate_checkpoint_signature(
-            seg_signature,
-            checkpoint_path=cfg.seg_model,
-            in_channels=1,
-            out_channels=1,
-            spatial_dims=3,
-            strategy=str(cfg.strategy),
-        )
         seg_model = load_diffusion_model(
             cfg.seg_model, device=device,
             in_channels=1, out_channels=1, compile_model=True, spatial_dims=3
@@ -1403,8 +1083,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         generated = cfg.get('current_image', 0)
         if generated != 0:
             raise ValueError(
-                "Mask-only generation requires current_image=0 so bins.csv and the "
-                "generation manifest describe the complete frozen pool"
+                "Mask-only generation requires current_image=0 so bins.csv "
+                "describes the complete generated pool"
             )
         total_retries = 0
 
@@ -1415,7 +1095,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Deterministic, fail-closed retry loop for one accepted mask.
             valid_mask = False
             rejection_counts: dict[str, int] = {}
-            accepted_attempt = -1
             actual_bins: np.ndarray | None = None
             output_seg: np.ndarray | None = None
             for attempt in range(max_attempts):
@@ -1477,7 +1156,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         continue
 
                 output_seg = candidate
-                accepted_attempt = attempt
                 valid_mask = True
                 break
 
@@ -1492,24 +1170,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             seg_binary = np.transpose(output_seg, (1, 2, 0))
 
             # Save in subdirectory: 00000/seg.nii.gz
+            sample_dir = output_dir / f"{generated:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            _save_sample_directory_atomic(
-                output_dir,
-                generated,
-                {'seg.nii.gz': seg_binary},
-                voxel_size=voxel,
-            )
-            manifest_samples.append({
-                'index': generated,
-                'patient_id': None,
-                'conditioning_mask': None,
-                'seg_noise_seed': seg_seed,
-                'image_noise_seed': None,
-                'seg_attempt': accepted_attempt,
-                'rejected_attempts': accepted_attempt,
-                'rejection_counts': rejection_counts,
-                'actual_size_bins': actual_bins.astype(int).tolist(),
-            })
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             # Requested bins do not condition an unconditional checkpoint. Save
             # measured bins so bins.csv never implies adherence that was absent.
             all_bins.append((generated, actual_bins.astype(int).tolist()))
@@ -1606,6 +1270,37 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         brain_threshold = cfg.get('brain_threshold', 0.05)
         brain_tolerance = cfg.get('brain_tolerance', 0.0)
         brain_dilate = cfg.get('brain_dilate_pixels', 0)
+        conditioning_brain_qc_mode = str(
+            cfg.get('conditioning_brain_qc_mode', 'cleanup')
+        )
+        if conditioning_brain_qc_mode not in {'cleanup', 'reject'}:
+            raise ValueError(
+                "conditioning_brain_qc_mode must be 'cleanup' or 'reject'"
+            )
+        brain_containment_margin_mm = float(
+            cfg.get('brain_containment_margin_mm', 3.0)
+        )
+        if brain_containment_margin_mm < 0.0:
+            raise ValueError("brain_containment_margin_mm must be non-negative")
+        max_image_attempts_raw = cfg.get('max_image_attempts_per_mask', None)
+        max_image_attempts_per_mask = (
+            None if max_image_attempts_raw is None else int(max_image_attempts_raw)
+        )
+        if max_image_attempts_per_mask is not None:
+            if max_image_attempts_per_mask < 1:
+                raise ValueError("max_image_attempts_per_mask must be positive")
+            if real_seg_files is None:
+                raise ValueError(
+                    "max_image_attempts_per_mask is only supported with a fixed real_seg_dir pool"
+                )
+            if conditioning_brain_qc_mode != 'reject':
+                raise ValueError(
+                    "max_image_attempts_per_mask requires conditioning_brain_qc_mode=reject"
+                )
+        if conditioning_brain_qc_mode == 'reject' and not validate_brain_mask:
+            raise ValueError(
+                "conditioning_brain_qc_mode=reject requires validate_brain_mask=true"
+            )
 
         # Size bin validation settings (verify generated seg matches conditioning)
         validate_size_bins = cfg.get('validate_size_bins', True)
@@ -1618,13 +1313,33 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         if shift_bravo != 1.0:
             logger.info(f"Bravo time-shift: ratio={shift_bravo:.2f}")
         logger.info(f"Generating {cfg.num_images} seg+bravo pairs...")
-        logger.info(f"Seg validation: per-slice max {max_white_pct:.2%} (same as 2D threshold)")
+        if real_seg_files is None:
+            if max_white_pct is None:
+                logger.info("Generated-seg per-slice foreground limit: disabled")
+            else:
+                logger.info(
+                    f"Generated-seg validation: per-slice max {max_white_pct:.2%}"
+                )
+        else:
+            logger.info(
+                "Fixed conditioning masks: input validation only; "
+                "no per-slice foreground limit is applied"
+            )
         if brain_atlas is not None:
             logger.info(f"Stage 1 — Atlas validation: enabled (tolerance={brain_tolerance:.0%}, dilate={brain_dilate}px)")
         if seg_pca is not None:
             logger.info(f"Stage 1b — Seg PCA validation: enabled (threshold={seg_pca.error_threshold:.8f})")
         if validate_brain_mask:
-            logger.info(f"Stage 2 — Brain mask validation: enabled (per-tumor cleanup, threshold={brain_threshold})")
+            if conditioning_brain_qc_mode == 'reject':
+                logger.info(
+                    "Stage 2 — Brain mask validation: reject image and preserve mask "
+                    f"(threshold={brain_threshold}, margin={brain_containment_margin_mm:.1f} mm)"
+                )
+            else:
+                logger.info(
+                    "Stage 2 — Brain mask validation: enabled "
+                    f"(historical per-tumor cleanup, threshold={brain_threshold})"
+                )
         if validate_size_bins:
             logger.info("Size bin validation: enabled (verify generated seg matches conditioning)")
 
@@ -1639,6 +1354,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         mask_outside_dilate = cfg.get('mask_outside_brain_dilate_pixels', 2)
         if mask_outside_brain:
             logger.info(f"Final brain-mask zeroing: enabled (threshold={brain_threshold}, dilate={mask_outside_dilate}px)")
+        if max_image_attempts_per_mask is not None:
+            logger.info(
+                f"Fixed-mask image attempt cap: {max_image_attempts_per_mask} deterministic draws"
+            )
 
         while generated < cfg.num_images:
             if outer_retries >= max_outer_retries:
@@ -1756,10 +1475,19 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             # Inner loop: generate bravo, validate, retry bravo or restart seg
             bravo_accepted = False
             dual_channels = None   # Holds [2, D, H, W] array when dual mode; else None
-            for bravo_attempt in range(max_brain_retries):
+            image_attempts_this_round = (
+                max_image_attempts_per_mask
+                if max_image_attempts_per_mask is not None
+                else max_brain_retries
+            )
+            for bravo_attempt in range(image_attempts_this_round):
                 # Generate BRAVO (or dual) conditioned on seg mask
                 _apply_shift(shift_bravo)
-                image_attempt = outer_retries * max_brain_retries + bravo_attempt
+                image_attempt = (
+                    bravo_attempt
+                    if max_image_attempts_per_mask is not None
+                    else outer_retries * max_brain_retries + bravo_attempt
+                )
                 image_seed = _derive_sample_seed(
                     base_seed,
                     generated,
@@ -1787,34 +1515,69 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                         noise_seed=image_seed,
                     )
 
-                # Stage 2a — Reject disconnected brain volumes
-                if validate_brain_mask and not has_single_brain_component(bravo_np, threshold=brain_threshold):
+                # Validate the retained output volume. The padded tail is
+                # discarded before saving and should not affect acceptance.
+                qc_bravo_np = bravo_np
+                qc_seg_binary = seg_binary
+                if conditioning_brain_qc_mode == 'reject' and trim_slices > 0:
+                    qc_bravo_np = bravo_np[:-trim_slices]
+                    qc_seg_binary = seg_binary[:-trim_slices]
+
+                # Preserve the historical component check for cleanup mode.
+                # Fixed-mask rejection uses only the explicit containment rule.
+                if (
+                    validate_brain_mask
+                    and conditioning_brain_qc_mode == 'cleanup'
+                    and not has_single_brain_component(
+                        qc_bravo_np,
+                        threshold=brain_threshold,
+                    )
+                ):
                     total_retries += 1
                     if cfg.verbose:
                         logger.warning(f"Sample {generated}: multiple brain components detected "
-                                       f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
+                                       f"(attempt {bravo_attempt + 1}/{image_attempts_this_round})")
                     continue
 
-                # Stage 2b — Remove tumors outside brain, retry bravo with cleaned seg
+                # Stage 2b — Either preserve and reject (controlled fixed-mask
+                # protocol) or retain the historical cleanup behavior.
                 if validate_brain_mask:
-                    brain_mask = create_brain_mask(
-                        bravo_np, threshold=brain_threshold,
-                        dilate_pixels=brain_dilate,
-                    )
-                    cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
+                    if conditioning_brain_qc_mode == 'reject':
+                        containment = evaluate_conditioning_brain_containment(
+                            qc_bravo_np,
+                            qc_seg_binary,
+                            brain_threshold=brain_threshold,
+                            margin_mm=brain_containment_margin_mm,
+                            voxel_spacing_mm=_xyz_to_dhw(voxel_spacing),
+                        )
+                        if not containment['valid']:
+                            total_retries += 1
+                            if cfg.verbose:
+                                logger.warning(
+                                    f"Sample {generated}: conditioning lesion outside main brain "
+                                    f"(max distance={containment['max_distance_mm']}, "
+                                    f"attempt {bravo_attempt + 1}/{image_attempts_this_round})"
+                                )
+                            continue
+                    else:
+                        brain_mask = create_brain_mask(
+                            bravo_np, threshold=brain_threshold,
+                            dilate_pixels=brain_dilate,
+                        )
+                        cleaned_seg, n_removed = remove_tumors_outside_brain(seg_binary, brain_mask)
 
-                    if n_removed > 0:
-                        total_retries += 1
-                        if cleaned_seg.sum() == 0:
-                            if cfg.verbose:
-                                logger.warning(f"Sample {generated}: all tumors outside brain "
-                                               f"(attempt {bravo_attempt + 1}/{max_brain_retries})")
-                        else:
-                            if cfg.verbose:
-                                logger.warning(f"Sample {generated}: removed {n_removed} tumor(s) outside brain, "
-                                               f"retrying bravo (attempt {bravo_attempt + 1}/{max_brain_retries})")
-                            seg_binary = cleaned_seg
-                        continue
+                        if n_removed > 0:
+                            total_retries += 1
+                            if cleaned_seg.sum() == 0:
+                                if cfg.verbose:
+                                    logger.warning(f"Sample {generated}: all tumors outside brain "
+                                                   f"(attempt {bravo_attempt + 1}/{image_attempts_this_round})")
+                            else:
+                                if cfg.verbose:
+                                    logger.warning(f"Sample {generated}: removed {n_removed} tumor(s) outside brain, "
+                                                   f"retrying bravo (attempt {bravo_attempt + 1}/{image_attempts_this_round})")
+                                seg_binary = cleaned_seg
+                            continue
 
                 # Stage 2c — PCA brain shape validation
                 if brain_pca is not None:
@@ -1826,7 +1589,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                             logger.warning(
                                 f"Sample {generated}: brain shape invalid "
                                 f"(PCA error={recon_error:.6f}, threshold={brain_pca.error_threshold:.6f}, "
-                                f"attempt {bravo_attempt + 1}/{max_brain_retries})"
+                                f"attempt {bravo_attempt + 1}/{image_attempts_this_round})"
                             )
                         continue
 
@@ -1834,6 +1597,11 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 break
 
             if not bravo_accepted:
+                if max_image_attempts_per_mask is not None:
+                    raise RuntimeError(
+                        f"Sample {generated}: no image passed quality control after "
+                        f"{max_image_attempts_per_mask} deterministic draws"
+                    )
                 # All bravo attempts failed — restart with new seg mask
                 logger.warning(f"Sample {generated}: bravo failed {max_brain_retries} times, restarting with new seg...")
                 total_retries += 1
@@ -1867,27 +1635,23 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             # Save in subdirectory: 00000/{seg,bravo}.nii.gz for bravo mode
             # or 00000/{seg,t1_pre,t1_gd}.nii.gz for dual mode.
+            sample_dir = output_dir / f"{generated:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            sample_arrays = {'seg.nii.gz': seg_binary_save}
+            save_nifti(seg_binary_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             if is_dual:
-                sample_arrays['t1_pre.nii.gz'] = dual_channels_save[0]
-                sample_arrays['t1_gd.nii.gz'] = dual_channels_save[1]
+                save_nifti(
+                    dual_channels_save[0],
+                    str(sample_dir / "t1_pre.nii.gz"),
+                    voxel_size=voxel,
+                )
+                save_nifti(
+                    dual_channels_save[1],
+                    str(sample_dir / "t1_gd.nii.gz"),
+                    voxel_size=voxel,
+                )
             else:
-                sample_arrays['bravo.nii.gz'] = bravo_np
-            _save_sample_directory_atomic(
-                output_dir,
-                generated,
-                sample_arrays,
-                voxel_size=voxel,
-            )
-            manifest_samples.append({
-                'index': generated,
-                'patient_id': seg_path.parent.name if real_seg_files is not None else None,
-                'conditioning_mask': str(seg_path.resolve()) if real_seg_files is not None else None,
-                'seg_noise_seed': None if real_seg_files is not None else seg_seed,
-                'image_noise_seed': image_seed,
-                'image_attempt': image_attempt,
-            })
+                save_nifti(bravo_np, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
             all_bins.append((generated, bins))
 
             generated += 1
@@ -2003,20 +1767,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 seg_binary = seg_binary[:, :, :-trim_slices]  # [H, W, D-trim]
 
             # Save in subdirectory: 00000/seg.nii.gz
+            sample_dir = output_dir / f"{generated:05d}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
             voxel = compute_voxel_size(cfg.image_size, cfg.get('fov_mm', 240.0))
-            _save_sample_directory_atomic(
-                output_dir,
-                generated,
-                {'seg.nii.gz': seg_binary},
-                voxel_size=voxel,
-            )
-            manifest_samples.append({
-                'index': generated,
-                'patient_id': None,
-                'conditioning_mask': None,
-                'seg_noise_seed': seg_seed,
-                'image_noise_seed': None,
-            })
+            save_nifti(seg_binary, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
             all_bins.append((generated, bins))
             generated += 1
 
@@ -2033,7 +1787,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
     # Save all bins to single CSV file
     save_bins_csv(all_bins, output_dir / "bins.csv")
-    _write_generation_manifest(cfg, output_dir, manifest_samples)
     logger.info(f"Saved {len(all_bins)} samples to {output_dir}")
     logger.info(f"Bins info saved to {output_dir / 'bins.csv'}")
 
@@ -2041,8 +1794,6 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 @hydra.main(version_base=None, config_path="../../../configs", config_name="generate")
 def main(cfg: DictConfig) -> None:
     """Main entry point for generation."""
-    _validate_expected_strategy(cfg)
-
     # Build output directory from paths config
     generated_dir = Path(cfg.paths.generated_dir)
     if cfg.output_subdir:

@@ -7,23 +7,10 @@ import torch
 from medgen.metrics.generation import compute_cmmd
 from medgen.scripts.eval_all_metrics import (
     derive_seed,
-    generation_manifest_provenance,
     reference_independent,
     scoped_numpy_rng,
     two_sample_metrics,
 )
-
-
-def test_generation_manifest_provenance_records_stable_hash(tmp_path):
-    manifest = tmp_path / "generation_manifest.json"
-    manifest.write_text('{"status":"complete"}\n', encoding="utf-8")
-    first = generation_manifest_provenance(str(tmp_path))
-    second = generation_manifest_provenance(str(tmp_path))
-    assert first == second
-    assert first is not None
-    assert first["path"] == str(manifest.resolve())
-    assert len(first["sha256"]) == 64
-    assert generation_manifest_provenance(str(tmp_path / "missing")) is None
 
 
 def test_derived_streams_are_stable_and_scope_specific():

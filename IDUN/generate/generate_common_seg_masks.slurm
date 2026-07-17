@@ -29,9 +29,8 @@ readonly SEED=42
 readonly STEPS=100
 readonly MAX_ATTEMPTS=50
 readonly COMPONENT_CONNECTIVITY=26
-readonly PANEL_ID="source_selection_train105_seed42_euler100"
+readonly EVAL_ID="source_selection_train105_seed42_euler100"
 readonly POOL_NAME="common_seg_masks_525"
-readonly EXPECTED_ATLAS_SHA256="c0c00cfc37177cd555d956a02554895cc9041280f7f32df20cb9ae21388c75ba"
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
@@ -45,50 +44,17 @@ readonly REPO_ROOT
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
 cd "$REPO_ROOT"
 
-SOURCE_COMMIT="$(git rev-parse --verify HEAD)" || fatal "could not resolve repository HEAD"
-readonly SOURCE_COMMIT
-readonly -a SOURCE_PATHS=(
-    pyproject.toml
-    configs
-    src/medgen
-    IDUN/generate
-    data/brain_atlas_256x256x160.nii.gz
-)
-
-verify_source_tree() {
-    local current_commit
-    current_commit="$(git rev-parse --verify HEAD)" || fatal "could not resolve repository HEAD"
-    [[ "$current_commit" == "$SOURCE_COMMIT" ]] || fatal \
-        "repository commit changed: expected $SOURCE_COMMIT, found $current_commit"
-    if [[ -n "$(git status --porcelain --untracked-files=all -- "${SOURCE_PATHS[@]}")" ]]; then
-        fatal "mask-pool source paths contain tracked or untracked changes"
-    fi
-}
-
-verify_source_tree
-
 readonly SEG_CKPT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/seg/exp14_1_pixel_seg_20260217-040309/checkpoint_latest.pt"
 readonly ATLAS_PATH="${REPO_ROOT}/data/brain_atlas_256x256x160.nii.gz"
-readonly PANEL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${PANEL_ID}"
-readonly FINAL_DIR="${PANEL_ROOT}/${POOL_NAME}"
-readonly STAGING_ROOT="${PANEL_ROOT}/.staging"
+readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
+readonly FINAL_DIR="${EVAL_ROOT}/${POOL_NAME}"
 readonly JOB_TOKEN="${SLURM_JOB_ID:-preflight}"
-readonly STAGING_NAME="${POOL_NAME}.job-${JOB_TOKEN}"
-readonly STAGING_DIR="${STAGING_ROOT}/${STAGING_NAME}"
 
 [[ -f "$SEG_CKPT" ]] || fatal "pinned segmentation checkpoint not found: $SEG_CKPT"
 [[ "$(basename "$SEG_CKPT")" == "checkpoint_latest.pt" ]] || fatal \
     "segmentation checkpoint is not checkpoint_latest.pt"
 [[ -f "$ATLAS_PATH" ]] || fatal "tracked train-only atlas not found: $ATLAS_PATH"
-ATLAS_SHA256="$(sha256sum "$ATLAS_PATH" | awk '{print $1}')"
-[[ "$ATLAS_SHA256" == "$EXPECTED_ATLAS_SHA256" ]] || fatal \
-    "atlas hash changed: expected $EXPECTED_ATLAS_SHA256, found $ATLAS_SHA256"
-
-SEG_CKPT_SHA256="$(sha256sum "$SEG_CKPT" | awk '{print $1}')"
-readonly SEG_CKPT_SHA256
-[[ "$SEG_CKPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || fatal "invalid checkpoint SHA-256"
 [[ ! -e "$FINAL_DIR" ]] || fatal "final mask pool already exists: $FINAL_DIR"
-[[ ! -e "$STAGING_DIR" ]] || fatal "job staging directory already exists: $STAGING_DIR"
 
 module purge
 module load Anaconda3/2024.02-1
@@ -98,59 +64,20 @@ export PYTHONSAFEPATH=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-${USER}-${JOB_TOKEN}"
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-python - "$SEG_CKPT" <<'PY'
-import json
-import sys
-
-from medgen.scripts.generate import (
-    _checkpoint_generation_signature,
-    _validate_checkpoint_signature,
-)
-
-checkpoint = sys.argv[1]
-signature = _checkpoint_generation_signature(checkpoint)
-_validate_checkpoint_signature(
-    signature,
-    checkpoint_path=checkpoint,
-    in_channels=1,
-    out_channels=1,
-    spatial_dims=3,
-    strategy='rflow',
-)
-if signature.get('wrapper_type') != 'raw':
-    raise RuntimeError(f"Expected unconditional raw mask checkpoint, found {signature}")
-if signature.get('mode') != 'seg':
-    raise RuntimeError(f"Expected mode='seg' mask checkpoint, found {signature}")
-print(json.dumps(signature, sort_keys=True))
-PY
-
 python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
-
-verify_source_tree
-
-if [[ "${PREFLIGHT_ONLY:-0}" == "1" ]]; then
-    echo "Preflight passed; generation skipped because PREFLIGHT_ONLY=1"
-    exit 0
-fi
 
 echo "=== Frozen common segmentation-mask pool ==="
 echo "checkpoint:       $SEG_CKPT"
-echo "checkpoint sha:   $SEG_CKPT_SHA256"
 echo "atlas:            $ATLAS_PATH"
-echo "atlas sha:        $ATLAS_SHA256"
 echo "protocol:         525 masks, seed 42, Euler 100, shift 1.0"
 echo "artifact filters: non-empty, strict train-derived brain-support containment"
 echo "lesion components: ${COMPONENT_CONNECTIVITY}-connectivity"
 echo "disabled:         per-slice burden limit, segmentation PCA, brain PCA, image-derived cleanup"
-echo "staging output:   $STAGING_DIR"
-echo "final output:     $FINAL_DIR"
-
-mkdir -p "$STAGING_ROOT"
+echo "output:           $FINAL_DIR"
 
 time python -m medgen.scripts.generate \
     paths=cluster \
     spatial_dims=3 \
-    expected_strategy=rflow \
     gen_mode=seg_conditioned \
     image_size=256 \
     depth=160 \
@@ -182,37 +109,17 @@ time python -m medgen.scripts.generate \
     validate_brain_mask=false \
     mask_outside_brain=false \
     diffrs_checkpoint=null \
-    provenance_hash_checkpoints=true \
-    paths.generated_dir="$STAGING_ROOT" \
-    output_subdir="$STAGING_NAME" \
+    paths.generated_dir="$EVAL_ROOT" \
+    output_subdir="$POOL_NAME" \
     verbose=true
 
-[[ -d "$STAGING_DIR" ]] || fatal "generator did not create staging output: $STAGING_DIR"
+[[ -d "$FINAL_DIR" ]] || fatal "generator did not create output: $FINAL_DIR"
+MASK_COUNT="$(find "$FINAL_DIR" -mindepth 2 -maxdepth 2 -type f -name seg.nii.gz | wc -l)"
+[[ "$MASK_COUNT" -eq "$NUM_MASKS" ]] || fatal \
+    "generated pool contains $MASK_COUNT masks, expected $NUM_MASKS"
+[[ -s "$FINAL_DIR/bins.csv" ]] || fatal "generated pool is missing bins.csv"
+BIN_COUNT="$(tail -n +2 "$FINAL_DIR/bins.csv" | wc -l)"
+[[ "$BIN_COUNT" -eq "$NUM_MASKS" ]] || fatal \
+    "bins.csv contains $BIN_COUNT rows, expected $NUM_MASKS"
 
-python -m medgen.scripts.audit_seg_mask_pool \
-    --dataset-root "$STAGING_DIR" \
-    --published-root "$FINAL_DIR" \
-    --atlas "$ATLAS_PATH" \
-    --checkpoint "$SEG_CKPT" \
-    --expected-count "$NUM_MASKS" \
-    --height 256 \
-    --width 256 \
-    --output-depth 150 \
-    --generation-depth 160 \
-    --seed "$SEED" \
-    --steps "$STEPS" \
-    --max-attempts "$MAX_ATTEMPTS" \
-    --fov-mm 240.0 \
-    --expected-git-commit "$SOURCE_COMMIT" \
-    --output "$STAGING_DIR/mask_pool_audit.json"
-
-verify_source_tree
-[[ "$(sha256sum "$SEG_CKPT" | awk '{print $1}')" == "$SEG_CKPT_SHA256" ]] || fatal \
-    "checkpoint changed while generation was running"
-[[ "$(sha256sum "$ATLAS_PATH" | awk '{print $1}')" == "$EXPECTED_ATLAS_SHA256" ]] || fatal \
-    "atlas changed while generation was running"
-[[ ! -e "$FINAL_DIR" ]] || fatal "final output appeared during generation: $FINAL_DIR"
-mv -T -- "$STAGING_DIR" "$FINAL_DIR"
-
-echo "Published frozen mask pool atomically: $FINAL_DIR"
-echo "Audit report: $FINAL_DIR/mask_pool_audit.json"
+echo "Completed frozen mask pool: $FINAL_DIR"

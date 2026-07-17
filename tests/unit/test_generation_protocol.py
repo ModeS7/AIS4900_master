@@ -1,4 +1,4 @@
-"""Focused tests for deterministic, auditable generation protocol helpers."""
+"""Focused tests for deterministic generation protocol helpers."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -17,8 +17,6 @@ from medgen.scripts.generate import (
     _load_image_model_with_optional_handoff,
     _preflight_real_seg_files,
     _randn,
-    _save_sample_directory_atomic,
-    _validate_expected_strategy,
     _validate_real_seg_volume,
 )
 
@@ -48,20 +46,10 @@ def _checkpoint(path: Path, *, spatial_dims: int, in_channels: int, out_channels
 def test_generation_config_preserves_stochastic_default_and_exposes_processing_flags():
     config = OmegaConf.load(Path(__file__).parents[2] / 'configs' / 'generate.yaml')
     assert config.seed is None
-    assert config.expected_strategy is None
     assert config.mask_outside_brain is True
     assert config.expected_real_cases is None
     assert config.expected_real_depth is None
     assert config.require_real_bravo_pairs is False
-
-
-def test_expected_strategy_assertion_fails_when_protocol_and_config_differ():
-    _validate_expected_strategy(OmegaConf.create({'strategy': 'rflow', 'expected_strategy': 'rflow'}))
-    with pytest.raises(ValueError, match='protocol requires rflow'):
-        _validate_expected_strategy(
-            OmegaConf.create({'strategy': 'ddpm', 'expected_strategy': 'rflow'})
-        )
-
 
 def test_sample_seed_streams_are_stable_and_first_bravo_seed_is_base_plus_index():
     assert _derive_sample_seed(None, 4) is None
@@ -161,41 +149,6 @@ def test_real_mask_validation_can_lock_expected_depth():
             source=Path('case/seg.nii.gz'),
             image_size=4,
             expected_depth=4,
-        )
-
-
-def test_atomic_sample_publish_reloads_all_niftis_and_refuses_overwrite(tmp_path: Path):
-    seg = np.zeros((4, 4, 3), dtype=np.float32)
-    seg[1, 1, 1] = 1.0
-    bravo = np.linspace(0, 1, seg.size, dtype=np.float32).reshape(seg.shape)
-
-    published = _save_sample_directory_atomic(
-        tmp_path,
-        0,
-        {'seg.nii.gz': seg, 'bravo.nii.gz': bravo},
-        voxel_size=(1.0, 1.0, 1.0),
-    )
-    assert published == tmp_path / '00000'
-    assert (published / 'seg.nii.gz').is_file()
-    assert (published / 'bravo.nii.gz').is_file()
-    assert not list(tmp_path.glob('.*.tmp-*'))
-
-    with pytest.raises(FileExistsError, match='Refusing to overwrite'):
-        _save_sample_directory_atomic(
-            tmp_path,
-            0,
-            {'seg.nii.gz': seg, 'bravo.nii.gz': bravo},
-            voxel_size=(1.0, 1.0, 1.0),
-        )
-
-
-def test_atomic_sample_publish_rejects_empty_segmentation(tmp_path: Path):
-    with pytest.raises(ValueError, match='empty'):
-        _save_sample_directory_atomic(
-            tmp_path,
-            0,
-            {'seg.nii.gz': np.zeros((4, 4, 3), dtype=np.float32)},
-            voxel_size=(1.0, 1.0, 1.0),
         )
 
 
@@ -314,29 +267,6 @@ def test_shared_image_loader_preserves_compile_setting_for_standalone_model(
     assert model is loaded
     loader.assert_called_once()
     assert loader.call_args.kwargs['compile_model'] is compile_model
-
-
-def test_handoff_loader_rejects_incompatible_pixel_normalization(tmp_path: Path):
-    low = tmp_path / 'low.pt'
-    high = tmp_path / 'high.pt'
-    _checkpoint(low, spatial_dims=3, in_channels=2, out_channels=1, pixel_shift=0.0)
-    _checkpoint(high, spatial_dims=3, in_channels=2, out_channels=1, pixel_shift=0.5)
-    config = OmegaConf.create({
-        'image_model': str(low),
-        'image_model_high_t': str(high),
-        'handoff_t': 0.25,
-        'strategy': 'rflow',
-    })
-
-    with patch('medgen.scripts.generate.load_diffusion_model', return_value=torch.nn.Identity()):
-        with pytest.raises(ValueError, match='disagree on pixel'):
-            _load_image_model_with_optional_handoff(
-                config,
-                torch.device('cpu'),
-                in_channels=2,
-                out_channels=1,
-                spatial_dims=3,
-            )
 
 
 class _CountingModel(torch.nn.Module):
