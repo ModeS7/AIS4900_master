@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate one 105-volume BRAVO dataset from the shared synthetic masks.
+# Evaluate one BRAVO generator on 150 shared synthetic-mask candidates.
 
 set -Eeuo pipefail
 
@@ -25,18 +25,18 @@ else
     [[ -z "$HANDOFF_T" ]] || fatal "handoff_t requires a high-t checkpoint"
 fi
 
-readonly NUM_IMAGES=105
+readonly NUM_CANDIDATES=150
 readonly SEED=42
 readonly STEPS=100
-readonly MAX_IMAGE_ATTEMPTS=50
+readonly MAX_IMAGE_ATTEMPTS=3
 readonly BRAIN_MARGIN_MM=3
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask105_seed42_euler100}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask150_seed42_euler100}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly BRAVO_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
-readonly SCREENING_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/screening105"
+readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates150"
 readonly SELECTION_FILE="${EVAL_ROOT}/ordered_common_seg_masks_seed42/selection.json"
 readonly LOW_CKPT="${BRAVO_ROOT}/${LOW_RUN}/checkpoint_latest.pt"
 readonly FINAL_DIR="${EVAL_ROOT}/${LABEL}"
@@ -47,7 +47,7 @@ fi
 readonly HIGH_CKPT
 
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
-[[ -d "$SCREENING_MASKS" ]] || fatal "prepared 105-mask view not found: $SCREENING_MASKS"
+[[ -d "$CANDIDATE_MASKS" ]] || fatal "prepared 150-mask view not found: $CANDIDATE_MASKS"
 [[ -s "$SELECTION_FILE" ]] || fatal "mask selection file not found: $SELECTION_FILE"
 [[ -f "$LOW_CKPT" ]] || fatal "low-t checkpoint not found: $LOW_CKPT"
 if [[ -n "$HIGH_CKPT" ]]; then
@@ -55,15 +55,15 @@ if [[ -n "$HIGH_CKPT" ]]; then
 fi
 [[ ! -e "$FINAL_DIR" ]] || fatal "final output already exists: $FINAL_DIR"
 
-mapfile -t MASK_IDS < <(find "$SCREENING_MASKS" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9]' -printf '%f\n' | LC_ALL=C sort)
-[[ ${#MASK_IDS[@]} -eq $NUM_IMAGES ]] || fatal "expected 105 prepared masks, found ${#MASK_IDS[@]}"
-for ((index = 0; index < NUM_IMAGES; index++)); do
+mapfile -t MASK_IDS < <(find "$CANDIDATE_MASKS" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9]' -printf '%f\n' | LC_ALL=C sort)
+[[ ${#MASK_IDS[@]} -eq $NUM_CANDIDATES ]] || fatal "expected 150 prepared masks, found ${#MASK_IDS[@]}"
+for ((index = 0; index < NUM_CANDIDATES; index++)); do
     printf -v expected_id '%05d' "$index"
     [[ "${MASK_IDS[index]}" == "$expected_id" ]] || fatal "unexpected mask ID ${MASK_IDS[index]}"
-    [[ -s "$SCREENING_MASKS/$expected_id/seg.nii.gz" ]] || fatal "missing mask $expected_id"
+    [[ -s "$CANDIDATE_MASKS/$expected_id/seg.nii.gz" ]] || fatal "missing mask $expected_id"
 done
 
-echo "Preflight OK [${LABEL}]: 105 shared synthetic masks and checkpoint_latest.pt"
+echo "Preflight OK [${LABEL}]: 150 shared synthetic-mask candidates and checkpoint_latest.pt"
 cd "$REPO_ROOT"
 module purge
 module load Anaconda3/2024.02-1
@@ -82,11 +82,11 @@ GEN_ARGS=(
     fov_mm=240.0
     image_model="$LOW_CKPT"
     image_model_high_t=null
-    real_seg_dir="$SCREENING_MASKS"
-    expected_real_cases=105
+    real_seg_dir="$CANDIDATE_MASKS"
+    expected_real_cases="$NUM_CANDIDATES"
     expected_real_depth=150
     seed="$SEED"
-    num_images="$NUM_IMAGES"
+    num_images="$NUM_CANDIDATES"
     current_image=0
     num_steps_bravo="$STEPS"
     ode_solver=euler
@@ -100,6 +100,7 @@ GEN_ARGS=(
     brain_threshold=0.05
     brain_containment_margin_mm="$BRAIN_MARGIN_MM"
     max_image_attempts_per_mask="$MAX_IMAGE_ATTEMPTS"
+    skip_failed_fixed_masks=true
     brain_atlas_path=null
     brain_pca_path=null
     seg_pca_path=null
@@ -113,8 +114,8 @@ if [[ -n "$HIGH_CKPT" ]]; then
     GEN_ARGS+=(image_model_high_t="$HIGH_CKPT" handoff_t="$HANDOFF_T")
 fi
 
-echo "=== Generating ${LABEL}: 105 BRAVO volumes, seed 42, Euler 100 ==="
-echo "masks:            $SCREENING_MASKS"
+echo "=== Evaluating ${LABEL}: 150 mask candidates, up to 3 image attempts each ==="
+echo "masks:            $CANDIDATE_MASKS"
 echo "low-t checkpoint: $LOW_CKPT"
 if [[ -n "$HIGH_CKPT" ]]; then
     echo "high-t checkpoint: $HIGH_CKPT (t > $HANDOFF_T)"
@@ -122,10 +123,15 @@ fi
 time python -m medgen.scripts.generate "${GEN_ARGS[@]}"
 
 [[ -d "$FINAL_DIR" ]] || fatal "generator did not create output: $FINAL_DIR"
+[[ -s "$FINAL_DIR/bins.csv" ]] || fatal "generator did not create bins.csv"
 SEG_COUNT="$(find "$FINAL_DIR" -mindepth 2 -maxdepth 2 -type f -name seg.nii.gz | wc -l)"
 BRAVO_COUNT="$(find "$FINAL_DIR" -mindepth 2 -maxdepth 2 -type f -name bravo.nii.gz | wc -l)"
-[[ "$SEG_COUNT" -eq "$NUM_IMAGES" ]] || fatal \
-    "generated dataset contains $SEG_COUNT masks, expected $NUM_IMAGES"
-[[ "$BRAVO_COUNT" -eq "$NUM_IMAGES" ]] || fatal \
-    "generated dataset contains $BRAVO_COUNT BRAVO volumes, expected $NUM_IMAGES"
-echo "Completed dataset: $FINAL_DIR"
+BINS_COUNT="$(( $(wc -l < "$FINAL_DIR/bins.csv") - 1 ))"
+[[ "$SEG_COUNT" -eq "$BRAVO_COUNT" ]] || fatal \
+    "generated dataset contains $SEG_COUNT masks but $BRAVO_COUNT BRAVO volumes"
+[[ "$BINS_COUNT" -eq "$BRAVO_COUNT" ]] || fatal \
+    "bins.csv contains $BINS_COUNT samples but the dataset contains $BRAVO_COUNT BRAVO volumes"
+[[ "$BRAVO_COUNT" -le "$NUM_CANDIDATES" ]] || fatal \
+    "generated dataset contains $BRAVO_COUNT BRAVO volumes for only $NUM_CANDIDATES candidates"
+echo "Completed candidate panel: accepted $BRAVO_COUNT/$NUM_CANDIDATES, skipped $((NUM_CANDIDATES - BRAVO_COUNT))"
+echo "Output: $FINAL_DIR"

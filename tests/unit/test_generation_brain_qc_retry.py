@@ -33,6 +33,7 @@ def _pipeline_config(
     *,
     num_images: int,
     max_image_attempts: int,
+    skip_failed_fixed_masks: bool = False,
     generation_depth: int = 3,
     trim_slices: int = 0,
     expected_real_depth: int = 3,
@@ -81,6 +82,7 @@ def _pipeline_config(
             "conditioning_brain_qc_mode": "reject",
             "brain_containment_margin_mm": 0.0,
             "max_image_attempts_per_mask": max_image_attempts,
+            "skip_failed_fixed_masks": skip_failed_fixed_masks,
             "mask_outside_brain": False,
             "verbose": False,
         },
@@ -211,6 +213,65 @@ def test_reject_mode_fails_closed_when_fixed_mask_attempt_cap_is_exhausted(
         source_mask,
     )
     assert not (output_dir / "00000").exists()
+
+
+def test_reject_mode_can_skip_exhausted_fixed_mask_and_preserve_candidate_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real_seg_dir = tmp_path / "masks"
+    first_mask = _write_mask(
+        real_seg_dir / "00000" / "seg.nii.gz",
+        (1, 1, 1),
+    )
+    second_mask = _write_mask(
+        real_seg_dir / "00001" / "seg.nii.gz",
+        (2, 1, 1),
+    )
+    config = _pipeline_config(
+        tmp_path,
+        real_seg_dir,
+        num_images=2,
+        max_image_attempts=3,
+        skip_failed_fixed_masks=True,
+    )
+    output_dir = tmp_path / "generated"
+    _patch_non_sampling_dependencies(monkeypatch)
+
+    generated_images = iter(
+        [
+            _image_with_tissue((1, 3, 3)),
+            _image_with_tissue((1, 3, 3)),
+            _image_with_tissue((1, 3, 3)),
+            _image_with_tissue((1, 2, 1)),
+        ]
+    )
+    seeds_seen: list[int | None] = []
+
+    def fake_generate_bravo(
+        _seg_binary: np.ndarray,
+        *_args: object,
+        noise_seed: int | None = None,
+        **_kwargs: object,
+    ) -> np.ndarray:
+        seeds_seen.append(noise_seed)
+        return next(generated_images)
+
+    monkeypatch.setattr(generation, "_generate_bravo", fake_generate_bravo)
+    generation.run_3d_pipeline(config, output_dir)
+
+    assert seeds_seen == [42, 1_000_042, 2_000_042, 43]
+    assert not (output_dir / "00000").exists()
+    assert (output_dir / "00001" / "bravo.nii.gz").is_file()
+    np.testing.assert_array_equal(
+        nib.load(output_dir / "00001" / "seg.nii.gz").get_fdata(),
+        second_mask,
+    )
+    np.testing.assert_array_equal(
+        nib.load(real_seg_dir / "00000" / "seg.nii.gz").get_fdata(),
+        first_mask,
+    )
+    assert (output_dir / "bins.csv").read_text().splitlines()[1].startswith("00001,")
 
 
 def test_reject_qc_ignores_the_discarded_padding_tail(

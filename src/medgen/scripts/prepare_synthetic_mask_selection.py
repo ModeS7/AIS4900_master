@@ -1,4 +1,4 @@
-"""Create one deterministic 105/420 split of a 525-mask pool."""
+"""Select 150 deterministic candidates from a 525-mask pool."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 POOL_SIZE = 525
-SCREENING_SIZE = 105
+CANDIDATE_SIZE = 150
 SEED = 42
 
 
@@ -35,7 +35,7 @@ def prepare_mask_selection(
     *,
     seed: int = SEED,
 ) -> dict[str, int | list[int]]:
-    """Randomly order the pool once and expose the first 105 and remaining 420 masks."""
+    """Randomly order the pool once and expose the first 150 candidates."""
     pool_root = pool_root.resolve()
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
@@ -44,17 +44,13 @@ def prepare_mask_selection(
     order = np.random.default_rng(seed).permutation(POOL_SIZE).astype(int).tolist()
     selection: dict[str, int | list[int]] = {
         "seed": seed,
-        "screening_source_indices": order[:SCREENING_SIZE],
-        "extension_source_indices": order[SCREENING_SIZE:],
+        "candidate_source_indices": order[:CANDIDATE_SIZE],
     }
 
     output_root.mkdir(parents=True)
     try:
-        for rank, source_index in enumerate(order):
-            if rank < SCREENING_SIZE:
-                destination = output_root / "screening105" / f"{rank:05d}"
-            else:
-                destination = output_root / "extension420" / f"{rank - SCREENING_SIZE:05d}"
+        for rank, source_index in enumerate(order[:CANDIDATE_SIZE]):
+            destination = output_root / "candidates150" / f"{rank:05d}"
             destination.mkdir(parents=True)
             (destination / "seg.nii.gz").symlink_to(masks[source_index])
 
@@ -74,8 +70,8 @@ def main() -> None:
     args = parser.parse_args()
     selection = prepare_mask_selection(args.pool_root, args.output_root)
     print(
-        f"Prepared {len(selection['screening_source_indices'])} screening masks and "
-        f"{len(selection['extension_source_indices'])} extension masks in {args.output_root}"
+        f"Prepared {len(selection['candidate_source_indices'])} candidate masks "
+        f"in {args.output_root}"
     )
 
 

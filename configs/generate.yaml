@@ -99,6 +99,7 @@ max_brain_retries: 5             # Max retries for brain mask validation
 conditioning_brain_qc_mode: cleanup # "reject" retries images without changing fixed masks
 brain_containment_margin_mm: 3.0 # Physical boundary allowance in reject mode
 max_image_attempts_per_mask: null # Explicit fixed-mask cap in reject mode
+skip_failed_fixed_masks: false   # Continue to the next fixed mask when the image-attempt cap is exhausted
 brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 brain_pca_path: null             # "auto" = use bundled PCA model, path = custom, null = skip
 seg_pca_path: null               # "auto" = use bundled seg PCA model, path = custom, null = skip

@@ -1286,6 +1286,7 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_image_attempts_per_mask = (
             None if max_image_attempts_raw is None else int(max_image_attempts_raw)
         )
+        skip_failed_fixed_masks = bool(cfg.get('skip_failed_fixed_masks', False))
         if max_image_attempts_per_mask is not None:
             if max_image_attempts_per_mask < 1:
                 raise ValueError("max_image_attempts_per_mask must be positive")
@@ -1297,6 +1298,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 raise ValueError(
                     "max_image_attempts_per_mask requires conditioning_brain_qc_mode=reject"
                 )
+        if skip_failed_fixed_masks and max_image_attempts_per_mask is None:
+            raise ValueError(
+                "skip_failed_fixed_masks requires max_image_attempts_per_mask"
+            )
         if conditioning_brain_qc_mode == 'reject' and not validate_brain_mask:
             raise ValueError(
                 "conditioning_brain_qc_mode=reject requires validate_brain_mask=true"
@@ -1358,6 +1363,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             logger.info(
                 f"Fixed-mask image attempt cap: {max_image_attempts_per_mask} deterministic draws"
             )
+            if skip_failed_fixed_masks:
+                logger.info("Fixed masks that exhaust the cap will be skipped")
 
         while generated < cfg.num_images:
             if outer_retries >= max_outer_retries:
@@ -1598,6 +1605,18 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
             if not bravo_accepted:
                 if max_image_attempts_per_mask is not None:
+                    if skip_failed_fixed_masks:
+                        logger.warning(
+                            f"Sample {generated}: no image passed quality control after "
+                            f"{max_image_attempts_per_mask} deterministic draws; "
+                            "skipping fixed mask"
+                        )
+                        generated += 1
+                        outer_retries = 0
+                        if generated % 10 == 0 or generated == cfg.num_images:
+                            logger.info(f"Progress: {generated}/{cfg.num_images}")
+                            torch.cuda.empty_cache()
+                        continue
                     raise RuntimeError(
                         f"Sample {generated}: no image passed quality control after "
                         f"{max_image_attempts_per_mask} deterministic draws"
