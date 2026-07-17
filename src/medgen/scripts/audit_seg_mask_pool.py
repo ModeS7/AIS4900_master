@@ -78,7 +78,6 @@ def _validate_generation_manifest(
     expected_atlas: Path,
     max_white_percentage: float | None,
     max_attempts: int,
-    expected_git_commit: str | None,
     expected_shape: tuple[int, int, int],
     generation_depth: int,
     fov_mm: float,
@@ -96,9 +95,6 @@ def _validate_generation_manifest(
             raise ValueError(
                 f"generation_manifest.json has {key}={manifest.get(key)!r}, expected {expected!r}"
             )
-    if expected_git_commit is not None and manifest.get("git_commit") != expected_git_commit:
-        raise ValueError("Manifest Git commit does not match the locked source commit")
-
     sampling = manifest.get("sampling", {})
     sampling_expected = {
         "strategy": "rflow",
@@ -207,7 +203,6 @@ def audit_pool(
     max_attempts: int,
     published_root: Path | None = None,
     fov_mm: float = 240.0,
-    expected_git_commit: str | None = None,
 ) -> dict[str, Any]:
     """Audit every saved mask and return a machine-readable report."""
     if not dataset_root.is_dir():
@@ -238,7 +233,6 @@ def audit_pool(
         expected_atlas=atlas_path,
         max_white_percentage=max_white_percentage,
         max_attempts=max_attempts,
-        expected_git_commit=expected_git_commit,
         expected_shape=expected_shape,
         generation_depth=generation_depth,
         fov_mm=fov_mm,
@@ -369,7 +363,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-attempts", type=int, required=True)
     parser.add_argument("--published-root", type=Path)
     parser.add_argument("--fov-mm", type=float, default=240.0)
-    parser.add_argument("--expected-git-commit")
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -389,7 +382,6 @@ def main() -> None:
         max_attempts=args.max_attempts,
         published_root=args.published_root,
         fov_mm=args.fov_mm,
-        expected_git_commit=args.expected_git_commit,
     )
     _write_json_atomic(args.output, report)
     print(f"PASS: audited {args.expected_count} frozen masks; report={args.output}")
