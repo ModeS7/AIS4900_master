@@ -162,7 +162,7 @@ def is_valid_mask(binary_mask: np.ndarray, max_white_percentage: float = MAX_WHI
 def _generated_seg_rejection_reason(
     binary_mask: np.ndarray,
     *,
-    max_white_percentage: float,
+    max_white_percentage: float | None,
     brain_atlas: np.ndarray | None = None,
     brain_tolerance: float = 0.0,
     brain_dilate_pixels: int = 0,
@@ -176,7 +176,7 @@ def _generated_seg_rejection_reason(
         return 'wrong_shape'
     if not np.isfinite(binary_mask).all():
         return 'non_finite'
-    if not 0.0 < max_white_percentage <= 1.0:
+    if max_white_percentage is not None and not 0.0 < max_white_percentage <= 1.0:
         raise ValueError("max_white_percentage must be in (0, 1]")
     if not 0.0 <= brain_tolerance <= 1.0:
         raise ValueError("brain_tolerance must be in [0, 1]")
@@ -186,9 +186,10 @@ def _generated_seg_rejection_reason(
     foreground = binary_mask > 0.5
     if not foreground.any():
         return 'empty'
-    slice_fractions = foreground.reshape(foreground.shape[0], -1).mean(axis=1)
-    if float(slice_fractions.max()) >= max_white_percentage:
-        return 'slice_foreground_limit'
+    if max_white_percentage is not None:
+        slice_fractions = foreground.reshape(foreground.shape[0], -1).mean(axis=1)
+        if float(slice_fractions.max()) >= max_white_percentage:
+            return 'slice_foreground_limit'
 
     if brain_atlas is not None:
         if brain_atlas.shape != foreground.shape:
@@ -1087,8 +1088,10 @@ def _write_generation_manifest(
             'component_connectivity': int(
                 cfg.get('seg_component_connectivity', 6)
             ),
-            'max_white_percentage': float(
-                cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
+            'max_white_percentage': (
+                None
+                if cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE) is None
+                else float(cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE))
             ),
             'max_attempts_per_mask': int(cfg.get('max_retries', 10)),
             'brain_tolerance': float(cfg.get('brain_tolerance', 0.0)),
@@ -1361,7 +1364,8 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 "seg_component_connectivity must be one of 6, 18, or 26"
             )
         max_attempts = int(cfg.get('max_retries', 10))
-        max_white_pct = float(cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE))
+        max_white_value = cfg.get('max_white_percentage', MAX_WHITE_PERCENTAGE)
+        max_white_pct = None if max_white_value is None else float(max_white_value)
         if max_attempts < 1:
             raise ValueError("max_retries must allow at least one generation attempt")
 
@@ -1378,9 +1382,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         output_atlas = brain_atlas[:output_depth] if brain_atlas is not None else None
 
         logger.info(f"Generating {cfg.num_images} seg masks...")
-        logger.info(
-            f"Mask artifact filter: non-empty and per-slice foreground < {max_white_pct:.2%}"
-        )
+        if max_white_pct is None:
+            logger.info("Mask artifact filter: non-empty")
+        else:
+            logger.info(
+                f"Mask artifact filter: non-empty and per-slice foreground < {max_white_pct:.2%}"
+            )
         logger.info(
             f"Measured lesion components: {component_connectivity}-connectivity"
         )

@@ -76,7 +76,7 @@ def _validate_generation_manifest(
     expected_steps: int,
     expected_checkpoint: Path,
     expected_atlas: Path,
-    max_white_percentage: float,
+    max_white_percentage: float | None,
     max_attempts: int,
     expected_git_commit: str | None,
     expected_shape: tuple[int, int, int],
@@ -203,7 +203,7 @@ def audit_pool(
     generation_depth: int,
     expected_seed: int,
     expected_steps: int,
-    max_white_percentage: float,
+    max_white_percentage: float | None,
     max_attempts: int,
     published_root: Path | None = None,
     fov_mm: float = 240.0,
@@ -294,13 +294,17 @@ def audit_pool(
         bins = measured_bins[index]
         if manifest_sample.get("actual_size_bins") != bins:
             raise ValueError(f"Mask {sample_dir.name} bins.csv and manifest bins disagree")
-        recomputed_bins = compute_size_bins_3d(
-            mask_dhw,
-            list(DEFAULT_BIN_EDGES),
-            voxel_spacing,
-            7,
-            connectivity=_COMPONENT_CONNECTIVITY,
-        ).astype(int).tolist()
+        recomputed_bins = (
+            compute_size_bins_3d(
+                mask_dhw,
+                list(DEFAULT_BIN_EDGES),
+                voxel_spacing,
+                7,
+                connectivity=_COMPONENT_CONNECTIVITY,
+            )
+            .astype(int)
+            .tolist()
+        )
         if bins != recomputed_bins:
             raise ValueError(f"Mask {sample_dir.name} measured size bins are incorrect")
         per_mask.append(
@@ -356,7 +360,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--generation-depth", type=int, default=160)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--steps", type=int, required=True)
-    parser.add_argument("--max-white-per-slice", type=float, default=0.04)
+    parser.add_argument(
+        "--max-white-per-slice",
+        type=float,
+        default=None,
+        help="Optional per-slice foreground ceiling; omitted for the frozen common pool",
+    )
     parser.add_argument("--max-attempts", type=int, required=True)
     parser.add_argument("--published-root", type=Path)
     parser.add_argument("--fov-mm", type=float, default=240.0)

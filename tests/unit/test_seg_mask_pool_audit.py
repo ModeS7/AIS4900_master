@@ -46,19 +46,23 @@ def test_mask_pool_audit_checks_provenance_content_and_published_paths(tmp_path:
         sample_dir.mkdir()
         nib.save(nib.Nifti1Image(mask_hwd, np.eye(4)), sample_dir / "seg.nii.gz")
         mask_dhw = np.transpose(mask_hwd, (2, 0, 1))
-        bins = compute_size_bins_3d(
-            mask_dhw,
-            list(DEFAULT_BIN_EDGES),
-            (1.0, 1.0, 1.0),
-            7,
-            connectivity=26,
-        ).astype(int).tolist()
+        bins = (
+            compute_size_bins_3d(
+                mask_dhw,
+                list(DEFAULT_BIN_EDGES),
+                (1.0, 1.0, 1.0),
+                7,
+                connectivity=26,
+            )
+            .astype(int)
+            .tolist()
+        )
         measured_bins.append(bins)
 
     manifest = {
         "schema_version": 1,
         "status": "complete",
-        "git_commit": "0123456789abcdef",
+        "git_commit": "0" * 40,
         "mode": "seg_conditioned",
         "spatial_dims": 3,
         "seed": 42,
@@ -92,7 +96,7 @@ def test_mask_pool_audit_checks_provenance_content_and_published_paths(tmp_path:
             "seg_pca_path": None,
             "validate_size_bins": False,
             "component_connectivity": 26,
-            "max_white_percentage": 0.04,
+            "max_white_percentage": None,
             "max_attempts_per_mask": 50,
             "brain_tolerance": 0.0,
             "brain_dilate_pixels": 0,
@@ -127,11 +131,11 @@ def test_mask_pool_audit_checks_provenance_content_and_published_paths(tmp_path:
         generation_depth=generation_depth,
         expected_seed=42,
         expected_steps=100,
-        max_white_percentage=0.04,
+        max_white_percentage=None,
         max_attempts=50,
         published_root=published,
         fov_mm=10.0,
-        expected_git_commit="0123456789abcdef",
+        expected_git_commit="0" * 40,
     )
 
     assert report["status"] == "pass"
@@ -140,9 +144,7 @@ def test_mask_pool_audit_checks_provenance_content_and_published_paths(tmp_path:
     assert report["total_rejected_draws_before_acceptance"] == 0
     assert [entry["connected_components"] for entry in report["masks"]] == [1, 1]
     assert report["masks"][1]["component_voxels"] == [2]
-    assert report["masks"][0]["path"] == str(
-        published.resolve() / "00000" / "seg.nii.gz"
-    )
+    assert report["masks"][0]["path"] == str(published.resolve() / "00000" / "seg.nii.gz")
     assert len({entry["sha256"] for entry in report["masks"]}) == 2
 
 

@@ -68,6 +68,7 @@ def test_sample_seed_streams_are_stable_and_first_bravo_seed_is_base_plus_index(
     assert _derive_sample_seed(42, 4, stream='bravo', attempt=0) == 46
     assert _derive_sample_seed(42, 4, stream='bravo', attempt=1) == 1_000_046
     assert _derive_sample_seed(42, 4, stream='seg', attempt=0) == 1_000_000_046
+    assert _derive_sample_seed(42, 4, stream='seg', attempt=1) == 1_001_000_046
 
 
 def test_local_seeded_noise_is_independent_of_global_rng_state():
@@ -222,6 +223,11 @@ def test_generated_mask_filter_is_strict_and_reports_stable_reasons():
         max_white_percentage=0.04,
         brain_atlas=atlas,
     ) == 'slice_foreground_limit'
+    assert _generated_seg_rejection_reason(
+        too_large,
+        max_white_percentage=None,
+        brain_atlas=atlas,
+    ) is None
 
     restricted_atlas = atlas.copy()
     restricted_atlas[1, 5, 5] = False

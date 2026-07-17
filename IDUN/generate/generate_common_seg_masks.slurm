@@ -28,7 +28,6 @@ readonly NUM_MASKS=525
 readonly SEED=42
 readonly STEPS=100
 readonly MAX_ATTEMPTS=50
-readonly MAX_WHITE_PER_SLICE=0.04
 readonly COMPONENT_CONNECTIVITY=26
 readonly PANEL_ID="source_selection_train105_seed42_euler100"
 readonly POOL_NAME="common_seg_masks_525"
@@ -46,8 +45,7 @@ readonly REPO_ROOT
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
 cd "$REPO_ROOT"
 
-: "${MASK_SOURCE_COMMIT:?Set MASK_SOURCE_COMMIT to the Git commit at submission time}"
-SOURCE_COMMIT="$MASK_SOURCE_COMMIT"
+SOURCE_COMMIT="$(git rev-parse --verify HEAD)" || fatal "could not resolve repository HEAD"
 readonly SOURCE_COMMIT
 readonly -a SOURCE_PATHS=(
     pyproject.toml
@@ -86,12 +84,9 @@ ATLAS_SHA256="$(sha256sum "$ATLAS_PATH" | awk '{print $1}')"
 [[ "$ATLAS_SHA256" == "$EXPECTED_ATLAS_SHA256" ]] || fatal \
     "atlas hash changed: expected $EXPECTED_ATLAS_SHA256, found $ATLAS_SHA256"
 
-: "${MASK_SEG_CKPT_SHA256:?Set MASK_SEG_CKPT_SHA256 to the checkpoint hash at submission time}"
-SEG_CKPT_SHA256="$MASK_SEG_CKPT_SHA256"
+SEG_CKPT_SHA256="$(sha256sum "$SEG_CKPT" | awk '{print $1}')"
 readonly SEG_CKPT_SHA256
 [[ "$SEG_CKPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || fatal "invalid checkpoint SHA-256"
-[[ "$(sha256sum "$SEG_CKPT" | awk '{print $1}')" == "$SEG_CKPT_SHA256" ]] || fatal \
-    "checkpoint hash differs from the submitted/pinned value"
 [[ ! -e "$FINAL_DIR" ]] || fatal "final mask pool already exists: $FINAL_DIR"
 [[ ! -e "$STAGING_DIR" ]] || fatal "job staging directory already exists: $STAGING_DIR"
 
@@ -131,22 +126,24 @@ PY
 
 python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
 
+verify_source_tree
+
+if [[ "${PREFLIGHT_ONLY:-0}" == "1" ]]; then
+    echo "Preflight passed; generation skipped because PREFLIGHT_ONLY=1"
+    exit 0
+fi
+
 echo "=== Frozen common segmentation-mask pool ==="
 echo "checkpoint:       $SEG_CKPT"
 echo "checkpoint sha:   $SEG_CKPT_SHA256"
 echo "atlas:            $ATLAS_PATH"
 echo "atlas sha:        $ATLAS_SHA256"
 echo "protocol:         525 masks, seed 42, Euler 100, shift 1.0"
-echo "artifact filters: non-empty, <4% foreground per slice, strict train-atlas containment"
+echo "artifact filters: non-empty, strict train-derived brain-support containment"
 echo "lesion components: ${COMPONENT_CONNECTIVITY}-connectivity"
-echo "disabled:         size-bin validation, brain PCA, segmentation PCA, image-derived cleanup"
+echo "disabled:         per-slice burden limit, segmentation PCA, brain PCA, image-derived cleanup"
 echo "staging output:   $STAGING_DIR"
 echo "final output:     $FINAL_DIR"
-
-if [[ "${PREFLIGHT_ONLY:-0}" == "1" ]]; then
-    echo "Preflight passed; generation skipped because PREFLIGHT_ONLY=1"
-    exit 0
-fi
 
 mkdir -p "$STAGING_ROOT"
 
@@ -176,7 +173,7 @@ time python -m medgen.scripts.generate \
     validate_size_bins=false \
     seg_component_connectivity="$COMPONENT_CONNECTIVITY" \
     max_retries="$MAX_ATTEMPTS" \
-    max_white_percentage="$MAX_WHITE_PER_SLICE" \
+    max_white_percentage=null \
     brain_atlas_path="$ATLAS_PATH" \
     brain_tolerance=0.0 \
     brain_dilate_pixels=0 \
@@ -204,7 +201,6 @@ python -m medgen.scripts.audit_seg_mask_pool \
     --generation-depth 160 \
     --seed "$SEED" \
     --steps "$STEPS" \
-    --max-white-per-slice "$MAX_WHITE_PER_SLICE" \
     --max-attempts "$MAX_ATTEMPTS" \
     --fov-mm 240.0 \
     --expected-git-commit "$SOURCE_COMMIT" \
