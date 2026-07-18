@@ -20,13 +20,13 @@ fatal() {
     exit 1
 }
 
-readonly NUM_CANDIDATES=150
+readonly NUM_CANDIDATES=200
 readonly NUM_SELECTED=105
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask150_seed42_euler100}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask200_seed42_euler100_pca2p323mm_try10}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
-readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates150"
+readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates200"
 readonly FINAL_ROOT="${EVAL_ROOT}/matched_common105"
 readonly COMMON_IDS_FILE="${FINAL_ROOT}/common_candidate_ids.txt"
 readonly LABELS=(
@@ -52,7 +52,8 @@ readonly LABELS=(
 for label in "${LABELS[@]}"; do
     dataset_dir="${EVAL_ROOT}/${label}"
     [[ -d "$dataset_dir" ]] || fatal "generator dataset not found: $label"
-    [[ -s "$dataset_dir/bins.csv" ]] || fatal "generator did not finish all 150 candidates: $label"
+    [[ -s "$dataset_dir/bins.csv" ]] || fatal \
+        "generator did not finish all $NUM_CANDIDATES candidates: $label"
 done
 
 COMMON_IDS=()

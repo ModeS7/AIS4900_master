@@ -1,4 +1,4 @@
-"""Select 150 deterministic candidates from a 525-mask pool."""
+"""Select 200 deterministic candidates from a 525-mask pool."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 POOL_SIZE = 525
-CANDIDATE_SIZE = 150
+CANDIDATE_SIZE = 200
 SEED = 42
 
 
@@ -35,7 +35,7 @@ def prepare_mask_selection(
     *,
     seed: int = SEED,
 ) -> dict[str, int | list[int]]:
-    """Randomly order the pool once and expose the first 150 candidates."""
+    """Randomly order the pool once and expose the first 200 candidates."""
     pool_root = pool_root.resolve()
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
@@ -50,7 +50,7 @@ def prepare_mask_selection(
     output_root.mkdir(parents=True)
     try:
         for rank, source_index in enumerate(order[:CANDIDATE_SIZE]):
-            destination = output_root / "candidates150" / f"{rank:05d}"
+            destination = output_root / "candidates200" / f"{rank:05d}"
             destination.mkdir(parents=True)
             (destination / "seg.nii.gz").symlink_to(masks[source_index])
 

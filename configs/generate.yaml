@@ -102,6 +102,7 @@ max_image_attempts_per_mask: null # Explicit fixed-mask cap in reject mode
 skip_failed_fixed_masks: false   # Continue to the next fixed mask when the image-attempt cap is exhausted
 brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 brain_pca_path: null             # "auto" = use bundled PCA model, path = custom, null = skip
+brain_support_pca_path: null     # Train-derived PCA support used only by fixed-mask reject QC
 seg_pca_path: null               # "auto" = use bundled seg PCA model, path = custom, null = skip
 real_seg_dir: null               # Path to dir with real seg masks (*/seg.nii.gz). Skips seg generation.
 expected_real_cases: null        # If set, require exactly this many unique masks in real_seg_dir

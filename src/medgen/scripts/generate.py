@@ -981,6 +981,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         logger.info(f"Brain PCA model loaded: {brain_pca_path} "
                      f"({brain_pca.n_samples} ref volumes, threshold={brain_pca.error_threshold:.6f})")
 
+    # Load the train-derived PCA model used only to reconstruct anatomical
+    # support for fixed-mask containment QC. This is separate from the legacy
+    # global reconstruction-error filter above.
+    brain_support_pca = None
+    brain_support_pca_path = cfg.get('brain_support_pca_path', None)
+    if brain_support_pca_path:
+        brain_support_pca = BrainPCAModel(brain_support_pca_path)
+        logger.info(
+            f"Brain-support PCA model loaded: {brain_support_pca_path} "
+            f"({brain_support_pca.n_samples} training volumes, "
+            f"{brain_support_pca.components.shape[0]} components, "
+            f"support threshold={brain_support_pca.support_threshold:.1f})"
+        )
+
     # Load seg PCA shape model for seg mask validation
     seg_pca = None
     seg_pca_path = cfg.get('seg_pca_path', None)
@@ -1277,6 +1291,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             raise ValueError(
                 "conditioning_brain_qc_mode must be 'cleanup' or 'reject'"
             )
+        if (
+            brain_support_pca is not None
+            and conditioning_brain_qc_mode != 'reject'
+        ):
+            raise ValueError(
+                "brain_support_pca_path is only supported with "
+                "conditioning_brain_qc_mode=reject"
+            )
         brain_containment_margin_mm = float(
             cfg.get('brain_containment_margin_mm', 3.0)
         )
@@ -1336,10 +1358,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             logger.info(f"Stage 1b — Seg PCA validation: enabled (threshold={seg_pca.error_threshold:.8f})")
         if validate_brain_mask:
             if conditioning_brain_qc_mode == 'reject':
-                logger.info(
-                    "Stage 2 — Brain mask validation: reject image and preserve mask "
-                    f"(threshold={brain_threshold}, margin={brain_containment_margin_mm:.1f} mm)"
-                )
+                if brain_support_pca is not None:
+                    logger.info(
+                        "Stage 2 — Train-PCA brain-support containment: reject image and "
+                        "preserve mask "
+                        f"(foreground threshold={brain_threshold}, "
+                        f"support threshold={brain_support_pca.support_threshold:.1f}, "
+                        f"margin={brain_containment_margin_mm:.3f} mm)"
+                    )
+                else:
+                    logger.info(
+                        "Stage 2 — Brain mask validation: reject image and preserve mask "
+                        f"(threshold={brain_threshold}, "
+                        f"margin={brain_containment_margin_mm:.3f} mm)"
+                    )
             else:
                 logger.info(
                     "Stage 2 — Brain mask validation: enabled "
@@ -1529,6 +1561,13 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                 if conditioning_brain_qc_mode == 'reject' and trim_slices > 0:
                     qc_bravo_np = bravo_np[:-trim_slices]
                     qc_seg_binary = seg_binary[:-trim_slices]
+                    if brain_support_pca is not None:
+                        # The PCA was fitted on training volumes padded from
+                        # 150 to 160 slices. Remove the generated tail that is
+                        # never saved, then restore that known-zero padding.
+                        pad_width = ((0, trim_slices), (0, 0), (0, 0))
+                        qc_bravo_np = np.pad(qc_bravo_np, pad_width)
+                        qc_seg_binary = np.pad(qc_seg_binary, pad_width)
 
                 # Preserve the historical component check for cleanup mode.
                 # Fixed-mask rejection uses only the explicit containment rule.
@@ -1556,12 +1595,19 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                             brain_threshold=brain_threshold,
                             margin_mm=brain_containment_margin_mm,
                             voxel_spacing_mm=_xyz_to_dhw(voxel_spacing),
+                            brain_support_pca=brain_support_pca,
                         )
                         if not containment['valid']:
                             total_retries += 1
                             if cfg.verbose:
+                                support_name = (
+                                    "PCA-reconstructed brain support"
+                                    if brain_support_pca is not None
+                                    else "main brain"
+                                )
                                 logger.warning(
-                                    f"Sample {generated}: conditioning lesion outside main brain "
+                                    f"Sample {generated}: conditioning lesion outside "
+                                    f"{support_name} "
                                     f"(max distance={containment['max_distance_mm']}, "
                                     f"attempt {bravo_attempt + 1}/{image_attempts_this_round})"
                                 )

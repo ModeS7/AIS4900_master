@@ -158,8 +158,15 @@ def evaluate_conditioning_brain_containment(
     brain_threshold: float = 0.05,
     margin_mm: float = 3.0,
     voxel_spacing_mm: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    brain_support_pca: 'BrainPCAModel | None' = None,
 ) -> dict[str, bool | float | None]:
-    """Check that every conditioning-positive voxel is near the main brain."""
+    """Check that every conditioning-positive voxel is near the brain support.
+
+    When ``brain_support_pca`` is provided, the intensity-derived main-brain
+    mask is projected onto the training-set PCA model before distances are
+    measured. This prevents generated tissue around an implausibly placed
+    conditioning lesion from validating itself.
+    """
     if isinstance(image, torch.Tensor):
         image = image.detach().cpu().numpy()
     if isinstance(seg, torch.Tensor):
@@ -199,6 +206,10 @@ def evaluate_conditioning_brain_containment(
     )
     if not np.any(brain_mask):
         return {'valid': False, 'max_distance_mm': None}
+    if brain_support_pca is not None:
+        brain_mask = brain_support_pca.reconstruct_support(brain_mask)
+        if not np.any(brain_mask):
+            return {'valid': False, 'max_distance_mm': None}
 
     distance_mm = ndimage.distance_transform_edt(
         ~brain_mask,
@@ -324,9 +335,23 @@ class BrainPCAModel:
         data = np.load(npz_path)
         self.mean = data['mean']  # [n_voxels]
         self.components = data['components']  # [n_components, n_voxels]
-        self.error_threshold = float(data['error_threshold'][0])
+        self.error_threshold = (
+            float(data['error_threshold'][0])
+            if 'error_threshold' in data.files
+            else None
+        )
         self.pca_shape = tuple(data['pca_shape'])  # (D, H, W) for downsampled
         self.n_samples = int(data['n_samples'][0])
+        self.full_shape = (
+            tuple(int(value) for value in data['full_shape'])
+            if 'full_shape' in data.files
+            else None
+        )
+        self.support_threshold = (
+            float(data['support_threshold'][0])
+            if 'support_threshold' in data.files
+            else 0.5
+        )
 
     def reconstruction_error(self, brain_mask: np.ndarray) -> float:
         """Compute PCA reconstruction error for a brain mask.
@@ -355,8 +380,48 @@ class BrainPCAModel:
         Returns:
             Tuple of (is_valid, reconstruction_error).
         """
+        if self.error_threshold is None:
+            raise ValueError(
+                "This PCA artifact does not define a reconstruction-error threshold"
+            )
         error = self.reconstruction_error(brain_mask)
         return error <= self.error_threshold, error
+
+    def reconstruct_support(self, brain_mask: np.ndarray) -> np.ndarray:
+        """Reconstruct a binary brain support at the input-mask resolution.
+
+        The continuous PCA reconstruction is interpolated to the generation
+        grid before applying the fixed 0.5 nearest-binary threshold.
+        """
+        brain_mask = np.squeeze(np.asarray(brain_mask))
+        if brain_mask.ndim != 3:
+            raise ValueError("PCA brain-support reconstruction requires a 3D mask")
+        if self.full_shape is not None and brain_mask.shape != self.full_shape:
+            raise ValueError(
+                f"Brain mask shape {brain_mask.shape} does not match PCA full shape "
+                f"{self.full_shape}"
+            )
+        if not 0.0 < self.support_threshold < 1.0:
+            raise ValueError("PCA support threshold must be between 0 and 1")
+
+        mask_down = self._downsample(brain_mask)
+        flat = mask_down.flatten().astype(np.float32)
+        centered = flat - self.mean
+        projection = centered @ self.components.T
+        reconstructed = (
+            projection @ self.components + self.mean
+        ).reshape(self.pca_shape)
+
+        reconstructed_tensor = torch.from_numpy(
+            reconstructed.astype(np.float32, copy=False)
+        ).unsqueeze(0).unsqueeze(0)
+        reconstructed_full = torch.nn.functional.interpolate(
+            reconstructed_tensor,
+            size=brain_mask.shape,
+            mode='trilinear',
+            align_corners=False,
+        ).squeeze().numpy()
+        return reconstructed_full > self.support_threshold
 
     def _downsample(self, mask: np.ndarray) -> np.ndarray:
         """Downsample mask to PCA resolution."""

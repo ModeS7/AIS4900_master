@@ -13,7 +13,7 @@
 #SBATCH --output=IDUN/output/generate/synthmask_metrics_%j.out
 #SBATCH --error=IDUN/output/generate/synthmask_metrics_%j.err
 
-# Submit manually after all 14 standalone generation jobs have completed.
+# Submit after finalize_synthmask_common105.slurm has created the matched datasets.
 
 set -Eeuo pipefail
 
@@ -23,13 +23,16 @@ fatal() {
 }
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask105_seed42_euler100}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask200_seed42_euler100_pca2p323mm_try10}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
+readonly MATCHED_ROOT="${EVAL_ROOT}/matched_common105"
+readonly COMMON_IDS_SOURCE="${MATCHED_ROOT}/common_candidate_ids.txt"
 readonly RESULT_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/eval"
 readonly FINAL_DIR="${RESULT_ROOT}/${EVAL_ID}"
 readonly REPORT="${FINAL_DIR}/all_metrics_train105.json"
+readonly COMMON_IDS_RESULT="${FINAL_DIR}/common_candidate_ids.txt"
 readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
@@ -48,12 +51,26 @@ readonly LABELS=(
 )
 
 [[ -d "$TRAIN_DIR" ]] || fatal "training reference not found: $TRAIN_DIR"
+[[ -d "$MATCHED_ROOT" ]] || fatal "matched 105-case datasets not found: $MATCHED_ROOT"
+[[ -s "$COMMON_IDS_SOURCE" ]] || fatal "common candidate ID list not found: $COMMON_IDS_SOURCE"
 [[ ! -e "$FINAL_DIR" ]] || fatal "metric output already exists: $FINAL_DIR"
+
+mapfile -t COMMON_IDS < "$COMMON_IDS_SOURCE"
+[[ ${#COMMON_IDS[@]} -eq 105 ]] || fatal \
+    "common candidate ID list contains ${#COMMON_IDS[@]} entries, expected 105"
 
 DATASET_ARGS=()
 for label in "${LABELS[@]}"; do
-    dataset_dir="${EVAL_ROOT}/${label}"
-    count="$(find "$dataset_dir" -mindepth 2 -maxdepth 2 -type f -name bravo.nii.gz | wc -l)"
+    dataset_dir="${MATCHED_ROOT}/${label}"
+    [[ -d "$dataset_dir" ]] || fatal "matched dataset not found: $label"
+    for candidate_id in "${COMMON_IDS[@]}"; do
+        [[ "$candidate_id" =~ ^[0-9]{5}$ ]] || fatal "invalid candidate ID: $candidate_id"
+        [[ -s "$dataset_dir/$candidate_id/seg.nii.gz" ]] || \
+            fatal "$label is missing segmentation candidate $candidate_id"
+        [[ -s "$dataset_dir/$candidate_id/bravo.nii.gz" ]] || \
+            fatal "$label is missing BRAVO candidate $candidate_id"
+    done
+    count="$(find -L "$dataset_dir" -mindepth 2 -maxdepth 2 -type f -name bravo.nii.gz | wc -l)"
     [[ "$count" -eq 105 ]] || fatal "$label contains $count BRAVO volumes, expected 105"
     DATASET_ARGS+=(--dataset "${label}:${dataset_dir}")
 done
@@ -83,4 +100,6 @@ time python -m medgen.scripts.eval_all_metrics \
     --output "$REPORT"
 
 [[ -s "$REPORT" ]] || fatal "metric report was not created"
+cp -- "$COMMON_IDS_SOURCE" "$COMMON_IDS_RESULT"
 echo "Completed metric report: $REPORT"
+echo "Matched candidate IDs: $COMMON_IDS_RESULT"

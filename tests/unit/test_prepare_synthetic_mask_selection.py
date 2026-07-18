@@ -24,9 +24,9 @@ def test_seed42_split_uses_one_shared_random_order(tmp_path: Path):
     selection = prepare_mask_selection(pool, output)
 
     expected = np.random.default_rng(42).permutation(525).astype(int).tolist()
-    assert selection["candidate_source_indices"] == expected[:150]
-    assert len(list((output / "candidates150").glob("*/seg.nii.gz"))) == 150
-    assert (output / "candidates150/00000/seg.nii.gz").resolve() == (
+    assert selection["candidate_source_indices"] == expected[:200]
+    assert len(list((output / "candidates200").glob("*/seg.nii.gz"))) == 200
+    assert (output / "candidates200/00000/seg.nii.gz").resolve() == (
         pool / f"{expected[0]:05d}/seg.nii.gz"
     ).resolve()
     assert json.loads((output / "selection.json").read_text()) == selection

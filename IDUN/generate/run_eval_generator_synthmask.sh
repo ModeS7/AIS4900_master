@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Evaluate one BRAVO generator on 150 shared synthetic-mask candidates.
+# Evaluate one BRAVO generator on 200 shared synthetic-mask candidates.
 
 set -Eeuo pipefail
 
@@ -25,20 +25,22 @@ else
     [[ -z "$HANDOFF_T" ]] || fatal "handoff_t requires a high-t checkpoint"
 fi
 
-readonly NUM_CANDIDATES=150
+readonly NUM_CANDIDATES=200
 readonly SEED=42
 readonly STEPS=100
-readonly MAX_IMAGE_ATTEMPTS=3
-readonly BRAIN_MARGIN_MM=3
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask150_seed42_euler100}"
+readonly MAX_IMAGE_ATTEMPTS=10
+# Maximum observed training-pair distance was 2.322613 mm. Round upward to 0.001 mm.
+readonly BRAIN_MARGIN_MM=2.323
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask200_seed42_euler100_pca2p323mm_try10}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly BRAVO_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
-readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates150"
+readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates200"
 readonly SELECTION_FILE="${EVAL_ROOT}/ordered_common_seg_masks_seed42/selection.json"
 readonly LOW_CKPT="${BRAVO_ROOT}/${LOW_RUN}/checkpoint_latest.pt"
+readonly BRAIN_SUPPORT_PCA="${REPO_ROOT}/data/brain_support_pca_train105_var95_256x256x160.npz"
 readonly FINAL_DIR="${EVAL_ROOT}/${LABEL}"
 HIGH_CKPT=""
 if [[ -n "$HIGH_RUN" ]]; then
@@ -47,23 +49,25 @@ fi
 readonly HIGH_CKPT
 
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
-[[ -d "$CANDIDATE_MASKS" ]] || fatal "prepared 150-mask view not found: $CANDIDATE_MASKS"
+[[ -d "$CANDIDATE_MASKS" ]] || fatal "prepared $NUM_CANDIDATES-mask view not found: $CANDIDATE_MASKS"
 [[ -s "$SELECTION_FILE" ]] || fatal "mask selection file not found: $SELECTION_FILE"
 [[ -f "$LOW_CKPT" ]] || fatal "low-t checkpoint not found: $LOW_CKPT"
+[[ -s "$BRAIN_SUPPORT_PCA" ]] || fatal "brain-support PCA not found: $BRAIN_SUPPORT_PCA"
 if [[ -n "$HIGH_CKPT" ]]; then
     [[ -f "$HIGH_CKPT" ]] || fatal "high-t checkpoint not found: $HIGH_CKPT"
 fi
 [[ ! -e "$FINAL_DIR" ]] || fatal "final output already exists: $FINAL_DIR"
 
 mapfile -t MASK_IDS < <(find "$CANDIDATE_MASKS" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9][0-9][0-9]' -printf '%f\n' | LC_ALL=C sort)
-[[ ${#MASK_IDS[@]} -eq $NUM_CANDIDATES ]] || fatal "expected 150 prepared masks, found ${#MASK_IDS[@]}"
+[[ ${#MASK_IDS[@]} -eq $NUM_CANDIDATES ]] || fatal \
+    "expected $NUM_CANDIDATES prepared masks, found ${#MASK_IDS[@]}"
 for ((index = 0; index < NUM_CANDIDATES; index++)); do
     printf -v expected_id '%05d' "$index"
     [[ "${MASK_IDS[index]}" == "$expected_id" ]] || fatal "unexpected mask ID ${MASK_IDS[index]}"
     [[ -s "$CANDIDATE_MASKS/$expected_id/seg.nii.gz" ]] || fatal "missing mask $expected_id"
 done
 
-echo "Preflight OK [${LABEL}]: 150 shared synthetic-mask candidates and checkpoint_latest.pt"
+echo "Preflight OK [${LABEL}]: $NUM_CANDIDATES shared synthetic-mask candidates and checkpoint_latest.pt"
 cd "$REPO_ROOT"
 module purge
 module load Anaconda3/2024.02-1
@@ -102,6 +106,7 @@ GEN_ARGS=(
     max_image_attempts_per_mask="$MAX_IMAGE_ATTEMPTS"
     skip_failed_fixed_masks=true
     brain_atlas_path=null
+    brain_support_pca_path="$BRAIN_SUPPORT_PCA"
     brain_pca_path=null
     seg_pca_path=null
     diffrs_checkpoint=null
@@ -114,8 +119,9 @@ if [[ -n "$HIGH_CKPT" ]]; then
     GEN_ARGS+=(image_model_high_t="$HIGH_CKPT" handoff_t="$HANDOFF_T")
 fi
 
-echo "=== Evaluating ${LABEL}: 150 mask candidates, up to 3 image attempts each ==="
+echo "=== Evaluating ${LABEL}: $NUM_CANDIDATES mask candidates, up to ${MAX_IMAGE_ATTEMPTS} image attempts each ==="
 echo "masks:            $CANDIDATE_MASKS"
+echo "brain support:    $BRAIN_SUPPORT_PCA (train105 PCA, 0.5 threshold, ${BRAIN_MARGIN_MM} mm margin)"
 echo "low-t checkpoint: $LOW_CKPT"
 if [[ -n "$HIGH_CKPT" ]]; then
     echo "high-t checkpoint: $HIGH_CKPT (t > $HANDOFF_T)"

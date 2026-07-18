@@ -76,6 +76,7 @@ def _pipeline_config(
             "validate_size_bins": False,
             "brain_atlas_path": None,
             "brain_pca_path": None,
+            "brain_support_pca_path": None,
             "seg_pca_path": None,
             "validate_brain_mask": True,
             "brain_threshold": 0.05,
