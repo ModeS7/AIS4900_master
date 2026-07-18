@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Evaluate one BRAVO generator on 200 shared synthetic-mask candidates.
+# Evaluate one BRAVO generator on 525 shared synthetic-mask candidates.
 
 set -Eeuo pipefail
 
@@ -25,19 +25,19 @@ else
     [[ -z "$HANDOFF_T" ]] || fatal "handoff_t requires a high-t checkpoint"
 fi
 
-readonly NUM_CANDIDATES=200
+readonly NUM_CANDIDATES=525
 readonly SEED=42
 readonly STEPS=100
-readonly MAX_IMAGE_ATTEMPTS=10
+readonly MAX_IMAGE_ATTEMPTS=3
 # Maximum observed training-pair distance was 2.322613 mm. Round upward to 0.001 mm.
 readonly BRAIN_MARGIN_MM=2.323
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask200_seed42_euler100_pca2p323mm_try10}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly BRAVO_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/diffusion_3d/bravo"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
-readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates200"
+readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates525"
 readonly SELECTION_FILE="${EVAL_ROOT}/ordered_common_seg_masks_seed42/selection.json"
 readonly LOW_CKPT="${BRAVO_ROOT}/${LOW_RUN}/checkpoint_latest.pt"
 readonly BRAIN_SUPPORT_PCA="${REPO_ROOT}/data/brain_support_pca_train105_var95_256x256x160.npz"

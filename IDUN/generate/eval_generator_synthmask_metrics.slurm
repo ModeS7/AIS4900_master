@@ -23,7 +23,7 @@ fatal() {
 }
 
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
-readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask200_seed42_euler100_pca2p323mm_try10}"
+readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
