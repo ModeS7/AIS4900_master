@@ -44,7 +44,6 @@ readonly NNUNET_RESULTS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
 readonly RAW_DIR="${NNUNET_BASE}/nnUNet_raw/Dataset${DATASET_ID}_BrainMet"
 readonly PREPROCESSED_DIR="${NNUNET_BASE}/nnUNet_preprocessed/Dataset${DATASET_ID}_BrainMet"
 readonly REAL_RAW_DIR="${NNUNET_BASE}/nnUNet_raw/Dataset600_BrainMet"
-readonly REAL_PREPROCESSED_DIR="${NNUNET_BASE}/nnUNet_preprocessed/Dataset600_BrainMet"
 readonly MODEL_NAME="nnUNetTrainerBrainMets__nnUNetResEncUNetLPlans__3d_fullres"
 readonly FOLD_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET_ID}_BrainMet/${MODEL_NAME}/fold_${FOLD}"
 
@@ -56,8 +55,6 @@ readonly FOLD_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET_
 [[ -s "$PREPROCESSED_DIR/nnUNetResEncUNetLPlans.json" ]] || \
     fatal "Dataset${DATASET_ID} has not been preprocessed with ResEnc-L"
 [[ -s "$REAL_RAW_DIR/case_info.json" ]] || fatal "Dataset600 case_info.json is missing"
-[[ -s "$REAL_PREPROCESSED_DIR/nnUNetResEncUNetLPlans.json" ]] || \
-    fatal "Dataset600 ResEnc-L plans are missing"
 
 if [[ "$RESUME" == 0 ]]; then
     [[ ! -e "$FOLD_RESULT_DIR" ]] || \
@@ -75,13 +72,13 @@ module load Anaconda3/2024.02-1
 conda activate nnunet
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-python - "$RAW_DIR" "$PREPROCESSED_DIR" "$REAL_RAW_DIR" "$REAL_PREPROCESSED_DIR" "$LABEL" "$DATASET_ID" <<'PYEOF'
+python - "$RAW_DIR" "$PREPROCESSED_DIR" "$REAL_RAW_DIR" "$LABEL" "$DATASET_ID" <<'PYEOF'
 import json
 import sys
 from pathlib import Path
 
-raw, preprocessed, real_raw, real_preprocessed = map(Path, sys.argv[1:5])
-expected_label, expected_dataset_id = sys.argv[5], int(sys.argv[6])
+raw, preprocessed, real_raw = map(Path, sys.argv[1:4])
+expected_label, expected_dataset_id = sys.argv[4], int(sys.argv[5])
 case_info = json.loads((raw / "case_info.json").read_text())
 real_info = json.loads((real_raw / "case_info.json").read_text())
 source = dict(
@@ -102,14 +99,7 @@ assert case_info["test_cases"] == real_info["test_cases"]
 assert case_info["modalities"] == ["bravo"]
 
 plans = json.loads((preprocessed / "nnUNetResEncUNetLPlans.json").read_text())
-reference = json.loads((real_preprocessed / "nnUNetResEncUNetLPlans.json").read_text())
 configuration = plans["configurations"]["3d_fullres"]
-reference_configuration = reference["configurations"]["3d_fullres"]
-for key in (
-    "spacing", "patch_size", "batch_size", "architecture",
-    "normalization_schemes", "use_mask_for_norm",
-):
-    assert configuration.get(key) == reference_configuration.get(key), key
 
 cache = preprocessed / configuration["data_identifier"]
 assert cache.is_dir(), cache
@@ -118,7 +108,7 @@ npz_count = len(list(cache.glob("*.npz")))
 assert b2nd_count == 420 or (b2nd_count == 0 and npz_count == 210), (
     cache, b2nd_count, npz_count,
 )
-print("Preflight OK: common 105, fixed real folds/test, Dataset600-matched ResEnc-L plans")
+print("Preflight OK: common 105, fixed real folds/test, native ResEnc-L plan/cache")
 PYEOF
 
 echo "=== Common-105 synthetic-only training ==="
