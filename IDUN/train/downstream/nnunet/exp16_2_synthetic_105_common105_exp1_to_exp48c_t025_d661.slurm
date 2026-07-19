@@ -11,8 +11,8 @@
 #SBATCH --exclude=idun-06-02
 #SBATCH --array=0-4%5
 #SBATCH --job-name="exp16_2_c105_48c"
-#SBATCH --output=IDUN/output/train/downstream/nnunet/exp16_2_common105_exp48c_%A_%a.out
-#SBATCH --error=IDUN/output/train/downstream/nnunet/exp16_2_common105_exp48c_%A_%a.err
+#SBATCH --output=IDUN/output/train/downstream/nnunet/exp16_2_common105_exp1_to_exp48c_t025_d661/%A_%a.out
+#SBATCH --error=IDUN/output/train/downstream/nnunet/exp16_2_common105_exp1_to_exp48c_t025_d661/%A_%a.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=FAIL
 
