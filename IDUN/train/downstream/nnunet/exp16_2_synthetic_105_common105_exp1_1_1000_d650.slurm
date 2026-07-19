@@ -15,8 +15,10 @@
 #SBATCH --error=IDUN/output/train/downstream/nnunet/exp16_2_common105_exp1_1_1000_d650/%A_%a.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=FAIL
+#SBATCH --signal=B:SIGUSR1@120
 
-# Five independent runs for the frozen common-105 exp1 dataset.
+# One submission launches five folds for the frozen common-105 exp1 dataset.
+# Each fold may use at most 20 chained 12-hour allocations.
 # Normal: sbatch IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000_d650.slurm
 # Resume fold 2 only:
 # sbatch --array=2 --export=ALL,RESUME=1 IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000_d650.slurm
@@ -34,10 +36,18 @@ readonly EXPERIMENT_NAME="exp16_2_synthetic_105_common105_${LABEL}_d${DATASET_ID
 readonly FOLD="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
 readonly SEED="$((4200 + FOLD))"
 readonly RESUME="${RESUME:-0}"
+readonly CHAIN_MAX="${CHAIN_MAX:-20}"
+readonly CHAIN_COUNT="${CHAIN_COUNT:-0}"
+readonly SCRIPT_RELATIVE="IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000_d650.slurm"
 (( FOLD >= 0 && FOLD < 5 )) || fatal "fold is outside 0--4: $FOLD"
 [[ "$RESUME" == 0 || "$RESUME" == 1 ]] || fatal "RESUME must be 0 or 1"
+[[ "$CHAIN_MAX" =~ ^[1-9][0-9]*$ ]] || fatal "CHAIN_MAX must be a positive integer"
+[[ "$CHAIN_COUNT" =~ ^[0-9]+$ ]] || fatal "CHAIN_COUNT must be a non-negative integer"
+(( CHAIN_COUNT < CHAIN_MAX )) || fatal "chain count reached limit: ${CHAIN_COUNT}/${CHAIN_MAX}"
+(( CHAIN_COUNT == 0 || RESUME == 1 )) || fatal "a chained allocation must use RESUME=1"
 
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
+readonly SCRIPT_PATH="${REPO_ROOT}/${SCRIPT_RELATIVE}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 readonly NNUNET_BASE="${CLUSTER_BASE}/MedicalDataSets/nnunet"
 readonly NNUNET_RESULTS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
@@ -118,6 +128,7 @@ echo "Fold:       $FOLD/4"
 echo "Seed:       $SEED"
 echo "Experiment: $EXPERIMENT_NAME"
 echo "Resume:     $RESUME"
+echo "Chain:      $CHAIN_COUNT/$CHAIN_MAX"
 nvidia-smi
 
 TRAIN_ARGS=(
@@ -136,7 +147,41 @@ if [[ "$RESUME" == 1 ]]; then
     TRAIN_ARGS+=(--continue-training)
 fi
 
-time python -m medgen.scripts.train_nnunet "${TRAIN_ARGS[@]}"
+TRAIN_PID=""
+handle_timeout() {
+    trap - SIGUSR1
+    echo "=== Wall time approaching for fold $FOLD; preparing continuation ==="
+    if [[ -n "$TRAIN_PID" ]] && kill -0 "$TRAIN_PID" 2>/dev/null; then
+        kill -TERM "$TRAIN_PID" 2>/dev/null || true
+        wait "$TRAIN_PID" 2>/dev/null || true
+    fi
+    if [[ -s "$FOLD_RESULT_DIR/checkpoint_final.pth" ]]; then
+        echo "Fold $FOLD completed before timeout; no continuation needed."
+        exit 0
+    fi
+    [[ -s "$FOLD_RESULT_DIR/checkpoint_latest.pth" ]] || \
+        fatal "cannot chain without checkpoint_latest.pth: $FOLD_RESULT_DIR"
+    local next_count=$((CHAIN_COUNT + 1))
+    (( next_count < CHAIN_MAX )) || fatal "chain limit reached: ${CHAIN_MAX} allocations"
+    local submission
+    submission="$(sbatch --array="$FOLD" \
+        --export="ALL,RESUME=1,CHAIN_COUNT=${next_count},CHAIN_MAX=${CHAIN_MAX}" \
+        "$SCRIPT_PATH")" || fatal "failed to submit continuation for fold $FOLD"
+    echo "$submission"
+    echo "Submitted fold $FOLD continuation $next_count/$CHAIN_MAX"
+    exit 0
+}
+trap handle_timeout SIGUSR1
+
+python -m medgen.scripts.train_nnunet "${TRAIN_ARGS[@]}" &
+TRAIN_PID=$!
+if wait "$TRAIN_PID"; then
+    train_exit=0
+else
+    train_exit=$?
+fi
+trap - SIGUSR1
+(( train_exit == 0 )) || fatal "training exited with status $train_exit"
 
 [[ -s "$FOLD_RESULT_DIR/checkpoint_final.pth" ]] || \
     fatal "checkpoint_final.pth is missing after training"
