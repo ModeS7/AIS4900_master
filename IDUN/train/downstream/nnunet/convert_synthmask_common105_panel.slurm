@@ -7,15 +7,15 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --exclude=idun-06-02
-#SBATCH --array=0-13%2
+#SBATCH --array=0-4%2
 #SBATCH --job-name="nn_common105"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/convert_common105_%A_%a.out
 #SBATCH --error=IDUN/output/train/downstream/nnunet/convert_common105_%A_%a.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=END,FAIL
 
-# Convert the 14 matched common-105 generator datasets to nnU-Net raw format.
-# This is additive: it creates Dataset650--Dataset663 and never deletes or
+# Convert the five matched common-105 generator datasets to nnU-Net raw format.
+# This is additive: it creates Dataset650, 651, 652, 661, and 662 and never deletes or
 # overwrites an existing raw or preprocessed dataset.
 
 set -Eeuo pipefail
@@ -29,25 +29,17 @@ readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
     exp32_2_1000
-    exp32_3_1000
-    exp47a
-    exp47b
-    exp47c
-    exp47d
-    exp47e
-    exp1_to_exp48a_t025
-    exp1_to_exp48b_t025
     exp1_to_exp48c_t025
     exp1_to_exp48d_t025
-    exp1_to_exp48e_t025
 )
+readonly DATASET_IDS=(650 651 652 661 662)
 
 readonly ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
 (( ARRAY_INDEX >= 0 && ARRAY_INDEX < ${#LABELS[@]} )) || \
-    fatal "array index is outside 0--13: $ARRAY_INDEX"
+    fatal "array index is outside 0--4: $ARRAY_INDEX"
 
 readonly LABEL="${LABELS[$ARRAY_INDEX]}"
-readonly DATASET_ID="$((650 + ARRAY_INDEX))"
+readonly DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
 readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
@@ -106,7 +98,7 @@ module load Anaconda3/2024.02-1
 conda activate nnunet
 
 echo "=== Convert matched common-105 dataset ==="
-echo "Array task:  ${ARRAY_INDEX}/13"
+echo "Array task:  ${ARRAY_INDEX}/4"
 echo "Generator:   ${LABEL}"
 echo "Dataset ID:  ${DATASET_ID}"
 echo "Synthetic:   ${SYNTHETIC_DIR}"

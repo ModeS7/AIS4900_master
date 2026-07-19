@@ -11,7 +11,7 @@
 #SBATCH --output=IDUN/output/generate/finalize_sm_common105_%j.out
 #SBATCH --error=IDUN/output/generate/finalize_sm_common105_%j.err
 
-# Build 14 matched 105-case datasets from the candidates accepted by every generator.
+# Build five matched 105-case datasets from the candidates accepted by every generator.
 
 set -Eeuo pipefail
 
@@ -33,18 +33,10 @@ readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
     exp32_2_1000
-    exp32_3_1000
-    exp47a
-    exp47b
-    exp47c
-    exp47d
-    exp47e
-    exp1_to_exp48a_t025
-    exp1_to_exp48b_t025
     exp1_to_exp48c_t025
     exp1_to_exp48d_t025
-    exp1_to_exp48e_t025
 )
+readonly NUM_GENERATORS=${#LABELS[@]}
 
 [[ -d "$CANDIDATE_MASKS" ]] || fatal "candidate masks not found: $CANDIDATE_MASKS"
 [[ ! -e "$FINAL_ROOT" ]] || fatal "matched dataset already exists: $FINAL_ROOT"
@@ -54,6 +46,11 @@ for label in "${LABELS[@]}"; do
     [[ -d "$dataset_dir" ]] || fatal "generator dataset not found: $label"
     [[ -s "$dataset_dir/bins.csv" ]] || fatal \
         "generator did not finish all $NUM_CANDIDATES candidates: $label"
+done
+
+for label in exp1_to_exp48c_t025 exp1_to_exp48d_t025; do
+    [[ -s "$EVAL_ROOT/$label/.tail_merge_manifest" ]] || fatal \
+        "$label has not been merged with its tail300 output"
 done
 
 COMMON_IDS=()
@@ -83,7 +80,8 @@ for ((candidate = 0; candidate < NUM_CANDIDATES; candidate++)); do
 done
 
 [[ ${#COMMON_IDS[@]} -ge $NUM_SELECTED ]] || fatal \
-    "only ${#COMMON_IDS[@]} candidates were accepted by all 14 generators; need $NUM_SELECTED"
+    "only ${#COMMON_IDS[@]} candidates were accepted by all $NUM_GENERATORS generators; "\
+    "need $NUM_SELECTED"
 
 SELECTED_IDS=()
 for ((index = 0; index < NUM_SELECTED; index++)); do
@@ -114,7 +112,8 @@ for label in "${LABELS[@]}"; do
         "$label matched dataset contains $case_count cases, expected $NUM_SELECTED"
 done
 
-echo "Common candidates accepted by all 14 generators: ${#COMMON_IDS[@]}/$NUM_CANDIDATES"
+echo "Common candidates accepted by all $NUM_GENERATORS generators: "\
+"${#COMMON_IDS[@]}/$NUM_CANDIDATES"
 echo "Selected the first $NUM_SELECTED candidates in the fixed seed-42 order"
 echo "Matched datasets: $FINAL_ROOT"
 echo "Selected candidate IDs: $COMMON_IDS_FILE"

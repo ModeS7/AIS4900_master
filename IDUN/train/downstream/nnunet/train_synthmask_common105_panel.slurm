@@ -9,7 +9,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --exclude=idun-06-02
-#SBATCH --array=0-69%14
+#SBATCH --array=0-24%14
 #SBATCH --job-name="nn_syn_common105"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/train_common105_%A_%a.out
 #SBATCH --error=IDUN/output/train/downstream/nnunet/train_common105_%A_%a.err
@@ -17,7 +17,7 @@
 #SBATCH --mail-type=FAIL
 #SBATCH --signal=B:SIGUSR1@120
 
-# Train five pure-synthetic folds for each of Dataset650--Dataset663.
+# Train five pure-synthetic folds for each of Dataset650, 651, 652, 661, and 662.
 # Array mapping: five adjacent tasks per dataset, fold = task modulo five.
 # Training uses all 105 synthetic cases; validation is the fixed real fold.
 
@@ -29,11 +29,12 @@ fatal() {
 }
 
 readonly TASK_ID="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
-(( TASK_ID >= 0 && TASK_ID < 70 )) || fatal "array index is outside 0--69: $TASK_ID"
+(( TASK_ID >= 0 && TASK_ID < 25 )) || fatal "array index is outside 0--24: $TASK_ID"
 
+readonly DATASET_IDS=(650 651 652 661 662)
 readonly PANEL_INDEX="$((TASK_ID / 5))"
 readonly FOLD="$((TASK_ID % 5))"
-readonly DATASET_ID="$((650 + PANEL_INDEX))"
+readonly DATASET_ID="${DATASET_IDS[$PANEL_INDEX]}"
 readonly CHAIN_MAX=20
 readonly CHAIN_COUNT="${CHAIN_COUNT:-0}"
 [[ "$CHAIN_COUNT" =~ ^[0-9]+$ ]] || fatal "invalid CHAIN_COUNT: $CHAIN_COUNT"
@@ -132,7 +133,7 @@ print(
 PYEOF
 
 echo "=== Pure-synthetic nnU-Net training ==="
-echo "Array task: ${TASK_ID}/69"
+echo "Array task: ${TASK_ID}/24"
 echo "Generator:  $LABEL"
 echo "Dataset:    $DATASET_ID"
 echo "Fold:       $FOLD"

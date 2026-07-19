@@ -37,17 +37,8 @@ readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
     exp32_2_1000
-    exp32_3_1000
-    exp47a
-    exp47b
-    exp47c
-    exp47d
-    exp47e
-    exp1_to_exp48a_t025
-    exp1_to_exp48b_t025
     exp1_to_exp48c_t025
     exp1_to_exp48d_t025
-    exp1_to_exp48e_t025
 )
 
 [[ -d "$TRAIN_DIR" ]] || fatal "training reference not found: $TRAIN_DIR"
@@ -83,7 +74,7 @@ export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
 
-echo "=== Computing train-reference metrics for all 14 datasets ==="
+echo "=== Computing train-reference metrics for all ${#LABELS[@]} datasets ==="
 time python -m medgen.scripts.eval_all_metrics \
     --reference "train:${TRAIN_DIR}" \
     "${DATASET_ARGS[@]}" \

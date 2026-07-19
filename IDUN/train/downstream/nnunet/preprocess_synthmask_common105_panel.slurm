@@ -7,14 +7,14 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --exclude=idun-06-02
-#SBATCH --array=0-13%2
+#SBATCH --array=0-4%2
 #SBATCH --job-name="nn_pp_common105"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/preprocess_common105_%A_%a.out
 #SBATCH --error=IDUN/output/train/downstream/nnunet/preprocess_common105_%A_%a.err
 #SBATCH --mail-user=modestas@stud.ntnu.no
 #SBATCH --mail-type=END,FAIL
 
-# Plan and preprocess Dataset650--Dataset663 with the same default and
+# Plan and preprocess Dataset650, 651, 652, 661, and 662 with the same default and
 # ResEnc-L nnU-Net settings used by the earlier synthetic-only experiments.
 # This is additive and refuses to overwrite any preprocessed dataset.
 
@@ -26,10 +26,11 @@ fatal() {
 }
 
 readonly ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
-(( ARRAY_INDEX >= 0 && ARRAY_INDEX < 14 )) || \
-    fatal "array index is outside 0--13: $ARRAY_INDEX"
+(( ARRAY_INDEX >= 0 && ARRAY_INDEX < 5 )) || \
+    fatal "array index is outside 0--4: $ARRAY_INDEX"
 
-readonly DATASET_ID="$((650 + ARRAY_INDEX))"
+readonly DATASET_IDS=(650 651 652 661 662)
+readonly DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
