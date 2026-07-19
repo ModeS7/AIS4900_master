@@ -28,9 +28,26 @@ Usage:
 """
 import argparse
 import os
+import random
 import shutil
 
+import numpy as np
 import torch
+
+
+def _set_training_seed(seed: int) -> None:
+    """Seed parent-process RNGs before nnU-Net constructs the network.
+
+    This pairs model initialization and parent-process randomness across
+    experiments. nnU-Net's default multi-process augmentation remains
+    asynchronous, so this is not a claim of bitwise deterministic training.
+    """
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _setup_env(
@@ -143,6 +160,9 @@ def main() -> None:
                              'val-tuned threshold sweep.')
     parser.add_argument('--device', default='cuda',
                         choices=['cuda', 'cpu', 'mps'])
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Training RNG seed. Applied before model construction; '
+                             'use matched seeds for paired experiments.')
 
     args = parser.parse_args()
 
@@ -152,6 +172,7 @@ def main() -> None:
     print("=== nnU-Net Training Setup ===")
     print(f"  Experiment: {experiment_name}")
     print(f"  Folds: {folds}")
+    print(f"  Training seed: {args.seed if args.seed is not None else 'unseeded'}")
 
     # 1. Set raw + results env vars (preprocessed set after isolation)
     print("\nEnvironment:")
@@ -194,6 +215,8 @@ def main() -> None:
     from nnunetv2.run.run_training import run_training
 
     for fold in folds:
+        if args.seed is not None:
+            _set_training_seed(args.seed)
         print(f"\n{'='*50}")
         print(f"=== Training fold {fold} ===")
         print(f"  Train: {len(splits[fold]['train'])} cases")

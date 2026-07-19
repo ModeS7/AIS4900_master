@@ -33,6 +33,7 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 
 import numpy as np
 
@@ -256,20 +257,37 @@ def create_isolated_preprocessed_dir(
         with contextlib.suppress(FileExistsError):
             os.symlink(src, dst)
 
-    # Write experiment-specific splits_final.json (real file, not symlink)
+    # Multiple folds of one experiment can start at once. They all write the
+    # same split content, but a direct write can still expose a truncated JSON
+    # file to another process. Write privately and publish atomically.
     splits_path = os.path.join(isolated_dataset_dir, 'splits_final.json')
-    with open(splits_path, 'w') as f:
-        json.dump(splits, f, indent=2)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            dir=isolated_dataset_dir,
+            prefix='.splits_final.',
+            suffix='.tmp',
+            delete=False,
+        ) as f:
+            temporary_path = f.name
+            json.dump(splits, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, splits_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temporary_path)
 
-    # Verify: read back and check case counts match
+    # Verify the complete content, not only case counts.
     with open(splits_path) as f:
         readback = json.load(f)
-    for i, (written, read) in enumerate(zip(splits, readback)):
-        assert len(read['train']) == len(written['train']), (
-            f"Fold {i} split verification failed: wrote {len(written['train'])} "
-            f"train cases but read back {len(read['train'])}. "
-            f"Possible race condition on {splits_path}"
-        )
+    assert readback == splits, (
+        f"Split verification failed for {splits_path}. Another process may be "
+        "using the same experiment name with different splits."
+    )
 
     # Log summary
     for i, fold in enumerate(splits):
