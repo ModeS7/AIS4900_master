@@ -26,6 +26,7 @@ fatal() {
 
 readonly NUM_CANDIDATES=525
 readonly BINS_HEADER='id,bin_0,bin_1,bin_2,bin_3,bin_4,bin_5,bin_6,total_tumors'
+readonly MASK_MODE='in_place_atomic'
 readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
@@ -162,7 +163,7 @@ for index in "${!LABELS[@]}"; do
     marker_tmp="${marker}.tmp_${SLURM_JOB_ID:?SLURM_JOB_ID must be set}"
     {
         echo "method=medgen.scripts.brain_mask_existing"
-        echo "mode=in_place_atomic"
+        echo "mode=${MASK_MODE}"
         echo "threshold=0.05"
         echo "fill_holes=true"
         echo "dilate_pixels=2"
@@ -179,7 +180,7 @@ validate_common_view "$COMMON105_ROOT" 105 "${COMMON105_LABELS[@]}"
 marker_tmp="${COMPLETE_MARKER}.tmp_${SLURM_JOB_ID}"
 {
     echo "eval_id=${EVAL_ID}"
-    echo "mode=in_place_atomic"
+    echo "mode=${MASK_MODE}"
     echo "threshold=0.05"
     echo "fill_holes=true"
     echo "dilate_pixels=2"

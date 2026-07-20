@@ -19,6 +19,7 @@
 
 # One submission launches five folds for the frozen common-105 exp1plus dataset.
 # Each fold may use at most 20 chained 12-hour allocations.
+# Uses Dataset600's transferred plan and the historical unseeded training path.
 # Normal: sbatch IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000plus_d651.slurm
 # Resume fold 2 only:
 # sbatch --array=2 --export=ALL,RESUME=1 IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000plus_d651.slurm
@@ -34,10 +35,10 @@ readonly DATASET_ID=651
 readonly LABEL="exp1_1_1000plus"
 readonly EXPERIMENT_NAME="exp16_2_synthetic_105_common105_${LABEL}_d${DATASET_ID}"
 readonly FOLD="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
-readonly SEED="$((4200 + FOLD))"
 readonly RESUME="${RESUME:-0}"
 readonly CHAIN_MAX="${CHAIN_MAX:-20}"
 readonly CHAIN_COUNT="${CHAIN_COUNT:-0}"
+readonly PLANS_NAME="nnUNetResEncUNetLPlansD600"
 readonly SCRIPT_RELATIVE="IDUN/train/downstream/nnunet/exp16_2_synthetic_105_common105_exp1_1_1000plus_d651.slurm"
 (( FOLD >= 0 && FOLD < 5 )) || fatal "fold is outside 0--4: $FOLD"
 [[ "$RESUME" == 0 || "$RESUME" == 1 ]] || fatal "RESUME must be 0 or 1"
@@ -54,16 +55,19 @@ readonly NNUNET_RESULTS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
 readonly RAW_DIR="${NNUNET_BASE}/nnUNet_raw/Dataset${DATASET_ID}_BrainMet"
 readonly PREPROCESSED_DIR="${NNUNET_BASE}/nnUNet_preprocessed/Dataset${DATASET_ID}_BrainMet"
 readonly REAL_RAW_DIR="${NNUNET_BASE}/nnUNet_raw/Dataset600_BrainMet"
-readonly MODEL_NAME="nnUNetTrainerBrainMets__nnUNetResEncUNetLPlans__3d_fullres"
+readonly MODEL_NAME="nnUNetTrainerBrainMets__${PLANS_NAME}__3d_fullres"
 readonly FOLD_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET_ID}_BrainMet/${MODEL_NAME}/fold_${FOLD}"
+readonly PREPROCESS_MARKER="${PREPROCESSED_DIR}/.exp16_2_d600_preprocess_complete"
 
 [[ -s "$RAW_DIR/source_selection.txt" ]] || fatal "missing source provenance: $RAW_DIR"
 [[ "$(grep -c '^generator=' "$RAW_DIR/source_selection.txt" || true)" -eq 1 ]] || \
     fatal "expected one generator entry in source_selection.txt"
 [[ "$(sed -n 's/^generator=//p' "$RAW_DIR/source_selection.txt")" == "$LABEL" ]] || \
     fatal "Dataset${DATASET_ID} does not contain $LABEL"
-[[ -s "$PREPROCESSED_DIR/nnUNetResEncUNetLPlans.json" ]] || \
-    fatal "Dataset${DATASET_ID} has not been preprocessed with ResEnc-L"
+[[ -s "$PREPROCESSED_DIR/${PLANS_NAME}.json" ]] || \
+    fatal "Dataset${DATASET_ID} has no Dataset600-controlled plan"
+[[ -s "$PREPROCESS_MARKER" ]] || \
+    fatal "Dataset${DATASET_ID} controlled preprocessing is incomplete"
 [[ -s "$REAL_RAW_DIR/case_info.json" ]] || fatal "Dataset600 case_info.json is missing"
 
 if [[ "$RESUME" == 0 ]]; then
@@ -82,13 +86,15 @@ module load Anaconda3/2024.02-1
 conda activate nnunet
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-python - "$RAW_DIR" "$PREPROCESSED_DIR" "$REAL_RAW_DIR" "$LABEL" "$DATASET_ID" <<'PYEOF'
+python - "$RAW_DIR" "$PREPROCESSED_DIR" "$REAL_RAW_DIR" "$LABEL" "$DATASET_ID" "$PLANS_NAME" <<'PYEOF'
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 raw, preprocessed, real_raw = map(Path, sys.argv[1:4])
 expected_label, expected_dataset_id = sys.argv[4], int(sys.argv[5])
+plans_name = sys.argv[6]
 case_info = json.loads((raw / "case_info.json").read_text())
 real_info = json.loads((real_raw / "case_info.json").read_text())
 source = dict(
@@ -108,24 +114,87 @@ assert case_info["real_train_cases"] == real_info["real_train_cases"]
 assert case_info["test_cases"] == real_info["test_cases"]
 assert case_info["modalities"] == ["bravo"]
 
-plans = json.loads((preprocessed / "nnUNetResEncUNetLPlans.json").read_text())
+marker_path = preprocessed / ".exp16_2_d600_preprocess_complete"
+marker = dict(
+    line.split("=", 1)
+    for line in marker_path.read_text().splitlines()
+    if "=" in line
+)
+assert int(marker["dataset_id"]) == expected_dataset_id
+assert marker["generator"] == expected_label
+assert marker["source_dataset_id"] == "600"
+assert marker["target_plans"] == plans_name
+
+plan_path = preprocessed / f"{plans_name}.json"
+plans = json.loads(plan_path.read_text())
+actual_plan_sha256 = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+if marker.get("target_plan_sha256") != actual_plan_sha256:
+    raise RuntimeError(
+        "controlled plan SHA-256 does not match the completed preprocessing marker: "
+        f"expected {marker.get('target_plan_sha256')}, got {actual_plan_sha256}"
+    )
 configuration = plans["configurations"]["3d_fullres"]
+required = {
+    "patch_size": [160, 192, 160],
+    "batch_size": 3,
+    "spacing": [1.0, 0.9375, 0.9375],
+    "normalization_schemes": ["ZScoreNormalization"],
+    "use_mask_for_norm": [True],
+    "preprocessor_name": "DefaultPreprocessor",
+    "batch_dice": False,
+}
+if plans["plans_name"] != plans_name:
+    raise RuntimeError(
+        f"plans_name: expected {plans_name!r}, got {plans['plans_name']!r}"
+    )
+for key, expected in required.items():
+    actual = configuration.get(key)
+    if actual != expected:
+        raise RuntimeError(f"{key}: expected {expected!r}, got {actual!r}")
+
+architecture = configuration["architecture"]
+expected_network = (
+    "dynamic_network_architectures.architectures.unet.ResidualEncoderUNet"
+)
+if architecture["network_class_name"] != expected_network:
+    raise RuntimeError(
+        f"network_class_name: expected {expected_network!r}, "
+        f"got {architecture['network_class_name']!r}"
+    )
+expected_features = [32, 64, 128, 256, 320, 320]
+actual_features = architecture["arch_kwargs"]["features_per_stage"]
+if actual_features != expected_features:
+    raise RuntimeError(
+        f"features_per_stage: expected {expected_features!r}, "
+        f"got {actual_features!r}"
+    )
 
 cache = preprocessed / configuration["data_identifier"]
 assert cache.is_dir(), cache
+assert configuration["data_identifier"].startswith(plans_name), (
+    f"cache identifier does not belong to {plans_name}: "
+    f"{configuration['data_identifier']}"
+)
+assert marker_path.stat().st_mtime_ns >= plan_path.stat().st_mtime_ns, (
+    "controlled preprocess marker predates its plan"
+)
+assert marker_path.stat().st_mtime_ns >= cache.stat().st_mtime_ns, (
+    "controlled preprocess marker predates its cache"
+)
 b2nd_count = len(list(cache.glob("*.b2nd")))
 npz_count = len(list(cache.glob("*.npz")))
 assert b2nd_count == 420 or (b2nd_count == 0 and npz_count == 210), (
     cache, b2nd_count, npz_count,
 )
-print("Preflight OK: common 105, fixed real folds/test, native ResEnc-L plan/cache")
+print("Preflight OK: common 105, fixed real folds/test, exact Dataset600 plan/cache")
 PYEOF
 
 echo "=== Common-105 synthetic-only training ==="
 echo "Generator:  $LABEL"
 echo "Dataset:    $DATASET_ID"
 echo "Fold:       $FOLD/4"
-echo "Seed:       $SEED"
+echo "Seed:       historical behavior (no explicit override)"
+echo "Plans:      $PLANS_NAME"
 echo "Experiment: $EXPERIMENT_NAME"
 echo "Resume:     $RESUME"
 echo "Chain:      $CHAIN_COUNT/$CHAIN_MAX"
@@ -137,11 +206,10 @@ TRAIN_ARGS=(
     --dataset-id "$DATASET_ID"
     --experiment-name "$EXPERIMENT_NAME"
     --fold "$FOLD"
-    --seed "$SEED"
     --nnunet-base "$NNUNET_BASE"
     --nnunet-results "$NNUNET_RESULTS"
     --trainer nnUNetTrainerBrainMets
-    --plans nnUNetResEncUNetLPlans
+    --plans "$PLANS_NAME"
 )
 if [[ "$RESUME" == 1 ]]; then
     TRAIN_ARGS+=(--continue-training)

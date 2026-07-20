@@ -13,14 +13,30 @@
 #SBATCH --output=IDUN/output/generate/sm_all14_c96_metrics_%j.out
 #SBATCH --error=IDUN/output/generate/sm_all14_c96_metrics_%j.err
 
-# Evaluate the strict 96 cases accepted by all 14 generators.
-# Submit only after the separate common-96 finalizer has completed.
+# Evaluate the strict 96 cases accepted by all 14 generators after the canonical
+# BRAVO volumes have completed the all-14 in-place brain-masking stage.
 
 set -Eeuo pipefail
 
 fatal() {
     echo "FATAL: $*" >&2
     exit 1
+}
+
+require_marker_value() {
+    local marker="$1"
+    local key="$2"
+    local expected="$3"
+    local -a values=()
+
+    mapfile -t values < <(
+        awk -F= -v key="$key" \
+            '$1 == key { print substr($0, index($0, "=") + 1) }' "$marker"
+    )
+    [[ ${#values[@]} -eq 1 ]] || fatal \
+        "$marker must contain exactly one ${key}=... entry"
+    [[ "${values[0]}" == "$expected" ]] || fatal \
+        "$marker has ${key}=${values[0]}; expected ${key}=${expected}"
 }
 
 readonly NUM_CANDIDATES=525
@@ -31,12 +47,13 @@ readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
+readonly BRAIN_MASK_COMPLETE_MARKER="${EVAL_ROOT}/.brain_mask_stage3_all14_complete"
 readonly CANDIDATE_MASKS="${EVAL_ROOT}/ordered_common_seg_masks_seed42/candidates525"
 readonly MATCHED_ROOT="${EVAL_ROOT}/matched_common96_all14"
 readonly COMMON_IDS_SOURCE="${MATCHED_ROOT}/common_candidate_ids.txt"
 readonly RESULT_ROOT="${CLUSTER_BASE}/AIS4900_master/runs/eval"
-readonly FINAL_DIR="${RESULT_ROOT}/${EVAL_ID}_all14_common96"
-readonly REPORT_NAME="all_metrics_train105_all14_common96.json"
+readonly FINAL_DIR="${RESULT_ROOT}/${EVAL_ID}_all14_common96_brainmasked"
+readonly REPORT_NAME="all_metrics_train105_all14_common96_brainmasked.json"
 readonly COMMON_IDS_RESULT_NAME="common_candidate_ids.txt"
 readonly INPUT_MANIFEST_NAME="metric_inputs.txt"
 readonly STAGING_DIR="${FINAL_DIR}.__staging_${SLURM_JOB_ID:?SLURM_JOB_ID must be set}"
@@ -59,6 +76,13 @@ readonly LABELS=(
 )
 
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
+[[ -s "$BRAIN_MASK_COMPLETE_MARKER" ]] || fatal \
+    "all-14 in-place brain masking is not complete: $BRAIN_MASK_COMPLETE_MARKER"
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" mode in_place_atomic
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" threshold 0.05
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" fill_holes true
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" dilate_pixels 2
+
 [[ -d "$TRAIN_DIR" ]] || fatal "training reference not found: $TRAIN_DIR"
 [[ -d "$CANDIDATE_MASKS" ]] || fatal "candidate masks not found: $CANDIDATE_MASKS"
 [[ -d "$MATCHED_ROOT" ]] || fatal \
@@ -128,7 +152,7 @@ for label in "${LABELS[@]}"; do
             "$label segmentation $candidate_id does not reference the shared mask"
         [[ "$dataset_dir/$candidate_id/bravo.nii.gz" \
             -ef "$canonical_dir/$candidate_id/bravo.nii.gz" ]] || fatal \
-            "$label BRAVO $candidate_id does not reference the original accepted output"
+            "$label BRAVO $candidate_id does not reference the brain-masked canonical output"
     done
 
     seg_count="$(
@@ -156,7 +180,7 @@ export PYTHONSAFEPATH=1
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 python -c "import torch; assert torch.cuda.is_available(); print(f'CUDA GPU: {torch.cuda.get_device_name(0)}')"
 
-echo "=== Computing train-reference metrics for all 14 datasets on the strict common 96 ==="
+echo "=== Computing train-reference metrics for all 14 brain-masked datasets on the strict common 96 ==="
 time python -m medgen.scripts.eval_all_metrics \
     --reference "train:${TRAIN_DIR}" \
     "${DATASET_ARGS[@]}" \
@@ -177,11 +201,16 @@ cp -- "$COMMON_IDS_SOURCE" "$STAGING_DIR/$COMMON_IDS_RESULT_NAME"
 ids_sha256="$(sha256sum "$COMMON_IDS_SOURCE" | awk '{print $1}')"
 {
     echo "eval_id=$EVAL_ID"
-    echo "panel=all14_common96"
+    echo "panel=all14_common96_brainmasked"
     echo "generated_cases=$NUM_COMMON"
     echo "reference=train105"
     echo "reference_cases=$NUM_REFERENCE"
     echo "candidate_ids_sha256=$ids_sha256"
+    echo "brain_mask_marker=$BRAIN_MASK_COMPLETE_MARKER"
+    echo "brain_mask_mode=in_place_atomic"
+    echo "brain_mask_threshold=0.05"
+    echo "brain_mask_fill_holes=true"
+    echo "brain_mask_dilate_pixels=2"
     echo "labels=${LABELS[*]}"
 } > "$STAGING_DIR/$INPUT_MANIFEST_NAME"
 

@@ -25,6 +25,22 @@ fatal() {
     exit 1
 }
 
+require_marker_value() {
+    local marker="$1"
+    local key="$2"
+    local expected="$3"
+    local -a values=()
+
+    mapfile -t values < <(
+        awk -F= -v key="$key" \
+            '$1 == key { print substr($0, index($0, "=") + 1) }' "$marker"
+    )
+    [[ ${#values[@]} -eq 1 ]] || fatal \
+        "$marker must contain exactly one ${key}=... entry"
+    [[ "${values[0]}" == "$expected" ]] || fatal \
+        "$marker has ${key}=${values[0]}; expected ${key}=${expected}"
+}
+
 readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
@@ -45,6 +61,7 @@ readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 
 readonly EVAL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${EVAL_ID}"
+readonly BRAIN_MASK_COMPLETE_MARKER="${EVAL_ROOT}/.brain_mask_stage3_all14_complete"
 readonly MATCHED_ROOT="${EVAL_ROOT}/matched_common105"
 readonly SYNTHETIC_DIR="${MATCHED_ROOT}/${LABEL}"
 readonly COMMON_IDS_FILE="${MATCHED_ROOT}/common_candidate_ids.txt"
@@ -57,6 +74,13 @@ export nnUNet_results="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 readonly TARGET_RAW="${nnUNet_raw}/Dataset${DATASET_ID}_BrainMet"
+
+[[ -s "$BRAIN_MASK_COMPLETE_MARKER" ]] || fatal \
+    "all-14 in-place brain masking is not complete: $BRAIN_MASK_COMPLETE_MARKER"
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" mode in_place_atomic
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" threshold 0.05
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" fill_holes true
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" dilate_pixels 2
 
 [[ -d "$REAL_DIR/train" && -d "$REAL_DIR/val" && -d "$REAL_DIR/test_new" ]] || \
     fatal "real train/val/test_new dataset is incomplete: $REAL_DIR"
@@ -148,6 +172,11 @@ printf '%s\n' \
     "generator=${LABEL}" \
     "dataset_id=${DATASET_ID}" \
     "synthetic_dir=${SYNTHETIC_DIR}" \
+    "brain_mask_marker=${BRAIN_MASK_COMPLETE_MARKER}" \
+    "brain_mask_mode=in_place_atomic" \
+    "brain_mask_threshold=0.05" \
+    "brain_mask_fill_holes=true" \
+    "brain_mask_dilate_pixels=2" \
     > "$TARGET_RAW/source_selection.txt"
 
 echo "Raw nnU-Net dataset ready: $TARGET_RAW"
