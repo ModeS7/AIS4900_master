@@ -9,6 +9,9 @@ METRICS_SLURM = (
     PROJECT_ROOT
     / "IDUN/generate/eval_generator_synthmask_metrics_all14_common96.slurm"
 )
+CORE5_METRICS_SLURM = (
+    PROJECT_ROOT / "IDUN/generate/eval_generator_synthmask_metrics.slurm"
+)
 
 TRAINING_JOBS = {
     "exp16_2_synthetic_105_common105_exp1_1_1000_d650.slurm": (
@@ -185,3 +188,28 @@ def test_common96_metrics_require_masking_and_use_a_distinct_output() -> None:
     ) in text
     assert 'readonly REPORT_NAME="all_metrics_train105_all14_common96_brainmasked.json"' in text
     assert "panel=all14_common96_brainmasked" in text
+
+
+def test_core5_common105_metrics_use_the_controlled_masked_panel() -> None:
+    text = _read(CORE5_METRICS_SLURM)
+
+    assert (
+        'readonly BRAIN_MASK_COMPLETE_MARKER="${EVAL_ROOT}/'
+        f'{MASK_MARKER_NAME}"'
+    ) in text
+    _assert_strict_mask_gate(text, "BRAIN_MASK_COMPLETE_MARKER")
+    assert 'readonly NUM_COMMON=105' in text
+    assert 'readonly MATCHED_ROOT="${EVAL_ROOT}/matched_common105"' in text
+    assert (
+        'readonly FINAL_DIR="${RESULT_ROOT}/'
+        '${EVAL_ID}_core5_common105_brainmasked"'
+    ) in text
+    assert (
+        'readonly REPORT_NAME="all_metrics_train105_'
+        'core5_common105_brainmasked.json"'
+    ) in text
+    assert "panel=core5_common105_brainmasked" in text
+    assert "--diversity-cap 105" in text
+
+    for label, _ in TRAINING_JOBS.values():
+        assert f"    {label}\n" in text
