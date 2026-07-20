@@ -20,14 +20,27 @@ fatal() {
     exit 1
 }
 
+require_marker_value() {
+    local marker="$1"
+    local key="$2"
+    local expected="$3"
+    local -a values
+    mapfile -t values < <(sed -n "s/^${key}=//p" "$marker")
+    [[ ${#values[@]} -eq 1 ]] || fatal \
+        "$marker must contain exactly one ${key}=... entry"
+    [[ "${values[0]}" == "$expected" ]] || fatal \
+        "$marker has ${key}=${values[0]}; expected ${key}=${expected}"
+}
+
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
 export CLUSTER_BASE
 readonly PANEL_ID="${PANEL_ID:-source_selection_train105_seed42_euler100}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly TRAIN_DIR="${CLUSTER_BASE}/MedicalDataSets/brainmetshare-3/train"
 readonly PANEL_ROOT="${CLUSTER_BASE}/MedicalDataSets/evalModels/${PANEL_ID}"
+readonly BRAIN_MASK_COMPLETE_MARKER="${PANEL_ROOT}/.brain_mask_stage3_all14_complete"
 readonly RESULT_DIR="${CLUSTER_BASE}/AIS4900_master/runs/eval/${PANEL_ID}"
-readonly REPORT="${RESULT_DIR}/all_metrics_train105.json"
+readonly REPORT="${RESULT_DIR}/all_metrics_train105_brainmasked.json"
 readonly LABELS=(
     exp1_1_1000
     exp1_1_1000plus
@@ -47,6 +60,17 @@ readonly LABELS=(
 
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || fatal "repository root not found: $REPO_ROOT"
 [[ -d "$TRAIN_DIR" ]] || fatal "training reference not found: $TRAIN_DIR"
+[[ -s "$BRAIN_MASK_COMPLETE_MARKER" ]] || fatal \
+    "real-seg all-14 brain masking is not complete: $BRAIN_MASK_COMPLETE_MARKER"
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" eval_id "$PANEL_ID"
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" mode in_place_atomic
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" threshold 0.05
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" fill_holes true
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" dilate_pixels 2
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" conditioning real_train_segmentation
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" generators 14
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" generated_cases_per_dataset 105
+require_marker_value "$BRAIN_MASK_COMPLETE_MARKER" generated_volumes 1470
 [[ ! -e "$REPORT" ]] || fatal "metric report already exists; refusing to overwrite: $REPORT"
 cd "$REPO_ROOT"
 
@@ -66,7 +90,7 @@ for label in "${LABELS[@]}"; do
     DATASET_ARGS+=(--dataset "${label}:${dataset_dir}")
 done
 
-echo "=== One combined train-reference metric pass for all 14 datasets ==="
+echo "=== Train-reference metrics for all 14 in-place brain-masked real-seg datasets ==="
 time python -m medgen.scripts.eval_all_metrics \
     --reference "train:${TRAIN_DIR}" \
     "${DATASET_ARGS[@]}" \
@@ -83,4 +107,4 @@ time python -m medgen.scripts.eval_all_metrics \
     --output "$REPORT"
 
 [[ -s "$REPORT" ]] || fatal "metric report was not created"
-echo "Completed combined metric report: $REPORT"
+echo "Completed brain-masked metric report: $REPORT"
