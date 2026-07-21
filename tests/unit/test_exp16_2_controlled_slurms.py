@@ -36,6 +36,10 @@ CORE5_TRAINING_JOBS = {
     ),
 }
 ADDITIONAL_TRAINING_JOBS = {
+    "exp16_2_synthetic_105_common105_exp47a_d654.slurm": (
+        "exp47a",
+        654,
+    ),
     "exp16_2_synthetic_105_common105_exp47c_d656.slurm": (
         "exp47c",
         656,
@@ -76,7 +80,7 @@ def _assert_strict_mask_gate(text: str, marker_variable: str) -> None:
 
 def test_exp16_2_training_jobs_keep_the_controlled_d600_contract() -> None:
     assert len(CORE5_TRAINING_JOBS) == 5
-    assert len(TRAINING_JOBS) == 6
+    assert len(TRAINING_JOBS) == 7
 
     for filename, (label, dataset_id) in TRAINING_JOBS.items():
         text = _read(NNUNET_SLURM_DIR / filename)
@@ -86,6 +90,10 @@ def test_exp16_2_training_jobs_keep_the_controlled_d600_contract() -> None:
         assert "#SBATCH --array=0-4%5" in text
         assert f"readonly DATASET_ID={dataset_id}" in text
         assert f'readonly LABEL="{label}"' in text
+        assert (
+            f'readonly SCRIPT_RELATIVE="IDUN/train/downstream/nnunet/{filename}"'
+            in text
+        )
         assert f'readonly PLANS_NAME="{CONTROLLED_PLANS}"' in text
         assert (
             'readonly MODEL_NAME="nnUNetTrainerBrainMets__'
@@ -133,6 +141,103 @@ def test_exp47c_preparation_selects_existing_frozen_cases_and_runs_no_generation
     assert '"$CANDIDATE_MASKS/$candidate_id/seg.nii.gz"' in text
     assert '"$CANONICAL_DIR/$candidate_id/bravo.nii.gz"' in text
     assert 'mv -- "$STAGED_VIEW" "$MATCHED_VIEW"' in text
+    assert 'export EXP16_LABEL_OVERRIDE="$LABEL"' in text
+    assert 'export EXP16_DATASET_ID_OVERRIDE="$DATASET_ID"' in text
+    assert 'bash "$CONVERT_SCRIPT"' in text
+    assert 'bash "$PREPROCESS_SCRIPT"' in text
+    assert "python -m medgen.scripts.generate" not in text
+
+
+def test_exp47a_preparation_requires_the_recovered_frozen_view() -> None:
+    text = _read(
+        NNUNET_SLURM_DIR / "prepare_synthmask_common105_exp47a_d654.slurm"
+    )
+
+    assert "#SBATCH --partition=CPUQ" in text
+    assert "#SBATCH --time=0-12:00:00" in text
+    assert 'readonly LABEL="exp47a"' in text
+    assert "readonly DATASET_ID=654" in text
+    assert "readonly EXPECTED_CASES=105" in text
+    assert 'readonly RECOVERED_CANDIDATE="00400"' in text
+    assert "readonly EXPECTED_CANONICAL_CASES=155" in text
+    assert "readonly EXPECTED_PANEL_VOLUMES=2125" in text
+    assert (
+        'readonly CANDIDATE_MASKS="${EVAL_ROOT}/'
+        'ordered_common_seg_masks_seed42/candidates525"'
+    ) in text
+    assert 'readonly COMMON_IDS_FILE="${MATCHED_ROOT}/common_candidate_ids.txt"' in text
+    assert 'readonly MATCHED_VIEW="${MATCHED_ROOT}/${LABEL}"' in text
+    assert (
+        'readonly CASE_RECOVERY_MARKER="${CANONICAL_DIR}/'
+        '${RECOVERED_CANDIDATE}/.recovery_provenance"'
+    ) in text
+    assert (
+        'readonly VIEW_RECOVERY_MARKER="${MATCHED_VIEW}/.recovery_provenance"'
+        in text
+    )
+    _assert_strict_mask_gate(text, "PANEL_MASK_MARKER")
+    for key, value in (
+        ("threshold", "0.05"),
+        ("fill_holes", "true"),
+        ("dilate_pixels", "2"),
+        ("accepted_cases", '"$EXPECTED_CANONICAL_CASES"'),
+        ("extension_candidate", '"$RECOVERED_CANDIDATE"'),
+    ):
+        assert (
+            f'require_marker_value "$DATASET_MASK_MARKER" {key} {value}'
+            in text
+        )
+
+    assert 'require_marker_value "$CASE_RECOVERY_MARKER" job_id "$recovery_job"' in text
+    assert 'require_marker_value "$VIEW_RECOVERY_MARKER" job_id "$recovery_job"' in text
+    assert (
+        'require_marker_value "$CASE_RECOVERY_MARKER" candidate_id '
+        '"$RECOVERED_CANDIDATE"'
+    ) in text
+    assert (
+        'require_marker_value "$VIEW_RECOVERY_MARKER" candidate_id '
+        '"$RECOVERED_CANDIDATE"'
+    ) in text
+    assert 'require_marker_value "$DATASET_MASK_MARKER" extension_job_id "$recovery_job"' in text
+    assert 'require_marker_value "$PANEL_MASK_MARKER" extension_job_id "$recovery_job"' in text
+    assert 'require_marker_value "$PANEL_MASK_MARKER" extension_label "$LABEL"' in text
+    assert (
+        'require_marker_value "$PANEL_MASK_MARKER" extension_candidate '
+        '"$RECOVERED_CANDIDATE"'
+    ) in text
+    assert (
+        'require_marker_value "$PANEL_MASK_MARKER" accepted_volumes '
+        '"$EXPECTED_PANEL_VOLUMES"'
+    ) in text
+    assert 'cmp -s "$CASE_RECOVERY_MARKER" "$VIEW_RECOVERY_MARKER"' in text
+    assert (
+        'require_marker_value "$CASE_RECOVERY_MARKER" selection_rule '
+        'first_passing_draw_in_4_to_50'
+    ) in text
+    assert (
+        '"$CANONICAL_DIR/$RECOVERED_CANDIDATE/seg.nii.gz"'
+        in text
+    )
+    assert 'require_marker_value "$CASE_RECOVERY_MARKER" mask_sha256 "$mask_sha256"' in text
+    assert (
+        'require_marker_value "$CASE_RECOVERY_MARKER" '
+        'masked_bravo_sha256 "$bravo_sha256"'
+    ) in text
+    assert '"$CANDIDATE_MASKS/$candidate_id/seg.nii.gz"' in text
+    assert '"$CANONICAL_DIR/$candidate_id/bravo.nii.gz"' in text
+    assert 'validate_view "$MATCHED_VIEW"' in text
+    assert "flock -u 9" in text
+    assert (
+        '[[ "$RAW_DIR/source_selection.txt" -nt "$VIEW_RECOVERY_MARKER" ]]'
+        in text
+    )
+    assert (
+        '[[ "$PREPROCESS_MARKER" -nt "$RAW_DIR/source_selection.txt" ]]'
+        in text
+    )
+    assert '[[ "$PREPROCESS_MARKER" -nt "$VIEW_RECOVERY_MARKER" ]]' in text
+    assert 'mv -- "$STAGED_VIEW" "$MATCHED_VIEW"' not in text
+    assert 'ln -s --' not in text
     assert 'export EXP16_LABEL_OVERRIDE="$LABEL"' in text
     assert 'export EXP16_DATASET_ID_OVERRIDE="$DATASET_ID"' in text
     assert 'bash "$CONVERT_SCRIPT"' in text
