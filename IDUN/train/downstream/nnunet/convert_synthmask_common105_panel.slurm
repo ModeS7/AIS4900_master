@@ -50,12 +50,23 @@ readonly LABELS=(
 )
 readonly DATASET_IDS=(650 651 652 661 662)
 
-readonly ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
-(( ARRAY_INDEX >= 0 && ARRAY_INDEX < ${#LABELS[@]} )) || \
-    fatal "array index is outside 0--4: $ARRAY_INDEX"
-
-readonly LABEL="${LABELS[$ARRAY_INDEX]}"
-readonly DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
+if [[ -n "${EXP16_LABEL_OVERRIDE:-}" || -n "${EXP16_DATASET_ID_OVERRIDE:-}" ]]; then
+    [[ -n "${EXP16_LABEL_OVERRIDE:-}" && -n "${EXP16_DATASET_ID_OVERRIDE:-}" ]] || \
+        fatal "EXP16_LABEL_OVERRIDE and EXP16_DATASET_ID_OVERRIDE must be set together"
+    [[ "$EXP16_DATASET_ID_OVERRIDE" =~ ^[0-9]{3}$ ]] || \
+        fatal "EXP16_DATASET_ID_OVERRIDE must be a three-digit nnU-Net dataset ID"
+    LABEL="$EXP16_LABEL_OVERRIDE"
+    DATASET_ID="$EXP16_DATASET_ID_OVERRIDE"
+    TASK_DESCRIPTION="single-source extension"
+else
+    ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
+    (( ARRAY_INDEX >= 0 && ARRAY_INDEX < ${#LABELS[@]} )) || \
+        fatal "array index is outside 0--4: $ARRAY_INDEX"
+    LABEL="${LABELS[$ARRAY_INDEX]}"
+    DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
+    TASK_DESCRIPTION="array task ${ARRAY_INDEX}/4"
+fi
+readonly LABEL DATASET_ID TASK_DESCRIPTION
 readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 : "${CLUSTER_BASE:=/cluster/work/${USER}}"
@@ -122,7 +133,7 @@ module load Anaconda3/2024.02-1
 conda activate nnunet
 
 echo "=== Convert matched common-105 dataset ==="
-echo "Array task:  ${ARRAY_INDEX}/4"
+echo "Selection:   ${TASK_DESCRIPTION}"
 echo "Generator:   ${LABEL}"
 echo "Dataset ID:  ${DATASET_ID}"
 echo "Synthetic:   ${SYNTHETIC_DIR}"

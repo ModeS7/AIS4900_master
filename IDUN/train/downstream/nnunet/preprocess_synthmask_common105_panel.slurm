@@ -47,11 +47,21 @@ readonly SOURCE_DATASET_ID=600
 readonly SOURCE_PLANS="nnUNetResEncUNetLPlans"
 readonly TARGET_PLANS="nnUNetResEncUNetLPlansD600"
 
-readonly ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
-(( ARRAY_INDEX >= 0 && ARRAY_INDEX < ${#DATASET_IDS[@]} )) || \
-    fatal "array index is outside 0--4: $ARRAY_INDEX"
-readonly LABEL="${LABELS[$ARRAY_INDEX]}"
-readonly DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
+if [[ -n "${EXP16_LABEL_OVERRIDE:-}" || -n "${EXP16_DATASET_ID_OVERRIDE:-}" ]]; then
+    [[ -n "${EXP16_LABEL_OVERRIDE:-}" && -n "${EXP16_DATASET_ID_OVERRIDE:-}" ]] || \
+        fatal "EXP16_LABEL_OVERRIDE and EXP16_DATASET_ID_OVERRIDE must be set together"
+    [[ "$EXP16_DATASET_ID_OVERRIDE" =~ ^[0-9]{3}$ ]] || \
+        fatal "EXP16_DATASET_ID_OVERRIDE must be a three-digit nnU-Net dataset ID"
+    LABEL="$EXP16_LABEL_OVERRIDE"
+    DATASET_ID="$EXP16_DATASET_ID_OVERRIDE"
+else
+    ARRAY_INDEX="${SLURM_ARRAY_TASK_ID:?submit this file as its configured job array}"
+    (( ARRAY_INDEX >= 0 && ARRAY_INDEX < ${#DATASET_IDS[@]} )) || \
+        fatal "array index is outside 0--4: $ARRAY_INDEX"
+    LABEL="${LABELS[$ARRAY_INDEX]}"
+    DATASET_ID="${DATASET_IDS[$ARRAY_INDEX]}"
+fi
+readonly LABEL DATASET_ID
 
 readonly REPO_ROOT="${SLURM_SUBMIT_DIR:?SLURM_SUBMIT_DIR must be set}"
 readonly EVAL_ID="${EVAL_ID:-source_selection_synthmask525_seed42_euler100_pca2p323mm_try3}"

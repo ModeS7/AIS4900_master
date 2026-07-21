@@ -13,7 +13,7 @@ CORE5_METRICS_SLURM = (
     PROJECT_ROOT / "IDUN/generate/eval_generator_synthmask_metrics.slurm"
 )
 
-TRAINING_JOBS = {
+CORE5_TRAINING_JOBS = {
     "exp16_2_synthetic_105_common105_exp1_1_1000_d650.slurm": (
         "exp1_1_1000",
         650,
@@ -35,6 +35,13 @@ TRAINING_JOBS = {
         662,
     ),
 }
+ADDITIONAL_TRAINING_JOBS = {
+    "exp16_2_synthetic_105_common105_exp47c_d656.slurm": (
+        "exp47c",
+        656,
+    ),
+}
+TRAINING_JOBS = {**CORE5_TRAINING_JOBS, **ADDITIONAL_TRAINING_JOBS}
 
 MASK_MARKER_NAME = ".brain_mask_stage3_all14_complete"
 PREPROCESS_MARKER_NAME = ".exp16_2_d600_preprocess_complete"
@@ -68,7 +75,8 @@ def _assert_strict_mask_gate(text: str, marker_variable: str) -> None:
 
 
 def test_exp16_2_training_jobs_keep_the_controlled_d600_contract() -> None:
-    assert len(TRAINING_JOBS) == 5
+    assert len(CORE5_TRAINING_JOBS) == 5
+    assert len(TRAINING_JOBS) == 6
 
     for filename, (label, dataset_id) in TRAINING_JOBS.items():
         text = _read(NNUNET_SLURM_DIR / filename)
@@ -93,6 +101,58 @@ def test_exp16_2_training_jobs_keep_the_controlled_d600_contract() -> None:
         assert "hashlib.sha256(plan_path.read_bytes()).hexdigest()" in text
         assert "--seed" not in text
         assert "readonly SEED" not in text
+
+
+def test_exp47c_preparation_selects_existing_frozen_cases_and_runs_no_generation() -> None:
+    text = _read(
+        NNUNET_SLURM_DIR / "prepare_synthmask_common105_exp47c_d656.slurm"
+    )
+
+    assert "#SBATCH --partition=CPUQ" in text
+    assert "#SBATCH --time=0-12:00:00" in text
+    assert 'readonly LABEL="exp47c"' in text
+    assert "readonly DATASET_ID=656" in text
+    assert "readonly EXPECTED_CASES=105" in text
+    assert (
+        'readonly CANDIDATE_MASKS="${EVAL_ROOT}/'
+        'ordered_common_seg_masks_seed42/candidates525"'
+    ) in text
+    assert 'readonly COMMON_IDS_FILE="${MATCHED_ROOT}/common_candidate_ids.txt"' in text
+    assert 'readonly MATCHED_VIEW="${MATCHED_ROOT}/${LABEL}"' in text
+    _assert_strict_mask_gate(text, "PANEL_MASK_MARKER")
+    for key, value in (
+        ("threshold", "0.05"),
+        ("fill_holes", "true"),
+        ("dilate_pixels", "2"),
+    ):
+        assert (
+            f'require_marker_value "$DATASET_MASK_MARKER" {key} {value}'
+            in text
+        )
+
+    assert '"$CANDIDATE_MASKS/$candidate_id/seg.nii.gz"' in text
+    assert '"$CANONICAL_DIR/$candidate_id/bravo.nii.gz"' in text
+    assert 'mv -- "$STAGED_VIEW" "$MATCHED_VIEW"' in text
+    assert 'export EXP16_LABEL_OVERRIDE="$LABEL"' in text
+    assert 'export EXP16_DATASET_ID_OVERRIDE="$DATASET_ID"' in text
+    assert 'bash "$CONVERT_SCRIPT"' in text
+    assert 'bash "$PREPROCESS_SCRIPT"' in text
+    assert "python -m medgen.scripts.generate" not in text
+
+
+def test_common105_preparation_scripts_support_a_fail_closed_single_source() -> None:
+    for filename in (
+        "convert_synthmask_common105_panel.slurm",
+        "preprocess_synthmask_common105_panel.slurm",
+    ):
+        text = _read(NNUNET_SLURM_DIR / filename)
+        assert '"${EXP16_LABEL_OVERRIDE:-}"' in text
+        assert '"${EXP16_DATASET_ID_OVERRIDE:-}"' in text
+        assert (
+            "EXP16_LABEL_OVERRIDE and EXP16_DATASET_ID_OVERRIDE must be set together"
+            in text
+        )
+        assert 'readonly LABEL DATASET_ID' in text
 
 
 def test_exp16_2_preprocessing_transfers_and_validates_the_exp3_plan() -> None:
@@ -211,5 +271,5 @@ def test_core5_common105_metrics_use_the_controlled_masked_panel() -> None:
     assert "panel=core5_common105_brainmasked" in text
     assert "--diversity-cap 105" in text
 
-    for label, _ in TRAINING_JOBS.values():
+    for label, _ in CORE5_TRAINING_JOBS.values():
         assert f"    {label}\n" in text
