@@ -73,6 +73,58 @@ def volumetric_iou(prediction: np.ndarray, target: np.ndarray) -> float:
     return float(np.logical_and(pred, gt).sum()) / union
 
 
+def brats_mets_lesionwise_dice(
+    prediction: np.ndarray,
+    target: np.ndarray,
+    *,
+    min_overlap_voxels: int = 1,
+) -> float:
+    """BraTS-Mets lesion-wise Dice with missed and false-positive lesions scored zero.
+
+    Ground-truth and predicted lesions use 26-connectivity.  Each ground-truth
+    lesion contributes its local bounding-box Dice when it has the required
+    voxel overlap and contributes zero otherwise.  Each predicted component
+    that touches no ground-truth lesion contributes one additional zero.  The
+    patient score is the mean of those contributions.  This intentionally
+    remains separate from the study-defined one-to-one detection analysis,
+    which uses a full-component Dice threshold and minimum component size.
+    """
+    pred = np.asarray(prediction, dtype=bool)
+    gt = np.asarray(target, dtype=bool)
+    if pred.shape != gt.shape or pred.ndim != 3:
+        raise ValueError(f"Expected equal 3D masks, got {pred.shape} and {gt.shape}")
+    if min_overlap_voxels < 1:
+        raise ValueError("min_overlap_voxels must be positive")
+
+    gt_labels, n_gt = label(gt, structure=CONNECTIVITY_26)
+    pred_labels, n_pred = label(pred, structure=CONNECTIVITY_26)
+    if n_gt == 0 and n_pred == 0:
+        return 1.0
+
+    contributions: list[float] = []
+    prediction_touched = np.zeros(n_pred + 1, dtype=bool)
+    for gt_id in range(1, n_gt + 1):
+        gt_component = gt_labels == gt_id
+        if int(np.logical_and(pred, gt_component).sum()) < min_overlap_voxels:
+            contributions.append(0.0)
+            continue
+
+        coordinates = np.where(gt_component)
+        bounding_box = tuple(slice(int(axis.min()), int(axis.max()) + 1) for axis in coordinates)
+        local_prediction = pred[bounding_box]
+        local_target = gt_component[bounding_box]
+        denominator = int(local_prediction.sum()) + int(local_target.sum())
+        contributions.append(
+            2.0 * float(np.logical_and(local_prediction, local_target).sum()) / denominator
+        )
+        for pred_id in np.unique(pred_labels[gt_component]):
+            if pred_id != 0:
+                prediction_touched[int(pred_id)] = True
+
+    contributions.extend(0.0 for pred_id in range(1, n_pred + 1) if not prediction_touched[pred_id])
+    return float(np.mean(contributions))
+
+
 def slicewise_dice(
     prediction: np.ndarray,
     target: np.ndarray,

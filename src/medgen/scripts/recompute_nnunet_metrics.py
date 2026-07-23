@@ -29,6 +29,7 @@ from scipy import stats
 
 from medgen.metrics.paper_segmentation import (
     LEGACY_SIZE_BINS_MM,
+    brats_mets_lesionwise_dice,
     hd95_mm,
     matched_component_metrics,
     sample_summary,
@@ -351,6 +352,7 @@ def _case_metrics(
         },
         "volumetric_dice": volumetric_dice(prediction, target),
         "volumetric_iou": volumetric_iou(prediction, target),
+        "brats_mets_lesionwise_dice": brats_mets_lesionwise_dice(prediction, target),
         "voxel_precision": (
             true_positive_voxels / predicted_positive_voxels if predicted_positive_voxels else None
         ),
@@ -499,6 +501,10 @@ def _summarize_condition(
         [case["volumetric_dice"] for case in case_values],
         dtype=np.float64,
     )
+    brats_mets_dice_values = np.asarray(
+        [case["brats_mets_lesionwise_dice"] for case in case_values],
+        dtype=np.float64,
+    )
 
     return {
         "n_cases": len(case_values),
@@ -511,6 +517,14 @@ def _summarize_condition(
             ),
         },
         "volumetric_iou": sample_summary([case["volumetric_iou"] for case in case_values]),
+        "brats_mets_lesionwise_dice": {
+            **sample_summary(brats_mets_dice_values),
+            "bootstrap_mean_95ci": _bootstrap_mean_ci(
+                brats_mets_dice_values,
+                draws=bootstrap_draws,
+                seed=seed,
+            ),
+        },
         "sagittal_slicewise_dice": sample_summary(
             [case["sagittal_slicewise_dice"] for case in case_values]
         ),
@@ -625,6 +639,10 @@ def _evaluate_condition(
             "dice_views": {
                 "patient_volumetric": "complete 3D foreground mask; empty/empty=1",
                 "pooled_voxel": "all patient voxels pooled before Dice calculation",
+                "brats_mets_lesionwise": (
+                    "26-connected lesions; missed GT and prediction-only lesions contribute 0; "
+                    "any voxel overlap detects a GT lesion for this metric"
+                ),
                 "slicewise_all": (
                     "sagittal, coronal, and axial; correctly predicted empty slices=1"
                 ),
@@ -859,6 +877,14 @@ def _summary_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             "dice_ci_hi": summary["volumetric_dice"]["bootstrap_mean_95ci"][1],
             "iou_mean": summary["volumetric_iou"]["mean"],
             "iou_std": summary["volumetric_iou"]["std"],
+            "brats_mets_dice_mean": summary["brats_mets_lesionwise_dice"]["mean"],
+            "brats_mets_dice_std": summary["brats_mets_lesionwise_dice"]["std"],
+            "brats_mets_dice_ci_lo": summary["brats_mets_lesionwise_dice"]["bootstrap_mean_95ci"][
+                0
+            ],
+            "brats_mets_dice_ci_hi": summary["brats_mets_lesionwise_dice"]["bootstrap_mean_95ci"][
+                1
+            ],
             "slicewise_dice_mean": summary["sagittal_slicewise_dice"]["mean"],
             "slicewise_dice_std": summary["sagittal_slicewise_dice"]["std"],
             "sagittal_slicewise_dice_mean": summary["sagittal_slicewise_dice"]["mean"],
@@ -938,6 +964,7 @@ def _per_case_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                     "case_id": case_id,
                     "volumetric_dice": case["volumetric_dice"],
                     "volumetric_iou": case["volumetric_iou"],
+                    "brats_mets_lesionwise_dice": case["brats_mets_lesionwise_dice"],
                     "voxel_precision": case["voxel_precision"],
                     "voxel_recall": case["voxel_recall"],
                     "sagittal_slicewise_dice": case["sagittal_slicewise_dice"],
@@ -995,9 +1022,10 @@ def _per_lesion_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
 def _print_headline(results: dict[str, dict[str, Any]]) -> None:
     logger.info("=== Prediction-only paper metric panel ===")
     logger.info(
-        "%-18s %8s %8s %8s %10s %8s %8s %8s",
+        "%-18s %8s %8s %8s %8s %10s %8s %8s %8s",
         "condition",
         "Dice",
+        "BraTS",
         "Prec",
         "Recall",
         "HD95mm",
@@ -1008,9 +1036,10 @@ def _print_headline(results: dict[str, dict[str, Any]]) -> None:
     for label_name, result in results.items():
         summary = result["summary"]
         logger.info(
-            "%-18s %8.4f %8.4f %8.4f %10.3f %8.4f %8.4f %8.3f",
+            "%-18s %8.4f %8.4f %8.4f %8.4f %10.3f %8.4f %8.4f %8.3f",
             label_name,
             summary["volumetric_dice"]["mean"],
+            summary["brats_mets_lesionwise_dice"]["mean"],
             summary["voxel_micro"]["precision"],
             summary["voxel_micro"]["recall"],
             summary["hd95_mm"]["failure_aware_all_cases"]["mean"],

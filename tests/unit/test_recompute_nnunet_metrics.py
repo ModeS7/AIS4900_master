@@ -14,6 +14,7 @@ import pytest
 
 from medgen.metrics.paper_segmentation import (
     axial_feret_diameter_mm,
+    brats_mets_lesionwise_dice,
     classify_legacy_size,
     hd95_mm,
     matched_component_metrics,
@@ -69,6 +70,19 @@ def test_complete_volume_overlap_metrics_cover_empty_and_partial_masks() -> None
     assert volumetric_iou(empty, empty) == 1.0
     assert volumetric_dice(prediction, target) == pytest.approx(2 / 3)
     assert volumetric_iou(prediction, target) == pytest.approx(1 / 2)
+
+
+def test_brats_mets_dice_penalizes_misses_and_prediction_only_lesions() -> None:
+    target = _mask((12, 12, 12))
+    prediction = _mask((12, 12, 12))
+    target[1:3, 1:3, 1:3] = True
+    target[8:10, 8:10, 8:10] = True
+    prediction[1:3, 1:3, 1:3] = True
+    prediction[5:7, 5:7, 5:7] = True
+
+    # One perfect hit, one missed GT lesion, and one prediction-only lesion.
+    assert brats_mets_lesionwise_dice(prediction, target) == pytest.approx(1 / 3)
+    assert brats_mets_lesionwise_dice(_mask(), _mask()) == 1.0
 
 
 def test_slicewise_dice_exposes_all_axes_and_foreground_only_policy() -> None:
@@ -358,6 +372,8 @@ def test_cli_smoke_reads_saved_masks_without_predictor(tmp_path: Path) -> None:
     assert toy["volumetric_dice"]["mean"] == 1.0
     assert toy["volumetric_dice"]["bootstrap_mean_95ci"] == [1.0, 1.0]
     assert toy["volumetric_iou"]["mean"] == 1.0
+    assert toy["brats_mets_lesionwise_dice"]["mean"] == 1.0
+    assert toy["brats_mets_lesionwise_dice"]["bootstrap_mean_95ci"] == [1.0, 1.0]
     assert toy["voxel_micro"]["dice"] == 1.0
     assert toy["voxel_micro"]["iou"] == 1.0
     for plane in ("sagittal", "coronal", "axial"):
