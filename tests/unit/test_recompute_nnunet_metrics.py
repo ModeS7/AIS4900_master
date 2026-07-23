@@ -17,6 +17,9 @@ from medgen.metrics.paper_segmentation import (
     classify_legacy_size,
     hd95_mm,
     matched_component_metrics,
+    slicewise_dice,
+    volumetric_dice,
+    volumetric_iou,
 )
 from medgen.scripts.recompute_nnunet_metrics import (
     _paired_statistics,
@@ -51,6 +54,49 @@ def _save_provenance(stdout_path: Path, prediction_dir: Path, cases: int) -> Non
     stdout_path.with_suffix(".err").write_text(
         f"INFO: Evaluating {cases} cases\n",
         encoding="utf-8",
+    )
+
+
+def test_complete_volume_overlap_metrics_cover_empty_and_partial_masks() -> None:
+    empty = _mask((2, 2, 2))
+    target = empty.copy()
+    prediction = empty.copy()
+    target[0, 0, 0] = True
+    target[1, 1, 1] = True
+    prediction[0, 0, 0] = True
+
+    assert volumetric_dice(empty, empty) == 1.0
+    assert volumetric_iou(empty, empty) == 1.0
+    assert volumetric_dice(prediction, target) == pytest.approx(2 / 3)
+    assert volumetric_iou(prediction, target) == pytest.approx(1 / 2)
+
+
+def test_slicewise_dice_exposes_all_axes_and_foreground_only_policy() -> None:
+    target = _mask((2, 2, 2))
+    prediction = _mask((2, 2, 2))
+    target[0, 0, 0] = True
+    prediction[0, 0, 0] = True
+    prediction[0, 1, 0] = True
+
+    # Axis 0 has one non-empty slice with Dice 2/3 and one true-negative slice.
+    assert slicewise_dice(prediction, target, axis=0) == pytest.approx(5 / 6)
+    assert slicewise_dice(
+        prediction,
+        target,
+        axis=0,
+        include_empty_slices=False,
+    ) == pytest.approx(2 / 3)
+    # The same masks exercise the coronal and axial paths explicitly.
+    assert slicewise_dice(prediction, target, axis=1) == pytest.approx(1 / 2)
+    assert slicewise_dice(prediction, target, axis=2) == pytest.approx(5 / 6)
+    assert (
+        slicewise_dice(
+            _mask((2, 2, 2)),
+            _mask((2, 2, 2)),
+            axis=2,
+            include_empty_slices=False,
+        )
+        is None
     )
 
 
@@ -308,7 +354,16 @@ def test_cli_smoke_reads_saved_masks_without_predictor(tmp_path: Path) -> None:
 
     with (output_dir / "summary.json").open(encoding="utf-8") as handle:
         summary = json.load(handle)
-    assert summary["conditions"]["toy"]["summary"]["volumetric_dice"]["mean"] == 1.0
+    toy = summary["conditions"]["toy"]["summary"]
+    assert toy["volumetric_dice"]["mean"] == 1.0
+    assert toy["volumetric_dice"]["bootstrap_mean_95ci"] == [1.0, 1.0]
+    assert toy["volumetric_iou"]["mean"] == 1.0
+    assert toy["voxel_micro"]["dice"] == 1.0
+    assert toy["voxel_micro"]["iou"] == 1.0
+    for plane in ("sagittal", "coronal", "axial"):
+        assert toy[f"{plane}_slicewise_dice"]["mean"] == 1.0
+        assert toy[f"{plane}_foreground_slicewise_dice"]["mean"] == 1.0
+    assert toy["matched_lesions"]["per_patient_penalized_lesion_dice"]["mean"] == 1.0
     assert summary["metadata"]["created_by"].endswith("recompute_nnunet_metrics")
     assert summary["metadata"]["conditions"][0]["prediction_provenance"]["folds"] == [
         0,

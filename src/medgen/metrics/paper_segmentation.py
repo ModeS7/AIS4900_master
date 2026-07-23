@@ -63,13 +63,30 @@ def volumetric_dice(prediction: np.ndarray, target: np.ndarray) -> float:
     return 2.0 * float(np.logical_and(pred, gt).sum()) / denominator
 
 
+def volumetric_iou(prediction: np.ndarray, target: np.ndarray) -> float:
+    """Complete-volume foreground IoU; empty/empty is scored as one."""
+    pred = np.asarray(prediction, dtype=bool)
+    gt = np.asarray(target, dtype=bool)
+    union = int(np.logical_or(pred, gt).sum())
+    if union == 0:
+        return 1.0
+    return float(np.logical_and(pred, gt).sum()) / union
+
+
 def slicewise_dice(
     prediction: np.ndarray,
     target: np.ndarray,
     *,
     axis: int = 0,
-) -> float:
-    """Mean slice-wise Dice with correctly predicted empty slices scored one."""
+    include_empty_slices: bool = True,
+) -> float | None:
+    """Mean slice-wise Dice on one array axis.
+
+    With ``include_empty_slices=True`` correctly predicted empty slices score
+    one, matching the paper's sagittal endpoint.  With it disabled, slices
+    where both masks are empty are omitted.  The latter is undefined when all
+    slices are empty and therefore returns ``None``.
+    """
     pred = np.asarray(prediction, dtype=bool)
     gt = np.asarray(target, dtype=bool)
     if pred.shape != gt.shape:
@@ -82,8 +99,14 @@ def slicewise_dice(
     denominator = pred.sum(axis=reduce_axes, dtype=np.float64) + gt.sum(
         axis=reduce_axes, dtype=np.float64
     )
+    nonempty = denominator > 0
+    if not include_empty_slices:
+        if not nonempty.any():
+            return None
+        return float((2.0 * intersection[nonempty] / denominator[nonempty]).mean())
+
     values = np.ones_like(denominator, dtype=np.float64)
-    np.divide(2.0 * intersection, denominator, out=values, where=denominator > 0)
+    np.divide(2.0 * intersection, denominator, out=values, where=nonempty)
     return float(values.mean())
 
 

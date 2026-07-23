@@ -34,6 +34,7 @@ from medgen.metrics.paper_segmentation import (
     sample_summary,
     slicewise_dice,
     volumetric_dice,
+    volumetric_iou,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,8 @@ def _case_metrics(
     true_positive_voxels = int(np.logical_and(prediction, target).sum())
     false_positive_voxels = int(np.logical_and(prediction, ~target).sum())
     false_negative_voxels = int(np.logical_and(~prediction, target).sum())
+    predicted_positive_voxels = true_positive_voxels + false_positive_voxels
+    target_positive_voxels = true_positive_voxels + false_negative_voxels
     lesion = matched_component_metrics(
         prediction,
         target,
@@ -347,7 +350,34 @@ def _case_metrics(
             "fn": false_negative_voxels,
         },
         "volumetric_dice": volumetric_dice(prediction, target),
+        "volumetric_iou": volumetric_iou(prediction, target),
+        "voxel_precision": (
+            true_positive_voxels / predicted_positive_voxels if predicted_positive_voxels else None
+        ),
+        "voxel_recall": (
+            true_positive_voxels / target_positive_voxels if target_positive_voxels else None
+        ),
         "sagittal_slicewise_dice": slicewise_dice(prediction, target, axis=0),
+        "coronal_slicewise_dice": slicewise_dice(prediction, target, axis=1),
+        "axial_slicewise_dice": slicewise_dice(prediction, target, axis=2),
+        "sagittal_foreground_slicewise_dice": slicewise_dice(
+            prediction,
+            target,
+            axis=0,
+            include_empty_slices=False,
+        ),
+        "coronal_foreground_slicewise_dice": slicewise_dice(
+            prediction,
+            target,
+            axis=1,
+            include_empty_slices=False,
+        ),
+        "axial_foreground_slicewise_dice": slicewise_dice(
+            prediction,
+            target,
+            axis=2,
+            include_empty_slices=False,
+        ),
         "hd95": hd95_mm(prediction, target, target_spacing, target_affine),
         "lesion": lesion,
     }
@@ -367,13 +397,26 @@ def _wilson_interval(
     return [float(max(0.0, centre - half_width)), float(min(1.0, centre + half_width))]
 
 
-def _summarize_condition(cases: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _defined_summary(values: list[float | None]) -> dict[str, float | int | None]:
+    return sample_summary([value for value in values if value is not None])
+
+
+def _summarize_condition(
+    cases: dict[str, dict[str, Any]],
+    *,
+    bootstrap_draws: int,
+    seed: int,
+) -> dict[str, Any]:
     case_values = list(cases.values())
     voxel_tp = sum(case["voxel_counts"]["tp"] for case in case_values)
     voxel_fp = sum(case["voxel_counts"]["fp"] for case in case_values)
     voxel_fn = sum(case["voxel_counts"]["fn"] for case in case_values)
     precision = voxel_tp / (voxel_tp + voxel_fp) if voxel_tp + voxel_fp else None
     recall = voxel_tp / (voxel_tp + voxel_fn) if voxel_tp + voxel_fn else None
+    micro_dice_denominator = 2 * voxel_tp + voxel_fp + voxel_fn
+    micro_iou_denominator = voxel_tp + voxel_fp + voxel_fn
+    micro_dice = 2 * voxel_tp / micro_dice_denominator if micro_dice_denominator else 1.0
+    micro_iou = voxel_tp / micro_iou_denominator if micro_iou_denominator else 1.0
 
     hd95_statuses = Counter(case["hd95"]["status"] for case in case_values)
     conditional = [
@@ -451,17 +494,51 @@ def _summarize_condition(cases: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if case["lesion"]["precision"] is not None
     ]
     patient_f1 = [case["lesion"]["f1"] for case in case_values]
+    patient_penalized_dice = [case["lesion"]["penalized_lesion_dice"] for case in case_values]
+    volumetric_dice_values = np.asarray(
+        [case["volumetric_dice"] for case in case_values],
+        dtype=np.float64,
+    )
 
     return {
         "n_cases": len(case_values),
-        "volumetric_dice": sample_summary([case["volumetric_dice"] for case in case_values]),
+        "volumetric_dice": {
+            **sample_summary(volumetric_dice_values),
+            "bootstrap_mean_95ci": _bootstrap_mean_ci(
+                volumetric_dice_values,
+                draws=bootstrap_draws,
+                seed=seed,
+            ),
+        },
+        "volumetric_iou": sample_summary([case["volumetric_iou"] for case in case_values]),
         "sagittal_slicewise_dice": sample_summary(
             [case["sagittal_slicewise_dice"] for case in case_values]
         ),
+        "coronal_slicewise_dice": sample_summary(
+            [case["coronal_slicewise_dice"] for case in case_values]
+        ),
+        "axial_slicewise_dice": sample_summary(
+            [case["axial_slicewise_dice"] for case in case_values]
+        ),
+        "sagittal_foreground_slicewise_dice": _defined_summary(
+            [case["sagittal_foreground_slicewise_dice"] for case in case_values]
+        ),
+        "coronal_foreground_slicewise_dice": _defined_summary(
+            [case["coronal_foreground_slicewise_dice"] for case in case_values]
+        ),
+        "axial_foreground_slicewise_dice": _defined_summary(
+            [case["axial_foreground_slicewise_dice"] for case in case_values]
+        ),
+        "patient_macro": {
+            "voxel_precision": _defined_summary([case["voxel_precision"] for case in case_values]),
+            "voxel_recall": _defined_summary([case["voxel_recall"] for case in case_values]),
+        },
         "voxel_micro": {
             "tp": voxel_tp,
             "fp": voxel_fp,
             "fn": voxel_fn,
+            "dice": micro_dice,
+            "iou": micro_iou,
             "precision": precision,
             "recall": recall,
         },
@@ -489,6 +566,7 @@ def _summarize_condition(cases: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "matched_dice": sample_summary(matched_scores),
             "all_gt_dice": sample_summary(all_gt_scores),
             "penalized_lesion_dice": float(penalized_dice),
+            "per_patient_penalized_lesion_dice": sample_summary(patient_penalized_dice),
             "per_patient_sensitivity": sample_summary(patient_sensitivity),
             "per_patient_precision": sample_summary(patient_precision),
             "per_patient_f1": sample_summary(patient_f1),
@@ -506,6 +584,8 @@ def _evaluate_condition(
     pairs: list[tuple[str, Path, Path]],
     min_component_voxels: int,
     detection_threshold: float,
+    bootstrap_draws: int,
+    seed: int,
 ) -> dict[str, Any]:
     logger.info(
         "[%s] prediction-only evaluation: %d cases\n  predictions=%s\n  targets=%s",
@@ -542,6 +622,26 @@ def _evaluate_condition(
             "minimum_component_voxels": min_component_voxels,
             "detection_rule": f"unsmoothed full-component Dice > {detection_threshold}",
             "matching": "one-to-one maximum-cardinality then maximum-Dice",
+            "dice_views": {
+                "patient_volumetric": "complete 3D foreground mask; empty/empty=1",
+                "pooled_voxel": "all patient voxels pooled before Dice calculation",
+                "slicewise_all": (
+                    "sagittal, coronal, and axial; correctly predicted empty slices=1"
+                ),
+                "slicewise_foreground": (
+                    "sagittal, coronal, and axial; slices with both masks empty omitted"
+                ),
+                "matched_lesion": "detected one-to-one component pairs only",
+                "all_gt_lesion": "all retained GT components; missed lesions=0",
+                "fp_penalized_lesion": (
+                    "matched Dice sum divided by retained GT plus unmatched predictions"
+                ),
+            },
+            "primary_mean_bootstrap": {
+                "draws": bootstrap_draws,
+                "seed": seed,
+                "interval": "pointwise 2.5th and 97.5th percentiles",
+            },
             "size_measure": (
                 "2D Feret diameter of the largest 4-connected region on the "
                 "maximum-area axial slice"
@@ -566,7 +666,11 @@ def _evaluate_condition(
                 ),
             },
         },
-        "summary": _summarize_condition(cases),
+        "summary": _summarize_condition(
+            cases,
+            bootstrap_draws=bootstrap_draws,
+            seed=seed,
+        ),
         "per_case": cases,
     }
 
@@ -751,10 +855,33 @@ def _summary_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             "n_cases": summary["n_cases"],
             "dice_mean": summary["volumetric_dice"]["mean"],
             "dice_std": summary["volumetric_dice"]["std"],
+            "dice_ci_lo": summary["volumetric_dice"]["bootstrap_mean_95ci"][0],
+            "dice_ci_hi": summary["volumetric_dice"]["bootstrap_mean_95ci"][1],
+            "iou_mean": summary["volumetric_iou"]["mean"],
+            "iou_std": summary["volumetric_iou"]["std"],
             "slicewise_dice_mean": summary["sagittal_slicewise_dice"]["mean"],
             "slicewise_dice_std": summary["sagittal_slicewise_dice"]["std"],
+            "sagittal_slicewise_dice_mean": summary["sagittal_slicewise_dice"]["mean"],
+            "sagittal_slicewise_dice_std": summary["sagittal_slicewise_dice"]["std"],
+            "coronal_slicewise_dice_mean": summary["coronal_slicewise_dice"]["mean"],
+            "coronal_slicewise_dice_std": summary["coronal_slicewise_dice"]["std"],
+            "axial_slicewise_dice_mean": summary["axial_slicewise_dice"]["mean"],
+            "axial_slicewise_dice_std": summary["axial_slicewise_dice"]["std"],
+            "sagittal_foreground_slicewise_dice_mean": summary[
+                "sagittal_foreground_slicewise_dice"
+            ]["mean"],
+            "coronal_foreground_slicewise_dice_mean": summary["coronal_foreground_slicewise_dice"][
+                "mean"
+            ],
+            "axial_foreground_slicewise_dice_mean": summary["axial_foreground_slicewise_dice"][
+                "mean"
+            ],
+            "voxel_dice_micro": summary["voxel_micro"]["dice"],
+            "voxel_iou_micro": summary["voxel_micro"]["iou"],
             "voxel_precision": summary["voxel_micro"]["precision"],
             "voxel_recall": summary["voxel_micro"]["recall"],
+            "patient_precision_mean": summary["patient_macro"]["voxel_precision"]["mean"],
+            "patient_recall_mean": summary["patient_macro"]["voxel_recall"]["mean"],
             "hd95_conditional_mean_mm": summary["hd95_mm"]["conditional_valid_cases"]["mean"],
             "hd95_conditional_std_mm": summary["hd95_mm"]["conditional_valid_cases"]["std"],
             "hd95_conditional_n": summary["hd95_mm"]["conditional_valid_cases"]["n"],
@@ -776,6 +903,12 @@ def _summary_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             "all_gt_lesion_dice_mean": summary["matched_lesions"]["all_gt_dice"]["mean"],
             "all_gt_lesion_dice_std": summary["matched_lesions"]["all_gt_dice"]["std"],
             "penalized_lesion_dice": summary["matched_lesions"]["penalized_lesion_dice"],
+            "patient_penalized_lesion_dice_mean": summary["matched_lesions"][
+                "per_patient_penalized_lesion_dice"
+            ]["mean"],
+            "patient_penalized_lesion_dice_std": summary["matched_lesions"][
+                "per_patient_penalized_lesion_dice"
+            ]["std"],
         }
         for size_name in LEGACY_SIZE_BINS_MM:
             size = summary["matched_lesions"]["by_gt_size"][size_name]
@@ -804,7 +937,17 @@ def _per_case_rows(results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                     "condition": label_name,
                     "case_id": case_id,
                     "volumetric_dice": case["volumetric_dice"],
+                    "volumetric_iou": case["volumetric_iou"],
+                    "voxel_precision": case["voxel_precision"],
+                    "voxel_recall": case["voxel_recall"],
                     "sagittal_slicewise_dice": case["sagittal_slicewise_dice"],
+                    "coronal_slicewise_dice": case["coronal_slicewise_dice"],
+                    "axial_slicewise_dice": case["axial_slicewise_dice"],
+                    "sagittal_foreground_slicewise_dice": case[
+                        "sagittal_foreground_slicewise_dice"
+                    ],
+                    "coronal_foreground_slicewise_dice": case["coronal_foreground_slicewise_dice"],
+                    "axial_foreground_slicewise_dice": case["axial_foreground_slicewise_dice"],
                     "voxel_tp": case["voxel_counts"]["tp"],
                     "voxel_fp": case["voxel_counts"]["fp"],
                     "voxel_fn": case["voxel_counts"]["fn"],
@@ -957,7 +1100,7 @@ def main() -> None:
     _write_json(args.output_dir / "manifest.json", metadata)
 
     results: dict[str, dict[str, Any]] = {}
-    for condition in args.condition:
+    for condition_index, condition in enumerate(args.condition):
         prediction_dir, labels_dir, pairs, provenance = resolved[condition.label]
         result = _evaluate_condition(
             condition,
@@ -967,6 +1110,8 @@ def main() -> None:
             pairs=pairs,
             min_component_voxels=args.min_component_voxels,
             detection_threshold=args.detection_threshold,
+            bootstrap_draws=args.bootstrap_draws,
+            seed=args.seed + condition_index,
         )
         results[condition.label] = result
         _write_json(args.output_dir / "conditions" / f"{condition.label}.json", result)
