@@ -275,6 +275,54 @@ def test_reject_mode_can_skip_exhausted_fixed_mask_and_preserve_candidate_ids(
     assert (output_dir / "bins.csv").read_text().splitlines()[1].startswith("00001,")
 
 
+def test_fixed_mask_run_stops_after_requested_number_of_accepted_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real_seg_dir = tmp_path / "masks"
+    for index, foreground in enumerate(((1, 1, 1), (2, 1, 1), (3, 1, 1))):
+        _write_mask(
+            real_seg_dir / f"{index:05d}" / "seg.nii.gz",
+            foreground,
+        )
+    config = _pipeline_config(
+        tmp_path,
+        real_seg_dir,
+        num_images=3,
+        max_image_attempts=1,
+        skip_failed_fixed_masks=True,
+    )
+    config.stop_after_accepted_images = 1
+    output_dir = tmp_path / "generated"
+    _patch_non_sampling_dependencies(monkeypatch)
+
+    generated_images = iter(
+        [
+            _image_with_tissue((1, 0, 0)),
+            _image_with_tissue((1, 2, 1)),
+        ]
+    )
+    seeds_seen: list[int | None] = []
+
+    def fake_generate_bravo(
+        _seg_binary: np.ndarray,
+        *_args: object,
+        noise_seed: int | None = None,
+        **_kwargs: object,
+    ) -> np.ndarray:
+        seeds_seen.append(noise_seed)
+        return next(generated_images)
+
+    monkeypatch.setattr(generation, "_generate_bravo", fake_generate_bravo)
+    generation.run_3d_pipeline(config, output_dir)
+
+    assert seeds_seen == [42, 43]
+    assert not (output_dir / "00000").exists()
+    assert (output_dir / "00001" / "bravo.nii.gz").is_file()
+    assert not (output_dir / "00002").exists()
+    assert (output_dir / "bins.csv").read_text().splitlines()[1].startswith("00001,")
+
+
 def test_reject_qc_ignores_the_discarded_padding_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

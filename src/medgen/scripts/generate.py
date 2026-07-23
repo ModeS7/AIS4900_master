@@ -1309,6 +1309,12 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             None if max_image_attempts_raw is None else int(max_image_attempts_raw)
         )
         skip_failed_fixed_masks = bool(cfg.get('skip_failed_fixed_masks', False))
+        stop_after_accepted_raw = cfg.get('stop_after_accepted_images', None)
+        stop_after_accepted_images = (
+            None
+            if stop_after_accepted_raw is None
+            else int(stop_after_accepted_raw)
+        )
         if max_image_attempts_per_mask is not None:
             if max_image_attempts_per_mask < 1:
                 raise ValueError("max_image_attempts_per_mask must be positive")
@@ -1324,6 +1330,20 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             raise ValueError(
                 "skip_failed_fixed_masks requires max_image_attempts_per_mask"
             )
+        if stop_after_accepted_images is not None:
+            if stop_after_accepted_images < 1:
+                raise ValueError("stop_after_accepted_images must be positive")
+            if real_seg_files is None:
+                raise ValueError(
+                    "stop_after_accepted_images is only supported with a fixed real_seg_dir pool"
+                )
+            remaining_candidates = int(cfg.num_images) - int(
+                cfg.get('current_image', 0)
+            )
+            if stop_after_accepted_images > remaining_candidates:
+                raise ValueError(
+                    "stop_after_accepted_images exceeds the remaining fixed-mask candidates"
+                )
         if conditioning_brain_qc_mode == 'reject' and not validate_brain_mask:
             raise ValueError(
                 "conditioning_brain_qc_mode=reject requires validate_brain_mask=true"
@@ -1397,8 +1417,16 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             )
             if skip_failed_fixed_masks:
                 logger.info("Fixed masks that exhaust the cap will be skipped")
+        if stop_after_accepted_images is not None:
+            logger.info(
+                "Fixed-mask accepted-image target: "
+                f"{stop_after_accepted_images} new images"
+            )
 
-        while generated < cfg.num_images:
+        while generated < cfg.num_images and (
+            stop_after_accepted_images is None
+            or len(all_bins) < stop_after_accepted_images
+        ):
             if outer_retries >= max_outer_retries:
                 raise RuntimeError(
                     f"Sample {generated}: exhausted {max_outer_retries} outer retries. "
@@ -1722,6 +1750,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
             generated += 1
             outer_retries = 0  # reset on successful sample
 
+            if (
+                stop_after_accepted_images is not None
+                and len(all_bins) == stop_after_accepted_images
+            ):
+                logger.info(
+                    "Reached fixed-mask accepted-image target after candidate "
+                    f"{generated - 1}"
+                )
+
             # Log progress and clear cache periodically
             if generated % 10 == 0 or generated == cfg.num_images:
                 logger.info(f"Progress: {generated}/{cfg.num_images}")
@@ -1729,6 +1766,14 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
 
         if total_retries > 0:
             logger.info(f"Total retries: {total_retries} (seg validation + brain mask)")
+        if (
+            stop_after_accepted_images is not None
+            and len(all_bins) < stop_after_accepted_images
+        ):
+            logger.warning(
+                "Fixed-mask pool exhausted before accepted-image target: "
+                f"accepted {len(all_bins)}/{stop_after_accepted_images}"
+            )
 
     # Mode: seg_conditioned_input (input channel conditioning - stronger than FiLM)
     elif cfg.gen_mode == 'seg_conditioned_input':
