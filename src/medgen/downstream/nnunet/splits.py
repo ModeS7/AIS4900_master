@@ -33,6 +33,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -73,6 +74,50 @@ def _load_case_info(nnunet_raw: str, dataset_id: int) -> dict:
                     return json.load(f)
             raise FileNotFoundError(f"case_info.json not found in {entry}")
     raise FileNotFoundError(f"No dataset for ID {dataset_id} in {nnunet_raw}")
+
+
+def _load_synthetic_manifest(
+    path: str,
+    available_cases: list[str],
+) -> list[str]:
+    """Load one complete, ordered synthetic-case manifest.
+
+    Rows may be nnU-Net case IDs (``BrainMetSyn_00000``) or raw five-digit
+    candidate IDs (``00000``). The manifest must be an exact permutation of
+    ``available_cases`` so prefix selection can never silently omit or add a
+    synthetic case.
+    """
+    with open(path) as f:
+        rows = [line.strip() for line in f if line.strip()]
+
+    if not rows:
+        raise ValueError(f"Synthetic manifest is empty: {path}")
+
+    available = set(available_cases)
+    normalized: list[str] = []
+    for row in rows:
+        if row in available:
+            case_id = row
+        elif re.fullmatch(r"[0-9]{5}", row):
+            case_id = f"BrainMetSyn_{row}"
+        else:
+            raise ValueError(f"Malformed synthetic manifest row: {row!r}")
+        if case_id not in available:
+            raise ValueError(
+                f"Synthetic manifest case is absent from case_info.json: {case_id}"
+            )
+        normalized.append(case_id)
+
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"Synthetic manifest contains duplicate cases: {path}")
+    if set(normalized) != available:
+        missing = sorted(available - set(normalized))
+        raise ValueError(
+            "Synthetic manifest is not a complete permutation of case_info.json: "
+            f"manifest={len(normalized)}, available={len(available)}, "
+            f"missing={missing[:5]}"
+        )
+    return normalized
 
 
 def generate_base_folds(
@@ -119,6 +164,7 @@ def generate_experiment_splits(
     n_synthetic: int | None = None,
     seed: int = FOLD_SEED,
     synthetic_seed: int = 42,
+    synthetic_order: list[str] | None = None,
 ) -> list[dict[str, list[str]]]:
     """Generate splits_final.json content for a specific experiment.
 
@@ -129,14 +175,36 @@ def generate_experiment_splits(
         n_synthetic: Number of synthetic samples for mixed (None = all 525).
         seed: Seed for fold generation (must match across experiments).
         synthetic_seed: Seed for synthetic subset selection.
+        synthetic_order: Optional complete case order. When supplied, the
+            first ``n_synthetic`` cases are selected instead of using the
+            historical seeded random subset.
 
     Returns:
         List of 5 dicts, each with 'train' and 'val' keys.
     """
     base_folds = generate_base_folds(real_train_cases, seed=seed)
 
-    # Select synthetic subset if needed
-    if n_synthetic is not None and n_synthetic < len(synthetic_cases):
+    # Explicit order is opt-in. Historical callers retain the original seeded
+    # random subset behavior byte-for-byte when no order is supplied.
+    if synthetic_order is not None:
+        if not synthetic_order:
+            raise ValueError("synthetic_order must not be empty")
+        if len(synthetic_order) != len(set(synthetic_order)):
+            raise ValueError("synthetic_order contains duplicate cases")
+        available = set(synthetic_cases)
+        ordered = set(synthetic_order)
+        if ordered != available:
+            raise ValueError(
+                "synthetic_order must be a complete permutation of "
+                "synthetic_cases"
+            )
+        requested = len(synthetic_order) if n_synthetic is None else n_synthetic
+        if requested < 0 or requested > len(synthetic_order):
+            raise ValueError(
+                f"n_synthetic={requested} is outside 0--{len(synthetic_order)}"
+            )
+        syn_subset = list(synthetic_order[:requested])
+    elif n_synthetic is not None and n_synthetic < len(synthetic_cases):
         rng = np.random.default_rng(synthetic_seed)
         syn_subset = sorted(rng.choice(synthetic_cases, size=n_synthetic, replace=False))
     else:
@@ -243,19 +311,25 @@ def create_isolated_preprocessed_dir(
         if entry == 'splits_final.json':
             continue  # We'll write our own
 
-        if os.path.exists(dst) or os.path.islink(dst):
-            continue  # Already set up (e.g. from a previous chain segment)
-
         # Race-safe symlink creation: another fold of the same experiment
         # (different SLURM job) may create this symlink between our
-        # os.path.exists check above and this call. Suppressing
+        # lexists check below and this call. Suppressing
         # FileExistsError is safe — every fold of one experiment maps the
         # same src→dst (the target is determined by the entry name, not by
-        # the calling job), so the resulting symlink is correct whoever
-        # wins the race. Hit historically by exp6_2_synthetic_525,
-        # exp7_2_mixed_210, exp7_3_mixed_315, and exp345 fold 1.
-        with contextlib.suppress(FileExistsError):
-            os.symlink(src, dst)
+        # the calling job). Always validate the resulting target so a stale
+        # isolated directory cannot silently reuse another dataset cache.
+        if not os.path.lexists(dst):
+            with contextlib.suppress(FileExistsError):
+                os.symlink(src, dst)
+        if not os.path.islink(dst):
+            raise RuntimeError(
+                f"Isolated preprocessing entry is not a symlink: {dst}"
+            )
+        if os.path.realpath(dst) != os.path.realpath(src):
+            raise RuntimeError(
+                "Isolated preprocessing entry points to stale data: "
+                f"{dst} -> {os.path.realpath(dst)}; expected {src}"
+            )
 
     # Multiple folds of one experiment can start at once. They all write the
     # same split content, but a direct write can still expose a truncated JSON
@@ -314,6 +388,8 @@ def main() -> None:
                         help='Experiment type')
     parser.add_argument('--n-synthetic', type=int, default=None,
                         help='Number of synthetic samples for mixed (default: all)')
+    parser.add_argument('--synthetic-manifest', default=None,
+                        help='Ordered complete synthetic-case manifest; selects prefixes')
     parser.add_argument('--seed', type=int, default=FOLD_SEED,
                         help=f'Fold generation seed (default: {FOLD_SEED})')
     args = parser.parse_args()
@@ -321,6 +397,12 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     case_info = _load_case_info(args.nnunet_raw, args.dataset_id)
+    synthetic_order = None
+    if args.synthetic_manifest is not None:
+        synthetic_order = _load_synthetic_manifest(
+            args.synthetic_manifest,
+            case_info['synthetic_cases'],
+        )
 
     desc = EXPERIMENTS[args.experiment]
     if args.experiment == 'mixed' and args.n_synthetic:
@@ -333,6 +415,7 @@ def main() -> None:
         synthetic_cases=case_info['synthetic_cases'],
         n_synthetic=args.n_synthetic,
         seed=args.seed,
+        synthetic_order=synthetic_order,
     )
 
     # Use the per-experiment isolated preprocessed dir to avoid the splits_final.json

@@ -80,8 +80,12 @@ def _register_trainer() -> None:
     """Register custom TensorBoard trainer into nnunetv2 package.
 
     Symlinks our trainer.py into nnunetv2/training/nnUNetTrainer/ so that
-    nnU-Net's class discovery finds it. Falls back to copy if symlink fails.
+    nnU-Net's class discovery finds it. A shared file lock makes first-time
+    registration safe when all five SLURM array tasks start together. Falls
+    back to copy if symlink creation is unavailable.
     """
+    import fcntl
+
     import nnunetv2.training.nnUNetTrainer as trainer_pkg
 
     trainer_dir = os.path.dirname(trainer_pkg.__file__)
@@ -90,19 +94,26 @@ def _register_trainer() -> None:
         'downstream', 'nnunet', 'trainer.py',
     )
     target = os.path.join(trainer_dir, 'nnUNetTrainerTensorBoard.py')
+    lock_path = f'{target}.lock'
 
-    if os.path.exists(target):
-        if os.path.islink(target) and os.readlink(target) == our_trainer:
-            print(f"  Trainer already registered: {target}")
-            return
-        os.remove(target)
+    with open(lock_path, 'a') as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
 
-    try:
-        os.symlink(our_trainer, target)
-        print(f"  Symlinked trainer: {target} -> {our_trainer}")
-    except OSError:
-        shutil.copy2(our_trainer, target)
-        print(f"  Copied trainer to: {target}")
+        if os.path.lexists(target):
+            if (
+                os.path.islink(target)
+                and os.path.realpath(target) == os.path.realpath(our_trainer)
+            ):
+                print(f"  Trainer already registered: {target}")
+                return
+            os.remove(target)
+
+        try:
+            os.symlink(our_trainer, target)
+            print(f"  Symlinked trainer: {target} -> {our_trainer}")
+        except OSError:
+            shutil.copy2(our_trainer, target)
+            print(f"  Copied trainer to: {target}")
 
 
 def _get_experiment_name(experiment: str, n_synthetic: int | None) -> str:
@@ -132,6 +143,8 @@ def main() -> None:
                         help='Override auto-generated experiment name (results subdir)')
     parser.add_argument('--n-synthetic', type=int, default=None,
                         help='Number of synthetic samples for mixed (default: all 525)')
+    parser.add_argument('--synthetic-manifest', default=None,
+                        help='Ordered complete synthetic-case manifest; selects prefixes')
     parser.add_argument('--dataset-id', type=int, default=501,
                         help='Dataset ID (default: 501)')
     parser.add_argument('--configuration', default='3d_fullres',
@@ -183,6 +196,7 @@ def main() -> None:
     print("\nCreating isolated preprocessed dir:")
     from medgen.downstream.nnunet.splits import (
         _load_case_info,
+        _load_synthetic_manifest,
         create_isolated_preprocessed_dir,
         generate_experiment_splits,
     )
@@ -190,11 +204,22 @@ def main() -> None:
     # Need raw env var set to load case info
     os.environ['nnUNet_raw'] = os.path.join(args.nnunet_base, 'nnUNet_raw')  # noqa: SIM112
     case_info = _load_case_info(os.environ['nnUNet_raw'], args.dataset_id)  # noqa: SIM112
+    synthetic_order = None
+    if args.synthetic_manifest is not None:
+        synthetic_order = _load_synthetic_manifest(
+            args.synthetic_manifest,
+            case_info['synthetic_cases'],
+        )
+        print(
+            f"  Synthetic manifest: {args.synthetic_manifest} "
+            f"({len(synthetic_order)} ordered cases)"
+        )
     splits = generate_experiment_splits(
         experiment=args.experiment,
         real_train_cases=case_info['real_train_cases'],
         synthetic_cases=case_info['synthetic_cases'],
         n_synthetic=args.n_synthetic,
+        synthetic_order=synthetic_order,
     )
     isolated_preprocessed = create_isolated_preprocessed_dir(
         experiment_name=experiment_name,
