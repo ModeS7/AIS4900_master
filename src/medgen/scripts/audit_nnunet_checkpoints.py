@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import math
 import os
 import zipfile
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -60,6 +62,11 @@ class CheckpointAudit:
     valid: bool = False
     epoch: int | None = None
     best_ema: float | None = None
+    network_tensor_count: int | None = None
+    network_parameter_count: int | None = None
+    network_signature: str | None = None
+    optimizer_state_entries: int | None = None
+    optimizer_param_groups: int | None = None
     logging_lengths: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
@@ -96,6 +103,66 @@ def _all_float_tensors_finite(value: Any) -> bool:
             if not bool(torch.isfinite(tensor).all()):
                 return False
     return True
+
+
+def _audit_network_weights(value: Any) -> tuple[list[str], int, int, str | None]:
+    errors: list[str] = []
+    if not isinstance(value, Mapping):
+        return ["network_weights is not a mapping"], 0, 0, None
+    if not value:
+        return ["network_weights is empty"], 0, 0, None
+
+    metadata: list[tuple[str, tuple[int, ...], str]] = []
+    parameter_count = 0
+    for key, tensor in value.items():
+        if not isinstance(key, str):
+            errors.append(f"network_weights contains a non-string key: {key!r}")
+            continue
+        if not isinstance(tensor, torch.Tensor):
+            errors.append(f"network_weights[{key!r}] is not a tensor")
+            continue
+        shape = tuple(int(size) for size in tensor.shape)
+        metadata.append((key, shape, str(tensor.dtype)))
+        parameter_count += tensor.numel()
+
+    if not metadata:
+        errors.append("network_weights contains no tensors")
+        return errors, 0, 0, None
+    if len(metadata) != len(value):
+        return errors, len(metadata), parameter_count, None
+
+    digest = hashlib.sha256()
+    for key, shape, dtype in sorted(metadata):
+        digest.update(key.encode())
+        digest.update(b"\0")
+        digest.update(repr(shape).encode())
+        digest.update(b"\0")
+        digest.update(dtype.encode())
+        digest.update(b"\n")
+    return errors, len(metadata), parameter_count, digest.hexdigest()
+
+
+def _audit_optimizer_state(value: Any) -> tuple[list[str], int, int]:
+    errors: list[str] = []
+    if not isinstance(value, Mapping):
+        return ["optimizer_state is not a mapping"], 0, 0
+    state = value.get("state")
+    param_groups = value.get("param_groups")
+    if not isinstance(state, Mapping):
+        errors.append("optimizer_state.state is not a mapping")
+        state_count = 0
+    else:
+        state_count = len(state)
+        if state_count == 0:
+            errors.append("optimizer_state.state is empty")
+    if not isinstance(param_groups, list):
+        errors.append("optimizer_state.param_groups is not a list")
+        group_count = 0
+    else:
+        group_count = len(param_groups)
+        if group_count == 0:
+            errors.append("optimizer_state.param_groups is empty")
+    return errors, state_count, group_count
 
 
 def _nested_equal(left: Any, right: Any) -> bool:
@@ -289,6 +356,21 @@ def audit_checkpoint(path: Path, *, fold: int, kind: str) -> tuple[CheckpointAud
     if not _all_float_tensors_finite(checkpoint.get("grad_scaler_state")):
         result.errors.append("grad_scaler_state contains non-finite tensors")
 
+    network_errors, tensor_count, parameter_count, signature = _audit_network_weights(
+        checkpoint.get("network_weights")
+    )
+    result.errors.extend(network_errors)
+    result.network_tensor_count = tensor_count
+    result.network_parameter_count = parameter_count
+    result.network_signature = signature
+
+    optimizer_errors, state_count, group_count = _audit_optimizer_state(
+        checkpoint.get("optimizer_state")
+    )
+    result.errors.extend(optimizer_errors)
+    result.optimizer_state_entries = state_count
+    result.optimizer_param_groups = group_count
+
     result.valid = not result.errors
     return result, checkpoint
 
@@ -332,6 +414,10 @@ def _lineage_matches(best: Any, anchor: Any) -> bool:
     if not isinstance(best_epoch, int) or not isinstance(anchor_epoch, int):
         return False
     if best_epoch > anchor_epoch:
+        return False
+    _, _, _, best_signature = _audit_network_weights(best.get("network_weights"))
+    _, _, _, anchor_signature = _audit_network_weights(anchor.get("network_weights"))
+    if best_signature is None or best_signature != anchor_signature:
         return False
     if not _logging_is_prefix(best.get("logging", {}), anchor.get("logging", {})):
         return False
