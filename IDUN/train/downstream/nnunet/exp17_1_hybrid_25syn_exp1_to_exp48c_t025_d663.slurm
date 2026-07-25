@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100|gpu80g"
+#SBATCH --constraint="h100|gpu80g"
 #SBATCH --exclude=idun-06-02
 #SBATCH --array=0-4%5
 #SBATCH --job-name="exp17_1_h25"
