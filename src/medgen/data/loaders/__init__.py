@@ -372,5 +372,4 @@ __all__ = [
     'create_seg_conditioned_dataloader',
     'create_seg_conditioned_validation_dataloader',
     'create_seg_conditioned_test_dataloader',
-    'create_single_modality_diffusion_val_loader',
 ]
