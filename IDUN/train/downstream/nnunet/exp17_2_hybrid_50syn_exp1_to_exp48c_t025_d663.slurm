@@ -65,6 +65,9 @@ readonly PREPROCESS_MARKER="${PREPROCESSED_DIR}/.exp17_d600_preprocess_complete"
 readonly HISTORICAL_SPLITS="${NNUNET_BASE}/nnUNet_preprocessed_exp3_baseline_v2_d600/Dataset600_BrainMet/splits_final.json"
 readonly MODEL_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET_ID}_BrainMet/${MODEL_NAME}"
 readonly FOLD_LOCK="${MODEL_RESULT_DIR}/.fold_${FOLD}.training.lock"
+readonly RECOVERY_MARKER="${NNUNET_RESULTS}/.exp17_recovery_manifests/recovery_checkpoint_audit_24940260.json"
+
+[[ -s "$RECOVERY_MARKER" ]] || fatal "exp17 recovery is incomplete: $RECOVERY_MARKER"
 
 # Hold one advisory lock for the complete allocation. This prevents a manual
 # resume and an automatic continuation from writing the same fold concurrently.

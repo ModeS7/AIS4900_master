@@ -27,7 +27,10 @@ def test_exp17_training_arms_use_one_controlled_nested_dataset() -> None:
         assert f'readonly EXPERIMENT_NAME="{filename.removesuffix(".slurm")}"' in content
         assert 'readonly PLANS_NAME="nnUNetResEncUNetLPlansD600"' in content
         assert 'readonly SYNTHETIC_MANIFEST="${RAW_DIR}/synthetic_candidate_order.txt"' in content
-        assert 'readonly PREPROCESS_MARKER="${PREPROCESSED_DIR}/.exp17_d600_preprocess_complete"' in content
+        assert (
+            'readonly PREPROCESS_MARKER="${PREPROCESSED_DIR}/.exp17_d600_preprocess_complete"'
+            in content
+        )
         assert "nnUNet_preprocessed_exp3_baseline_v2_d600" in content
         assert "synthetic_candidate_order_sha256" in content
         assert "conversion_marker_sha256" in content
@@ -41,18 +44,21 @@ def test_exp17_training_arms_use_one_controlled_nested_dataset() -> None:
         assert 'echo "Per-fold training:   $((84 + N_SYNTHETIC)) cases"' in content
         assert 84 + n_synthetic == n_training
         assert "--continue-training" in content
-        assert "sbatch --array=\"$FOLD\"" in content
+        assert 'sbatch --array="$FOLD"' in content
         assert "flock -n 9" in content
-        assert 'another allocation is already training ${EXPERIMENT_NAME} fold ${FOLD}' in content
+        assert "another allocation is already training ${EXPERIMENT_NAME} fold ${FOLD}" in content
+        assert "recovery_checkpoint_audit_24940260.json" in content
+        assert 'fatal "exp17 recovery is incomplete: $RECOVERY_MARKER"' in content
+        assert content.index('[[ -s "$RECOVERY_MARKER" ]]') < content.index(
+            'mkdir -p "$MODEL_RESULT_DIR"'
+        )
         assert '--dependency="afterany:${SLURM_JOB_ID}"' in content
         assert "--seed" not in content
         assert "Evaluation is intentionally separate" in content
 
 
 def test_exp17_has_one_conversion_and_one_controlled_preprocess_job() -> None:
-    conversion = (
-        SLURM_DIR / "convert_exp17_weighted_huber_handoff_210_d663.slurm"
-    ).read_text()
+    conversion = (SLURM_DIR / "convert_exp17_weighted_huber_handoff_210_d663.slurm").read_text()
     preprocessing = (
         SLURM_DIR / "preprocess_exp17_weighted_huber_handoff_210_d663.slurm"
     ).read_text()
@@ -66,7 +72,7 @@ def test_exp17_has_one_conversion_and_one_controlled_preprocess_job() -> None:
     assert "hybrid_candidate_ids_210.txt" in conversion
     assert "synthetic_candidate_order.txt" in conversion
     assert ".exp17_d663_conversion_complete" in conversion
-    assert "--dataset-id \"$DATASET_ID\"" in conversion
+    assert '--dataset-id "$DATASET_ID"' in conversion
     assert "--modality bravo" in conversion
     assert "all real images and labels numerically match Dataset600" in conversion
     assert "np.array_equal(current_data, baseline_data" in conversion
