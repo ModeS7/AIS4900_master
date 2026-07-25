@@ -20,7 +20,7 @@ def test_exp17_training_arms_use_one_controlled_nested_dataset() -> None:
         content = (SLURM_DIR / filename).read_text()
 
         assert "#SBATCH --time=0-12:00:00" in content
-        assert '#SBATCH --constraint="a100|h100|gpu80g"' in content
+        assert '#SBATCH --constraint="h100|gpu80g"' in content
         assert "#SBATCH --array=0-4%5" in content
         assert "readonly DATASET_ID=663" in content
         assert f"readonly N_SYNTHETIC={n_synthetic}" in content
@@ -42,6 +42,9 @@ def test_exp17_training_arms_use_one_controlled_nested_dataset() -> None:
         assert 84 + n_synthetic == n_training
         assert "--continue-training" in content
         assert "sbatch --array=\"$FOLD\"" in content
+        assert "flock -n 9" in content
+        assert 'another allocation is already training ${EXPERIMENT_NAME} fold ${FOLD}' in content
+        assert '--dependency="afterany:${SLURM_JOB_ID}"' in content
         assert "--seed" not in content
         assert "Evaluation is intentionally separate" in content
 

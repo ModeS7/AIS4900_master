@@ -63,6 +63,15 @@ readonly CONVERSION_MARKER="${RAW_DIR}/.exp17_d663_conversion_complete"
 readonly SYNTHETIC_MANIFEST="${RAW_DIR}/synthetic_candidate_order.txt"
 readonly PREPROCESS_MARKER="${PREPROCESSED_DIR}/.exp17_d600_preprocess_complete"
 readonly HISTORICAL_SPLITS="${NNUNET_BASE}/nnUNet_preprocessed_exp3_baseline_v2_d600/Dataset600_BrainMet/splits_final.json"
+readonly MODEL_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET_ID}_BrainMet/${MODEL_NAME}"
+readonly FOLD_LOCK="${MODEL_RESULT_DIR}/.fold_${FOLD}.training.lock"
+
+# Hold one advisory lock for the complete allocation. This prevents a manual
+# resume and an automatic continuation from writing the same fold concurrently.
+mkdir -p "$MODEL_RESULT_DIR"
+exec 9>"$FOLD_LOCK"
+flock -n 9 || fatal \
+    "another allocation is already training ${EXPERIMENT_NAME} fold ${FOLD}"
 
 [[ -s "$CONVERSION_MARKER" ]] || fatal "Dataset663 conversion is incomplete: $CONVERSION_MARKER"
 [[ -s "$RAW_DIR/source_selection.txt" ]] || fatal "missing source provenance: $RAW_DIR"
@@ -333,6 +342,7 @@ handle_timeout() {
     (( next_count < CHAIN_MAX )) || fatal "chain limit reached: ${CHAIN_MAX} allocations"
     local submission
     submission="$(sbatch --array="$FOLD" \
+        --dependency="afterany:${SLURM_JOB_ID}" \
         --export="ALL,RESUME=1,CHAIN_COUNT=${next_count},CHAIN_MAX=${CHAIN_MAX}" \
         "$SCRIPT_PATH")" || fatal "failed to submit continuation for fold $FOLD"
     echo "$submission"
