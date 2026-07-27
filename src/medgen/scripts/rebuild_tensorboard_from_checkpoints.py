@@ -6,10 +6,12 @@ per-class Dice, epoch timestamps). If the live event files were lost or
 corrupted (e.g. overlapping SLURM allocations writing the same dir), the real
 curves are still fully recoverable from ``checkpoint_final.pth``.
 
-This writes ONE clean event file per fold, directly in that fold's
-``tensorboard/`` dir. It is NON-DESTRUCTIVE: any pre-existing ``events.out.*``
-files are moved into a local ``tensorboard/superseded/`` subdir first (not an
-external quarantine). Checkpoints are only read, never modified.
+This writes exactly ONE event file per fold, directly in that fold's
+``tensorboard/`` dir, so TensorBoard shows a single run per fold. Any pre-existing
+event files (including ones a validation re-run left behind) are removed first —
+safe, because the curve is reconstructed losslessly from the checkpoint and the
+pre-recovery originals live in the external quarantine. Checkpoints are only read.
+Run this LAST, after any validation re-run (which writes its own event file).
 
 Usage (one line per fold discovered):
     python -m medgen.scripts.rebuild_tensorboard_from_checkpoints \
@@ -48,17 +50,26 @@ def _load_logging(ckpt_path: Path) -> dict:
     return log
 
 
-def _supersede_existing(tb_dir: Path, dry_run: bool) -> int:
-    """Move any existing event files to tb_dir/superseded/ (kept, not deleted)."""
+def _clear_existing_events(tb_dir: Path, dry_run: bool) -> int:
+    """Remove existing event files (and a prior run's superseded/ subdir) so the fold
+    ends with exactly ONE event file = one TensorBoard run.
+
+    Safe to delete: the curve is losslessly reconstructed from the checkpoint (re-runnable
+    any time), and the pre-recovery originals are preserved in the external quarantine.
+    TensorBoard scans subdirs recursively, so a kept superseded/ would show as an extra run.
+    """
+    import shutil
     existing = sorted(tb_dir.glob("events.out.tfevents.*"))
-    if not existing:
+    old_superseded = tb_dir / "superseded"
+    count = len(existing) + (1 if old_superseded.exists() else 0)
+    if count == 0:
         return 0
     if dry_run:
         return len(existing)
-    dest = tb_dir / "superseded"
-    dest.mkdir(exist_ok=True)
     for ev in existing:
-        ev.rename(dest / ev.name)
+        ev.unlink()
+    if old_superseded.is_dir():
+        shutil.rmtree(old_superseded, ignore_errors=True)
     return len(existing)
 
 
@@ -146,11 +157,11 @@ def rebuild_fold(ckpt_path: Path, dry_run: bool, aux: bool = True) -> int:
     fold_dir = ckpt_path.parent
     tb_dir = fold_dir / "tensorboard"
 
-    moved = _supersede_existing(tb_dir, dry_run)
+    removed = _clear_existing_events(tb_dir, dry_run)
     extras = " + progress.png + training_log" if aux else ""
     if dry_run:
         print(f"[dry-run] {tb_dir}  -> {n_epochs} epochs, {len(series)} scalars{extras}"
-              f"{f', would supersede {moved} old event file(s)' if moved else ''}")
+              f"{f', would remove {removed} old event file(s)' if removed else ''}")
         return n_epochs
 
     from torch.utils.tensorboard import SummaryWriter
@@ -169,7 +180,7 @@ def rebuild_fold(ckpt_path: Path, dry_run: bool, aux: bool = True) -> int:
         _write_progress_png(log, fold_dir)
         _write_training_log(log, fold_dir)
     print(f"rebuilt {tb_dir}{extras}  ({n_epochs} epochs"
-          f"{f', {moved} old event file(s) -> superseded/' if moved else ''})")
+          f"{f', removed {removed} old event file(s)' if removed else ''})")
     return n_epochs
 
 
