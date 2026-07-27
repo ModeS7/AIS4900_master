@@ -73,24 +73,36 @@ def _write_progress_png(log: dict, fold_dir: Path) -> None:
     ep_time = [ts[i] - ts[i - 1] for i in range(1, len(ts))] if len(ts) > 1 else []
 
     fig, ax = plt.subplots(3, 1, figsize=(18, 24))
-    # panel 0: losses (left) + dice (right)
+    # panel 0: losses (left axis) + pseudo dice (right axis)
     ax0, ax0b = ax[0], ax[0].twinx()
-    if log.get("train_losses"): ax0.plot(epochs, log["train_losses"], color="b", ls="-", label="train loss")
-    if log.get("val_losses"):   ax0.plot(epochs, log["val_losses"], color="r", ls="-", label="val loss")
+    if log.get("train_losses"):
+        ax0.plot(epochs, log["train_losses"], color="b", label="train loss")
+    if log.get("val_losses"):
+        ax0.plot(epochs, log["val_losses"], color="r", label="val loss")
     ax0b.plot(epochs, log["mean_fg_dice"], color="g", ls="dotted", label="pseudo dice")
-    if log.get("ema_fg_dice"):  ax0b.plot(epochs, log["ema_fg_dice"], color="g", ls="-", label="ema pseudo dice")
-    ax0.set_xlabel("epoch"); ax0.set_ylabel("loss"); ax0b.set_ylabel("pseudo dice")
-    ax0.legend(loc="upper left"); ax0b.legend(loc="lower right"); ax0.set_title("loss & pseudo dice")
-    # panel 1: epoch time
+    if log.get("ema_fg_dice"):
+        ax0b.plot(epochs, log["ema_fg_dice"], color="g", label="ema pseudo dice")
+    ax0.set_xlabel("epoch")
+    ax0.set_ylabel("loss")
+    ax0b.set_ylabel("pseudo dice")
+    ax0.legend(loc="upper left")
+    ax0b.legend(loc="lower right")
+    ax0.set_title("loss & pseudo dice")
+    # panel 1: epoch duration
     if ep_time:
-        ax[1].plot(epochs[1:], ep_time, color="b"); ax[1].set_xlabel("epoch"); ax[1].set_ylabel("time (s)")
+        ax[1].plot(epochs[1:], ep_time, color="b")
+        ax[1].set_xlabel("epoch")
+        ax[1].set_ylabel("time (s)")
         ax[1].set_title("epoch duration")
     # panel 2: learning rate
     if log.get("lrs"):
-        ax[2].plot(epochs, log["lrs"], color="b"); ax[2].set_xlabel("epoch"); ax[2].set_ylabel("lr")
+        ax[2].plot(epochs, log["lrs"], color="b")
+        ax[2].set_xlabel("epoch")
+        ax[2].set_ylabel("lr")
         ax[2].set_title("learning rate")
     fig.tight_layout()
-    fig.savefig(fold_dir / "progress.png"); plt.close(fig)
+    fig.savefig(fold_dir / "progress.png")
+    plt.close(fig)
 
 
 def _write_training_log(log: dict, fold_dir: Path) -> None:
@@ -108,13 +120,19 @@ def _write_training_log(log: dict, fold_dir: Path) -> None:
         f.write("# text log was lost. Metric values and epoch-end timestamps are exact.\n\n")
         for i in range(n):
             f.write(f"{stamp(i)}: Epoch {i}\n")
-            if log.get("lrs"):          f.write(f"{stamp(i)}: Current learning rate: {round(float(log['lrs'][i]), 5)}\n")
-            if log.get("train_losses"): f.write(f"{stamp(i)}: train_loss {round(float(log['train_losses'][i]), 4)}\n")
-            if log.get("val_losses"):   f.write(f"{stamp(i)}: val_loss {round(float(log['val_losses'][i]), 4)}\n")
+            if log.get("lrs"):
+                f.write(f"{stamp(i)}: Current learning rate: {round(float(log['lrs'][i]), 5)}\n")
+            if log.get("train_losses"):
+                f.write(f"{stamp(i)}: train_loss {round(float(log['train_losses'][i]), 4)}\n")
+            if log.get("val_losses"):
+                f.write(f"{stamp(i)}: val_loss {round(float(log['val_losses'][i]), 4)}\n")
             dpc = log.get("dice_per_class_or_region")
-            pseudo = [round(float(x), 4) for x in dpc[i]] if dpc else [round(float(log["mean_fg_dice"][i]), 4)]
+            if dpc:
+                pseudo = [round(float(x), 4) for x in dpc[i]]
+            else:
+                pseudo = [round(float(log["mean_fg_dice"][i]), 4)]
             f.write(f"{stamp(i)}: Pseudo dice {pseudo}\n")
-            if i < len(ts) and i > 0 and ts[i] and ts[i - 1]:
+            if 0 < i < len(ts) and ts[i] and ts[i - 1]:
                 f.write(f"{stamp(i)}: Epoch time: {round(ts[i] - ts[i - 1], 2)} s\n")
 
 
