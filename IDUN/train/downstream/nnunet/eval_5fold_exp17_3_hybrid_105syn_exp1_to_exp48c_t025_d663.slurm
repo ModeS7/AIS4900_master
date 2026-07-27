@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #SBATCH --partition=GPUQ
 #SBATCH --account=share-ie-idi
-#SBATCH --time=0-00:30:00
+#SBATCH --time=0-01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|h100|gpu80g"
+#SBATCH --constraint="a100|h100|gpu80g|gpu40g"
 #SBATCH --exclude=idun-06-02
 #SBATCH --job-name="eval17_h105"
 #SBATCH --output=IDUN/output/train/downstream/nnunet/eval_5fold/exp17_3_hybrid_105syn_exp1_to_exp48c_t025_d663_%j.out
