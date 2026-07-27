@@ -62,18 +62,76 @@ def _supersede_existing(tb_dir: Path, dry_run: bool) -> int:
     return len(existing)
 
 
-def rebuild_fold(ckpt_path: Path, dry_run: bool) -> int:
-    """Rebuild one fold's tensorboard/ from its checkpoint. Returns #epochs."""
+def _write_progress_png(log: dict, fold_dir: Path) -> None:
+    """Reconstruct nnU-Net's progress.png (loss/dice, epoch time, LR) from the logging dict."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    epochs = list(range(len(log["mean_fg_dice"])))
+    ts = log.get("epoch_end_timestamps") or []
+    ep_time = [ts[i] - ts[i - 1] for i in range(1, len(ts))] if len(ts) > 1 else []
+
+    fig, ax = plt.subplots(3, 1, figsize=(18, 24))
+    # panel 0: losses (left) + dice (right)
+    ax0, ax0b = ax[0], ax[0].twinx()
+    if log.get("train_losses"): ax0.plot(epochs, log["train_losses"], color="b", ls="-", label="train loss")
+    if log.get("val_losses"):   ax0.plot(epochs, log["val_losses"], color="r", ls="-", label="val loss")
+    ax0b.plot(epochs, log["mean_fg_dice"], color="g", ls="dotted", label="pseudo dice")
+    if log.get("ema_fg_dice"):  ax0b.plot(epochs, log["ema_fg_dice"], color="g", ls="-", label="ema pseudo dice")
+    ax0.set_xlabel("epoch"); ax0.set_ylabel("loss"); ax0b.set_ylabel("pseudo dice")
+    ax0.legend(loc="upper left"); ax0b.legend(loc="lower right"); ax0.set_title("loss & pseudo dice")
+    # panel 1: epoch time
+    if ep_time:
+        ax[1].plot(epochs[1:], ep_time, color="b"); ax[1].set_xlabel("epoch"); ax[1].set_ylabel("time (s)")
+        ax[1].set_title("epoch duration")
+    # panel 2: learning rate
+    if log.get("lrs"):
+        ax[2].plot(epochs, log["lrs"], color="b"); ax[2].set_xlabel("epoch"); ax[2].set_ylabel("lr")
+        ax[2].set_title("learning rate")
+    fig.tight_layout()
+    fig.savefig(fold_dir / "progress.png"); plt.close(fig)
+
+
+def _write_training_log(log: dict, fold_dir: Path) -> None:
+    """Reconstruct a per-epoch training_log text file from the logging dict."""
+    from datetime import datetime
+    ts = log.get("epoch_end_timestamps") or []
+    n = len(log["mean_fg_dice"])
+    def stamp(i):
+        if i < len(ts) and ts[i]:
+            return datetime.fromtimestamp(ts[i]).strftime("%Y-%m-%d %H:%M:%S")
+        return "unknown-time"
+    out = fold_dir / "training_log_reconstructed_from_checkpoint.txt"
+    with open(out, "w") as f:
+        f.write("# Reconstructed from checkpoint_final.pth['logging']; the original per-epoch\n")
+        f.write("# text log was lost. Metric values and epoch-end timestamps are exact.\n\n")
+        for i in range(n):
+            f.write(f"{stamp(i)}: Epoch {i}\n")
+            if log.get("lrs"):          f.write(f"{stamp(i)}: Current learning rate: {round(float(log['lrs'][i]), 5)}\n")
+            if log.get("train_losses"): f.write(f"{stamp(i)}: train_loss {round(float(log['train_losses'][i]), 4)}\n")
+            if log.get("val_losses"):   f.write(f"{stamp(i)}: val_loss {round(float(log['val_losses'][i]), 4)}\n")
+            dpc = log.get("dice_per_class_or_region")
+            pseudo = [round(float(x), 4) for x in dpc[i]] if dpc else [round(float(log["mean_fg_dice"][i]), 4)]
+            f.write(f"{stamp(i)}: Pseudo dice {pseudo}\n")
+            if i < len(ts) and i > 0 and ts[i] and ts[i - 1]:
+                f.write(f"{stamp(i)}: Epoch time: {round(ts[i] - ts[i - 1], 2)} s\n")
+
+
+def rebuild_fold(ckpt_path: Path, dry_run: bool, aux: bool = True) -> int:
+    """Rebuild one fold's tensorboard/ (+progress.png/training_log) from its checkpoint."""
     log = _load_logging(ckpt_path)
     series = {tag: log[key] for tag, key in SCALAR_TAGS.items() if log.get(key)}
     n_epochs = len(log["mean_fg_dice"])
     timestamps = log.get("epoch_end_timestamps") or []
     dice_per_class = log.get("dice_per_class_or_region")  # list[epoch] of list[class]
-    tb_dir = ckpt_path.parent / "tensorboard"
+    fold_dir = ckpt_path.parent
+    tb_dir = fold_dir / "tensorboard"
 
     moved = _supersede_existing(tb_dir, dry_run)
+    extras = " + progress.png + training_log" if aux else ""
     if dry_run:
-        print(f"[dry-run] {tb_dir}  -> {n_epochs} epochs, {len(series)} scalars"
+        print(f"[dry-run] {tb_dir}  -> {n_epochs} epochs, {len(series)} scalars{extras}"
               f"{f', would supersede {moved} old event file(s)' if moved else ''}")
         return n_epochs
 
@@ -89,7 +147,10 @@ def rebuild_fold(ckpt_path: Path, dry_run: bool) -> int:
             for ci, value in enumerate(per_class):
                 writer.add_scalar(f"val/dice_class_{ci}", float(value), step)
     writer.close()
-    print(f"rebuilt {tb_dir}  ({n_epochs} epochs"
+    if aux:
+        _write_progress_png(log, fold_dir)
+        _write_training_log(log, fold_dir)
+    print(f"rebuilt {tb_dir}{extras}  ({n_epochs} epochs"
           f"{f', {moved} old event file(s) -> superseded/' if moved else ''})")
     return n_epochs
 
@@ -104,6 +165,8 @@ def main() -> None:
     ap.add_argument("--model", default="nnUNetTrainerBrainMets__nnUNetResEncUNetLPlansD600__3d_fullres")
     ap.add_argument("--dry-run", action="store_true",
                     help="Report what would be rebuilt without writing anything.")
+    ap.add_argument("--no-aux", action="store_true",
+                    help="Only rebuild tensorboard/; skip progress.png + training_log.")
     args = ap.parse_args()
 
     pattern = os.path.join(args.results_root, args.glob, args.dataset, args.model,
@@ -115,7 +178,7 @@ def main() -> None:
     print(f"Found {len(checkpoints)} checkpoint(s){' (dry-run)' if args.dry_run else ''}.")
     total_epochs = 0
     for ckpt in checkpoints:
-        total_epochs += rebuild_fold(Path(ckpt), args.dry_run)
+        total_epochs += rebuild_fold(Path(ckpt), args.dry_run, aux=not args.no_aux)
     verb = "would rebuild" if args.dry_run else "rebuilt"
     print(f"\nDone: {verb} {len(checkpoints)} fold(s), {total_epochs} epoch-points total.")
 
