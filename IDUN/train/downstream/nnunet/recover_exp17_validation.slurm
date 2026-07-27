@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="gpu80g"
+#SBATCH --constraint="gpu80g|gpu40g"
 #SBATCH --job-name="recover_exp17_val"
 #SBATCH --array=0-19
 #SBATCH --output=IDUN/output/train/downstream/nnunet/recover_exp17_val_%A_%a.out
