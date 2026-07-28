@@ -57,8 +57,8 @@ def test_exp17_has_four_independent_exp16_style_evaluation_jobs() -> None:
 
         assert text.startswith("#!/usr/bin/env bash\n")
         assert "set -Eeuo pipefail" in text
-        assert "#SBATCH --time=0-00:30:00" in text
-        assert '#SBATCH --constraint="a100|h100|gpu80g"' in text
+        assert "#SBATCH --time=0-01:00:00" in text
+        assert '#SBATCH --constraint="a100|h100|gpu80g|gpu40g"' in text
         assert "#SBATCH --array" not in text
         assert f'#SBATCH --job-name="{job_name}"' in text
         assert f"readonly N_SYNTHETIC={dose}" in text
