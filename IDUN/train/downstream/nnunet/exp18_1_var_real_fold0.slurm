@@ -97,6 +97,12 @@ readonly MODEL_RESULT_DIR="${NNUNET_RESULTS}/${EXPERIMENT_NAME}/Dataset${DATASET
 readonly FOLD_RESULT_DIR="${MODEL_RESULT_DIR}/fold_${FOLD}"
 readonly REFERENCE_RESULT_DIR="${NNUNET_RESULTS}/${REFERENCE_EXPERIMENT}/Dataset${DATASET_ID}_BrainMet/${MODEL_NAME}/fold_${FOLD}"
 readonly FOLD_LOCK="${MODEL_RESULT_DIR}/.rep_${REPLICATE}.training.lock"
+# train_nnunet CREATES its own isolated nnUNet_preprocessed_<experiment>/ with a freshly
+# generated splits_final.json, so that file never exists in the shared preprocessed dir.
+# The first version of this script demanded it there and every replicate died with
+# "missing splits_final.json" before training started. What we actually need to verify is
+# that the replicate's generated folds match the ORIGINAL run's, which live here.
+readonly HISTORICAL_SPLITS="${NNUNET_BASE}/nnUNet_preprocessed_${REFERENCE_EXPERIMENT}/Dataset${DATASET_ID}_BrainMet/splits_final.json"
 
 mkdir -p "$MODEL_RESULT_DIR"
 exec 9>"$FOLD_LOCK"
@@ -105,7 +111,7 @@ flock -n 9 || fatal "another allocation is already training replicate ${REPLICAT
 # --- the replicate must be comparable to the original run, or it measures nothing ----
 [[ -s "$RAW_DIR/case_info.json" ]] || fatal "Dataset600 case_info.json is missing"
 [[ -s "$PREPROCESSED_DIR/$PLANS_NAME.json" ]] || fatal "missing plan: $PLANS_NAME"
-[[ -s "$PREPROCESSED_DIR/splits_final.json" ]] || fatal "missing splits_final.json"
+[[ -s "$HISTORICAL_SPLITS" ]] || fatal "original run's splits not found: $HISTORICAL_SPLITS"
 [[ -d "$REFERENCE_RESULT_DIR" ]] || \
     fatal "original reference fold 0 not found, nothing to replicate: $REFERENCE_RESULT_DIR"
 
@@ -129,17 +135,33 @@ conda activate nnunet
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 # Preflight: this replicate must train on exactly the cases the original fold 0 used.
-python - "$PREPROCESSED_DIR/splits_final.json" "$FOLD" <<'PYEOF'
+python - "$RAW_DIR" "$HISTORICAL_SPLITS" "$FOLD" <<'PYEOF'
 import json, sys
-splits = json.loads(open(sys.argv[1]).read())
-fold = int(sys.argv[2])
-assert len(splits) == 5, len(splits)
-s = splits[fold]
+from pathlib import Path
+
+from medgen.downstream.nnunet.splits import generate_experiment_splits
+
+raw, hist = Path(sys.argv[1]), Path(sys.argv[2])
+fold = int(sys.argv[3])
+case_info = json.loads((raw / "case_info.json").read_text())
+historical = json.loads(hist.read_text())
+
+# train_nnunet will generate these same splits at runtime. Verifying them here means a
+# replicate that would have trained on different data fails before burning a GPU day.
+splits = generate_experiment_splits(
+    experiment="baseline",
+    real_train_cases=case_info["real_train_cases"],
+    synthetic_cases=case_info.get("synthetic_cases", []),
+)
+assert len(splits) == 5 and len(historical) == 5
+s, h = splits[fold], historical[fold]
 assert len(s["train"]) == 84, len(s["train"])
 assert len(s["val"]) == 21, len(s["val"])
 assert not (set(s["train"]) & set(s["val"]))
+assert s["val"] == h["val"], "validation patients differ from the original run"
+assert sorted(s["train"]) == sorted(h["train"]), "training cases differ from the original run"
 print(f"Preflight OK: fold {fold} = 84 real train / 21 real validation, "
-      f"identical to the original reference run")
+      f"case-for-case identical to {hist.parent.parent.name}")
 PYEOF
 
 echo "=== exp18 training-variance screen, arm 1 (real-data reference) ==="
