@@ -19,6 +19,7 @@ Usage:
     python -m medgen.scripts.generate mode=bravo output_subdir=experiment1 \\
         seg_model=... image_model=...
 """
+import json
 import logging
 import random
 from pathlib import Path
@@ -200,6 +201,36 @@ def _xyz_to_dhw(voxel_xyz: tuple[float, float, float]) -> tuple[float, float, fl
     """
     x, y, z = voxel_xyz
     return (z, y, x)
+
+
+def _save_rejected_draw(out_root, index, attempt, bravo_np, seg_binary,
+                        trim_slices, containment, margin_mm, voxel):
+    """Persist a draw that failed the conditioning-containment check.
+
+    Off unless ``save_rejected_dir`` is set, and it never changes acceptance: the
+    protocol still discards the draw and retries. It only writes what would otherwise
+    be lost, because a rejected volume is exactly the thing needed to show what the
+    filter is for and the production path keeps no copy.
+
+    Arrays are transposed and trimmed exactly as an accepted sample is, so a rejected
+    volume can be placed beside an accepted one without any further alignment.
+    """
+    seg_save = np.transpose(seg_binary, (1, 2, 0))
+    bravo_save = np.transpose(bravo_np, (1, 2, 0))
+    if trim_slices > 0:
+        seg_save = seg_save[:, :, :-trim_slices]
+        bravo_save = bravo_save[:, :, :-trim_slices]
+    sample_dir = Path(out_root) / f"{index:05d}_attempt{attempt + 1}"
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    save_nifti(seg_save, str(sample_dir / "seg.nii.gz"), voxel_size=voxel)
+    save_nifti(bravo_save, str(sample_dir / "bravo.nii.gz"), voxel_size=voxel)
+    (sample_dir / "containment.json").write_text(json.dumps({
+        'candidate_index': int(index),
+        'attempt': int(attempt) + 1,
+        'valid': False,
+        'max_distance_mm': containment.get('max_distance_mm'),
+        'margin_mm': float(margin_mm),
+    }, indent=2))
 
 
 def compute_voxel_size(image_size: int, fov_mm: float = 240.0,
@@ -1308,6 +1339,10 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
         max_image_attempts_per_mask = (
             None if max_image_attempts_raw is None else int(max_image_attempts_raw)
         )
+        # Opt-in, default off. Production runs leave this unset and behave exactly as
+        # before: a failed draw is discarded and never written.
+        save_rejected_raw = cfg.get('save_rejected_dir', None)
+        save_rejected_dir = None if save_rejected_raw is None else str(save_rejected_raw)
         skip_failed_fixed_masks = bool(cfg.get('skip_failed_fixed_masks', False))
         stop_after_accepted_raw = cfg.get('stop_after_accepted_images', None)
         stop_after_accepted_images = (
@@ -1638,6 +1673,15 @@ def run_3d_pipeline(cfg: DictConfig, output_dir: Path) -> None:
                                     f"{support_name} "
                                     f"(max distance={containment['max_distance_mm']}, "
                                     f"attempt {bravo_attempt + 1}/{image_attempts_this_round})"
+                                )
+                            if save_rejected_dir is not None:
+                                _save_rejected_draw(
+                                    save_rejected_dir, generated, bravo_attempt,
+                                    bravo_np, seg_binary, trim_slices, containment,
+                                    brain_containment_margin_mm,
+                                    compute_voxel_size(
+                                        cfg.image_size, cfg.get('fov_mm', 240.0),
+                                    ),
                                 )
                             continue
                     else:

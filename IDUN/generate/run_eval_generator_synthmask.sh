@@ -35,7 +35,24 @@ readonly START_CANDIDATE_INPUT="${SYNTHMASK_START_CANDIDATE:-0}"
 readonly START_CANDIDATE_VALUE=$((10#$START_CANDIDATE_INPUT))
 (( START_CANDIDATE_VALUE < NUM_CANDIDATES )) || fatal \
     "SYNTHMASK_START_CANDIDATE must be below $NUM_CANDIDATES: $START_CANDIDATE_VALUE"
-readonly NUM_CANDIDATES_TO_PROCESS=$((NUM_CANDIDATES - START_CANDIDATE_VALUE))
+# Upper bound on the candidate range, exclusive. Defaults to the full pool, so an
+# unset variable reproduces the production run exactly. Set it only to re-derive a
+# handful of candidates, e.g. to recover draws the protocol discarded.
+readonly END_CANDIDATE_INPUT="${SYNTHMASK_END_CANDIDATE:-$NUM_CANDIDATES}"
+[[ "$END_CANDIDATE_INPUT" =~ ^(0|[1-9][0-9]*)$ ]] || fatal \
+    "SYNTHMASK_END_CANDIDATE must be a non-negative integer: $END_CANDIDATE_INPUT"
+readonly END_CANDIDATE_VALUE=$((10#$END_CANDIDATE_INPUT))
+(( END_CANDIDATE_VALUE > START_CANDIDATE_VALUE )) || fatal \
+    "SYNTHMASK_END_CANDIDATE must exceed the start: $END_CANDIDATE_VALUE"
+(( END_CANDIDATE_VALUE <= NUM_CANDIDATES )) || fatal \
+    "SYNTHMASK_END_CANDIDATE must not exceed $NUM_CANDIDATES: $END_CANDIDATE_VALUE"
+if (( END_CANDIDATE_VALUE < NUM_CANDIDATES )) && [[ "${SYNTHMASK_OUTPUT_LABEL:-}" == "" ]]; then
+    fatal "a partial candidate range must use a separate SYNTHMASK_OUTPUT_LABEL"
+fi
+readonly NUM_CANDIDATES_TO_PROCESS=$((END_CANDIDATE_VALUE - START_CANDIDATE_VALUE))
+# Draws that fail containment are discarded by the protocol and nothing is written.
+# Setting this keeps a copy. Acceptance is unaffected either way.
+readonly SAVE_REJECTED_DIR="${SYNTHMASK_SAVE_REJECTED_DIR:-}"
 readonly OUTPUT_LABEL="${SYNTHMASK_OUTPUT_LABEL:-$LABEL}"
 [[ "$OUTPUT_LABEL" =~ ^[a-zA-Z0-9_.-]+$ ]] || fatal "unsafe output label: $OUTPUT_LABEL"
 if (( START_CANDIDATE_VALUE > 0 )) && [[ "$OUTPUT_LABEL" == "$LABEL" ]]; then
@@ -102,7 +119,7 @@ GEN_ARGS=(
     expected_real_cases="$NUM_CANDIDATES"
     expected_real_depth=150
     seed="$SEED"
-    num_images="$NUM_CANDIDATES"
+    num_images="$END_CANDIDATE_VALUE"
     current_image="$START_CANDIDATE_VALUE"
     num_steps_bravo="$STEPS"
     ode_solver=euler
@@ -116,6 +133,7 @@ GEN_ARGS=(
     brain_threshold=0.05
     brain_containment_margin_mm="$BRAIN_MARGIN_MM"
     max_image_attempts_per_mask="$MAX_IMAGE_ATTEMPTS"
+    save_rejected_dir="${SAVE_REJECTED_DIR:-null}"
     skip_failed_fixed_masks=true
     brain_atlas_path=null
     brain_support_pca_path="$BRAIN_SUPPORT_PCA"
