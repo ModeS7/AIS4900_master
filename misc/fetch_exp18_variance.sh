@@ -1,15 +1,20 @@
 #!/bin/bash
-# Fetch the exp18 training-variance replicates from the cluster.
-# Run this LOCALLY (it pulls from the cluster), not on the cluster.
+# Gather the exp18 training-variance replicates into one directory.
+#
+# Runs either place, and detects which:
+#   ON the cluster   the 32 files are already on this filesystem, so it collects them
+#                    locally and prints the one command that pulls the result down.
+#   OFF the cluster  it rsyncs them over ssh. Set CLUSTER to your ssh target.
 #
 # Usage:
-#   CLUSTER=user@idun-login1.hpc.ntnu.no ./misc/fetch_exp18_variance.sh
+#   ./misc/fetch_exp18_variance.sh                            # on the cluster
+#   CLUSTER=user@idun-login1.hpc.ntnu.no ./misc/fetch_exp18_variance.sh   # from home
 #   ./misc/fetch_exp18_variance.sh runs/eval/exp18_variance   # explicit destination
 #
 # Env:
-#   CLUSTER       ssh target or alias                (default: cluster)
-#   CLUSTER_BASE  remote work root, single-quoted so
-#                 $USER expands on the REMOTE side   (default: /cluster/work/$USER)
+#   CLUSTER       ssh target or alias, used only when not already on the cluster
+#   CLUSTER_BASE  work root. The default is written with a literal $USER so it resolves
+#                 correctly whether it is expanded here or by the remote shell.
 #
 # WHAT exp18 IS
 #   IDUN/train/downstream/nnunet/exp18_{1,2}_*.slurm train fold 0 four times per arm with
@@ -46,6 +51,22 @@ readonly DEST="${1:-${REPO_ROOT}/runs/eval/exp18_variance}"
 readonly REMOTE_RUNS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
 readonly REMOTE_OUT="${CLUSTER_BASE}/AIS4900_master/IDUN/output/train/downstream"
 
+# Same paths with $USER resolved against the shell we are actually running in. If they
+# exist we are already on the cluster and ssh would be both unnecessary and wrong: the
+# first run of this script was executed on idun-login2 and tried to resolve a host named
+# "cluster" from inside the cluster.
+readonly HERE_RUNS="$(eval echo "$REMOTE_RUNS")"
+readonly HERE_OUT="$(eval echo "$REMOTE_OUT")"
+if [[ -d "$HERE_RUNS" ]]; then
+    readonly ON_CLUSTER=1
+    readonly SRC_RUNS="${HERE_RUNS}"
+    readonly SRC_OUT="${HERE_OUT}"
+else
+    readonly ON_CLUSTER=0
+    readonly SRC_RUNS="${CLUSTER}:${REMOTE_RUNS}"
+    readonly SRC_OUT="${CLUSTER}:${REMOTE_OUT}"
+fi
+
 # arm : dataset : plans  -- must track the readonly block at the top of each slurm file
 readonly ARMS=("exp18_1_var_real_fold0:600:nnUNetResEncUNetLPlans"
                "exp18_2_var_hyb210_fold0:663:nnUNetResEncUNetLPlansD600")
@@ -70,23 +91,38 @@ for spec in "${ARMS[@]}"; do
     done
 done >"$LIST"
 
-echo "=== fetching $(wc -l <"$LIST") files ==="
-echo "  from ${CLUSTER}:${REMOTE_RUNS}"
+echo "=== collecting $(wc -l <"$LIST") files ==="
+(( ON_CLUSTER )) && echo "  mode: on the cluster, no ssh" \
+                 || echo "  mode: over ssh as ${CLUSTER}"
+echo "  from ${SRC_RUNS}"
 echo "  to   ${DEST}"
 echo ""
 # --ignore-missing-args: report gaps below rather than aborting the whole transfer, so a
 # single failed replicate does not cost the other seven.
 rsync -avh --ignore-missing-args --files-from="$LIST" \
-      "${CLUSTER}:${REMOTE_RUNS}/" "$DEST/" || true
+      "${SRC_RUNS}/" "$DEST/" || true
 
 # Job stdout carries the preflight result: the line proving a replicate trained on exactly
 # the cases the ORIGINAL run's fold 0 used. Without it the replicates measure training
 # noise PLUS a data difference, and the screen means nothing.
 echo ""
-echo "=== fetching slurm logs ==="
-rsync -avh --ignore-missing-args \
-      "${CLUSTER}:${REMOTE_OUT}/*exp18_*var*" "$DEST/slurm/" 2>/dev/null || \
-    echo "  none matched -- fetch by hand if the preflight needs checking"
+echo "=== collecting slurm logs ==="
+mkdir -p "$DEST/slurm"
+if (( ON_CLUSTER )); then
+    # A local glob that matches nothing stays literal under this shell, so test first
+    # rather than handing rsync a path with a "*" still in it.
+    shopt -s nullglob
+    logs=("$SRC_OUT"/*exp18_*var*)
+    shopt -u nullglob
+    if (( ${#logs[@]} )); then
+        rsync -avh "${logs[@]}" "$DEST/slurm/"
+    else
+        echo "  none matched in ${SRC_OUT}"
+    fi
+else
+    rsync -avh --ignore-missing-args "${SRC_OUT}/*exp18_*var*" "$DEST/slurm/" \
+        2>/dev/null || echo "  none matched -- fetch by hand if the preflight needs checking"
+fi
 
 echo ""
 echo "=== what arrived ==="
@@ -106,8 +142,13 @@ if (( missing == total )); then
     # Everything absent almost never means every replicate failed. It means the transfer
     # itself did not happen, and rsync's error was swallowed by `|| true` above.
     echo "  ALL ${total} files missing -- the transfer failed, not the jobs."
-    echo "    check the ssh target: CLUSTER=${CLUSTER}"
-    echo "    check the remote root: ${REMOTE_RUNS}"
+    if (( ON_CLUSTER )); then
+        echo "    ${SRC_RUNS} exists but holds none of these experiment names."
+        echo "    check that the arm names in this script match the slurm files."
+    else
+        echo "    check the ssh target: CLUSTER=${CLUSTER}"
+        echo "    check the remote root: ${REMOTE_RUNS}"
+    fi
 elif (( missing )); then
     echo "  ${missing} of ${total} file(s) missing."
     echo "    no summary.json  -> that replicate's final validation did not run"
@@ -116,5 +157,13 @@ elif (( missing )); then
 else
     echo "  all ${#ARMS[@]} arms x ${#REPLICATES[@]} replicates present."
 fi
+
 echo ""
-echo "  next: point the training-variance analysis at --results ${DEST}"
+if (( ON_CLUSTER )); then
+    echo "  everything is now under one directory. Pull it down with:"
+    echo ""
+    echo "    rsync -avh ${USER}@$(hostname -f 2>/dev/null || hostname):${DEST}/ \\"
+    echo "        ~/NTNU/AIS4900_master/runs/eval/exp18_variance/"
+else
+    echo "  next: point the training-variance analysis at --results ${DEST}"
+fi
