@@ -49,7 +49,9 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly DEST="${1:-${REPO_ROOT}/runs/eval/exp18_variance}"
 
 readonly REMOTE_RUNS="${CLUSTER_BASE}/AIS4900_master/runs/downstream/nnunet"
-readonly REMOTE_OUT="${CLUSTER_BASE}/AIS4900_master/IDUN/output/train/downstream"
+# Matches #SBATCH --output in both slurm files, which is relative to the submit dir:
+#   IDUN/output/train/downstream/nnunet/<arm>/%A_%a.out
+readonly REMOTE_OUT="${CLUSTER_BASE}/AIS4900_master/IDUN/output/train/downstream/nnunet"
 
 # Same paths with $USER resolved against the shell we are actually running in. If they
 # exist we are already on the cluster and ssh would be both unnecessary and wrong: the
@@ -87,7 +89,10 @@ for spec in "${ARMS[@]}"; do
         echo "${base}/fold_0/validation/summary.json"   # 21 validation patients
         echo "${base}/fold_0/debug.json"                # epochs reached, resolved plan
         echo "${base}/dataset.json"                     # case counts for this arm
-        echo "eval_${exp}.json"                         # 51 test patients, per_case
+        # 51 test patients with per_case. NOT at <results>/eval_<exp>.json: _setup_env
+        # (eval_nnunet.py:39) reassigns nnUNet_results to <results>/<experiment> before
+        # the output path is built from it, so the file lands one level deeper.
+        echo "${exp}/eval_${exp}.json"
     done
 done >"$LIST"
 
@@ -108,21 +113,15 @@ rsync -avh --ignore-missing-args --files-from="$LIST" \
 echo ""
 echo "=== collecting slurm logs ==="
 mkdir -p "$DEST/slurm"
-if (( ON_CLUSTER )); then
-    # A local glob that matches nothing stays literal under this shell, so test first
-    # rather than handing rsync a path with a "*" still in it.
-    shopt -s nullglob
-    logs=("$SRC_OUT"/*exp18_*var*)
-    shopt -u nullglob
-    if (( ${#logs[@]} )); then
-        rsync -avh "${logs[@]}" "$DEST/slurm/"
+for spec in "${ARMS[@]}"; do
+    IFS=: read -r arm _ _ <<<"$spec"
+    if rsync -avh --ignore-missing-args "${SRC_OUT}/${arm}/" "$DEST/slurm/${arm}/" \
+            >/dev/null 2>&1 && compgen -G "$DEST/slurm/${arm}/*" >/dev/null; then
+        echo "  ${arm}: $(find "$DEST/slurm/${arm}" -type f | wc -l) file(s)"
     else
-        echo "  none matched in ${SRC_OUT}"
+        echo "  ${arm}: none found in ${SRC_OUT}/${arm}/"
     fi
-else
-    rsync -avh --ignore-missing-args "${SRC_OUT}/*exp18_*var*" "$DEST/slurm/" \
-        2>/dev/null || echo "  none matched -- fetch by hand if the preflight needs checking"
-fi
+done
 
 echo ""
 echo "=== what arrived ==="
