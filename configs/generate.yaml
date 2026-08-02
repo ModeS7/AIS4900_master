@@ -100,6 +100,7 @@ conditioning_brain_qc_mode: cleanup # "reject" retries images without changing f
 brain_containment_margin_mm: 3.0 # Physical boundary allowance in reject mode
 max_image_attempts_per_mask: null # Explicit fixed-mask cap in reject mode
 skip_failed_fixed_masks: false   # Continue to the next fixed mask when the image-attempt cap is exhausted
+save_rejected_dir: null          # Keep draws that fail containment (null = discard, as the protocol does)
 stop_after_accepted_images: null # Stop a fixed-mask run after this many newly accepted images
 brain_atlas_path: auto           # "auto" = use bundled atlas, path = custom, null = skip
 brain_pca_path: null             # "auto" = use bundled PCA model, path = custom, null = skip
