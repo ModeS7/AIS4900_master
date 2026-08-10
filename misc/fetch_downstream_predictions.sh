@@ -135,8 +135,15 @@ fi
 
 if on_cluster; then
   echo
-  echo "now pull it down with:"
-  echo "  rsync -avz <cluster>:$(pwd)/$DEST/ ./$DEST/"
+  echo "Files are now on the cluster. To get them onto your workstation, run the next"
+  echo "command THERE, not here -- running it on this login node just copies to itself:"
+  echo
+  echo "  rsync -avz ${USER}@$(hostname -f):$(pwd)/$DEST/ <local-AIS4900_master>/$DEST/"
+  echo
+  echo "No direct route from your workstation to the cluster (VPN only reachable from a"
+  echo "VM, for example)? Collapse it to one small file and move that however you can:"
+  echo
+  echo "  tar czf ~/downstream_predictions.tgz -C $(dirname "$DEST") $(basename "$DEST")"
 fi
 
 echo
